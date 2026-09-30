@@ -1,0 +1,6 @@
+export type { Locator, Page } from './api/page.ts'
+export { test } from './api/test.ts'
+export type { Test, TestOptions } from './api/test.ts'
+export type { TestBody, TestContext } from './api/test-body.ts'
+export { expect } from './assertions/expect.ts'
+export type { Assertions, LocatorAssertions, RetestTypeError, ValueAssertions } from './assertions/expect.ts'
