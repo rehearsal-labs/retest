@@ -1,4 +1,8 @@
-# Retest milestone 1 handoff
+# Retest implementation handoff
+
+This file has two parts. Part 1 is milestone 1's handoff, as that phase left it. Part 2 is milestone 2's, written by its verification phase on 30 September 2026. How to use Retest now is in [the guide](guide.md).
+
+# Part 1: Milestone 1
 
 30 September 2026. The verification phase wrote the first version from checks it ran itself. The originating session then reviewed the work, in `docs/plans/milestone-1/review.md`, and two fix waves followed it. A re-check of those waves found three more problems, N1 to N3, and a third wave fixed them. Section 10 lists every finding and what became of it. The commands and counts in section 5 come from the third wave's run, from 14:56 to 14:59 local time. The evidence runs in section 6 were made at 14:27, before it; their events and results still validate against the extended schemas.
 
@@ -296,3 +300,202 @@ These predate the review. The verification phase wrote a failing test for each a
 
 1. False pass: Retest's own errors thrown outside a test's scope were dropped. A `test()` declared after the file loaded, or an `expect()` that failed in a callback registered while the file loaded, threw a `RetestError` that nothing had recorded. Failing tests: the two `unawaited work: ... cannot leave a passing run` checks in `matrix-outcomes.test.ts`, with `fixtures/tests/late-test.retest.ts` and `outside-check.retest.ts`. `report()` now passes every error to `TestRun.recordThrown`, which records any failure not already recorded.
 2. A JSONL reader that went away left a stored pass. Failing test: `reporter integrity: a JSONL reader that goes away ...` in `matrix-reporting.test.ts`. Once stdout has failed, the report writer throws, so the run records `reporting_failed` and prints "error: The jsonl reporter failed on ...: write EPIPE".
+
+# Part 2: Milestone 2
+
+30 September 2026. The milestone 2 verification phase wrote this part from checks it ran itself, against the contract in `docs/plans/milestone-2/build-plan.md`. A fix agent changed `src/` while this phase worked; the final run in section 5 came after its last change. How to use what is described here is in [the guide](guide.md).
+
+## 1. What works
+
+Retest now runs a project from a config. Verified through the command line as a real subprocess, against real browsers and the task-app fixture on an ephemeral loopback port:
+
+- `retest.config.ts` is found, loaded and checked. An invalid one names the file and each key at fault. Its `Register` block gives the type check the project's names on TypeScript 6 and 7.
+- Several named apps in one test, each with its own browser context, its commands routed to its page, and a screenshot of each on failure.
+- A matrix of targets: Google Chrome through `chrome()` and Chrome for Testing through `chromium({ executablePath })`. A test on an app with two targets runs twice. `runs` pairs the targets of two such apps. `--target` picks one.
+- Device emulation: the viewport, pixel ratio, user agent and touch are applied, `tap()` works, `click()` becomes a tap, and every report says "emulated".
+- Role, label and text locators with strict matching by default, `exact: false`, and the hidden-element rules, all resolved by Chrome's own accessibility tree or the page text.
+- `test.describe`, `beforeEach`, `afterEach`, `test.for`, `test.setup` with saved sign-in `state`, `expect.poll`, `expect.soft`, and the new matchers.
+- Secrets typed by the parent process only, bound to origins, and replaced by `{{name}}` in what Retest records. This phase found two exceptions, listed in section 11; the review fixed both.
+- Choosing tests by `--grep`, `--tag`, `file:line`, `file:line#row`, `--last-failed` and `--target`.
+- `retest init` writes a project that type-checks and runs. `retest doctor` checks browsers, apps, servers and secrets.
+- `start` runs an app's server, waits for it, logs it and stops its process group.
+- The packed tarball installs offline into an outside project, which type-checks with a registered config, runs from its installed command line, and runs `runFiles` from the `runner` subpath with an in-memory config.
+- Milestone 1's mode, `--browser` with no config, still runs as before, and every milestone 1 integration test still passes.
+
+## 2. Environment
+
+| Item | Version |
+| --- | --- |
+| Operating system | macOS 27.0 (build 26A428), Darwin 27.0.0, arm64 |
+| Node.js | 24.12.0 |
+| npm | 11.6.2 |
+| First browser | Google Chrome 154.0.8037.92, `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, found by `chrome()` and passed as `--browser` in milestone 1's mode |
+| Second browser | Chrome for Testing 153.0.8010.12, `~/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`, given to `chromium({ executablePath })` or `RETEST_CHROMIUM`. No Playwright code ran |
+| TypeScript | 6.0.3 and 7.0.2 |
+
+Every browser ran headless. Nothing ran on Linux, Windows, Edge, a Chrome channel other than stable, a CI runner or a headed browser.
+
+## 3. Files and modules
+
+The build phases added these to `src/`. Each folder keeps milestone 1's separation: `protocol` is pure, `browser` knows nothing of tests, `runner` knows nothing of CDP, and reporters only read events.
+
+| Folder | Milestone 2 modules |
+| --- | --- |
+| `src/config/` | The config's types, `defineConfig`, `app`, `chromium`, `chrome`, `edge` and `env`, the device table, validation into a `LoadedConfig`, loading the file, and the `Register` types |
+| `src/api/` | App handles and their pages, locator recipes, `describe` blocks and hooks, `test.for`, `test.setup`, options, `secret()`, and per-app command lanes |
+| `src/assertions/` | The value checks, deep equality, `expect.poll`, `expect.soft` and how assertions are reported |
+| `src/browser/` | Accessibility-tree lookups for role and label, text matching, emulation, storage state capture and restore, finding executables, and refusing a secret on the wrong origin in the page |
+| `src/runner/` | Planning variants and runs, scheduling setups, finding setups in other files, selection, secret resolution and redaction, the browser pool, app servers, the run config, `last-run.json`, and the `runner` subpath entry |
+| `src/protocol/` | Variants, ARIA roles, emulation, storage state, secrets, `last-run.json`, source places, the JSON Schema URLs and the `protocol` subpath entry |
+| `src/cli/` | `init`, `doctor`, prompts, finding the config, `--base-url` and `--target` pairs, tag expressions and selection flags |
+| `src/reporters/` | Target labels and per-target summaries |
+| `src/shared/` | Listing words and finding test files |
+
+The verification phase added:
+
+| Path | Purpose |
+| --- | --- |
+| `examples/tasks/` | The example project: `retest.config.ts` with the `Register` block, its own `tsconfig.json`, and four test files that use every part of the milestone 2 API |
+| `fixtures/app-server/cli.ts` | A server for `start`: it listens on a given port after an optional delay, or never; it can ignore SIGTERM, start a child process, and print an environment variable; it logs to stdout and stderr, and serves a page with a heading and a field |
+| `tests/integration/m2-*.test.ts` | Fifteen files, one for each area of the acceptance checks |
+| `tests/integration/cli-harness.ts` | Extended: config runs without `--browser`, projects outside the repository that import Retest by name, JSONL checks, secret searches, app server fixtures, free ports, packing and installing the tarball, the second browser, and wider cleanup checks |
+| `tests/integration/package-smoke.test.ts` | Now packs and installs through the shared helpers; its checks are unchanged |
+| `docs/guide.md` | How to use milestone 2 |
+| `tsconfig.json` | One line outside this phase's files: `examples/tasks` is excluded, because its `Register` block would apply to the whole root program. It type-checks as a project of its own |
+
+## 4. Dependencies
+
+Unchanged. There are no runtime dependencies. The development dependencies are still `typescript` 6.0.3, `typescript-7` (`npm:typescript@7.0.2`) and `@types/node` 24.19.0, with `undici-types` 7.24.6 and `@typescript/typescript-darwin-arm64` 7.0.2 beneath them, and `package-lock.json` is unchanged. The package smoke tests install only the packed tarball. Where a project outside the repository needs Node's types, the tests link this checkout's `@types/node` into it rather than install anything.
+
+## 5. Commands and results
+
+The final run, from the repository root, one command after another, on 30 September 2026 from 18:19 to 18:24 local time, with Google Chrome 154.0.8037.92 and Chrome for Testing 153.0.8010.12. It came after the fix agent's last change to `src/`, which included the four changes it was making alongside this phase: the in-page origin check for secret fills, bringing in setups from other files, `doctor` logs under `.retest/doctor/`, and `file:line#row`.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `npm run build` | 0 | Empties `dist/`, then writes it, with `dist/schemas/event-v1.schema.json` and `result-v1.schema.json`. The event schema includes `app.started`, `app.reused`, `app.failed`, `state.saved`, `state.restored`, `origin` and `variantKey` |
+| `npm run typecheck` | 0 | TypeScript 6.0.3, then 7.0.2, no errors, no `FATAL` |
+| `npm run test:unit` | 0 | 1080 tests in 197 suites: 1080 passed, 0 failed, 0 skipped, 17.8 s |
+| `npm run test:types` | 0 | "109 expected errors matched 109 markers in 4 projects" on TypeScript 6.0.3, and again on 7.0.2 |
+| `npm run test:integration` | 1 | 235 tests: 233 passed, 2 failed, 0 cancelled, 0 skipped, 211.6 s. This phase's 15 `m2-*` files hold 54 of them, and the 2 failures are the bugs in section 11. The other 181 are milestone 1's suites, the package smoke test among them, and the build phases' browser-level tests |
+
+The integration run exits 1 on purpose: the two failing tests show the bugs in section 11, and pass once those are fixed. Every other test passed, milestone 1's included.
+
+`npm run test:integration` needs both browsers of section 2. It ran with neither `RETEST_TEST_BROWSER` nor `RETEST_TEST_SECOND_BROWSER` set, so it used the default paths.
+
+## 6. Acceptance checks
+
+Every check below ran through the `retest` command line as a real subprocess, against real browsers and the task-app fixture, with short explicit `--timeouts`. The projects the checks run are written into temporary folders outside the repository, and import Retest by its package name. After every run, the harness reads `events.jsonl` and `result.json` through the protocol schemas, checks that JSONL stdout is exactly those events, and checks cleanup as section 9 describes.
+
+The last column lists the unit tests in `tests/unit/` that check the same logic with fakes and mocks: a fake browser, fake transports, scripted CDP sessions and in-process runs. They show logic, not browser behaviour.
+
+| # | Check | Result | Real proof, in `tests/integration/` | Mocked only, in `tests/unit/` |
+| --- | --- | --- | --- | --- |
+| 1 | Config | Pass | `m2-config`, 8 tests: no config and no `--browser` is a usage error that says how to go on; an invalid config names the file and every key at fault, before a run folder exists; a config that throws, has no default export or is missing names itself; `--browser` beside a config is refused; a milestone 1 run still has one app named `page`, no variants and no `browsers`; `--base-url url` and `app=url` replace base URLs and are recorded; with no files every `.retest.ts` under the root runs, dot folders skipped; config budgets sit under `--timeouts`, and several apps with no `defaultApp` need `apps`. Every milestone 1 suite also still runs in `--browser` mode | `config-validate`, `config-load-file`, `config-define`, `cli-run-config`, `runner-run-config` |
+| 2 | Types | Pass | Real compilers, no browser: `npm run test:types` checks every error of the plan page's "What tsc catches" (`tests/types/fixtures/plan-page`) and every M2-10 fixture on TypeScript 6 and 7, and `unregistered.ts` compiles `page` tests with no config. `m2-example`: the example project type-checks on both. `m2-package`: a registered consumer type-checks on both, and an unknown app and an unknown secret fail with their messages on both. `package-smoke`: an unregistered consumer compiles a `page` test against the installed declarations | `type-diagnostics` |
+| 3 | Locators | Pass | `m2-locators`: one run of nine tests against `/locators`. Role matches the whole name Chrome computes, case and all, `exact: false` matches any part in any case, and whitespace is normalised; hidden, `aria-hidden`, `inert` and undisplayed elements are left out; label finds fields by `for`, a wrapping label, `aria-labelledby`, `aria-label`, `title` and placeholder, and never a button; text finds the innermost element and skips `script`, `style`, `template` and `noscript`; shadow roots and frames are not searched. An ambiguous role and an ambiguous label fail a click or fill in under a second, naming the count; text that matches nothing fails `not_found` after the 1500 ms action budget. `browser-locators` checks the same page at the browser level, 22 tests | `browser-locate`, `browser-accessibility`, `browser-text-match`, `locator` |
+| 4 | Two apps in one test | Pass | `m2-apps`: an owner signs in and saves, and the member's page is still signed out with empty storage and a first page load; the two apps' `goto`s run at once without a clash; every action, navigation and check names its app in `session`; a failure takes one PNG of each app, named with the app. The example's `roles.retest.ts` passes in `m2-example` | `api-handles`, `api-child`, `runner-config-apps` |
+| 5 | Matrix | Pass | `m2-matrix`, 3 tests. With a `chrome` target on Chrome 154 and a `testing` target on Chrome for Testing 153, a one-app test runs twice, and a page it opens tells a server which major version opened it: 154 once and 153 once. The human report labels each run and prints a line per target. `runs` gives exactly its two pairings for a two-app test, and no other. `--target web=testing` keeps only those runs and starts only the browsers they use; a pairing no `runs` entry has keeps nothing and exits 2; an unknown target is a usage error. A missing `runs` entry fails that file's collection with its message, and the other file still runs. `inspect --test --target` reads one variant | `runner-variants`, `runner-schedule`, `runner-browser-pool`, `reporters-variants`, `inspect-variants` |
+| 6 | Emulation | Pass | `m2-emulation`: a Pixel 9 target reads width 412, pixel ratio 2.625, a touch screen, and the Pixel user agent with the running Chrome's major version, in the page and in the request header, and no client hints in the page; `tap()` gives `touchstart touchend click:touch`; `click()` on it is sent and recorded as `tap`; a custom screen on Chrome for Testing gets width 800, ratio 2 and touch; the desktop target has no touch and gets `click:mouse`. `browser.started` carries the emulation and device. The human report, the agent report, `inspect` and `inspect --json` all say emulated. `browser-emulation` checks the same at the browser level, 13 tests | `browser-emulation`, `config-devices` |
+| 7 | Secrets | Pass, with the two bugs of section 11 | `m2-secrets`: a missing or short variable stops the run with exit 2 before a run folder exists, naming both; a secret signs in, and the page text that holds it reads `{{password}}` in the test; a failure quoting that text quotes the name; the test process has no secret variable and prints a secret as `{{password}}`; a function source is read on each fill, and a failing one fails that fill `setup_failed` with its redacted message; a secret on an origin it is not bound to fails `not_actionable`, naming the origin, and the field stays empty; `secretOrigins` allows another origin; a server that prints the secret has `{{password}}` in its log. Every file of the run folder, `.retest/last-run.json`, stdout and stderr are searched for each value as written, URL-encoded and form-encoded, and hold none. Two more tests fail and show the bugs. `m2-package` runs a function source through `runFiles`. `browser-secrets` checks fills at the browser level | `runner-secrets`, `runner-redactor`, `runner-config-secrets`, `api-secret` |
+| 8 | Sign-in state | Pass | `m2-state`: a setup signs in through `/login` once on each of two targets; a test with `state` starts signed in on both, with its `localStorage`; a test without starts signed out; a setup that fails keeps its dependents `not_run`, with its failure in the reason; `state.saved` and `state.restored` name the state and hold nothing else; no file of the run folder holds the session cookie, and `states/` is empty. A file run on its own brings in the setup it needs from another file, marked `setupFor`. A state no file saves fails collection, naming it. `m2-guarantees`: saved state is removed on SIGINT, SIGTERM and a second SIGINT, and stays after SIGKILL. `browser-state` checks capture and restore at the browser level | `runner-config-state`, `runner-setup-search`, `store-states`, `browser-storage-state` |
+| 9 | Hooks | Pass | `m2-hooks`: the child log and the `step.started` events show file, outer, outer, inner `beforeEach`, the body, then inner, outer, outer, file `afterEach`, each at its declared line; after a failed check the `afterEach` hooks run, the test keeps its own failure at its own line, and the hook's failure is in `details.also`; describe ids are `file > outer > inner > name` and `test.for` fills `$title` and `$count`, with the block's tags passed down; duplicate rows, blocks and test names each fail their file, and nothing starts | `api-hooks`, `api-registration`, `runner-plan` |
+| 10 | Matchers | Pass | `m2-matchers`: `toBeHidden`, `toHaveCount`, `toHaveText([...])`, `toHaveValue`, `toEqual` with `Date`, `Set` and `Map` values, `toContain` and `toMatch` each pass once and fail once, `check_failed`, with the expected and received values recorded. `expect.poll` read three times before it passed, and one that never matched looked more than twice, yet the run saved once per poll test; an action inside `expect.poll` fails the test `usage` and is never sent. `expect.soft` records two failures, both `soft: true`, the test goes on to its next action, and fails at the end with both | `assertions-matchers`, `assertions-poll`, `assertions-soft`, `assertions-deep-equal`, `assertions-expect` |
+| 11 | Selection | Pass | `m2-selection`, 6 tests: `--grep` text and `/pattern/i` on the full title; `--tag` with `and`, `not`, `or` and parentheses, and with `--grep`; an unknown tag is a usage error that points at it; `file:line` keeps a test, a `test.describe` block or a `test.for`, and `file:line:column` works; `file:line#2` keeps one row, and `list` shows it; `--last-failed` reads `.retest/last-run.json`, validated, and runs only the variant that failed, loading only its file; the failure card's rerun names `file:line` and `--target`; `--target` leaves out tests that do not use its app; after a clean run `--last-failed` has nothing to run; a selection that keeps nothing exits 2 with the reason and starts no browser | `runner-selection`, `runner-config-selection`, `cli-tag-expression`, `cli-arguments` |
+| 12 | `init` | Pass | `m2-package`: in an empty folder, `init --yes` writes the config with its `Register` block, the example, the tsconfig, `package.json` with `type: module` and both scripts, and `.gitignore`. In a project with the tarball installed offline, `init --yes --ci github` also writes the workflow; a second `init` changes no byte and reports six files left as is; the project type-checks with `tsconfig.retest.json` on TypeScript 6 and 7; its example runs with its installed `retest` against the fixture and passes. `init` found Chrome and chose `chrome()` | `cli-init`, `cli-prompt` |
+| 13 | `doctor` | Pass | `m2-doctor`: with Chrome, Chrome for Testing and an emulated target, a managed server and a set secret, `doctor` reports each browser's version and path, starts the server, says it answered and was stopped, and exits 0; its server and the child it started are gone, and no log folder is kept. With a missing executable, a program that is not a browser, an app that does not answer, a server that never answers and an unset secret, it reports five problems with their fixes and exits 2; the log it points to is under `.retest/doctor/` in the project, and nothing is left in `TMPDIR`. Without a config it says how to write one | `cli-doctor` |
+| 14 | `start` | Pass | `m2-servers`, 5 tests: a server that listens after 700 ms is started, waited for and ready before the first test, its stdout and stderr are in `logs/app-web-*.log`, and the run stops its process group, child included; a server already answering is used, never started, and still running afterwards; a server that never answers is `setup_failed` for both tests that need it, named with its log, and stopped; one that exits first gives its exit code; one that ignores SIGTERM is killed with its group | `runner-app-server`, `runner-config-servers` |
+| 15 | Package smoke test | Pass | `m2-package`, 6 tests, and `package-smoke`, 6 tests. Section 8 | |
+| 16 | Milestone 1 guarantees | Pass | `m2-guarantees`, 7 tests, in runs from a config: a pass exits 0, a failed check 1, and a target with no browser 2 with that run `not_run`; no action is repeated; a test that runs out of time ends its file process, the rest of the file does not run, and the next file does; a browser killed during a click gives `outcome_unknown` on the click and the test, the click is not sent again, later tests on that browser do not run and a test on another browser does; SIGINT exits 130 and SIGTERM 143 with `result.json`, the browsers and the server stopped and state removed; a second SIGINT quits at once and its exit hooks still end the browser and the server and remove state; after SIGKILL, `inspect --json` rebuilds the run with each variant and marks it incomplete. JSONL stdout is checked in every run from a config. Every milestone 1 suite (`matrix-*`, `run-interrupt`, `cli-commands`, `browser-*`, `cdp`) still passes | `runner-lifecycle`, `runner-outcome`, `runner-running-test`, `runner-process`, `cli-interrupt` |
+
+## 7. Evidence to open
+
+Made from `examples/tasks` against the task-app fixture, with `--no-agent`, after the final run. Beside each run folder under `.retest/example-runs/`, a `.txt` file keeps the command and what the terminal printed. `.retest/` is ignored by Git. `m2-validation.txt` shows every event line and `result.json` of the five runs validated against the protocol schemas, and each `states/` folder gone.
+
+| Run | Folder | Result |
+| --- | --- | --- |
+| Passing example | `.retest/example-runs/m2-passing` | `passed`, exit 0: 16 test runs across 8 targets, 42 checks |
+| Failing example | `.retest/example-runs/m2-failing` | `failed`, exit 1, against the broken fixture: 5 failed and 11 passed, each failure a card with a code frame, a screenshot per app page and a rerun command. `tests-roles-*-web-*-failure.png` and `tests-roles-*-admin-*-failure.png` are the two apps of one test |
+| Two targets | `.retest/example-runs/m2-two-targets` | `passed`, exit 0: `tests/devices.retest.ts:4` on `desktop=chrome`, Chrome 154, and on `desktop=chromium`, Chrome for Testing 153, with a summary line for each |
+| Emulated | `.retest/example-runs/m2-emulated` | `passed`, exit 0: `--tag phone`, 4 runs on the Pixel 9 and iPhone 17 targets, each labelled "emulated" |
+| Secrets | `.retest/example-runs/m2-secrets` | `passed`, exit 0: `tests/sign-in.retest.ts`, whose setup types `secret('password')`. `m2-secrets-search.txt` shows no file of the five runs holding the password in any form, and each secret fill recorded by name |
+
+`m2-inspect.txt` shows `inspect --test` on a two-app test, with the app of each action, and on one variant with `--target`.
+
+How the runs were made, with Chrome for Testing's path as `$CHROMIUM` and the addresses the fixtures printed as `$URL` and `$BROKEN`:
+
+```sh
+node fixtures/task-app/cli.ts                  # prints $URL
+node fixtures/task-app/cli.ts --mode broken    # prints $BROKEN
+cd examples/tasks
+export TASK_APP_PASSWORD='correct horse battery staple' RETEST_CHROMIUM="$CHROMIUM"
+retest() { node --conditions=retest-source ../../src/cli/main.ts "$@"; }
+TASK_APP_URL=$URL retest run --no-agent --output ../../.retest/example-runs/m2-passing
+TASK_APP_URL=$BROKEN retest run --no-agent --output ../../.retest/example-runs/m2-failing
+TASK_APP_URL=$URL retest run tests/devices.retest.ts:4 --no-agent --output ../../.retest/example-runs/m2-two-targets
+TASK_APP_URL=$URL retest run --tag phone --no-agent --output ../../.retest/example-runs/m2-emulated
+TASK_APP_URL=$URL retest run tests/sign-in.retest.ts --no-agent --output ../../.retest/example-runs/m2-secrets
+```
+
+Milestone 1's four evidence runs are still in `.retest/example-runs/` beside these (Part 1, section 6).
+
+## 8. Package smoke test
+
+`tests/integration/m2-package.test.ts` builds, packs and installs the tarball offline into new projects under the system temporary folder, outside the repository, with an npm cache of its own. It links this checkout's `@types/node` where a project needs Node's types; nothing else is installed. All 6 checks passed:
+
+- The package exports `.`, `./runner`, `./protocol` and `./package.json`, and each subpath has `retest-source`, `types` and `default`, in that order.
+- `init --yes` in an empty folder, and `init --yes --ci github` in a project with the tarball, as in check 12. The project it writes type-checks on TypeScript 6 and 7 and runs its example.
+- A consumer with a `retest.config.ts` that registers two apps, an `env` secret, a tag and a state type-checks on TypeScript 6.0.3 and 7.0.2 with `skipLibCheck: false`. A file that names an unknown app and misspells a secret fails with exactly two errors on both: TS2322 `Type '"desktop"' is not assignable to type '"admin" | "web"'` and TS2345 `Argument of type '"pasword"' is not assignable to parameter of type '"password"'`.
+- The consumer's installed `retest` runs its setup, a test from its state and a two-app test against the fixture, all passing, with the password in no file of the run folder.
+- A consumer script imports `runFiles` and `validateConfig` from `@rehearsal-labs/retest/runner`, and `parse`, the event and result schemas and both schema URLs from `@rehearsal-labs/retest/protocol`. It validates an in-memory config, runs a setup and a test with a secret that a function supplies, and collects the events with a reporter of its own. It reports: `passed`, exit 0, the function read once, every event valid against the event schema, the result valid, and both schema files present. The run folder is checked like any other, and holds no password.
+
+`tests/integration/package-smoke.test.ts`, milestone 1's, still passes its 6 checks. It now packs and installs through the shared helpers in `cli-harness.ts`.
+
+## 9. Cleanup
+
+The milestone 1 checks still run after every command, and now cover more. `finishRun` and `runCli` in `tests/integration/cli-harness.ts` start each command as the leader of a new process group, with `TMPDIR` set to a folder of its own, and afterwards check that:
+
+1. no process is left in the command's own process group, which holds the test file processes;
+2. every browser group from a `browser.started` event, and every server group from an `app.started` event, is gone;
+3. nothing Retest names `retest-*` is left in its `TMPDIR`: no browser profile, and no `doctor` log folder;
+4. no running process mentions that `TMPDIR` in its command line;
+5. no saved sign-in state is left in the run folder's `states/`.
+
+The server tests also check with `ps` that no `fixtures/app-server` process, or the child it starts, is left on the server's port, and that nothing answers there. The SIGKILL check is the exception, and says what is left: the browsers end by themselves, the profile stays until the next launch, and the saved state and the server Retest started stay. The harness then stops that server itself. Should a check fail midway, the harness kills only the process groups it started and the browser and server groups those runs reported.
+
+After the final run and the evidence runs, `ps` showed no fixture server, `retest` process, test file process, `fixtures/app-server` process or Chrome with a Retest profile, and the system temporary folder held no `retest-*` folder. The only Chrome running was the person's own.
+
+## 10. Limitations
+
+Most important first. Items marked *fixed after the review* were closed by the review in `docs/plans/milestone-2/review.md`, which names the test behind each; the rest still hold.
+
+1. *Fixed after the review.* The two secret leaks in section 11.
+2. Only macOS arm64 was exercised, with Google Chrome 154 and Chrome for Testing 153. `edge()`, Chrome's beta, dev and canary channels, Linux and CI runners never ran. Windows cannot work, because Retest signals POSIX process groups. `--headed` and `headless: false` never ran.
+3. Screenshots are not redacted. A secret the page shows appears in its failure screenshot.
+4. A function source's value is hidden only once a fill has read it. Page text the test read before that reached the test process as it was. *After the review*, every log is read again when the run ends, so a value printed before the first read is hidden from the run folder; the events and the terminal output written before it are not.
+5. After SIGKILL, nothing stops a server Retest started, and the saved state, with its session cookies, stays in the run folder, readable only by its owner. The browser profile is removed by the next launch.
+6. Emulation is desktop Chrome with a device's screen, touch and user agent. An emulated iPhone or iPad still runs Blink, not WebKit. The device sizes come from published specifications.
+7. Locators search the top-level document only: no shadow DOM and no frames.
+8. A test file is loaded once to collect its tests and again for each visit that runs them, so top-level code runs two or more times. A file whose setup runs before other files' tests is visited, and loaded, once more.
+9. `--target app=name` leaves out every test that does not use that app, including tests on the default app when another app is named.
+10. *Fixed after the review.* The human report printed each browser as a heading as it started. It now prints "started web=beta  Chrome ..." at the tests' indent.
+11. *Fixed after the review.* A target written on its own with a wrong setting hid the checks of its `baseUrl` and `start`; every problem of an app is now reported in one pass.
+12. *Fixed after the review* for the budgets: `defaultTimeouts`, `mergeTimeouts` and `Timeouts` come from both subpaths. Still true: `apps.secrets` must hold every config secret resolved, `{ value }` or `{ read }`; a secret left out fails its fill with "not one of the config's secrets", even when the config declares it. That point was read from the code, not run.
+13. *Fixed after the review.* The rerun command repeats the budgets the command line gave (`run.started.options.commandLineTimeouts`), not the config's.
+14. `list --json` has no published JSON Schema.
+15. Milestone 1's limits still hold where Part 1, section 11 lists them: input already sent is never recalled, page console messages are not recorded, and the rest.
+
+## 11. Bugs this phase found in `src/`
+
+This phase changed nothing in `src/`. Each bug has a failing test in `tests/integration/m2-secrets.test.ts`, and the final integration run fails on exactly these two. Both were fixed by the review (`docs/plans/milestone-2/review.md`, M1 and M2), and both tests pass since.
+
+1. **A secret written percent-encoded is not redacted.** The redactor replaces a value only as it was typed. A page that puts the value in its address, where a space becomes `%20`, or shows that address, gets the encoded value into the `navigation` event, the `pageUrl` of later actions and checks, the observed text sent to the test process, `result.json` and the terminal. By hand, with the password `correct horse battery staple`, the failure card read `Page http://127.0.0.1:51454/echo/correct%20horse%20battery%20staple`. A value made only of letters, digits and `-._~` is encoded as itself and is caught. Failing test: "a secret a page writes into its address, where it is percent-encoded, is hidden there too", which finds the value in `events.jsonl` and `result.json`. Teaching the redactor each value's URL-encoded and form-encoded forms, as the test's own search does, would close it.
+2. **A function source's value that a server printed before a fill read it stays in the server's log.** The redactor learns a function source's value when a fill reads it. App server output is redacted as it streams, so a line printed earlier, such as a one-time code a dev server logs as it sends it, keeps the value. Browser logs are redacted again after the browser closes; app server logs are not. Failing test: "a one-time code a server printed before the fill read it is hidden in the server log too", which finds the code in `logs/app-web-*.log`. Redacting app server logs again when the run ends, as browser logs are, would close it.
+
+This phase also noted, without a test, what section 10 lists as items 10 to 13.
+
+## 12. Changes outside this phase's files
+
+- `tsconfig.json`: `examples/tasks` is added to `exclude`. The example's `Register` block would otherwise apply to the whole root program, where it broke `tests/unit/api-secret.test.ts` (TS2345 on `secret('code')`). The example type-checks as a project of its own, in `m2-example`.
+- `README.md` was restored to its staged milestone 1 version on the orchestrator's instruction, and this phase left it alone after that. The milestone 2 usage documentation is in `docs/guide.md`. It replaces the milestone 1 usage guide committed in `e087be2`, and keeps what that guide said that still holds.
+- `package.json`'s `description` now reads "One test across web, mobile and desktop. Built for software engineers and coding agents." This phase did not write it. Mobile and desktop apps are not supported or verified, which `AGENTS.md` says must not be advertised.
