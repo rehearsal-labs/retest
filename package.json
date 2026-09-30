@@ -5,11 +5,19 @@
   "description": "One test across web, mobile and desktop. Built for software engineers and coding agents.",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rehearsal-labs/retest.git"
+  },
+  "homepage": "https://github.com/rehearsal-labs/retest#readme",
+  "bugs": {
+    "url": "https://github.com/rehearsal-labs/retest/issues"
+  },
   "engines": {
     "node": ">=24.12"
   },
   "bin": {
-    "retest": "./dist/cli/main.js"
+    "retest": "dist/cli/main.js"
   },
   "exports": {
     ".": {
@@ -32,6 +40,10 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node scripts/write-schemas.ts",
     "typecheck": "tsc -p tsconfig.json && node_modules/typescript-7/bin/tsc -p tsconfig.json && tsc -p examples/tasks/tsconfig.json",

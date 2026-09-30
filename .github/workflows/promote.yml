@@ -1,0 +1,313 @@
+name: Promote
+run-name: Promote ${{ inputs.commit }} as ${{ inputs.version }}
+
+# The one way to publish Retest. A person chooses a commit on main and a version and runs this by hand. It checks
+# both, runs every gate in ci.yml on that commit, publishes the commit to npm with that version through trusted
+# publishing, then tags the commit and makes a GitHub release. No push, tag or schedule starts this or any other
+# workflow here. docs/releasing.md says how to run it and what to do when a run fails.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit on main to publish, as its full 40-character SHA.
+        required: true
+        type: string
+      version:
+        description: The version to publish, such as 0.2.0. It must be above every version on npm.
+        required: true
+        type: string
+
+# Reading the code is all most jobs do. The publish job adds the OIDC token npm trusts, and the record job adds
+# writing the tag and the release.
+permissions:
+  contents: read
+
+# One promotion at a time, and never cancelled: a cancelled run can leave a version published without its tag.
+concurrency:
+  group: retest-promote
+  cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: '@rehearsal-labs/retest'
+  # A jq program over the list of versions npm has: prints the highest one that is not below $version, or nothing.
+  # Versions compare as semver, so a prerelease sits below its release.
+  NOT_BELOW: |
+    def parts: split("+")[0] | (split("-")[0] | split(".") | map(tonumber)) + [if test("-") then 0 else 1 end];
+    ($version | parts) as $floor | map(select(parts >= $floor)) | max_by(parts) // empty
+
+jobs:
+  # Everything that can refuse the promotion happens before the gates run and before npm is touched.
+  verify:
+    name: Check the commit and the version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The ref the run was started from, with every branch and its whole history, to find the commit in.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          # npm 11.6.2, whose answers the version check below was written against.
+          node-version: 24.12.0
+      - name: Check the commit
+        id: commit
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          # These checks and the gates in ci.yml are the files on the ref the run was started from.
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Run the promotion from main. This run was started from ${GITHUB_REF}."
+            exit 1
+          fi
+          commit="$(printf '%s' "$COMMIT" | tr -d '[:space:]' | tr 'A-F' 'a-f')"
+          if ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Give the commit as its full 40-character SHA. This run got \"${COMMIT}\"."
+            exit 1
+          fi
+          # main as it is now, which can be ahead of the commit the run was queued on.
+          git fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git cat-file -e "${commit}^{commit}" 2> /dev/null || ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "::error::${commit} is not on main. Only a commit on main is published."
+            exit 1
+          fi
+          manifest="$(git show "${commit}:package.json")"
+          name="$(printf '%s' "$manifest" | jq -r .name)"
+          if [ "$name" != "$PACKAGE_NAME" ]; then
+            echo "::error::package.json at ${commit} names ${name}, not ${PACKAGE_NAME}."
+            exit 1
+          fi
+          if [ "$(printf '%s' "$manifest" | jq -r '.private // false')" != false ]; then
+            echo "::error::package.json at ${commit} is marked private, and npm refuses a private package. Remove \"private\" on main and promote that commit."
+            exit 1
+          fi
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+      - name: Check the version
+        id: version
+        env:
+          COMMIT: ${{ steps.commit.outputs.commit }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(printf '%s' "$VERSION" | tr -d '[:space:]')"
+          # A plain version only. npm publishes a prerelease under a dist-tag, and nothing here chooses one.
+          if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || [ "$version" = 0.0.0 ]; then
+            echo "::error::Give the version as X.Y.Z above 0.0.0, such as 0.2.0, with no v and no prerelease. This run got \"${VERSION}\"."
+            exit 1
+          fi
+          # npm answers E404 for a package it has never published, which leaves nothing above 0.0.0.
+          if listed="$(npm view "$PACKAGE_NAME" versions --json 2> /dev/null)"; then
+            versions="$(printf '%s' "$listed" | jq -c 'if type == "string" then [.] else . end')"
+          elif [ "$(printf '%s' "$listed" | jq -r '.error.code? // empty' 2> /dev/null)" = E404 ]; then
+            versions='[]'
+          else
+            echo "::error::npm did not list the versions of ${PACKAGE_NAME}. Run the promotion again."
+            exit 1
+          fi
+          highest="$(printf '%s' "$versions" | jq -r --arg version "$version" "$NOT_BELOW")"
+          if [ -n "$highest" ]; then
+            echo "::error::npm already has ${PACKAGE_NAME}@${highest}. Promote a version above it."
+            exit 1
+          fi
+          tag="v${version}"
+          tags="$(git ls-remote --tags origin "refs/tags/${tag}")"
+          if [ -n "$tags" ]; then
+            echo "::error::The tag ${tag} already exists. Promote a version that has no tag yet."
+            exit 1
+          fi
+          printf 'version=%s\ntag=%s\n' "$version" "$tag" >> "$GITHUB_OUTPUT"
+          {
+            printf '### Promoting `%s` as %s\n\n' "$(git rev-parse --short "$COMMIT")" "$version"
+            printf '%s\n\n' "$(git log -1 --format=%s "$COMMIT")"
+            printf 'Commit `%s`, started by %s.\n' "$COMMIT" "$GITHUB_ACTOR"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Every gate, on Linux and macOS, against the commit. The gates are ci.yml as it is on main; the code is the commit.
+  gates:
+    name: Gates
+    needs: verify
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      commit: ${{ needs.verify.outputs.commit }}
+
+  publish:
+    name: Publish to npm
+    needs:
+      - verify
+      - gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The environment admits only main and waits for a maintainer's approval, and npm's trusted publisher names it,
+    # so an edited copy of this file run from another branch cannot publish.
+    environment: npm
+    permissions:
+      contents: read
+      # Trusted publishing: npm trades the run's OIDC token for a publish token and signs the provenance with it, so
+      # no npm token is stored in GitHub.
+      id-token: write
+    env:
+      COMMIT: ${{ needs.verify.outputs.commit }}
+      VERSION: ${{ needs.verify.outputs.version }}
+      TAG: ${{ needs.verify.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          # The same Node.js as the macOS gates. It comes with npm 11.6.2.
+          node-version: 24.12.0
+          registry-url: https://registry.npmjs.org
+          # Nothing restored from a cache runs in a job that can sign.
+          package-manager-cache: false
+      - name: Check what npm already has
+        id: registry
+        run: |
+          set -euo pipefail
+          # Trusted publishing needs npm 11.5.1 or newer.
+          npm_version="$(npm --version)"
+          if ! printf '11.5.1\n%s\n' "$npm_version" | sort -V -C; then
+            echo "::error::npm ${npm_version} cannot publish through trusted publishing, which needs 11.5.1 or newer."
+            exit 1
+          fi
+          if listed="$(npm view "$PACKAGE_NAME" versions --json 2> /dev/null)"; then
+            versions="$(printf '%s' "$listed" | jq -c 'if type == "string" then [.] else . end')"
+          elif [ "$(printf '%s' "$listed" | jq -r '.error.code? // empty' 2> /dev/null)" = E404 ]; then
+            versions='[]'
+          else
+            echo "::error::npm did not list the versions of ${PACKAGE_NAME}. Re-run the failed jobs."
+            exit 1
+          fi
+          # A re-run after npm took the package finds it here and goes on to the tag.
+          if printf '%s' "$versions" | jq -e --arg version "$VERSION" 'any(.[]; . == $version)' > /dev/null; then
+            echo "::notice::npm already has ${PACKAGE_NAME}@${VERSION}, so this run publishes nothing."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A higher version can have reached npm since the verify job, such as before a re-run days later. npm
+          # would move latest back to this one.
+          highest="$(printf '%s' "$versions" | jq -r --arg version "$VERSION" "$NOT_BELOW")"
+          if [ -n "$highest" ]; then
+            echo "::error::npm now has ${PACKAGE_NAME}@${highest}, which is not below ${VERSION}. Promote a version above it."
+            exit 1
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+      - name: Stamp the version
+        if: steps.registry.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          # The version is written into this checkout only. main keeps 0.0.0, so a release needs no commit of its own.
+          npm version "$VERSION" --no-git-tag-version --allow-same-version --ignore-scripts
+      - name: Build the published package
+        if: steps.registry.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          # No package Retest builds with has an install script, so none runs in a job that can sign.
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run build
+          # retest --version reads the package.json it ships with.
+          built="$(node dist/cli/main.js --version)"
+          if [ "$built" != "$VERSION" ]; then
+            echo "::error::The built command reports ${built}, not ${VERSION}."
+            exit 1
+          fi
+      - name: Publish to npm
+        if: steps.registry.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          # "files" limits the package to dist/, and npm adds package.json, the licence and the readme.
+          npm publish --provenance --access public
+      # Written as soon as npm takes the package, so a failure in the record job below still leaves the record.
+      - name: Write the receipt
+        env:
+          PUBLISHED: ${{ steps.registry.outputs.publish }}
+        run: |
+          set -euo pipefail
+          mkdir -p receipt
+          jq -nc --arg name "$PACKAGE_NAME" --arg version "$VERSION" --arg tag "$TAG" --arg commit "$COMMIT" \
+            --argjson published "$PUBLISHED" \
+            '{name: $name, version: $version, tag: $tag, commit: $commit, publishedByThisRun: $published}' > receipt/release.json
+          {
+            if [ "$PUBLISHED" = true ]; then
+              printf '### npm took `%s@%s`\n\n' "$PACKAGE_NAME" "$VERSION"
+            else
+              printf '### npm already had `%s@%s`\n\n' "$PACKAGE_NAME" "$VERSION"
+            fi
+            printf 'Commit `%s`, to be tagged `%s`.\n' "$COMMIT" "$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-receipt-${{ github.run_attempt }}
+          path: receipt/release.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # The only job that can write to the repository. It runs no code from it.
+  record:
+    name: Tag and release
+    needs:
+      - verify
+      - publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      COMMIT: ${{ needs.verify.outputs.commit }}
+      VERSION: ${{ needs.verify.outputs.version }}
+      TAG: ${{ needs.verify.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Wait for npm to serve the version
+        run: |
+          set -euo pipefail
+          # npm takes a moment to serve a new version. Under staged publishing it serves one only after a person
+          # approves it on npmjs.com, and the tag and the release wait for that.
+          for attempt in $(seq 1 20); do
+            if served="$(npm view "${PACKAGE_NAME}@${VERSION}" version 2> /dev/null)" && [ "$served" = "$VERSION" ]; then
+              echo "npm serves ${PACKAGE_NAME}@${served}."
+              exit 0
+            fi
+            echo "Attempt ${attempt} of 20: npm does not serve ${VERSION} yet."
+            sleep 15
+          done
+          echo "::error::npm took ${PACKAGE_NAME}@${VERSION} but does not serve it after five minutes. If publishing is staged, approve the version on npmjs.com, then re-run the failed jobs to make the tag and the release."
+          exit 1
+      - name: Tag the commit
+        run: |
+          set -euo pipefail
+          # A tag the workflow token makes starts no workflow, and no workflow here starts on a tag anyway.
+          refs="$(git ls-remote --tags "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git")"
+          # The commit a tag names: the peeled line for an annotated tag, the plain line for a lightweight one.
+          tagged="$(printf '%s\n' "$refs" | awk -v plain="refs/tags/${TAG}" -v peeled="refs/tags/${TAG}^{}" \
+            '$2 == peeled { p = $1 } $2 == plain { c = $1 } END { print (p != "" ? p : c) }')"
+          if [ -z "$tagged" ]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${COMMIT}" > /dev/null
+            echo "Tagged ${COMMIT} as ${TAG}."
+          elif [ "$tagged" = "$COMMIT" ]; then
+            echo "${TAG} already names ${COMMIT}."
+          else
+            echo "::error::${TAG} names ${tagged}, but npm has ${VERSION} from ${COMMIT}. Delete the tag, then re-run the failed jobs."
+            exit 1
+          fi
+      - name: Make the GitHub release
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "The release ${TAG} already exists."
+          else
+            notes="Published to npm as [\`${PACKAGE_NAME}@${VERSION}\`](https://www.npmjs.com/package/${PACKAGE_NAME}/v/${VERSION}) from ${COMMIT}."
+            # GitHub's generated notes follow the line above.
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" --generate-notes
+          fi
+          printf '\nTagged `%s` and released it: %s/%s/releases/tag/%s\n' "$TAG" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$TAG" >> "$GITHUB_STEP_SUMMARY"
