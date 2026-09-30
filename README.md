@@ -3,6 +3,8 @@
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/retest-dark.svg">
     <img alt="retest" src="docs/assets/retest-light.svg" width="600">
   </picture>
+  <br>
+  by <a href="https://rehearsal.dev"><b>Rehearsal</b></a>
 </p>
 
 <p align="center">
