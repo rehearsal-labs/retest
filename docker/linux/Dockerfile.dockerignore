@@ -1,0 +1,10 @@
+.git
+.retest
+coverage
+dist
+node_modules
+x-series
+**/.DS_Store
+**/*.tsbuildinfo
+.env
+.env.*

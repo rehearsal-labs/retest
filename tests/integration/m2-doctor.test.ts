@@ -7,6 +7,7 @@ import { browserPath } from './browser-harness.ts'
 import {
   answersAt,
   appServerCommand,
+  browserVersion,
   appServersOn,
   configSource,
   freePort,
@@ -38,9 +39,9 @@ test('doctor reports every browser with its version and path, starts and stops a
 
   assert.equal(doctor.exit.code, 0, `${doctor.stdout}\n${doctor.stderr}`)
   const lines = doctor.stdout.split('\n').map((line) => line.trim().replaceAll(/ {2,}/g, ' | '))
-  assert.ok(lines.includes(`web | chrome() | ✓ Chrome ${versionOf(lines, 'chrome()')} | ${browserPath()}`), doctor.stdout)
-  assert.ok(lines.some((line) => line.startsWith('testing: chromium() | ✓ Chrome 153.') && line.endsWith(secondBrowserPath())), doctor.stdout)
-  assert.ok(lines.some((line) => line.startsWith("pixel: chrome({ emulate: 'Pixel 9' }) | ✓ Chrome 154.")), doctor.stdout)
+  assert.ok(lines.includes(`web | chrome() | ✓ Chrome ${browserVersion(browserPath())} | ${browserPath()}`), doctor.stdout)
+  assert.ok(lines.includes(`testing: chromium() | ✓ Chrome ${browserVersion(secondBrowserPath())} | ${secondBrowserPath()}`), doctor.stdout)
+  assert.ok(lines.includes(`pixel: chrome({ emulate: 'Pixel 9' }) | ✓ Chrome ${browserVersion(browserPath())} | ${browserPath()}`), doctor.stdout)
   assert.ok(lines.some((line) => line.includes(`✓ started, ${url} answered after`) && line.endsWith(', then stopped')), doctor.stdout)
   assert.ok(lines.includes('secrets | password | ✓ RETEST_E2E_PASSWORD is set'), doctor.stdout)
   assert.ok(lines.includes('Ready. 1 app, 3 targets.'), doctor.stdout)
@@ -96,8 +97,3 @@ test('doctor without a config says how to write one', async (t) => {
   assert.equal(doctor.exit.code, 2)
   assert.match(doctor.stderr, /doctor checks the browsers and apps in a config\. No retest\.config\.ts here\. Run npx retest init to write one\./)
 })
-
-function versionOf(lines: readonly string[], target: string): string {
-  const line = lines.find((each) => each.includes(`| ${target} | ✓ Chrome `)) ?? ''
-  return /✓ Chrome (\S+)/.exec(line)?.[1] ?? 'unknown'
-}

@@ -11,6 +11,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { errorCode } from '../shared/error-code.ts'
+import { onlyUnreaped, procStats } from '../shared/unreaped-group.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 
 export type StartOptions = {
@@ -93,9 +94,7 @@ export class ChromiumProcess {
     try {
       if (!(await this.#ended(new Deadline(graceMs)))) {
         signalGroup(this.pid, 'SIGKILL')
-        if (!(await this.#ended(new Deadline(closeGraceMs)))) {
-          problems.push(`The browser's process group ${this.pid} was still there ${closeGraceMs} ms after SIGKILL.`)
-        }
+        if (!(await this.#ended(new Deadline(closeGraceMs)))) problems.push(stillThereMessage(this.pid, procStats))
       }
     } catch (error) {
       problems.push(`Could not end process group ${this.pid}: ${errorMessage(error)}`)
@@ -111,6 +110,18 @@ export class ChromiumProcess {
   async #ended(deadline: Deadline): Promise<boolean> {
     return (await this.waitForExit(deadline.remainingMs)) !== undefined && (await groupEnds(this.pid, deadline))
   }
+}
+
+/**
+ * What to say of a browser's process group that is still there after SIGKILL. When everything left in it has
+ * exited and waits only to be reaped, the fix lies with the process that adopted it, not with the browser.
+ *
+ * @example stillThereMessage(4242, procStats)
+ */
+export function stillThereMessage(groupId: number, stats: () => readonly string[]): string {
+  const left = `The browser's process group ${groupId} was still there ${closeGraceMs} ms after SIGKILL.`
+  if (!onlyUnreaped(groupId, stats)) return left
+  return `${left} Its processes have exited, but nothing reaped them. In a container, the first process adopts them and must reap them: start the container with an init, such as docker run --init.`
 }
 
 /**

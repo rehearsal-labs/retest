@@ -1,3 +1,4 @@
+import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -17,6 +18,17 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   await new Promise<void>((resolve) => server.close(() => resolve()))
+  assert.ok(address !== null && typeof address === 'object')
+  return address.port
+}
+
+// A port no other test can take while this one runs, where nothing answers: each connection is closed at once, as
+// a refused one would be. A port from freePort() is free again at once, and another file's server may take it.
+async function heldPort(t: TestContext): Promise<number> {
+  const holder = createTcpServer((socket) => socket.destroy())
+  t.after(() => holder.close())
+  await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', resolve))
+  const address = holder.address()
   assert.ok(address !== null && typeof address === 'object')
   return address.port
 }
@@ -77,8 +89,8 @@ describe('an app with a start command', () => {
     assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 1000), true)
   })
 
-  test('that never answers keeps every test that needs it from running, as setup, without launching a browser', async () => {
-    const port = await freePort()
+  test('that never answers keeps every test that needs it from running, as setup, without launching a browser', async (t) => {
+    const port = await heldPort(t)
     const record = await runProject(project(port, serverCommand(port, 60_000), 600), { files: ['tests/web.retest.ts'] })
     const [failed] = eventsOfType(record.events, 'app.failed')
     assert.equal(failed?.failure.class, 'setup_failed')

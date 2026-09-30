@@ -15,6 +15,8 @@ type RunMessage = Extract<ParentMessage, { type: 'run' }>
 
 let current: TestRun | undefined
 let lastCommandId = 0
+// Set once an error outside any test is on its way to the parent; the process then ends with that error.
+let endingAfterError = false
 
 if (process.send === undefined) {
   process.stderr.write('This is the process Retest runs a test file in. Start tests with retest run.\n')
@@ -42,8 +44,16 @@ function receive(message: ParentMessage): void {
     case 'abort':
       return current?.abort()
     case 'close':
-      return exitWhenFlushed(0)
+      return closeAfterQueuedWork()
   }
+}
+
+// Work the file queued before the request arrived, such as an error thrown on the turn after its tests were
+// collected, runs first: immediates run in the order they were queued. An error it throws ends the process instead.
+function closeAfterQueuedWork(): void {
+  setImmediate(() => {
+    if (!endingAfterError) exitWhenFlushed(0)
+  })
 }
 
 async function collect(file: string, rootDir: string): Promise<void> {
@@ -88,6 +98,7 @@ function report(error: unknown): void {
 
 // No test can take the error any more, so the parent is told before the process ends.
 function endAfterError(error: unknown, problem = failureFrom(error, sourceRoot() ?? process.cwd())): void {
+  endingAfterError = true
   process.stderr.write(`${inspect(error)}\n`)
   send({ type: 'process-error', failure: problem }, () => exitWhenFlushed(1))
 }

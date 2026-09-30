@@ -25,7 +25,8 @@ export type ArgumentsIn = (scope: WorldScope, deadline: Deadline) => Promise<rea
 /** A page function's arguments: JSON values, or arguments made afresh in each document the call reaches. */
 export type WorldArguments = readonly unknown[] | ArgumentsIn
 
-type Creation = { readonly promise: Promise<number>; context: number | undefined }
+/** A world being made, and the budget of the call that started it, which bounds how long it may take. */
+type Creation = { readonly promise: Promise<number>; readonly startedBy: Deadline; context: number | undefined }
 
 const worldName = 'retest'
 const retryPauseMs = 10
@@ -144,13 +145,16 @@ export class IsolatedWorld {
   // Every call that needs the current document's world waits for one creation, but none past its own deadline.
   async #context(deadline: Deadline): Promise<number> {
     for (;;) {
-      this.#creation ??= this.#create(deadline)
+      const creation = (this.#creation ??= this.#create(deadline))
       const identity = { method: 'Page.createIsolatedWorld', sessionId: this.#session.id }
       try {
-        return await beforeDeadline(this.#creation.promise, deadline, identity)
+        return await beforeDeadline(creation.promise, deadline, identity)
       } catch (error) {
         // Another call's shorter deadline, or a document that went away, ended the creation; this call may still have time.
         if (!(error instanceof CdpTimeoutError) && !isGoneContext(error)) throw error
+        // A creation this call started had all the time the call had left. A timer can fire a fraction of a
+        // millisecond before the clock agrees, and that sliver is no reason to make the world again.
+        if (error instanceof CdpTimeoutError && creation.startedBy === deadline) throw error
         await this.#pause(deadline)
       }
     }
@@ -160,7 +164,7 @@ export class IsolatedWorld {
   #create(deadline: Deadline): Creation {
     const params = { frameId: this.#frameId(), worldName }
     const world = request(this.#session, 'Page.createIsolatedWorld', params, worldSchema, { timeoutMs: deadline.commandTimeoutMs })
-    const creation: Creation = { promise: world.then(({ executionContextId }) => executionContextId), context: undefined }
+    const creation: Creation = { promise: world.then(({ executionContextId }) => executionContextId), startedBy: deadline, context: undefined }
     creation.promise.then(
       (context) => {
         creation.context = context

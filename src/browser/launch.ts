@@ -4,7 +4,7 @@ import type { PipeStreams, Transport } from './cdp/transport.ts'
 import type { LaunchOptions, OwnedBrowser } from './contract.ts'
 import type { BrowserVersion } from './browser.ts'
 import { appendFileSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, open, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Deadline } from '../protocol/deadline.ts'
@@ -20,8 +20,11 @@ import { ChromiumProcess } from './chromium-process.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { checkExecutable } from './executable.ts'
 import { profilePrefix, removeStaleProfiles } from './profiles.ts'
+import { explainStartFailure } from './start-failure.ts'
 
 const launchTimeoutMs = 30_000
+// Chrome states why it stopped in its last lines; more than this is never needed to find them.
+const launchOutputLimit = 64 * 1024
 
 const versionSchema = s.object({ product: s.string(), userAgent: s.string() })
 
@@ -45,6 +48,7 @@ export async function launchBrowser(
     throw new LaunchError(`Cannot create a temporary browser profile: ${errorMessage(error)}`, { cause: error })
   })
   const args = chromiumArguments(profile, options.headless)
+  const outputStart = await logLength(options.logFile)
   const chromium = await ChromiumProcess.start({ executable, args, profile, logFile: options.logFile })
   const log = logWriter(options.logFile)
   for (const problem of staleProfileProblems) log(problem)
@@ -63,7 +67,8 @@ export async function launchBrowser(
     const exit = ended ? await chromium.waitForExit(Math.min(deadline.remainingMs, closeGraceMs)) : undefined
     connection.close()
     const problems = await chromium.stop(0)
-    const message = handshakeFailure(error, { executable, exit, logFile: options.logFile, timeoutMs })
+    const output = await launchOutput(options.logFile, outputStart)
+    const message = handshakeFailure(error, { executable, exit, logFile: options.logFile, timeoutMs, output })
     const cleanup = problems.length === 0 ? '' : ` Cleaning up also failed: ${problems.join(' ')}`
     throw new LaunchError(`${message}${cleanup}`, { cause: error })
   }
@@ -90,16 +95,45 @@ async function handshake(connection: CdpConnection, deadline: Deadline): Promise
   return { product: product.slice(0, slash), version: product.slice(slash + 1), userAgent }
 }
 
-type HandshakeContext = { executable: string; exit: ProcessExit | undefined; logFile: string; timeoutMs: number }
+type HandshakeContext = { executable: string; exit: ProcessExit | undefined; logFile: string; timeoutMs: number; output: string }
 
-function handshakeFailure(error: unknown, { executable, exit, logFile, timeoutMs }: HandshakeContext): string {
-  const advice = `Pass the path to a Chromium or Chrome executable. Its output is in ${logFile}.`
+function handshakeFailure(error: unknown, { executable, exit, logFile, timeoutMs, output }: HandshakeContext): string {
+  const advice = `${explainStartFailure(output) ?? 'Pass the path to a Chromium or Chrome executable.'} Its output is in ${logFile}.`
   if (error instanceof CdpTimeoutError) return `${executable} did not answer as a browser within ${timeoutMs} ms. ${advice}`
   if (exit !== undefined) return `${executable} exited with ${describeExit(exit)} before it answered as a browser. ${advice}`
   if (error instanceof CdpDisconnectedError || error instanceof CdpClosedError) {
     return `${executable} closed its debugging pipe before it answered as a browser. ${advice}`
   }
   return `${executable} answered, but not as a Chromium browser: ${errorMessage(error)}. ${advice}`
+}
+
+// Where this launch's output begins in a log that may already hold another's.
+async function logLength(logFile: string): Promise<number> {
+  try {
+    return (await stat(logFile)).size
+  } catch {
+    // A log that is not there yet starts empty; one that cannot be read fails when the browser opens it.
+    return 0
+  }
+}
+
+// What the browser printed during this launch, up to its last `launchOutputLimit` bytes. A log that cannot be read
+// explains nothing, and the failure still points to it.
+async function launchOutput(logFile: string, from: number): Promise<string> {
+  try {
+    const handle = await open(logFile, 'r')
+    try {
+      const { size } = await handle.stat()
+      const start = Math.max(from, size - launchOutputLimit)
+      const length = Math.max(0, size - start)
+      const { buffer, bytesRead } = await handle.read(Buffer.alloc(length), 0, length, start)
+      return buffer.toString('utf8', 0, bytesRead)
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return ''
+  }
 }
 
 function describeDiagnostic(diagnostic: CdpDiagnostic): string {

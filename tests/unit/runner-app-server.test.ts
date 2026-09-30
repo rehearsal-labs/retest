@@ -1,3 +1,4 @@
+import type { TestContext } from 'node:test'
 import type { LoadedStart } from '../../src/config/loaded.ts'
 import type { AppServerHandle } from '../../src/runner/app-server.ts'
 import assert from 'node:assert/strict'
@@ -7,6 +8,7 @@ import { createServer, type Server } from 'node:http'
 import { createServer as createTcpServer } from 'node:net'
 import { join } from 'node:path'
 import { after, describe, test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { AppServerError, probeReady, startAppServer } from '../../src/runner/app-server.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
@@ -28,6 +30,24 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()))
   assert.ok(address !== null && typeof address === 'object')
   return address.port
+}
+
+// A port no other test can take while this one runs, where nothing answers: each connection is closed at once, as
+// a refused one would be. A port from freePort() is free again at once, and another file's server may take it.
+async function heldPort(t: TestContext): Promise<number> {
+  const holder = createTcpServer((socket) => socket.destroy())
+  t.after(() => holder.close())
+  await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', resolve))
+  const address = holder.address()
+  assert.ok(address !== null && typeof address === 'object')
+  return address.port
+}
+
+// A server reported ready where none should be is stopped, so a failing test leaves no process that keeps this
+// file from ending.
+function unexpectedlyReady(server: AppServerHandle): never {
+  started.push(server)
+  assert.fail(`the server was reported ${server.status}`)
 }
 
 async function listening(server: Server): Promise<number> {
@@ -54,6 +74,12 @@ function printedPid(log: string): number {
   const pid = /pid (\d+)/.exec(readFileSync(log, 'utf8'))?.[1]
   assert.ok(pid !== undefined, 'the server printed its process id')
   return Number(pid)
+}
+
+// Resolves once the server has printed its process id, or after `timeoutMs`, when `printedPid` then says it did not.
+async function pidPrinted(log: string, timeoutMs = 5000): Promise<void> {
+  const end = performance.now() + timeoutMs
+  while (!(existsSync(log) && /pid \d+/.test(readFileSync(log, 'utf8'))) && performance.now() < end) await delay(10)
 }
 
 describe('probeReady', () => {
@@ -109,14 +135,11 @@ describe('startAppServer', () => {
     assert.equal(existsSync(logFile), false, 'no command ran, so there is no log')
   })
 
-  test('a server that never becomes ready fails as setup, and its group is ended', async () => {
-    const port = await freePort()
+  test('a server that never becomes ready fails as setup, and its group is ended', async (t) => {
+    const port = await heldPort(t)
     const logFile = logIn('slow')
     const start = startOf(serverCommand(port, 60_000), port)
-    const error = await startAppServer({ name: 'web', start, logFile }, 700).then(
-      () => assert.fail('the server was never ready'),
-      (thrown: unknown) => thrown,
-    )
+    const error = await startAppServer({ name: 'web', start, logFile }, 700).then(unexpectedlyReady, (thrown: unknown) => thrown)
     assert.ok(error instanceof AppServerError)
     assert.deepEqual(error.failure, {
       class: 'setup_failed',
@@ -125,9 +148,12 @@ describe('startAppServer', () => {
     assert.equal(await isGoneWithin(printedPid(logFile), 1000), true)
   })
 
-  test('a server that exits before it is ready says how it ended', async () => {
-    const port = await freePort()
-    const error = await startAppServer({ name: 'web', start: startOf('exit 3', port), logFile: logIn('exits') }, 5000).catch((thrown: unknown) => thrown)
+  test('a server that exits before it is ready says how it ended', async (t) => {
+    const port = await heldPort(t)
+    const error = await startAppServer({ name: 'web', start: startOf('exit 3', port), logFile: logIn('exits') }, 5000).then(
+      unexpectedlyReady,
+      (thrown: unknown) => thrown,
+    )
     assert.ok(error instanceof AppServerError)
     assert.match(error.failure.message, /^The server for web exited with exit code 3 before http:\/\/127\.0\.0\.1:\d+\/health answered\./)
   })
@@ -158,12 +184,14 @@ describe('startAppServer', () => {
     assert.ok(!log.includes('hunter2'))
   })
 
-  test('stops waiting, and ends the group, when the run is interrupted', async () => {
-    const port = await freePort()
+  test('stops waiting, and ends the group, when the run is interrupted', async (t) => {
+    const port = await heldPort(t)
     const logFile = logIn('interrupted')
     const controller = new AbortController()
-    setTimeout(() => controller.abort(), 300)
-    const error = await startAppServer({ name: 'web', start: startOf(serverCommand(port, 60_000), port), logFile, signal: controller.signal }, 10_000).catch(
+    // Interrupts once the server is up and waiting to listen, however long Node takes to start on a busy machine.
+    void pidPrinted(logFile).then(() => controller.abort())
+    const error = await startAppServer({ name: 'web', start: startOf(serverCommand(port, 60_000), port), logFile, signal: controller.signal }, 10_000).then(
+      unexpectedlyReady,
       (thrown: unknown) => thrown,
     )
     assert.ok(error instanceof AppServerError)

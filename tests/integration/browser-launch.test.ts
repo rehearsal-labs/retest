@@ -90,6 +90,24 @@ test('a program that fails is named with its exit code', async (t) => {
   assert.equal(existsSync(profileIn(await readFile(log, 'utf8'))), false)
 })
 
+const noSandboxLine = 'No usable sandbox! If this is a Debian system, please install the chromium-sandbox package to solve this problem.'
+const sandboxCause =
+  "Chrome's sandbox could not start, because this system does not let the browser create user namespaces. Retest keeps the sandbox on, so allow them: in Docker, with a seccomp profile that permits them; on Ubuntu 23.10 or later, with an AppArmor profile for the browser."
+
+test('a browser whose sandbox cannot start is told why and how to allow it, not to pass another browser', async (t) => {
+  const program = await script(t, 'sandboxless-browser', `echo "$@"\necho '${noSandboxLine}' >&2\nexit 1`)
+  const log = join(await scratchFolder(t), 'browser.log')
+  const { error } = await launchFailure(program, log)
+  assert.equal(error.message, `${program} exited with exit code 1 before it answered as a browser. ${sandboxCause} Its output is in ${log}.`)
+})
+
+test('what an earlier launch left in the same log explains nothing about this one', async (t) => {
+  const log = join(await scratchFolder(t), 'browser.log')
+  await writeFile(log, `${noSandboxLine}\n`)
+  const { error } = await launchFailure('/bin/echo', log)
+  assert.equal(error.message, `/bin/echo exited with exit code 0 before it answered as a browser. ${advice} Its output is in ${log}.`)
+})
+
 test('a program that never answers fails within the launch time, and its process group is killed', async (t) => {
   const program = await script(t, 'silent-browser', 'echo "pid $$ $@"\nexec sleep 30')
   const log = join(await scratchFolder(t), 'browser.log')

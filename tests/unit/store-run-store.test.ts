@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { readEvents } from '../../src/cli/inspect/read-run-folder.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { RunFolderError, RunStore } from '../../src/store/run-store.ts'
@@ -150,7 +151,7 @@ describe('RunStore', () => {
     assert.equal(existsSync(join(folder, 'result.json')), false)
   })
 
-  test('a process killed while writing leaves only whole lines', async () => {
+  test('a process killed while writing leaves whole lines, all but a last one it cut off, which inspect leaves out', async () => {
     const folder = join(scratch(), 'run')
     const script = fileURLToPath(new URL('../support/append-events.ts', import.meta.url))
     const child = spawn(process.execPath, ['--conditions=retest-source', script, folder], { stdio: ['ignore', 'pipe', 'inherit'] })
@@ -162,13 +163,20 @@ describe('RunStore', () => {
     await new Promise((resolve) => child.once('close', resolve))
     assert.equal(isRunning(pid), false)
     const text = readFileSync(join(folder, 'events.jsonl'), 'utf8')
-    assert.ok(text.endsWith('\n'), 'the file ends with a whole line')
-    const lines = text.split('\n').slice(0, -1)
+    const lines = text.split('\n')
+    const tail = lines.pop() ?? ''
+    // Linux ends a write to a file early, at a page boundary, when SIGKILL arrives during it, so there the last line
+    // can be cut off. macOS finishes the write first.
+    if (process.platform === 'darwin') assert.equal(tail, '', 'the file ends with a whole line')
     assert.ok(lines.length > 10, `${lines.length} lines were written`)
     for (const [index, line] of lines.entries()) {
       const parsed = parse(retestEventSchema, JSON.parse(line))
       assert.ok(parsed.ok, `line ${index + 1} is a whole event`)
       assert.equal(parsed.value.sequence, index)
     }
+    const reading = readEvents(text)
+    assert.ok(reading.ok)
+    assert.equal(reading.events.length, lines.length, 'inspect reads every whole line')
+    assert.equal(reading.tornLine, tail === '' ? undefined : lines.length + 1, 'inspect names a line cut off')
   })
 })

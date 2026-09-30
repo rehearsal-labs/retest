@@ -4,7 +4,7 @@ import type { RetestEvent } from '../../src/protocol/events.ts'
 import type { RunResult, TestResult } from '../../src/protocol/result.ts'
 import type { Timeouts } from '../../src/protocol/timeouts.ts'
 import assert from 'node:assert/strict'
-import { execFile, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
@@ -464,6 +464,22 @@ export function secondBrowserPath(): string {
   if (configured) return configured
   if (existsSync(defaultSecondBrowser)) return defaultSecondBrowser
   throw new Error(`No second browser to test with: set RETEST_TEST_SECOND_BROWSER, or unpack Chrome for Testing at ${defaultSecondBrowser}`)
+}
+
+const versions = new Map<string, string>()
+
+/**
+ * The version a browser gives for itself with `--version`, such as `154.0.8037.92`. It is read without Retest,
+ * so a check can hold what Retest reports against it, whichever builds the machine has.
+ */
+export function browserVersion(executablePath: string): string {
+  const known = versions.get(executablePath)
+  if (known !== undefined) return known
+  const printed = execFileSync(executablePath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 })
+  const version = /\b\d+\.\d+\.\d+\.\d+\b/.exec(printed)?.[0]
+  assert.ok(version !== undefined, `${executablePath} --version printed no version: ${printed}`)
+  versions.set(executablePath, version)
+  return version
 }
 
 export type ProjectFiles = Readonly<Record<string, string>>

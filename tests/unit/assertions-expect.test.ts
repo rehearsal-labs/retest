@@ -57,7 +57,9 @@ describe('locator assertions', () => {
     assert.equal(failed.comparison, 'whole text, ends trimmed, each run of spaces or line breaks read as one space')
     assert.equal(failed.attempts, page.looks())
     assert.ok(failed.attempts >= 3)
-    assert.ok(failed.durationMs >= 200)
+    // A budget is spent once less than a whole millisecond of it is left (see Deadline), so the rounded time can
+    // be one short of it where timers fire on time, as they do on Linux.
+    assert.ok(failed.durationMs >= 200 - 1, `looked for ${failed.durationMs} ms of 200`)
     assert.equal(failed.failure, verdict.failure)
     assert.equal(verdict.failure?.details?.['timeoutMs'], 200)
   })

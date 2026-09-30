@@ -106,6 +106,16 @@ describe('collectFiles', () => {
     assert.equal(file.tests.length, 1)
   })
 
+  test('work a file queued before it was asked to close still runs, however soon the request comes', async () => {
+    // One collection seldom meets a request that arrives before the file's next turn; many at once make it likely.
+    const names = Array.from({ length: 16 }, (_, index) => (index % 2 === 0 ? 'after-collection-error.retest.ts' : 'after-collection-exit.retest.ts'))
+    const files = await Promise.all(names.map((name) => collectOne(name)))
+    for (const [index, file] of files.entries()) {
+      assert.equal(file.collection, 'ok')
+      assert.equal(file.failure?.class, 'test_error', `${names[index]} lost the work it queued: ${JSON.stringify(file.failure)}`)
+    }
+  })
+
   test('a missing file fails collection without starting a process', async () => {
     const file = await collectOne('not-there.retest.ts')
     assert.deepEqual(file.failure, { class: 'collection_failed', message: 'There is no file at tests/support/files/not-there.retest.ts.' })

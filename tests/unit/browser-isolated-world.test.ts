@@ -112,6 +112,20 @@ test('a creation cut short by another call deadline is made again for a call wit
   assert.equal(creations, 2)
 })
 
+test('a call whose own creation of the world runs out of time stops, even while its clock still shows time left', async () => {
+  let creations = 0
+  const { session } = scriptedSession((method) => {
+    if (method !== createWorld) return answered('seen')
+    creations += 1
+    // The creation's timer fired, as one can a fraction of a millisecond before the clock agrees.
+    return creations === 1 ? Promise.reject(new CdpTimeoutError({ method: createWorld, sessionId: 'S1' }, { timeoutMs: 30, written: true })) : created(8)
+  })
+  const world = new IsolatedWorld(session, () => 'F1')
+  const stillTimeLeft = new Deadline(30, { clock: () => 0 })
+  await assert.rejects(world.call(readValue, [], s.string(), stillTimeLeft), CdpTimeoutError)
+  assert.equal(creations, 1, 'the world is not made again for a call whose own creation used its time')
+})
+
 test('a call that fails for a reason other than a lost document keeps the world for the next call', async () => {
   let calls = 0
   const { session, sent } = scriptedSession((method) => {

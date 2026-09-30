@@ -56,7 +56,10 @@ export class RunStore {
     return new RunStore(directory, events)
   }
 
-  /** Writes one event as one line, synchronously, so a killed process leaves only whole lines behind. */
+  /**
+   * Writes one event as one line, synchronously, so a killed process leaves whole lines behind. On Linux, SIGKILL
+   * can end the last write early at a page boundary and cut that one line off; `inspect` leaves such a line out.
+   */
   appendEvent(event: RetestEvent): void {
     writeAll(this.#events, `${JSON.stringify(event)}\n`)
   }

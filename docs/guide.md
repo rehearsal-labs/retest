@@ -4,7 +4,7 @@ How to set up, run and read Retest at milestone 2, in detail: the config, the te
 
 Retest runs TypeScript test files against Chromium-family browsers, through its own runner and its own CDP client. A project has a config with named apps, several browser targets, emulated devices, secrets, tags and sign-in state. Retest has no runtime dependencies, and it downloads no browser.
 
-Everything here was checked on macOS arm64 only, with Google Chrome 154 and Chrome for Testing 153. Retest handles the SIGTERM a CI runner sends on cancel, but it has not run on a CI runner yet.
+Everything here was checked on macOS arm64, with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker, with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Retest handles the SIGTERM a CI runner sends on cancel, but it has not run on a CI runner yet.
 
 The package is not published and is marked private. Its intended name is `@rehearsal-labs/retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
 
@@ -12,7 +12,7 @@ The package is not published and is marked private. Its intended name is `@rehea
 
 - Node.js 24.12 or later. Retest runs `.ts` files with Node's built-in type stripping.
 - An installed Chromium, Google Chrome or Microsoft Edge. Retest downloads no browser. Where a path is asked for, give the executable itself, not a macOS app bundle.
-- macOS or Linux. Only macOS was verified. Retest relies on POSIX process groups, so Windows does not work.
+- macOS or Linux. Linux was verified only inside Docker, on arm64; see [Run in a container](#run-in-a-container). Retest relies on POSIX process groups, so Windows does not work.
 
 ## Install and build
 
@@ -47,6 +47,7 @@ The integration tests need two browsers. They never skip.
 
 - The first is `RETEST_TEST_BROWSER`, or `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` when that exists. Config runs find Google Chrome by themselves, through `chrome()`.
 - The second is `RETEST_TEST_SECOND_BROWSER`, or Chrome for Testing where Playwright unpacks it on macOS: `~/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`. It is a plain browser build. No Playwright code runs.
+- The two must be different builds. The matrix checks read each one's version with `--version` and tell them apart by it.
 
 The tests start their own fixture servers and browsers with temporary profiles, and stop only those.
 
@@ -449,6 +450,26 @@ retest doctor
 
 Each problem comes with its fix. `doctor` exits 0 when everything is ready and 2 otherwise. When a browser or a server fails, the message points to its log, which is kept under `.retest/doctor/<time>/`. Otherwise `doctor` removes its logs.
 
+## Run in a container
+
+Retest never turns Chrome's sandbox off. On Linux the sandbox creates user namespaces, which Docker's default seccomp profile refuses. A container that runs Retest needs three things, and no capability:
+
+- A user other than root. Chrome does not start its sandbox as root.
+- A seccomp profile that allows the namespaces. [`docker/linux/chromium-seccomp.json`](../docker/linux/chromium-seccomp.json) is Docker's own default profile with five rules added, for the calls Google Chrome 154 and Chromium 154 were traced making: `clone` with `CLONE_NEWUSER`, with `CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET` and with `CLONE_NEWPID`, `unshare(CLONE_NEWUSER)`, and `chroot`, which the sandbox calls inside its own user namespace. Docker's default allows `chroot` only while the container keeps `CAP_SYS_CHROOT`; the added rule lets a container drop every capability. Chrome for Testing 153 runs with the profile too. Everything else stays as Docker has it.
+- An init, `docker run --init`, to reap the processes a browser leaves as it ends. Without one they stay behind as zombies, and Retest reports the browser as still there after it closed.
+
+```sh
+docker run --rm --init --cap-drop ALL --security-opt seccomp=docker/linux/chromium-seccomp.json --user node <image> npx retest run
+```
+
+Without the profile, Chrome stops before it answers and the run exits 2 with the cause: "Chrome's sandbox could not start, because this system does not let the browser create user namespaces." The setuid helpers Debian (`chromium-sandbox`) and Google Chrome (`chrome-sandbox`) ship do not help in Docker. They create namespaces too, and Docker refuses those to a container without `CAP_SYS_ADMIN`.
+
+Docker gives a container 64 MB of `/dev/shm`, which was enough for Retest's own tests. Debian's `chromium` command adds `--disable-dev-shm-usage` by itself when there is less. For Google Chrome and large pages, give the container more with `--shm-size`.
+
+Outside a container, Ubuntu 23.10 and later restrict user namespaces with AppArmor, and the browser needs an AppArmor profile that allows them. That was not tried.
+
+Retest's own checks run on Linux with [`docker/linux/run.sh`](../docker/linux/run.sh). It builds [`docker/linux/Dockerfile`](../docker/linux/Dockerfile), Node.js 24 on Debian 13 with Google Chrome and Debian's Chromium, and runs it as the user `node` with the settings above. With no arguments it runs every gate; `docker/linux/run.sh npm run test:unit` runs one.
+
 ## List and inspect
 
 ```sh
@@ -530,7 +551,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 ## What milestone 2 does not do
 
 - Browsers: Chromium, Chrome and Edge only. No Firefox, WebKit or Safari, and no real phones, tablets, native or desktop apps. Emulation is a desktop browser pretending.
-- Checked only on macOS arm64 with Google Chrome 154 and Chrome for Testing 153. Edge, Chrome beta, dev and canary, Linux and CI runners were never run. Windows cannot work.
+- Checked on macOS arm64 with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Linux on x86-64, Linux outside a container, Edge, Chrome beta, dev and canary, and CI runners were never run. Windows cannot work.
 - `--headed`, and `headless: false` in a config, were never run.
 - Locators search the top-level document only: no shadow DOM, no frames. No `first()`, `nth()`, `filter()` or chained locators.
 - No popups, dialogs, uploads, downloads, network mocking, video or visual comparison. A JavaScript dialog fails the command as unsupported.
@@ -542,7 +563,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - A function source's value is hidden only from the moment a fill first reads it; page text read before that reached the test's process as it was.
 - A page that moves the keyboard focus into a frame of another site as the text arrives can receive the text there. Retest reports `outcome_unknown` and names the frame; it cannot stop typing inside a frame it is not attached to.
 - Page console messages are not recorded.
-- SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. The browser profile it left is removed when the next run starts. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.
+- SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is removed when the next run starts. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.
 - `list --json` has no published JSON Schema. Events and results do.
 
 ## Project documents

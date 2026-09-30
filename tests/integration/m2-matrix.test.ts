@@ -4,21 +4,48 @@ import type { FinishedRun } from './cli-harness.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { browserPath, openApp, servePages } from './browser-harness.ts'
-import { configSource, eventsOf, onlyEvent, resultOf, runCli, runProject, secondBrowserPath, testNamed, writeProject } from './cli-harness.ts'
+import {
+  browserVersion,
+  configSource,
+  eventsOf,
+  onlyEvent,
+  resultOf,
+  runCli,
+  runProject,
+  secondBrowserPath,
+  testNamed,
+  writeProject,
+} from './cli-harness.ts'
 
 // Acceptance check 5: an app with two targets runs its tests on each, `--target` picks one, and `runs` pairs the
-// targets of two such apps. The targets are Google Chrome, found by chrome(), and Chrome for Testing, given to
-// chromium() by its path.
+// targets of two such apps. The targets are Google Chrome, found by chrome(), and the second test browser, a plain
+// Chromium build given to chromium() by its path.
 
-// Each report page tells the server which browser opened it, by its major version, under the label in its path.
+// Each report page tells the server which browser opened it, by the full Chromium version of its build, under the
+// label in its path. The user agent carries only the major version, which two builds can share.
 const reportPage = `<!doctype html><meta charset="utf-8"><title>Report</title><p data-testid="reported"></p>
 <script>
 const label = location.pathname.split('/')[2]
-const major = /Chrome\\/(\\d+)/.exec(navigator.userAgent)?.[1] ?? 'unknown'
-fetch('/seen/' + label + '/' + major, { method: 'POST' }).then(() => {
-  document.querySelector('[data-testid="reported"]').textContent = 'reported'
-})
+navigator.userAgentData
+  .getHighEntropyValues(['fullVersionList'])
+  .then(({ fullVersionList }) => fullVersionList.find(({ brand }) => brand === 'Chromium')?.version ?? 'unknown')
+  .then((version) => fetch('/seen/' + label + '/' + version, { method: 'POST' }))
+  .then(() => {
+    document.querySelector('[data-testid="reported"]').textContent = 'reported'
+  })
 </script>`
+
+/** The versions of the two test browsers, which must differ for a page to tell which one opened it. */
+function testBrowserVersions(): { chrome: string; testing: string } {
+  const [chrome, testing] = [browserVersion(browserPath()), browserVersion(secondBrowserPath())]
+  assert.notEqual(chrome, testing, `Both test browsers are version ${chrome}. Set RETEST_TEST_SECOND_BROWSER to a build of another version.`)
+  return { chrome, testing }
+}
+
+// A version as it appears in a pattern, where each dot is literal.
+function literal(version: string): string {
+  return version.replaceAll('.', '\\.')
+}
 
 async function reportSite(t: TestContext): Promise<Pages> {
   return servePages(t, Object.fromEntries(['solo', 'web', 'admin'].map((label) => [`/report/${label}`, reportPage])))
@@ -68,6 +95,7 @@ function variantsOf(run: FinishedRun, name: string): (string | undefined)[] {
 }
 
 test('an app with two targets runs its test on each, and a run of two such apps follows runs', async (t) => {
+  const versions = testBrowserVersions()
   const [app, site] = [await openApp(t), await reportSite(t)]
   const root = await writeProject(t, { 'retest.config.ts': matrixConfig(app.url, pairings), ...reportTests(site) })
   const run = await runProject(t, root, { reporter: 'human', args: ['--no-agent'] })
@@ -78,17 +106,17 @@ test('an app with two targets runs its test on each, and a run of two such apps 
   assert.deepEqual(testNamed(run, 'reports its browser').variant, { web: 'chrome' })
 
   // Each run of a test opened its page in the browser its variant names, and in no other.
-  for (const seen of ['/seen/solo/154', '/seen/solo/153', '/seen/web/154', '/seen/web/153', '/seen/admin/153', '/seen/admin/154']) {
-    assert.equal(site.posts(seen), 1, seen)
+  for (const label of ['solo', 'web', 'admin']) {
+    for (const version of [versions.chrome, versions.testing]) assert.equal(site.posts(`/seen/${label}/${version}`), 1, `${label} ${version}`)
   }
 
   const browsers = eventsOf(run.events, 'browser.started')
-  const described = browsers.map((event) => [`${event.app}=${event.target?.name}`, event.executablePath, event.version.split('.')[0]])
+  const described = browsers.map((event) => [`${event.app}=${event.target?.name}`, event.executablePath, event.version])
   assert.deepEqual(described.sort(), [
-    ['admin=chrome', browserPath(), '154'],
-    ['admin=testing', secondBrowserPath(), '153'],
-    ['web=chrome', browserPath(), '154'],
-    ['web=testing', secondBrowserPath(), '153'],
+    ['admin=chrome', browserPath(), versions.chrome],
+    ['admin=testing', secondBrowserPath(), versions.testing],
+    ['web=chrome', browserPath(), versions.chrome],
+    ['web=testing', secondBrowserPath(), versions.testing],
   ])
   const pids = new Map(browsers.map((event) => [event.executablePath, event.pid]))
   assert.equal(pids.size, 2, 'targets on the same executable share one browser process')
@@ -98,9 +126,10 @@ test('an app with two targets runs its test on each, and a run of two such apps 
 
   // The report labels each run with its target, and sums up each target.
   for (const label of ['web=chrome', 'web=testing', 'admin=testing', 'admin=chrome']) assert.ok(run.stdout.includes(label), `the report names ${label}`)
-  assert.match(run.stdout, /^ {2}web=chrome +Chrome 154\.\S+ +✓ 1 passed/m)
-  assert.match(run.stdout, /^ {2}web=testing +Chrome 153\.\S+ +✓ 1 passed/m)
-  assert.match(run.stdout, /^ {2}admin=testing,web=chrome +admin: Chrome 153\.\S+, web: Chrome 154\.\S+ +✓ 1 passed/m)
+  const [chrome, testing] = [literal(versions.chrome), literal(versions.testing)]
+  assert.match(run.stdout, new RegExp(`^ {2}web=chrome +Chrome ${chrome} +✓ 1 passed`, 'm'))
+  assert.match(run.stdout, new RegExp(`^ {2}web=testing +Chrome ${testing} +✓ 1 passed`, 'm'))
+  assert.match(run.stdout, new RegExp(`^ {2}admin=testing,web=chrome +admin: Chrome ${testing}, web: Chrome ${chrome} +✓ 1 passed`, 'm'))
   assert.match(run.stdout, /Tests +4 passed across 4 targets/)
 
   const inspected = await runCli(t, ['inspect', run.output, '--test', 'tests/solo.retest.ts > reports its browser', '--target', 'web=testing'], { cwd: root })
@@ -113,6 +142,7 @@ test('an app with two targets runs its test on each, and a run of two such apps 
 })
 
 test('--target keeps only the runs on that target, and starts only the browsers they use', async (t) => {
+  const versions = testBrowserVersions()
   const [app, site] = [await openApp(t), await reportSite(t)]
   const root = await writeProject(t, { 'retest.config.ts': matrixConfig(app.url, pairings), ...reportTests(site) })
   const run = await runProject(t, root, { args: ['--target', 'web=testing'] })
@@ -120,8 +150,9 @@ test('--target keeps only the runs on that target, and starts only the browsers 
   assert.equal(run.exit.code, 0, run.stderr)
   assert.deepEqual(variantsOf(run, 'reports its browser'), ['web=testing'])
   assert.deepEqual(variantsOf(run, 'reports both browsers'), ['admin=chrome,web=testing'])
-  assert.deepEqual([site.posts('/seen/solo/153'), site.posts('/seen/solo/154')], [1, 0])
-  assert.deepEqual([site.posts('/seen/web/153'), site.posts('/seen/admin/154'), site.posts('/seen/web/154')], [1, 1, 0])
+  const seen = (label: string, version: string) => site.posts(`/seen/${label}/${version}`)
+  assert.deepEqual([seen('solo', versions.testing), seen('solo', versions.chrome)], [1, 0])
+  assert.deepEqual([seen('web', versions.testing), seen('admin', versions.chrome), seen('web', versions.chrome)], [1, 1, 0])
   const started = eventsOf(run.events, 'browser.started').map((event) => `${event.app}=${event.target?.name}`)
   assert.deepEqual(started.sort(), ['admin=chrome', 'web=testing'])
 
@@ -152,5 +183,6 @@ test('two apps with several targets and no runs entry naming both fail collectio
     '"reports both browsers": This test uses "web" and "admin", which have several targets each, and no entry in runs names all of them. Add one to runs.',
   )
   assert.deepEqual(variantsOf(run, 'reports its browser'), ['web=chrome', 'web=testing'])
-  assert.equal(site.posts('/seen/web/154') + site.posts('/seen/web/153'), 0)
+  const versions = [browserVersion(browserPath()), browserVersion(secondBrowserPath())]
+  assert.equal(versions.reduce((posts, version) => posts + site.posts(`/seen/web/${version}`), 0), 0)
 })
