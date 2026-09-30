@@ -1,6 +1,6 @@
 # Retest implementation handoff
 
-This file has two parts. Part 1 is milestone 1's handoff, as that phase left it. Part 2 is milestone 2's, written by its verification phase on 30 September 2026. How to use Retest now is in [the guide](guide.md).
+This file has three parts. Part 1 is milestone 1's handoff, as that phase left it. Part 2 is milestone 2's, written by its verification phase on 30 September 2026. Part 3 is milestone 3's first part, the short list of wave 1, written by its verification phase on 1 October 2026. How to use Retest now is in [the guide](guide.md).
 
 # Part 1: Milestone 1
 
@@ -499,3 +499,157 @@ This phase also noted, without a test, what section 10 lists as items 10 to 13.
 - `tsconfig.json`: `examples/tasks` is added to `exclude`. The example's `Register` block would otherwise apply to the whole root program, where it broke `tests/unit/api-secret.test.ts` (TS2345 on `secret('code')`). The example type-checks as a project of its own, in `m2-example`.
 - `README.md` was restored to its staged milestone 1 version on the orchestrator's instruction, and this phase left it alone after that. The milestone 2 usage documentation is in `docs/guide.md`. It replaces the milestone 1 usage guide committed in `e087be2`, and keeps what that guide said that still holds.
 - `package.json`'s `description` now reads "One test across web, mobile and desktop. Built for software engineers and coding agents." This phase did not write it. Mobile and desktop apps are not supported or verified, which `AGENTS.md` says must not be advertised.
+
+# Part 3: Milestone 3, wave 1, short list
+
+1 October 2026. The short list's verification phase wrote this part from checks it ran itself, against the contract in `docs/plans/milestone-3/build-plan.md`. Phases 1 and 2 had finished. This phase changed two things in `src/`, which the orchestrator decided (section 8), and nothing else there. How to use what is described here is in [the guide](guide.md), under "Pressing keys", "Proxy" and "Use Retest from code".
+
+## 1. What works
+
+Verified through the real command line and the real `/runner` subpath, as subprocesses, against real Chrome and the task-app fixture on ephemeral loopback ports:
+
+- `locator.press(key)` and `page.keyboard.press(key)`. Enter submits a form once, from a field or from the keyboard, and the answer is recorded as a navigation. Tab and Shift+Tab move the focus. A key whose element lost the focus to another element is stopped before any listener of the page hears it. A browser killed while a key is down leaves `outcome_unknown`, and the key went down once.
+- Host checks, given by a host's own program through `runFiles`. They run after the body, keyed by test and by file, in order and all of them, and they decide the test with it. A wrong final page fails with `host_check_failed`, exit 1, with a screenshot taken after the checks. A bad key or an unused app stops the run with exit 2 before any browser starts.
+- `observation` events and the parent's judgement. Every passed locator assertion names a look the parent wrote earlier, for the same app and locator, on which its matcher passes, and says `judgedBy: 'parent'`. Value passes say `judgedBy: 'child'`. A test file that speaks the protocol itself and claims `toBeVisible` on a look that matched nothing ends `test_error`, its process is killed, and no pass is written.
+- A proxy per target. Every request of the page goes through it, a service worker's and a frame of another site's included; a host in the bypass list goes around it; a proxy that refuses the connection is `setup_failed`, naming it; a proxy that asks for credentials reads as a page that would not open. `browser.started`, the replayed report and `doctor` show each target's proxy.
+- A host-style run from a project outside the repository, with the packed tarball installed offline: an in-memory config under a label with no file, every secret a function, a test file the program wrote, Chrome for Testing through the fixture proxy, host checks keyed by the file, a test environment of the host's choosing, and a reporter of its own. It passes, and fails with `host_check_failed` against an app that ends on the wrong page.
+- The tarball exports the short list's new names, a registered consumer that presses keys type-checks on TypeScript 6 and 7, and the keys `press` refuses fail with their messages on both.
+- Every milestone 1 and milestone 2 integration test still passes, and now also checks `judgedBy` on every pass (section 9).
+
+## 2. Environment
+
+| Item | Version |
+| --- | --- |
+| Operating system | macOS 27.0 (build 26A428), Darwin 27.0.0, arm64 |
+| Node.js | 24.12.0, with npm 11.6.2 |
+| Browsers | Google Chrome 154.0.8037.92 at `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, and Chrome for Testing 153.0.8010.12 at `~/Library/Caches/ms-playwright/chromium-1243/…`. No Playwright code ran |
+| TypeScript | 6.0.3 and 7.0.2 |
+| Linux | Docker 29.8.1, linux/arm64, in Docker Desktop. Debian 13, Node.js 24.21.0, Google Chrome 154.0.8037.92 and Debian's Chromium 154.0.8037.57, as the user `node`, with Chrome's sandbox on |
+
+Every browser ran headless.
+
+## 3. Files
+
+This phase added:
+
+| Path | Purpose |
+| --- | --- |
+| `tests/integration/m3-press.test.ts` | Acceptance check 1, the short list's part |
+| `tests/integration/m3-host-checks.test.ts` | Acceptance check 2, through a host script that calls `runFiles` |
+| `tests/integration/m3-observations.test.ts` | Acceptance check 3 |
+| `tests/integration/m3-proxy.test.ts` | Acceptance check 5, and `doctor` naming a proxy |
+| `tests/integration/m3-host-run.test.ts` | Acceptance check 6, the short list's form |
+| `tests/integration/m3-package.test.ts` | Acceptance check 8, the short list's part |
+| `examples/host/host.ts`, `examples/host/checkout.retest.ts` | The host-style example `m3-host-run` runs: a program that builds its config in memory and copies the test file beside it into a new folder of the project. Both are in the root type check |
+| `fixtures/task-app/keys-page.ts` | `/keys`: a field whose focus a notice takes, and a field whose key down reaches the server and then freezes the page. The server counts those key downs (`keyDowns()`) |
+| `fixtures/task-app/code-sign-in.ts` | `/code/sign-in`: a user name and password that send a one-time code, written to an outbox file when the app has one, and a code page that Enter submits. The server lists the codes it sent (`sentCodes()`) |
+| `fixtures/tests/press.retest.ts`, `press-browser-lost.retest.ts`, `observations.retest.ts`, `forged-visible.retest.ts` | The scenario files the checks run. `forged-visible` speaks the IPC protocol itself |
+
+This phase changed:
+
+| Path | Change |
+| --- | --- |
+| `src/runner/redactor.ts` | A text host check's text is free text (section 8) |
+| `src/reporters/commands.ts`, `src/reporters/failure-card.ts` | `canRerun`: no rerun command for a run the command line cannot reproduce (section 8) |
+| `tests/unit/runner-redactor.test.ts`, `runner-host-checks.test.ts` | The tests of the first change; one existing redactor test now expects the check's text redacted |
+| `tests/unit/reporters-host-checks.test.ts`, `reporters-variants.test.ts`, `reporters-variant-fixtures.ts` | The tests of the second change. The variant fixture project now holds the config file its run.started names |
+| `tests/integration/cli-harness.ts` | `assertJudged` on every run, `runHost` and `hostScript` for host programs, and scratch folders from `tests/support/temp-folder.ts` |
+| `fixtures/task-app/server.ts`, `cli.ts`, `modes.ts`, `sign-in.ts`, `html.ts` | The routes above, the `outbox` option and `--outbox` flag, the `wrong-page` mode (a save moves the address to `/drafts` and the page still shows the task), `Sessions.open`, and `htmlPage` for the two new pages |
+| `docs/guide.md` | Pressing keys, the proxy, host checks, observations and `judgedBy`, the test environment, what a host can trust, the host-style run, the new report and `inspect` lines, and the new limits |
+
+## 4. Facts established in real Chrome
+
+The Browser agent of phase 2 established these on Google Chrome 154.0.8037.92 and Chrome for Testing 153.0.8010.12, headless, with Retest's own CDP client, each probe in its own profile. The probes and their output are in `/tmp/retest-m3-browser/probes/` on the machine that ran them, outside the repository: `probe-f1.ts`, `probe-f1-extra.ts`, `probe-f5.ts`, `probe-innertext.ts`, `support.ts` and one `*-output.txt` for each. This phase read the output and relied on the facts; it did not rerun the probes.
+
+- **F1 holds.** `Target.createBrowserContext` with `proxyServer` and `proxyBypassList: '<-loopback>'` sends every request of that context through the proxy: the page, its fetch, a cross-site frame and that frame's fetch, the service worker's script and the worker's own fetch. Without `<-loopback>`, loopback addresses go direct. With `<-loopback>;localhost`, `localhost` goes direct and `127.0.0.1` through the proxy. The proxy belongs to the context. An https address uses `CONNECT`. A refusing proxy gives `net::ERR_PROXY_CONNECTION_FAILED`, and a tunnel that fails `net::ERR_TUNNEL_CONNECTION_FAILED`. A 407 that nothing answers gives `net::ERR_INVALID_AUTH_CREDENTIALS`, the same as a site's own 401, so Retest keeps it `not_actionable`. Chrome's own traffic, such as `CONNECT www.google.com:443`, also goes through the context's proxy. Output: `f1-output.txt` and `f1-extra-output.txt`.
+- **F5 holds.** `Input.dispatchKeyEvent` `keyDown` with `text: '\r'` on a focused field of a form submits it once: `keydown`, `keypress`, `beforeinput`, `submit` and `keyup` reach the same document before the next one commits, and the server counts one POST, also through a 303 redirect. Output: `f5-output.txt`.
+- **Visible text.** `document.body.innerText` leaves out shadow roots, frames and hidden elements, on both browsers. Output: `innertext-output.txt`.
+
+This phase found one more fact while writing the host-style run, in the code and in a real run: a function secret is read when its `fill` begins, before Retest looks for the field (`SecretFiller.resolve` in `src/runner/secrets.ts`). The first version of the example test typed a one-time code right after the click that sent it, and its fill failed `setup_failed` with `ENOENT` for the outbox, because the app had not yet written the code. The example now waits for the code field first, and the guide says so.
+
+## 5. Dependencies
+
+Unchanged. No runtime dependency, no new development dependency, `package-lock.json` untouched. The package checks install only the packed tarball, offline, and link this checkout's `@types/node` where a project needs Node's types.
+
+## 6. Commands and results
+
+From the repository root, one after another, on 1 October 2026 from 00:22 to 00:27 local time, each captured to a file under `/tmp/retest-m3-verify/` and read after it ended. No file in `src/`, `tests/`, `fixtures/`, `examples/` or `scripts/` changed after this run; only this handoff and the guide did.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `npm run build` | 0 | `dist/` rewritten. `dist/schemas/event-v1.schema.json` holds `observation`, `host_check.passed`, `host_check.failed`, `judgedBy`, `observationId`, `hostChecks`, `proxy`, `press`, `key` and `host_check_failed`; `result-v1.schema.json` holds `hostChecks` |
+| `npm run typecheck` | 0 | TypeScript 6.0.3 and 7.0.2 on the root project, which includes `examples/host`, then 6.0.3 on `examples/tasks`. No errors, no `FATAL` |
+| `npm run test:unit` | 0 | 1315 tests in 243 suites: 1315 passed, 18.2 s. Phase 2 left 1310; this phase added 5 |
+| `npm run test:types` | 0 | "124 expected errors matched 124 markers in 4 projects" on TypeScript 6.0.3 and on 7.0.2 |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/browser-*.test.ts" tests/integration/cdp.test.ts` | 0 | 159 tests: 159 passed, 52.8 s |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/matrix-*.test.ts" tests/integration/run-interrupt.test.ts tests/integration/cli-commands.test.ts tests/integration/package-smoke.test.ts` | 0 | 51 tests: 51 passed, 60.9 s |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/m2-*.test.ts"` | 0 | 54 tests: 54 passed, 106.8 s |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/m3-*.test.ts"` | 0 | 14 tests in 6 files: 14 passed, 28.5 s |
+
+No group took five minutes, so none was split.
+
+On Linux, the milestone 3 group ran at 00:29, and passed:
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `docker run --rm --init --cap-drop ALL --security-opt seccomp=docker/linux/chromium-seccomp.json --network none retest-linux:m3-verify node --conditions=retest-source --test --test-concurrency=1 "tests/integration/m3-*.test.ts"` | 0 | 14 tests: 14 passed, 24.3 s |
+
+It did not run through `docker/linux/run.sh` as written. That script rebuilds the image first, and the working tree's `package.json` differs from the one in `retest-linux:dev` (the uncommitted publishing fields of another session), so its `npm ci` layer would have run again and needed the network. `package-lock.json` is identical in both. So this phase built a throwaway image offline, `docker build --network=none`, from a Dockerfile of two steps outside the repository: `FROM retest-linux:dev`, then remove everything under `/home/node/retest` but `node_modules`, then copy the working tree with `docker/linux/Dockerfile.dockerignore`. It ran with the flags `run.sh` passes, plus `--network none`. The first attempt kept files the tree has since deleted, such as `src/assertions/locator-checks.ts`, because a copy only adds; `npm run build` then failed inside the package checks, and the remove step fixes it. The Chrome for Testing the macOS checks use is not in that image. There the second browser is Debian's Chromium 154.
+
+## 7. Acceptance checks
+
+After every run the harness validates `events.jsonl` and `result.json` against the regenerated schemas, checks that JSONL stdout is exactly those events (for a host program, that its reporter's JSON lines are, and that the result it printed is `result.json`), checks that every `assertion.passed` carries `judgedBy` and rests on an earlier look when it has a locator, and checks cleanup as section 9 describes. The last column names the unit tests that check the same logic with fakes.
+
+| # | Check | Real proof, in `tests/integration/` | Fails if | Mocked only, in `tests/unit/` |
+| --- | --- | --- | --- | --- |
+| 1 | `press`, short list | `m3-press`, 2 tests. Enter on a field and Enter on the keyboard each submit once: the app counts 2 searches for the two tests, each of which shows its own query, and each test records `/actions` then `/actions/submit` as navigations. Tab then Shift+Tab move the focus from First to Second and back, and the page heard `Tab Tab:shift`. Each press event records its key, and its locator only when it has one. A press on a field whose focus a notice takes fails `not_actionable` with `{ check: 'focused', focus: '<div data-testid="notice">', event: 'keydown' }`, and the `afterEach` hooks then read the focus on the notice and an empty list of heard keys. A browser killed while the frozen field's key is down, once the app counted it, gives `outcome_unknown` on the press and the test, no completed press, the next test `not_run` with `session_lost`, and still one key down | a key sent twice or not at all, a stopped key a page listener heard, a missing `key` or a locator on a keyboard press, a lost key reported as `session_lost`, or a key sent again | `protocol-keys`, `browser-keys`, `browser-page-scripts`, `browser-input-guard`, `api-actions`, `runner-actions`, `reporters-press` |
+| 2 | Host checks | `m3-host-checks`, 3 tests, each a host program run with `--conditions=retest-source` from a project outside the repository. Passing checks pass `saves a task`, as `host_check.passed` events with `origin: 'parent'` and in the result. A file key covers the file's setup and its test, before the test's own check, and the setup saves its state. A test whose own two assertions pass but which ends on `/account` fails `host_check_failed` with exit 1: all six checks ran, four failed, the address check leads and three are in `details.also`, and the PNG screenshot comes after the checks. `absent`, `ignoreCase` and a `RegExp` path each pass once and fail once. A body that failed lists its check `not_run`. A key naming no selected test and a misspelt file key, and a check on an app the test does not use, each exit 2 with the usage message, no `browser.started` and no request to the app. `inspect` replays the host check card, the `Not run` line and the summary row `Host checks  4 failed · 10 passed · 1 not run`, with no rerun command, and `inspect --test` shows the checks after the body's last look | a check that does not run, runs after a failed body, stops at the first failure, reads the wrong page, is ignored in the verdict, or a bad key that starts a browser | `protocol-host-check`, `runner-host-checks`, `reporters-host-checks`, `reporters-host-check-lines`, `inspect-timeline` |
+| 3 | Observations | `m3-observations`, 3 tests. With the save answering after 1500 ms, all seven passed locator assertions, `toHaveValue`, both `toHaveText` forms, `toBeVisible`, `toBeHidden`, `toHaveCount` and an `expect.soft`, say `judgedBy: 'parent'` and name a look written before them on which their matcher passes, read independently from the look's own record; each carries its look's page address. `toMatch` and `expect.poll` say `judgedBy: 'child'`. Ids run `o1` onwards in order; the saved-task check wrote one event per look, its first saw "Saving…", and it rested on its last. `inspect --test` prints "looked N times, passed on oN: 1 match, text "Release checklist"" and marks `toMatch` "reported by the test file". A page showing a secret reads `Signed in as {{password}}` in the look, and no file of the run folder holds the value. `forged-visible` sends `goto` and `observe` itself and then `assertion.passed` for `toBeVisible` naming `o1`, a look with count 0: the test ends `test_error` with the exact message, no `assertion.passed` is written, the look is the parent's, the process it printed is gone, and the next test is `not_run` | a pass with no look, a look missing or written after the pass, a look on which the matcher fails, a forged pass written or its process left running, or a value pass marked `parent` | `runner-observations`, `protocol-locator-checks`, `protocol-observation-record`, `assertions-observation-id`, `inspect-looks` |
+| 5 | Proxy | `m3-proxy`, 2 tests, from a config with four apps on `chrome()` that differ only by proxy. The app refuses any request without the header the fixture proxy adds; with `bypass: ['<-loopback>']` the proxy check page loaded, and its fetch, its service worker's fetch and its frame of another site answered, and the proxy log holds each of those requests (the test never claims the log holds only them, since Chrome's own requests are there too). With `['<-loopback>', 'localhost']`, `http://localhost:<port>/actions` showed the app's refusal, so the request came without the proxy, and the proxy never saw it. A closed port as the proxy gives `setup_failed` "Could not open … through the proxy http://127.0.0.1:<port>: net::ERR_PROXY_CONNECTION_FAILED. The proxy failed, not the app." A proxy that answers 407 gives `not_actionable` `net::ERR_INVALID_AUTH_CREDENTIALS`. `browser.started` records each app's server and bypass, all four share one browser, and the replayed report prints `· proxy … · bypass <-loopback>, localhost`. `doctor` names a refusing proxy and exits 0, since it does not check the proxy | a page request that went around the proxy, a bypassed host that went through it, a proxy failure blamed on the app, or a missing `proxy` on `browser.started` | `config-validate`, `runner-proxy`, `browser-proxy`, `browser-navigation`, `cli-doctor`; real Chrome at the browser level in `browser-proxy` |
+| 6 | Host-style run, short list | `m3-host-run`, 2 tests. The tarball, installed offline in a project outside the repository, runs `examples/host/host.ts` with no source condition: the config under the label `host.config.ts`, with no file there; the password and the one-time code as functions and `resolveSecrets(config, {})`; the test written into `checkout-*/checkout.retest.ts` and keyed by that path; Chrome for Testing through the fixture proxy with `<-loopback>`; an address, a present text and an absent text check; `testEnvironment: { CANARY: 'visible' }` while the host's environment holds `HOST_TOKEN` and `HOST_PASSWORD`; its own run folder and a reporter that prints each event. It passes with exit 0; the app refused nothing and the proxy carried the sign-in, the code and the save; the three checks are parent events and in the result; the three locator assertions are `judgedBy: 'parent'`; the fills name `password` and `code` and the press names Enter; the test printed `CANARY is set`, `HOST_TOKEN is not set` and `HOST_PASSWORD is not set`; the password, the code the app sent and the host's token are in no file of the run folder, in stdout, which is the collected events, or in stderr. Against the `wrong-page` app the same run exits 1 with `host_check_failed`, the page on `/drafts`, and the two text checks passed | a request that skipped the proxy, a check that is not the parent's, a host variable in the test process, a secret in any output, or a wrong page that passes | `runner-test-environment`, `runner-secrets` |
+| 8 | Package, short list | `m3-package`, 2 tests. A consumer of the tarball, installed offline, uses every name the short list added: `KeyArgument`, `Keyboard`, `HostCheck`, `PageReading`, `ProxyOptions`, `ResolvedSecrets`, `TextQuery`, `resolveSecrets`, `HostCheckActual`, `HostCheckRecord`, `HostCheckResult`, `HostCheckStatus`, `ObservedRecord`, `testId` and `testTitle`. With its registered config and a test that presses keys, it type-checks on TypeScript 6.0.3 and 7.0.2 with `skipLibCheck: false`, and running it gives the expected id and a function secret. `press('Entr')` and `keyboard.press('Control+a')` fail with exactly two TS2345 errors carrying their `RetestTypeError` messages on both compilers. Its installed `retest` runs the presses against the fixture, with one search and the keys Enter, Tab and Shift+Tab | a name missing from the tarball's declarations or entries, a consumer error, a refused key that compiles, or a press that fails from the installed build | `protocol-entry`, `type-diagnostics`; `npm run test:types` for the repository's own fixtures |
+| 9 | Milestones 1 and 2 hold | Every existing integration test passes: 159 browser-level, 51 of milestone 1 and 54 of milestone 2, now with the `judgedBy` check and the new scratch folders | any of them failing | |
+
+The negative controls are part of the checks: the wrong page, the forged claim, the refusing and challenging proxies, the bypassed host the app refuses, the covered field and the killed browser each have to come out as the check says, or the test fails.
+
+## 8. The two source changes
+
+**A host check's text is redacted.** A host could write a secret into a check's `text`. `Redactor.redactFields` in `src/runner/redactor.ts` now treats the `text` of a record whose `kind` is `text` and which parses as a host check record as free text (`isHostCheckText`). The walk already reaches every place a record is written: the `host_check.*` events, `TestResult.hostChecks` and `run.started.options.hostChecks`; messages and `details` were free text already. A locator's `text` stays an identifier. The page is still asked for the text as written.
+
+- Tests: `runner-redactor` "redacts a text host check's text wherever it is recorded: its events, run.started and the result", which also keeps a locator's text as it is, and the existing "redacts what a look observed and a host check saw and looked for, and leaves their locator and counts alone", which used to expect the check's text kept and now expects it redacted; `runner-host-checks` "a host check whose text holds a secret", two tests: the page is asked for the text as written, the text reads `{{password}}` in `run.started`, the events and `result.json`, and no line of `events.jsonl` and nothing in `result.json` holds the value.
+- Before and after: with the new line of `#redactFields` removed, 4 of the 41 tests in those two files fail (`/tmp/retest-m3-verify/before-redaction-2.txt`: the value in `run.started` and both `host_check.*` events); with it, 41 pass (`after-redaction.txt`).
+
+**No rerun command for a run the command line cannot reproduce.** `canRerun(run)` in `src/reporters/commands.ts` is false when `run.started.options.hostChecks` is present, or when the run's config names a file that is not there under `rootDir`. `testCard` and `fileCard` in `src/reporters/failure-card.ts` then leave `rerun` out, so the human report, its replay by `inspect` and `inspect --test` print only the `Inspect` line. The agent report's `next:` line already points to `retest inspect`.
+
+- Tests: `reporters-host-checks` "a run with host checks prints no rerun command, and its card points to inspect", and the exact card of "each failed check is a block of its own", which used to hold `Rerun  npx retest run tests/checkout.retest.ts:3 --config host.config.ts`; `reporters-variants` "a config with no file behind it gets no rerun command, and the card and the next line point to inspect", beside "repeat a config at another path", which now writes that config file so its rerun line stays. Integration: `m3-host-checks` finds no `Rerun` in the replayed report.
+- Before and after: without the change, 3 of the 31 tests in `reporters-host-checks`, `reporters-variants` and `inspect-variants` fail (`before-rerun.txt`); with it, 31 pass (`after-rerun.txt`).
+
+## 9. Cleanup
+
+Unchanged from part 2, section 9, and checked after every command, host programs included: nothing left in the command's process group, every browser and server group it reported gone, no `retest-*` entry in its `TMPDIR`, no process using that folder, and no saved state in the run folder. The harness's scratch folders now come from `tests/support/temp-folder.ts`, under one `retest-tests-*` root per test process, and each is still removed after its test. The fixture proxies close after each test. The press check kills only the browser group its run reported.
+
+After the gates, the system temporary folder held no `retest-*` folder, and `ps` showed no fixture server, `retest` process, test file process or Chrome with a Retest profile. The only Chrome processes left were the person's own and six-day-old Playwright ones this phase did not start. The throwaway image `retest-linux:m3-verify` was removed after the Linux run.
+
+## 10. Not verified
+
+Most important first.
+
+1. On Linux, only the milestone 3 group ran, and not through `docker/linux/run.sh` as written (section 6). Unit, types, the browser group and milestones 1 and 2 were not rerun on Linux in this phase. Chrome for Testing 153 did not run on Linux.
+2. Apart from `m3-host-run` on Chrome for Testing 153, the `m3-*` checks ran on Google Chrome 154 only on macOS. F1 and F5 were shown on both browsers by their probes.
+3. Only an http proxy ran. SOCKS and https proxies, `ERR_PROXY_AUTH_UNSUPPORTED`, `ERR_PROXY_CERTIFICATE_INVALID` and `ERR_NO_SUPPORTED_PROXIES`, a proxy that closes the connection mid-page, and one proxy on two apps of the same test were not run.
+4. A host check's `name` and an address check's `path` are written as given; only a text check's text is redacted. The guide tells hosts to keep secrets out of them.
+5. These are checked only with fakes: a host check on a page still redirecting when the body ends, a run interrupted during host checks, a lost browser during a check, the `observation` event being written before the answer, and a look answered after its test was revoked.
+6. `press` on an emulated touch screen, with a window, or with the macOS editing commands a headed browser needs, did not run.
+7. That the failure screenshot shows the page the checks read is shown only by order: `evidence.captured` comes after the last `host_check.failed`. Nobody looked at the image.
+8. Two runs at once in one process, `lastRunFile`, the stop reason and the resolve hook belong to the rest of wave 1 and were not tried.
+
+## 11. Defects found in phase 2's work, not fixed
+
+1. **A leading host check's card repeats its values.** `unshownDetails` in `src/reporters/failure-card.ts` counts `attempts`, `timeoutMs` and `also` as shown for a host check, but not `expected` and `received`, which the runner puts in `details` (`checkFailure` in `src/runner/run-host-checks.ts`). A real address check's card therefore ends with `expected "http://127.0.0.1:…/"` and `received "http://127.0.0.1:…/account"` under the `Expected` and `Page` lines, and a text check's with `expected "…"`; the agent report prints the same lines. The unit fixtures in `tests/unit/reporters-host-check-fixtures.ts` give their failures no such details, so the reporter tests do not see it. Seen in the replayed report of `m3-host-checks`.
+2. **`ProxySettings` is not exported** from the root entry, beside `TargetConfig`, `ChromiumOptions` and the other config types in `src/index.ts`. A host that types its proxy settings apart from a target cannot name the type.
+3. **`judgedBy` is optional in the event schema**, while M3-3 says every `assertion.passed` carries it. It keeps milestone 2 event files valid, and the parent always writes it; the harness now checks it on every run.
+
+## 12. Changes outside the usual
+
+- The harness's `scratchFolder` now makes its folders with `tempFolder` from `tests/support/temp-folder.ts`, as the rules for tests ask, and `readFinishedRun` checks `judgedBy` on every run. Both apply to every milestone 1 and 2 check that goes through `cli-harness.ts`, and all of them passed.
+- To remove the first throwaway image this phase built, it ran `docker image prune -f --filter dangling=true`. That removes every untagged image no container uses, on the whole machine, not only this phase's.
