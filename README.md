@@ -1,13 +1,9 @@
-```text
-⠀⠀⠀⢠⣶⣶⣦⣤⣀⡀
-⠀⠀⣠⡌⢿⣿⣿⣿⣿⣿⣷⣶⣤⣄⣀
-⠀⣤⠸⣿⡜⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣤⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣴⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⡆
-⠀⢹⣇⢹⣷⠹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠇⠀⠀⠀⢠⣶⣦⣶⡦⢀⣴⣶⣶⣤⡀⢰⣿⣿⣶⠀⢠⣴⣶⣶⣄⠀⢀⣴⣶⣶⣦⡄⠀⣾⣿⣷⡆
-⠀⠀⢿⡆⢻⣧⢻⣿⣿⣿⣿⣿⣿⣿⡿⠿⠛⠉⠀⠀⠀⠀⠀⢸⣿⡟⠀⠁⣿⣿⣥⣬⣿⣧⠀⣿⣿⠀⢀⣿⣿⣤⣼⣿⡇⠸⣿⣶⣤⣭⡉⠀⢸⣿⡇
-⠀⠀⠈⣿⡌⣿⣆⢿⣿⣿⣿⣿⣿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⡇⠀⠀⢿⣿⣉⣉⣭⡍⠀⢿⣿⣀⠈⣿⣯⣉⣩⣭⡅⢠⣤⣍⣙⣻⣿⠀⢸⣿⣇⡀
-⠀⠀⠀⠘⣷⠘⣿⡌⣿⣿⣿⣿⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⠛⠃⠀⠀⠈⠙⠛⠛⠋⠀⠀⠘⠛⠛⠃⠈⠛⠛⠛⠋⠀⠀⠙⠛⠛⠛⠁⠀⠀⠛⠛⠃
-⠀⠀⠀⠀⠀⠀⠉⠁⠘⢿⡿⠃
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/retest-dark.svg">
+    <img alt="retest" src="docs/assets/retest-light.svg" width="600">
+  </picture>
+</p>
 
 <p align="center">
   <b>One test across web, mobile and desktop.</b><br>
