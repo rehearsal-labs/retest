@@ -1,13 +1,13 @@
 # Retest
 
-Retest is a separate project beside Rehearsal. Read `README.md` and `docs/architecture.md` before implementation. This repository currently contains a design foundation, not a working testing library.
+Retest is a separate project beside Rehearsal. Read `README.md` and `docs/architecture.md` before implementation.
 
 ## Scope
 
 - Own the runner, test API, assertions, protocol and automation implementation. Do not add a required dependency on Vitest, Playwright Test, Playwright, Puppeteer, Selenium or another test/automation framework without a new user decision.
 - The initial target is TypeScript on Node.js, with no third-party runtime npm packages. Browsers, Node.js and operating-system APIs are explicit platform prerequisites. Build/typecheck tools are a separate dependency decision and must be declared accurately.
 - Start with one package. Keep modules internal until a real independent consumer or deployment requires another package. Future layout in the design document is a proposal, not a request to create empty packages.
-- Chromium is the first proposed browser. Firefox, Safari, Android, iOS and desktop support must not be advertised until exercised and verified.
+- Chromium is the first browser. The tagline and README may name where Retest is going: web, mobile and desktop. A claim that a browser or platform works today needs it exercised and verified; anything not yet verified is labelled as planned.
 - Do not copy code, secrets, environment files, customer data or private product logic from the sibling Rehearsal or Gruvi repositories. Public upstream code requires its license and attribution obligations to be respected.
 - Local use must not require Rehearsal credentials or cloud services.
 
