@@ -3,7 +3,7 @@ import type { Failure, SourceLocation } from '../../src/protocol/failures.ts'
 import type { RunResult } from '../../src/protocol/result.ts'
 import type { Variant } from '../../src/protocol/variant.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { rebuildResult } from '../../src/cli/inspect/rebuild-result.ts'
 import { emulationFor } from '../../src/config/devices.ts'
 import { truncateText } from '../../src/protocol/failures.ts'
@@ -42,11 +42,20 @@ const at = (line: number, column = 3): SourceLocation => ({ file: tasksFile, lin
 const saveButton = { by: 'role', role: 'button', name: 'Save' } as const
 const savedTask = { by: 'testId', value: 'saved-task' } as const
 
-/** A folder with the test file in it, to be the run's root directory. */
-export function variantProject(): string {
+const configSource = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+
+export default defineConfig({
+  apps: { web: app({ baseUrl: '${baseUrl}', targets: { chromium: chromium(), pixel: chromium({ emulate: 'Pixel 9' }) } }) },
+})
+`
+
+/** A folder with the test file and the config the run read in it, to be the run's root directory. */
+export function variantProject(configFile = 'retest.config.ts'): string {
   const root = temporaryFolder()
   mkdirSync(join(root, 'tests'))
   writeFileSync(join(root, tasksFile), tasksSource)
+  mkdirSync(dirname(join(root, configFile)), { recursive: true })
+  writeFileSync(join(root, configFile), configSource)
   return root
 }
 

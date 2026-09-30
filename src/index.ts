@@ -1,5 +1,6 @@
 export type { Apps, TestBody, TestContext } from './api/apps.ts'
-export type { Locator, Page, RoleOptions, TextOptions } from './api/page.ts'
+export type { KeyArgument } from './api/key-argument.ts'
+export type { Keyboard, Locator, Page, RoleOptions, TextOptions } from './api/page.ts'
 export { secret } from './api/secret.ts'
 export type { Secret } from './api/secret.ts'
 export { test } from './api/test.ts'
@@ -17,6 +18,7 @@ export type {
   Channel,
   ChromiumOptions,
   CustomEmulation,
+  ProxySettings,
   RetestConfig,
   SecretSource,
   StartCommand,

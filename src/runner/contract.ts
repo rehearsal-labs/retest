@@ -1,9 +1,12 @@
 import type { LoadedConfig } from '../config/loaded.ts'
 import type { CollectedTest } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
+import type { HostCheck } from '../protocol/host-check.ts'
 import type { LastRunTest } from '../protocol/last-run.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
+
+export type { HostCheck } from '../protocol/host-check.ts'
 
 /** What stops a run from outside. The run stops the same way for each; its exit code says which it was. */
 export type StopSignal = 'SIGINT' | 'SIGTERM'
@@ -82,6 +85,15 @@ export type RunOptions = {
   signal: AbortSignal
   /** Receives each test file's stdout and stderr as it arrives. The run folder keeps a copy either way. */
   onOutput?: (output: ChildOutput) => void
+  /**
+   * Checks the parent runs after a test's body, keyed by test id (`testId(file, title)`) or by file, POSIX and
+   * relative to the root as `run.started` lists it. A file's checks apply to every test collected from it, and
+   * come before a test's own. A test passes only if its checks pass. A key that names no selected test and no
+   * file a selected test comes from is a usage failure before any test runs.
+   */
+  hostChecks?: Readonly<Record<string, readonly HostCheck[]>>
+  /** The test process's whole environment. Absent: the parent's, without the variables secrets read. */
+  testEnvironment?: Readonly<Record<string, string>>
 }
 
 export type ChildOutput = { file: string; stream: 'stdout' | 'stderr'; text: string }

@@ -1,4 +1,6 @@
 import type { EventOfType } from './run-record.ts'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { formatLine } from '../protocol/location.ts'
 import { defaultTimeouts, formatTimeouts, timeoutNames, type Timeouts } from '../protocol/timeouts.ts'
 import { variantPairs, type Variant } from '../protocol/variant.ts'
@@ -28,6 +30,18 @@ export function shellQuote(value: string): string {
  * that pick out its variant.
  */
 export type RerunRequest = { file: string; line?: number | undefined; row?: number | undefined; targets?: Variant | undefined }
+
+/**
+ * Whether the command line can run this run's tests again as it ran them. It cannot when a program gave the run host
+ * checks, which no flag gives, or a config with no file behind it, as one built in memory.
+ *
+ * @example canRerun(started) // false for a run with host checks
+ */
+export function canRerun(run: EventOfType<'run.started'>): boolean {
+  const { config, hostChecks } = run.options
+  if (hostChecks !== undefined) return false
+  return config === undefined || existsSync(resolve(run.rootDir, config))
+}
 
 /**
  * Runs a test or a file again the way the original run did: with its browser, or its config, the base URLs

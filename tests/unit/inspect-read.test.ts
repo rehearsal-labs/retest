@@ -23,6 +23,7 @@ import {
   stamp,
   temporaryFolder,
 } from './reporters-fixtures.ts'
+import { checkoutProject, hostCheckFailureRun, hostChecksPassRun, noError, notPlaced, offThanks, onThanks, orderPlaced } from './reporters-host-check-fixtures.ts'
 
 const root = projectFolder()
 const workspace = temporaryFolder()
@@ -174,6 +175,28 @@ describe('rebuildResult', () => {
       },
     ])
     assert.equal(result.browser, null)
+  })
+
+  test("lists the host checks a test's events recorded, in the order they ran", () => {
+    const checkout = checkoutProject()
+    assert.deepEqual(rebuildResult(hostCheckFailureRun(checkout)).files[0]?.tests[0]?.hostChecks, [
+      { check: onThanks, app: 'web', status: 'failed', failure: offThanks },
+      { check: orderPlaced, app: 'web', status: 'failed', failure: notPlaced },
+      { check: noError, app: 'web', status: 'passed' },
+    ])
+    assert.equal(rebuildResult(passingRun(root)).files[0]?.tests[0]?.hostChecks, undefined)
+  })
+
+  test('a run cut off during the host checks never passes: a check with no ending is not listed', () => {
+    const events = hostChecksPassRun(checkoutProject())
+    const cut = events.slice(0, events.findIndex((event) => event.type === 'host_check.passed') + 1)
+    const result = rebuildResult(cut)
+    assert.ok(parse(runResultSchema, result).ok)
+    assert.deepEqual([result.complete, result.status, result.exitCode], [false, 'error', 2])
+    const [placed] = result.files[0]?.tests ?? []
+    assert.equal(placed?.status, 'error')
+    assert.deepEqual(placed?.failure, { class: 'interrupted', message: 'The run stopped before this test finished.' })
+    assert.deepEqual(placed?.hostChecks, [{ check: onThanks, app: 'web', status: 'passed' }])
   })
 
   test('needs the run.started event', () => {

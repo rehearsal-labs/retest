@@ -4,16 +4,19 @@ import type { TaskApp, TaskAppOptions } from '../../fixtures/task-app/server.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { BrowserError } from '../../src/browser/browser-error.ts'
+import { signalGroup } from '../../src/browser/chromium-process.ts'
 import {
   assertOk,
   click,
   failureOf,
   fill,
   goto,
+  launchGated,
   observe,
   observeUntil,
   openApp,
   openPage,
+  press,
   servePages,
   sharedBrowser,
   timed,
@@ -516,4 +519,198 @@ test('a click that opens an alert fails at once as unsupported, and later comman
   assert.deepEqual(failureOf(value).details, { dialog: 'alert', inputSent: false })
   assert.ok(ms < 500, `a blocked page should fail at once, took ${ms} ms`)
   await assert.rejects(page.screenshot(1000), (error) => error instanceof BrowserError && error.failure.class === 'unsupported')
+})
+
+async function actionsPage(t: TestContext) {
+  const app = await openApp(t)
+  const page = await openPage(t, browser(), app.url)
+  const visited: string[] = []
+  page.onNavigation((url) => void visited.push(url))
+  assertOk(await goto(page, '/actions'))
+  return { app, page, visited }
+}
+
+test('Enter in a form field submits the form once, and the page that answers is followed as a navigation', async (t) => {
+  const { app, page, visited } = await actionsPage(t)
+  assertOk(await fill(page, 'query', 'release notes'))
+  assert.deepEqual(await press(page, 'query', 'Enter'), { ok: true, kind: 'press' })
+  await observeUntil(page, 'submitted', (seen) => seen.text === 'Searched for release notes')
+  assert.equal(app.searches(), 1)
+  assert.deepEqual(visited, [`${app.url}/actions`, `${app.url}/actions/submit`])
+})
+
+test("Enter on the page's keyboard goes to the field a fill left the focus in, and submits its form once", async (t) => {
+  const { app, page, visited } = await actionsPage(t)
+  assertOk(await fill(page, 'query', 'keyboard'))
+  assert.deepEqual(await press(page, undefined, 'Enter'), { ok: true, kind: 'press' })
+  await observeUntil(page, 'submitted', (seen) => seen.text === 'Searched for keyboard')
+  assert.equal(app.searches(), 1)
+  assert.equal(visited.at(-1), `${app.url}/actions/submit`)
+})
+
+test('Tab moves the focus to the next field, and Shift+Tab moves it back, each heard once', async (t) => {
+  const { page } = await actionsPage(t)
+  assertOk(await press(page, 'first', 'Tab'))
+  await observeUntil(page, 'focus', (seen) => seen.text === 'second')
+  assertOk(await press(page, undefined, 'Shift+Tab'))
+  await observeUntil(page, 'focus', (seen) => seen.text === 'first')
+  assert.equal((await observe(page, 'keys-heard')).text, 'Tab Tab:shift')
+})
+
+test('Space on a button presses it once', async (t) => {
+  const { app, page } = await actionsPage(t)
+  assertOk(await press(page, 'count', 'Space'))
+  await observeUntil(page, 'clicks-answered', (seen) => seen.text === '1')
+  assert.equal(app.clicks(), 1)
+})
+
+test('a character is typed with the key a person presses for it, and Shift for an uppercase letter or a shifted symbol', async (t) => {
+  const { page } = await customPage(
+    t,
+    `<input data-testid="field"><pre data-testid="mirror"></pre><p data-testid="keys"></p><script>
+      const field = document.querySelector('[data-testid="field"]')
+      const keys = []
+      field.addEventListener('input', () => { document.querySelector('[data-testid="mirror"]').textContent = field.value })
+      field.addEventListener('keydown', (event) => {
+        keys.push([event.key, event.code, event.shiftKey ? 'shift' : ''].join(':'))
+        document.querySelector('[data-testid="keys"]').textContent = keys.join(' ')
+      })
+    </script>`,
+  )
+  for (const key of ['a', 'A', '7', '!', 'é']) assertOk(await press(page, 'field', key))
+  assert.equal((await observe(page, 'mirror')).text, 'aA7!é')
+  assert.equal((await observe(page, 'keys')).text, 'a:KeyA: A:KeyA:shift 7:Digit7: !:Digit1:shift é::')
+})
+
+test('each editing key edits a field once', async (t) => {
+  const { page } = await customPage(t, `<input data-testid="field">${mirror('field')}`)
+  const cases: [keys: string[], value: string][] = [
+    [['Backspace'], 'abc'],
+    [['ArrowLeft', 'Backspace'], 'abd'],
+    [['ArrowLeft', 'ArrowLeft', 'Delete'], 'abd'],
+    [['ArrowLeft', 'ArrowLeft', 'ArrowRight', 'X'], 'abcXd'],
+    [['Shift+ArrowLeft', 'X'], 'abcX'],
+    [['Home', 'X'], 'Xabcd'],
+    [['Home', 'End', 'X'], 'abcdX'],
+    [['Shift+Home', 'X'], 'X'],
+  ]
+  for (const [keys, value] of cases) {
+    assertOk(await fill(page, 'field', 'abcd'))
+    for (const key of keys) assertOk(await press(page, 'field', key))
+    assert.equal((await observe(page, 'mirror')).text, value, keys.join(' then '))
+  }
+})
+
+test('a key whose keydown the page cancels still reached its element, and the press passes', async (t) => {
+  const { page } = await customPage(
+    t,
+    `<input data-testid="field">${mirror('field')}<script>
+      document.querySelector('[data-testid="field"]').addEventListener('keydown', (event) => event.preventDefault())
+    </script>`,
+  )
+  assert.deepEqual(await press(page, 'field', 'a'), { ok: true, kind: 'press' })
+  assert.equal((await observe(page, 'mirror')).text, '')
+})
+
+test('a key the focus left for another element before it arrived is stopped before any listener of the page hears it', async (t) => {
+  const { page } = await customPage(
+    t,
+    `<input data-testid="field"><div data-testid="dialog" tabindex="-1">Dialog</div><p data-testid="heard"></p><script>
+      const heard = []
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        addEventListener(type, (event) => { heard.push(type); document.querySelector('[data-testid="heard"]').textContent = heard.join(' ') }, true)
+      }
+      document.querySelector('[data-testid="field"]').addEventListener('focus', () => {
+        queueMicrotask(() => document.querySelector('[data-testid="dialog"]').focus())
+      })
+    </script>`,
+  )
+  assert.deepEqual(failureOf(await press(page, 'field', 'Enter')), {
+    class: 'not_actionable',
+    message: `Could not press Enter on getByTestId('field'): the keyboard focus moved to another element, <div data-testid="dialog">, before the key arrived. Retest stopped the key before the page received it.`,
+    details: { check: 'focused', focus: '<div data-testid="dialog">', event: 'keydown' },
+  })
+  assert.equal((await observe(page, 'heard')).text, '', 'no listener of the page heard any part of the key')
+})
+
+test('a key is not pressed on an element that is hidden, disabled or cannot take the focus, and each failure says why', async (t) => {
+  const { page } = await customPage(
+    t,
+    `<input data-testid="hidden" style="visibility: hidden"><input data-testid="disabled" disabled><div data-testid="plain">Text</div>`,
+  )
+  const cases = [
+    ['hidden', 'visible', 'it is not visible'],
+    ['disabled', 'enabled', 'it is disabled'],
+    ['plain', 'focused', 'it did not keep the keyboard focus'],
+  ] as const
+  for (const [testId, check, reason] of cases) {
+    assert.deepEqual(failureOf(await press(page, testId, 'Enter', 300)), {
+      class: 'not_actionable',
+      message: `Could not press Enter on getByTestId('${testId}') within 300 ms: ${reason}.`,
+      details: { check, covering: null, waitedMs: 300 },
+    })
+  }
+})
+
+test("a key for the page's keyboard while the focus is inside a frame never reaches the page's document, so its outcome is unknown", async (t) => {
+  const { page } = await customPage(
+    t,
+    `<iframe data-testid="frame" srcdoc="<input>"></iframe><p data-testid="status"></p><script>
+      const frame = document.querySelector('[data-testid="frame"]')
+      frame.addEventListener('load', () => {
+        frame.contentDocument.querySelector('input').focus()
+        document.querySelector('[data-testid="status"]').textContent = 'focused'
+      })
+    </script>`,
+  )
+  await observeUntil(page, 'status', (seen) => seen.text === 'focused')
+  const result = await press(page, undefined, 'a')
+  assert.deepEqual(failureOf(result), {
+    class: 'outcome_unknown',
+    message: `Retest pressed a, but the key never reached the page's document, and the keyboard focus is on <iframe data-testid="frame">. Retest cannot tell what received the key.`,
+    details: { focus: '<iframe data-testid="frame">' },
+  })
+})
+
+test("a key for the page's keyboard waits while the page opens another document, and fails naming it when that document never arrives", async (t) => {
+  const never = await servePages(t, { '/': '<!doctype html><input autofocus>' }, { hold: () => new Promise(() => {}) })
+  const { page } = await customPage(
+    t,
+    `<input data-testid="field" autofocus><p data-testid="heard"></p><script>
+      addEventListener('keydown', () => { document.querySelector('[data-testid="heard"]').textContent = 'heard' }, true)
+      addEventListener('load', () => { location.href = ${JSON.stringify(`${never.url}/`)} })
+    </script>`,
+  )
+  assert.deepEqual(failureOf(await press(page, undefined, 'a', 1000)), {
+    class: 'not_actionable',
+    message: `Could not press a within 1000 ms: the page was still opening ${never.url}/, and Retest does not press in a document about to be replaced.`,
+    details: { check: 'navigation', url: `${never.url}/`, waitedMs: 1000 },
+  })
+})
+
+test('a browser lost between the key down and the key up leaves the outcome unknown, and the key went down once', async (t) => {
+  const keyDowns: unknown[] = []
+  const releaseHeld = Promise.withResolvers<void>()
+  const browser = await launchGated(t, {
+    hold: (method, params) => {
+      if (method !== 'Input.dispatchKeyEvent') return undefined
+      const type = typeof params === 'object' && params !== null && 'type' in params ? params.type : undefined
+      if (type !== 'keyUp') {
+        keyDowns.push(type)
+        return undefined
+      }
+      releaseHeld.resolve()
+      return new Promise(() => {})
+    },
+  })
+  const app = await openApp(t)
+  const page = await openPage(t, browser, app.url)
+  assertOk(await goto(page, '/actions'))
+  const pressing = press(page, 'query', 'Enter', 5000)
+  await releaseHeld.promise
+  signalGroup(browser.pid, 'SIGKILL')
+  const failure = failureOf(await pressing)
+  assert.equal(failure.class, 'outcome_unknown', JSON.stringify(failure))
+  assert.match(failure.message, /^Retest lost the page after it began to press Enter on getByTestId\('query'\), so it cannot tell whether that took effect: /)
+  assert.deepEqual(keyDowns, ['keyDown'])
 })

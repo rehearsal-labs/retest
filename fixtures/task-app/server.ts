@@ -2,10 +2,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { text } from 'node:stream/consumers'
+import { ACTIONS_PAGE, renderSubmittedPage } from './actions-page.ts'
+import { CODE_PAGE, CODE_SIGN_IN_PAGE, CodeSignIns, renderRefusal } from './code-sign-in.ts'
 import { renderDevicePage } from './device-page.ts'
+import { KEY_DOWN_PATH, KEYS_PAGE } from './keys-page.ts'
 import { LOCATORS_PAGE } from './locators-page.ts'
 import { MODES, type Mode, type TaskAppMode } from './modes.ts'
 import { renderPage } from './page.ts'
+import { PROXY_CHECK_FRAME, PROXY_CHECK_PAGE, PROXY_CHECK_PATH, PROXY_CHECK_WORKER } from './proxy-page.ts'
 import { SERVICE_WORKER, SERVICE_WORKER_PAGE } from './service-worker.ts'
 import { renderAccountPage, Sessions, SIGN_IN_PAGE } from './sign-in.ts'
 
@@ -13,6 +17,10 @@ export type TaskAppOptions = {
   mode?: TaskAppMode
   /** How long the `delayed` mode waits before it answers a save. */
   delayMs?: number
+  /** A header every request must carry, such as the one a proxy adds. Requests without it are refused with 403. */
+  requireHeader?: string
+  /** A file the app writes each one-time code it sends to, as a mail server would deliver it. */
+  outbox?: string
 }
 
 export type TaskApp = {
@@ -22,6 +30,16 @@ export type TaskApp = {
   submissions(): number
   /** How many requests of any kind the server has received. */
   requests(): number
+  /** How many requests the server refused for lacking the required header. */
+  refused(): number
+  /** How many searches the actions page submitted. */
+  searches(): number
+  /** How many presses of the actions page's count button reached the server. */
+  clicks(): number
+  /** How many key downs in the keys page's frozen field reached the server. */
+  keyDowns(): number
+  /** Every one-time code the app sent, oldest first. */
+  sentCodes(): readonly string[]
   close(): Promise<void>
 }
 
@@ -39,8 +57,13 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
   const page = renderPage(mode.page ?? {})
   const timers = new Set<NodeJS.Timeout>()
   const sessions = new Sessions()
+  const codeSignIns = new CodeSignIns(options.outbox)
   let submissions = 0
   let requests = 0
+  let refused = 0
+  let searches = 0
+  let clicks = 0
+  let keyDowns = 0
   let closing: Promise<void> | undefined
 
   async function signIn(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -51,6 +74,26 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     }
     response.setHeader('set-cookie', cookies)
     respond(response, 200, JSON_TYPE, JSON.stringify({ signedIn: true }))
+  }
+
+  async function sendCode(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const cookie = codeSignIns.send(new URLSearchParams(await text(request)))
+    if (cookie === undefined) {
+      respond(response, 401, HTML, renderRefusal('Wrong user name or password'))
+      return
+    }
+    response.writeHead(303, { location: '/code/verify', 'set-cookie': cookie, 'cache-control': 'no-store' })
+    response.end()
+  }
+
+  async function verifyCode(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const user = codeSignIns.verify(request.headers.cookie, new URLSearchParams(await text(request)))
+    if (user === undefined) {
+      respond(response, 401, HTML, renderRefusal('Wrong code'))
+      return
+    }
+    response.writeHead(303, { location: '/account', 'set-cookie': sessions.open(user), 'cache-control': 'no-store' })
+    response.end()
   }
 
   async function saveTask(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -100,6 +143,53 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     ['GET /account', (request, response) => respond(response, 200, HTML, renderAccountPage(sessions.userOf(request.headers.cookie)))],
     ['GET /service-worker', (_request, response) => respond(response, 200, HTML, SERVICE_WORKER_PAGE)],
     ['GET /service-worker.js', (_request, response) => respond(response, 200, 'text/javascript; charset=utf-8', SERVICE_WORKER)],
+    ['GET /actions', (_request, response) => respond(response, 200, HTML, ACTIONS_PAGE)],
+    [
+      'POST /actions/submit',
+      (request, response) => {
+        searches += 1
+        text(request)
+          .then((body) => respond(response, 200, HTML, renderSubmittedPage(new URLSearchParams(body).get('query') ?? '')))
+          .catch(() => response.destroy())
+      },
+    ],
+    ['GET /actions/counts', (_request, response) => respond(response, 200, JSON_TYPE, JSON.stringify({ searches, clicks }))],
+    [
+      'POST /actions/click',
+      (request, response) => {
+        clicks += 1
+        request.resume()
+        respond(response, 204, 'text/plain; charset=utf-8', '')
+      },
+    ],
+    ['GET /keys', (_request, response) => respond(response, 200, HTML, KEYS_PAGE)],
+    [
+      `POST ${KEY_DOWN_PATH}`,
+      (request, response) => {
+        keyDowns += 1
+        request.resume()
+        respond(response, 204, 'text/plain; charset=utf-8', '')
+      },
+    ],
+    ['GET /code/sign-in', (_request, response) => respond(response, 200, HTML, CODE_SIGN_IN_PAGE)],
+    [
+      'POST /code/send',
+      (request, response) => {
+        sendCode(request, response).catch(() => response.destroy())
+      },
+    ],
+    ['GET /code/verify', (_request, response) => respond(response, 200, HTML, CODE_PAGE)],
+    [
+      'POST /code/verify',
+      (request, response) => {
+        verifyCode(request, response).catch(() => response.destroy())
+      },
+    ],
+    [`GET ${PROXY_CHECK_PATH}`, (_request, response) => respond(response, 200, HTML, PROXY_CHECK_PAGE)],
+    [`GET ${PROXY_CHECK_PATH}frame`, (_request, response) => respond(response, 200, HTML, PROXY_CHECK_FRAME)],
+    [`GET ${PROXY_CHECK_PATH}data`, (_request, response) => respond(response, 200, 'text/plain; charset=utf-8', 'answered')],
+    [`GET ${PROXY_CHECK_PATH}from-worker`, (_request, response) => respond(response, 200, 'text/plain; charset=utf-8', 'answered by the worker')],
+    [`GET ${PROXY_CHECK_PATH}worker.js`, (_request, response) => respond(response, 200, 'text/javascript; charset=utf-8', PROXY_CHECK_WORKER)],
     [
       'GET /hang',
       (_request, response) => {
@@ -111,6 +201,11 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
 
   const server = createServer((request, response) => {
     requests += 1
+    if (options.requireHeader !== undefined && request.headers[options.requireHeader.toLowerCase()] === undefined) {
+      refused += 1
+      respond(response, 403, 'text/plain; charset=utf-8', `Refused: the request has no ${options.requireHeader} header.`)
+      return
+    }
     const { pathname } = new URL(request.url ?? '/', 'http://127.0.0.1')
     const route = routes.get(`${request.method} ${pathname}`)
     if (route === undefined) respond(response, 404, 'text/plain; charset=utf-8', 'Not found')
@@ -134,6 +229,11 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     url: `http://127.0.0.1:${address.port}`,
     submissions: () => submissions,
     requests: () => requests,
+    refused: () => refused,
+    searches: () => searches,
+    clicks: () => clicks,
+    keyDowns: () => keyDowns,
+    sentCodes: () => codeSignIns.sent(),
     close: () => (closing ??= stop()),
   }
 }

@@ -1,5 +1,5 @@
 import type { ResolvedFill } from '../browser/contract.ts'
-import type { LoadedSecret } from '../config/loaded.ts'
+import type { LoadedConfig, LoadedSecret } from '../config/loaded.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { ResolvedSecret } from './contract.ts'
@@ -27,17 +27,17 @@ export type FillResolution = { ok: true; command: ResolvedFill } | { ok: false; 
 const minSecretLength = 4
 
 /**
- * Reads each `env` source once, now, and keeps each function source to call on every use. A variable that is
- * missing, empty or too short to redact safely is a setup failure that names every such secret, before any test
- * runs. No message ever quotes a value.
+ * Reads each of the config's `env` sources once, now, from `env`, and keeps each function source to call on
+ * every use. A variable that is missing, empty or too short to redact safely is a setup failure that names every
+ * such secret, before any test runs. No message ever quotes a value.
  *
- * @example resolveSecrets(config.secrets, process.env)
+ * @example resolveSecrets(config, process.env)
  */
-export function resolveSecrets(secrets: ReadonlyMap<string, LoadedSecret>, env: Readonly<Record<string, string | undefined>>): ResolvedSecrets {
+export function resolveSecrets(config: LoadedConfig, env: Readonly<Record<string, string | undefined>>): ResolvedSecrets {
   const resolved = new Map<string, ResolvedSecret>()
   const missing: string[] = []
   const short: string[] = []
-  for (const [name, { source }] of secrets) {
+  for (const [name, { source }] of config.secrets) {
     if ('read' in source) {
       resolved.set(name, { read: source.read })
       continue

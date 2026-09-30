@@ -21,17 +21,20 @@ import {
   failureLabel,
   formatDetail,
   formatDuration,
+  messageLines,
   plural,
   runNotes,
   testTitle,
   titleWithin,
 } from './format.ts'
+import { countHostChecks } from './host-checks.ts'
 import { renderCard } from './human-card.ts'
 import { RunRecord, type EventOfType, type TestRecord } from './run-record.ts'
 import { createStyle, visibleLength, type Style, type Writer } from './style.ts'
 import {
   acrossTargets,
   describeBrowser,
+  describeProxy,
   runTargets,
   targetSummaries,
   variantLabel,
@@ -132,11 +135,15 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
   }
 }
 
-// Milestone 1's one browser has no app or target; a browser a config started names the one it serves. The line
-// says what happened, at the tests' indent, since the tests after it are not all the ones that ran in it.
+// Milestone 1's one browser has no app or target; a browser a config started names the one it serves, and the
+// proxy its pages go through. The line says what happened, at the tests' indent, since the tests after it are not
+// all the ones that ran in it.
 function browserLine(browser: EventOfType<'browser.started'>): string {
+  const { app, target } = browser
   const described = describeBrowser(browser)
-  return browser.app === undefined || browser.target === undefined ? `started ${described}` : `started ${variantKey({ [browser.app]: browser.target.name })}  ${described}`
+  if (app === undefined || target === undefined) return `started ${described}`
+  const proxy = target.proxy === undefined ? '' : ` · ${describeProxy(target.proxy)}`
+  return `started ${variantKey({ [app]: target.name })}  ${described}${proxy}`
 }
 
 type LineContext = { style: Style; targets: RunTargets }
@@ -170,7 +177,7 @@ function notRunLines(result: RunResult, targets: RunTargets, style: Style): stri
     const reason = notRunReason(result, test)
     const label = variantLabel(test.variant, targets)
     const variant = label === undefined ? '' : `  ${style.cyan(label)}`
-    return `    ${testTitle(test.file, test.name, test.describePath)}${variant}${reason === undefined ? '' : `  ${style.dim(reason.message)}`}`
+    return `    ${testTitle(test.file, test.name, test.describePath)}${variant}${reason === undefined ? '' : `  ${style.dim(messageLines(reason.message).join('\n'))}`}`
   })
   return `\n  ${style.bold('Not run')}\n${lines.join('\n')}\n`
 }
@@ -179,7 +186,7 @@ function runFailureLines(result: RunResult, style: Style): string {
   const failure = runFailureToShow(result)
   if (failure === undefined) return ''
   const details = Object.entries(failure.details ?? {}).map(([key, value]) => `${key}  ${formatDetail(value)}`)
-  const lines = [style.red(failureLabel(failure.class)), ...failure.message.split('\n'), ...details]
+  const lines = [style.red(failureLabel(failure.class)), ...messageLines(failure.message), ...details]
   return `\n  ${style.bold('Run failed')}\n${lines.map((line) => `    ${line}`).join('\n')}\n`
 }
 
@@ -188,15 +195,19 @@ type SummaryContext = { record: RunRecord; targets: RunTargets; runFolder: strin
 function summaryLines(result: RunResult, context: SummaryContext): string {
   const { style } = context
   const summaries = targetSummaries(result, context.targets)
-  const lines = [row('Tests', `${countParts(result.counts).join(' · ') || 'none'}${acrossTargets(summaries.length)}`)]
+  const rows: [string, string][] = [['Tests', `${countParts(result.counts).join(' · ') || 'none'}${acrossTargets(summaries.length)}`]]
   const checks = countChecks(context.record)
-  if (checks.length > 0) lines.push(row('Checks', checks.join(' · ')))
+  if (checks.length > 0) rows.push(['Checks', checks.join(' · ')])
+  const hostChecks = countHostChecks(result.files.flatMap((file) => file.tests))
+  if (hostChecks.length > 0) rows.push(['Host checks', hostChecks.join(' · ')])
   const files = fileProblemCounts(result)
-  if (files.length > 0) lines.push(row('Files', files.join(' · ')))
-  lines.push(row('Time', formatDuration(result.durationMs)), row('Output', context.runFolder))
+  if (files.length > 0) rows.push(['Files', files.join(' · ')])
+  rows.push(['Time', formatDuration(result.durationMs)], ['Output', context.runFolder])
   const notes = runNotes(result)
   const exit = `${result.exitCode}${notes.length === 0 ? '' : ` · ${notes.join(', ')}`}`
-  lines.push(row('Exit', result.exitCode === 0 ? style.green(exit) : style.red(exit)))
+  rows.push(['Exit', result.exitCode === 0 ? style.green(exit) : style.red(exit)])
+  const width = Math.max(8, ...rows.map(([label]) => label.length + 2))
+  const lines = rows.map(([label, value]) => `  ${label.padEnd(width)}${value}`)
   const perTarget = summaries.length > 1 ? `\n${targetLines(summaries, style).join('\n')}\n` : ''
   return `${perTarget}\n${lines.join('\n')}\n\n`
 }
@@ -250,8 +261,4 @@ function countChecks(record: RunRecord): string[] {
     }
   }
   return [...(failed > 0 ? [`${failed} failed`] : []), ...(passed > 0 ? [`${passed} passed`] : [])]
-}
-
-function row(label: string, value: string): string {
-  return `  ${label.padEnd(8)}${value}`
 }

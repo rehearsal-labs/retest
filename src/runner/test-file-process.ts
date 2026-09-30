@@ -28,6 +28,8 @@ export type SpawnOptions = {
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void
   /** Environment variables the process must not see, such as the ones secrets are read from. */
   hiddenVariables?: readonly string[]
+  /** The process's whole environment, in place of this process's own. The hidden variables are left out of it too. */
+  environment?: Readonly<Record<string, string>>
 }
 
 // The entry beside this module: child.ts when running from source, child.js once built.
@@ -65,13 +67,16 @@ export class TestFileProcess {
     })
   }
 
-  /** Starts a process for one test file, with the same export conditions as this one. */
+  /**
+   * Starts a process for one test file, with the same export conditions as this one, and this process's
+   * environment unless `environment` replaces it.
+   */
   static spawn(options: SpawnOptions = {}): TestFileProcess {
     const output = options.onOutput
     const hidden = new Set(options.hiddenVariables)
     const child = fork(childEntry, [], {
       execArgv: conditionArguments(process.execArgv),
-      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !hidden.has(name))),
+      env: Object.fromEntries(Object.entries(options.environment ?? process.env).filter(([name]) => !hidden.has(name))),
       serialization: 'json',
       stdio: output === undefined ? ['ignore', 'ignore', 'ignore', 'ipc'] : ['ignore', 'pipe', 'pipe', 'ipc'],
     })

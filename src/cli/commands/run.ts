@@ -166,7 +166,7 @@ function browserApps(parsed: Parsed, browser: string, cwd: string): RunApps {
 
 function configApps(parsed: Parsed, config: LoadedConfig, dependencies: CliDependencies): RunApps {
   const baseUrls = configBaseUrls(parsed.list('base-url'), config)
-  const secrets = resolveSecrets(config.secrets, dependencies.env)
+  const secrets = resolveSecrets(config, dependencies.env)
   if (!secrets.ok) throw new CliError(secrets.failure.message)
   return { kind: 'config', config, ...(baseUrls === undefined ? {} : { baseUrls }), secrets: secrets.secrets }
 }

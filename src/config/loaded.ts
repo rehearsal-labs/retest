@@ -13,8 +13,11 @@ export type LoadedStart = { readonly command: string; readonly ready: string; re
 /** A named device, or a screen of the config's own with `isMobile` filled in. */
 export type LoadedEmulation = DeviceName | Emulation
 
+/** A proxy's address as `scheme://host:port`, and its bypass rules, none when the config lists none. */
+export type LoadedProxy = { readonly server: string; readonly bypass: readonly string[] }
+
 /** `executablePath` is absolute; a chromium target without one uses RETEST_CHROMIUM. */
-export type LoadedTarget = { readonly name: string; readonly headless: boolean; readonly emulate?: LoadedEmulation } & (
+export type LoadedTarget = { readonly name: string; readonly headless: boolean; readonly emulate?: LoadedEmulation; readonly proxy?: LoadedProxy } & (
   | { readonly browser: 'chromium'; readonly executablePath?: string }
   | { readonly browser: 'chrome' | 'edge'; readonly channel: Channel }
 )

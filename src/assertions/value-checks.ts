@@ -1,6 +1,6 @@
 import { formatValue } from '../api/format-value.ts'
+import { shorten } from '../protocol/text.ts'
 import { equalComparison, firstDifference } from './deep-equal.ts'
-import { shorten } from './format.ts'
 
 /** What a value matcher checks, for `expect` and for each look of `expect.poll`. */
 export type ValueCheck = {

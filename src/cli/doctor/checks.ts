@@ -9,7 +9,7 @@ import { errorMessage } from '../../protocol/failures.ts'
 import { appLogFile, targetBrowserLogFile } from '../../protocol/run-folder.ts'
 import { variantKey } from '../../protocol/variant.ts'
 import { describeRunning, describeStarted } from '../../reporters/format.ts'
-import { describeBrowser } from '../../reporters/targets.ts'
+import { describeBrowser, describeProxy } from '../../reporters/targets.ts'
 import { Redactor } from '../../runner/redactor.ts'
 import { resolveSecrets } from '../../runner/secrets.ts'
 
@@ -66,7 +66,9 @@ async function checkTarget(app: LoadedApp, target: LoadedTarget, context: Target
   context.launches.set(key, launching)
   const launched = await launching
   if (!launched.ok) return { group: app.name, subject, ok: false, text: launched.message, fix: `The browser's log is at ${launched.logFile}.` }
-  return { group: app.name, subject, ok: true, text: describeBrowser(launched.browser), detail: launched.browser.executablePath }
+  // The proxy is a setting of each page's context, so the launch cannot check it; the line names it.
+  const proxy = target.proxy === undefined ? '' : ` · ${describeProxy(target.proxy)}`
+  return { group: app.name, subject, ok: true, text: `${describeBrowser(launched.browser)}${proxy}`, detail: launched.browser.executablePath }
 }
 
 type Launch = { executablePath: string; headless: boolean; appTarget: string }
@@ -121,7 +123,7 @@ async function checkServer(app: LoadedApp, context: ServerContext): Promise<Chec
 function environmentSecrets(config: LoadedConfig, env: CheckDependencies['env']): EnvironmentSecret[] {
   return [...config.secrets].flatMap(([name, secret]) => {
     if (!('env' in secret.source)) return []
-    return [{ name, variable: secret.source.env, resolved: resolveSecrets(new Map([[name, secret]]), env) }]
+    return [{ name, variable: secret.source.env, resolved: resolveSecrets({ ...config, secrets: new Map([[name, secret]]) }, env) }]
   })
 }
 

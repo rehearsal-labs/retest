@@ -8,7 +8,15 @@ import {
   type SourceLocation,
   type TruncatedText,
 } from './failures.ts'
+import {
+  hostCheckActualSchema,
+  hostCheckRecordSchema,
+  type HostCheckActual,
+  type HostCheckRecord,
+} from './host-check.ts'
+import { locatorCheckRecordSchema, type LocatorCheckRecord } from './locator-checks.ts'
 import { locatorRecipeSchema, type LocatorRecipe } from './locator.ts'
+import { observedRecordSchema, type ObservedRecord } from './observation-record.ts'
 import { s, type Schema } from './schema.ts'
 import { partialTimeoutsSchema, timeoutsSchema, type Timeouts } from './timeouts.ts'
 import { variantSchema, type Variant } from './variant.ts'
@@ -42,9 +50,10 @@ export type CollectedTest = {
 
 /**
  * A browser target: its name in its app and, for a target that emulates a screen, what it emulates and the
- * named device, if it is one. A target with `emulation` is always reported as emulated.
+ * named device, if it is one. A target with `emulation` is always reported as emulated. `proxy` is the proxy
+ * its pages' requests go through, and the hosts that go around it; never a user name or password.
  */
-export type TargetInfo = { name: string; emulation?: Emulation; device?: string }
+export type TargetInfo = { name: string; emulation?: Emulation; device?: string; proxy?: { server: string; bypass?: string[] } }
 
 /**
  * Who reported an event. `parent` is a fact the parent process saw for itself; `child` is a claim the test
@@ -78,6 +87,17 @@ type ActionFields = StepScope & {
   /** The length of the text a `fill` typed. A secret fill names its secret instead. */
   valueLength?: number
   secret?: string
+  /** The key a `press` sent, as the test wrote it. */
+  key?: string
+}
+/** A check the parent ran after the test's body. `session` is the app whose page it read. */
+type HostCheckFields = AttemptScope & {
+  session: string
+  check: HostCheckRecord
+  actual: HostCheckActual
+  attempts: number
+  timeoutMs: number
+  durationMs: number
 }
 type AssertionFields = TestScope & {
   stepId?: string
@@ -91,9 +111,35 @@ type AssertionFields = TestScope & {
   durationMs: number
   location?: SourceLocation
   pageUrl?: string
+  /** The look a locator assertion's verdict rested on: its last. */
+  observationId?: string
   /** From `expect.soft`: the test went on after it failed. */
   soft?: true
 }
+/**
+ * A locator assertion as the test process sends it also carries its matcher and arguments whole, in `check`, since
+ * `expected` is cut short. The parent reads it and never writes it.
+ */
+type SentAssertionFields = AssertionFields & { check?: LocatorCheckRecord }
+
+type StepEvent =
+  | (TestScope & {
+      type: 'step.started'
+      stepId: string
+      parentStepId?: string
+      name: string
+      location?: SourceLocation
+      hook?: 'beforeEach' | 'afterEach'
+    })
+  | (TestScope & { type: 'step.finished'; stepId: string; status: 'passed' | 'failed'; durationMs: number; failure?: Failure })
+
+/**
+ * An assertion as the parent writes it. On a pass, the parent says who judged it: `parent` when it judged the
+ * observation the assertion names, `child` for a value only the test process holds.
+ */
+type AssertionEvent =
+  | (AssertionFields & { type: 'assertion.passed'; judgedBy?: EventOrigin })
+  | (AssertionFields & { type: 'assertion.failed'; failure: Failure })
 
 /**
  * Step and assertion events, which the child reports for the parent to stamp. `hook` marks the step a
@@ -101,17 +147,9 @@ type AssertionFields = TestScope & {
  */
 export type ChildEvent = Common &
   (
-    | (TestScope & {
-        type: 'step.started'
-        stepId: string
-        parentStepId?: string
-        name: string
-        location?: SourceLocation
-        hook?: 'beforeEach' | 'afterEach'
-      })
-    | (TestScope & { type: 'step.finished'; stepId: string; status: 'passed' | 'failed'; durationMs: number; failure?: Failure })
-    | (AssertionFields & { type: 'assertion.passed' })
-    | (AssertionFields & { type: 'assertion.failed'; failure: Failure })
+    | StepEvent
+    | (SentAssertionFields & { type: 'assertion.passed' })
+    | (SentAssertionFields & { type: 'assertion.failed'; failure: Failure })
   )
 
 /**
@@ -120,10 +158,12 @@ export type ChildEvent = Common &
  * each app target, the first time it is used; app targets that launch the same browser share its `pid`.
  * `file.failed` is a collected file whose process failed outside its tests. The failure on `run.finished`
  * is the run's own, one that no single test explains, such as a browser that did not start or output that
- * could not be kept. State events never carry the state itself.
+ * could not be kept. State events never carry the state itself. An `observation` is a look the parent
+ * served the test process, written before the answer; `observed` is what the test process received, redacted.
+ * Host check events are always the parent's.
  */
 export type EventBody =
-  | (ChildEvent & VariantScope)
+  | (Common & VariantScope & (StepEvent | AssertionEvent))
   | (Common &
       (
         | {
@@ -144,6 +184,8 @@ export type EventBody =
               /** The budgets the command line gave, which a rerun command repeats. Absent when there was no command line. */
               commandLineTimeouts?: Partial<Timeouts>
               reporter: string
+              /** The host checks the run was asked to run, by test id or file. */
+              hostChecks?: Record<string, HostCheckRecord[]>
             }
           }
         | {
@@ -175,6 +217,16 @@ export type EventBody =
         | (ActionFields & { type: 'action.completed' })
         | (ActionFields & { type: 'action.failed'; failure: Failure })
         | (StepScope & { type: 'navigation'; url: string })
+        | (StepScope & {
+            type: 'observation'
+            observationId: string
+            locator: LocatorRecipe
+            pageUrl?: string
+            observed: ObservedRecord
+            durationMs: number
+          })
+        | (HostCheckFields & { type: 'host_check.passed' })
+        | (HostCheckFields & { type: 'host_check.failed'; failure: Failure })
         | (AttemptScope & { type: 'evidence.captured'; kind: 'screenshot'; path: string; reason: 'failure' })
         | (AttemptScope & { type: 'evidence.failed'; kind: 'screenshot'; reason: 'failure'; message: string })
         | (AttemptScope & {
@@ -218,6 +270,7 @@ export const targetInfoSchema: Schema<TargetInfo> = s.object({
   name: s.string(),
   emulation: s.optional(emulationSchema),
   device: s.optional(s.string()),
+  proxy: s.optional(s.object({ server: s.string(), bypass: s.optional(s.array(s.string())) })),
 })
 
 const collectedTestSchema: Schema<CollectedTest> = s.object({
@@ -233,6 +286,7 @@ const collectedTestSchema: Schema<CollectedTest> = s.object({
   variants: s.optional(s.array(variantSchema)),
 })
 
+const origin = s.enum(['parent', 'child'])
 const common = { session: s.optional(s.string()) }
 const envelope = {
   schemaVersion: s.literal(1),
@@ -240,7 +294,7 @@ const envelope = {
   sequence: count,
   time: s.string(),
   elapsedMs: duration,
-  origin: s.enum(['parent', 'child']),
+  origin,
   ...common,
 }
 const testScope = { testId: s.string(), attemptId: s.string() }
@@ -256,6 +310,7 @@ const actionFields = {
   location: s.optional(sourceLocationSchema),
   valueLength: s.optional(count),
   secret: s.optional(s.string()),
+  key: s.optional(s.string()),
 }
 const assertionFields = {
   ...testScope,
@@ -270,9 +325,20 @@ const assertionFields = {
   durationMs: duration,
   location: s.optional(sourceLocationSchema),
   pageUrl: s.optional(s.string()),
+  observationId: s.optional(s.string()),
   soft: s.optional(s.literal(true)),
 }
+const sentAssertionFields = { ...assertionFields, check: s.optional(locatorCheckRecordSchema) }
 const stateFields = { ...attemptScope, state: s.string(), app: s.string(), target: s.string() }
+const hostCheckFields = {
+  ...attemptScope,
+  session: s.string(),
+  check: hostCheckRecordSchema,
+  actual: hostCheckActualSchema,
+  attempts: count,
+  timeoutMs: s.number({ integer: true, min: 1 }),
+  durationMs: duration,
+}
 
 const stepStarted = {
   type: s.literal('step.started'),
@@ -291,14 +357,12 @@ const stepFinished = {
   durationMs: duration,
   failure: s.optional(failureSchema),
 }
-const assertionPassed = { type: s.literal('assertion.passed'), ...assertionFields }
-const assertionFailed = { type: s.literal('assertion.failed'), ...assertionFields, failure: failureSchema }
 
 export const childEventSchema: Schema<ChildEvent> = s.discriminatedUnion('type', [
   s.object({ ...common, ...stepStarted }),
   s.object({ ...common, ...stepFinished }),
-  s.object({ ...common, ...assertionPassed }),
-  s.object({ ...common, ...assertionFailed }),
+  s.object({ ...common, type: s.literal('assertion.passed'), ...sentAssertionFields }),
+  s.object({ ...common, type: s.literal('assertion.failed'), ...sentAssertionFields, failure: failureSchema }),
 ])
 
 export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type', [
@@ -318,6 +382,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
       timeouts: timeoutsSchema,
       commandLineTimeouts: s.optional(partialTimeoutsSchema),
       reporter: s.string(),
+      hostChecks: s.optional(s.record(s.array(hostCheckRecordSchema))),
     }),
   }),
   s.object({
@@ -359,8 +424,20 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
   s.object({ ...envelope, type: s.literal('action.completed'), ...actionFields }),
   s.object({ ...envelope, type: s.literal('action.failed'), ...actionFields, failure: failureSchema }),
   s.object({ ...envelope, type: s.literal('navigation'), ...stepScope, url: s.string() }),
-  s.object({ ...envelope, ...variantScope, ...assertionPassed }),
-  s.object({ ...envelope, ...variantScope, ...assertionFailed }),
+  s.object({
+    ...envelope,
+    type: s.literal('observation'),
+    ...stepScope,
+    observationId: s.string(),
+    locator: locatorRecipeSchema,
+    pageUrl: s.optional(s.string()),
+    observed: observedRecordSchema,
+    durationMs: duration,
+  }),
+  s.object({ ...envelope, type: s.literal('host_check.passed'), ...hostCheckFields }),
+  s.object({ ...envelope, type: s.literal('host_check.failed'), ...hostCheckFields, failure: failureSchema }),
+  s.object({ ...envelope, ...variantScope, type: s.literal('assertion.passed'), ...assertionFields, judgedBy: s.optional(origin) }),
+  s.object({ ...envelope, ...variantScope, type: s.literal('assertion.failed'), ...assertionFields, failure: failureSchema }),
   s.object({
     ...envelope,
     type: s.literal('evidence.captured'),

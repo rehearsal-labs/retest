@@ -2,11 +2,9 @@ import type { Observation } from '../../src/protocol/commands.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { formatValue } from '../../src/api/format-value.ts'
-import { quoteText, shorten } from '../../src/assertions/format.ts'
-import { textCheck, visibleCheck } from '../../src/assertions/locator-checks.ts'
 import { pollDelay } from '../../src/assertions/poll-locator.ts'
-import { textComparison } from '../../src/assertions/text.ts'
-import { normalizeText } from '../../src/protocol/text.ts'
+import { textCheck, visibleCheck } from '../../src/protocol/locator-checks.ts'
+import { normalizeText, quoteText, shorten, textComparison } from '../../src/protocol/text.ts'
 import { observationOf } from '../support/observation.ts'
 
 describe('text comparison', () => {

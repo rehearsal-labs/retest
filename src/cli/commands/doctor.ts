@@ -28,7 +28,8 @@ export const doctorCommand: Command = {
   description: [
     `Loads ${defaultConfigFile}, launches each target's browser once and closes it, and checks that each app answers.`,
     'An app with start is started and stopped again, unless it is already running. Secrets read from the environment',
-    'must be set. Each problem comes with its fix. No test runs.',
+    'must be set. A target with a proxy shows its address; the proxy itself is not checked.',
+    'Each problem comes with its fix. No test runs.',
     'When a fix points to a log, the logs stay in .retest/doctor. Otherwise they are removed.',
   ].join('\n'),
   options,

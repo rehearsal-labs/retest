@@ -1,5 +1,6 @@
 import type { RetestTypeError, TestIdValue } from '../config/register.ts'
 import type { AriaRole } from '../protocol/aria-role.ts'
+import type { KeyArgument } from './key-argument.ts'
 import type { Secret } from './secret.ts'
 
 /** How `getByRole` reads the accessible name: whole and case-sensitive, or with `exact: false` a case-insensitive part. */
@@ -44,6 +45,19 @@ export interface Page<Touch extends boolean = boolean> {
    * @example await expect(page.getByText('Saved')).toBeVisible()
    */
   getByText(text: string, options?: TextOptions): Locator<Touch>
+  /** The keyboard of this app's page. It presses keys on whatever holds the keyboard focus. */
+  readonly keyboard: Keyboard
+}
+
+/** An app's keyboard. Await each press, because an app takes one command at a time. */
+export interface Keyboard {
+  /**
+   * Presses a key and releases it on whatever holds the keyboard focus, or on the page's body when nothing does.
+   * It takes a named key such as `Enter` or `ArrowDown`, `Shift+` and a named key, or one character.
+   *
+   * @example await page.keyboard.press('Shift+Tab')
+   */
+  press<const K extends string>(key: KeyArgument<K>): Promise<void>
 }
 
 /**
@@ -64,6 +78,14 @@ export interface Locator<Touch extends boolean = boolean> {
    * @example await page.getByTestId('save-task').click()
    */
   click(): Promise<void>
+  /**
+   * Focuses the element once it is visible and enabled, then presses a key on it and releases it. It takes a named
+   * key such as `Enter` or `ArrowDown`, `Shift+` and a named key, or one character. An uppercase letter is typed
+   * with Shift.
+   *
+   * @example await page.getByLabel('Search').press('Enter')
+   */
+  press<const K extends string>(key: KeyArgument<K>): Promise<void>
   /**
    * Taps the element's centre, on an app whose every target has a touch screen.
    *

@@ -5,7 +5,7 @@ import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { codeFrame, readCodeFrame } from '../../src/reporters/code-frame.ts'
 import { formatInspectCommand, formatRerunCommand, shellQuote } from '../../src/reporters/commands.ts'
 import { diffLines } from '../../src/reporters/diff.ts'
-import { countParts, formatDetail, formatDuration, plural, quoteRecorded } from '../../src/reporters/format.ts'
+import { countParts, formatDetail, formatDuration, messageLines, plural, printable, quoteRecorded } from '../../src/reporters/format.ts'
 import { recordEvents } from '../../src/reporters/run-record.ts'
 import {
   file,
@@ -52,6 +52,18 @@ describe('quoteRecorded', () => {
     assert.equal(quoteRecorded(truncateText('Saving…')), '"Saving…"')
     assert.equal(quoteRecorded(truncateText('a "b"\n\tc')), '"a \\"b\\"\\n\\tc"')
     assert.equal(quoteRecorded(truncateText('')), '""')
+  })
+
+  test('escapes every control character, so page text cannot drive a terminal', () => {
+    assert.equal(quoteRecorded(truncateText('Saved\u001b[2J\u007f\u009b31m')), '"Saved\\u001b[2J\\u007f\\u009b31m"')
+    assert.equal(printable('a\u0000b\u0085c é ✓'), 'a\\u0000b\\u0085c é ✓')
+  })
+
+  test('a message keeps its lines, and each is printable, since a message may quote the page', () => {
+    assert.deepEqual(messageLines('Expected "Saved", received "\u009b31mSaved".\nLooked 3 times.'), [
+      'Expected "Saved", received "\\u009b31mSaved".',
+      'Looked 3 times.',
+    ])
   })
 
   test('notes a value the runner truncated, with its recorded length', () => {

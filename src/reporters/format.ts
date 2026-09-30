@@ -7,6 +7,7 @@ export const shownValueLength = 300
 
 const failureLabels: Record<FailureClass, string> = {
   check_failed: 'Check failed',
+  host_check_failed: 'Host check failed',
   not_found: 'Not found',
   ambiguous: 'Ambiguous',
   not_actionable: 'Not actionable',
@@ -100,9 +101,31 @@ export function totalTests(counts: Counts): number {
  */
 export function quoteRecorded(value: TruncatedText): string {
   const shown = truncateText(value.text, shownValueLength)
-  const quoted = JSON.stringify(shown.text)
+  const quoted = printable(JSON.stringify(shown.text))
   if (!shown.truncated && !value.truncated) return quoted
   return `${quoted}… (${shown.text.length} of ${value.length} characters)`
+}
+
+// JSON escapes the first 32 control characters; DEL and the C1 range, such as U+009B, can still start a terminal escape.
+const controlCharacters = /[\u0000-\u001f\u007f-\u009f]/g
+
+/**
+ * Text a page or a test file wrote, with every control character written as its escape, so it cannot move the
+ * cursor or change colours in a terminal.
+ *
+ * @example printable('Saved\u001b[2J') // 'Saved\\u001b[2J'
+ */
+export function printable(text: string): string {
+  return text.replace(controlCharacters, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
+/**
+ * A failure message as the lines a report prints. A message may quote page text, so each line is printable.
+ *
+ * @example messageLines('Expected "Saved".\nLooked 3 times.') // ['Expected "Saved".', 'Looked 3 times.']
+ */
+export function messageLines(message: string): string[] {
+  return message.split('\n').map(printable)
 }
 
 /** A failure detail as text. Text is quoted, so page text cannot pass for Retest's own words. */

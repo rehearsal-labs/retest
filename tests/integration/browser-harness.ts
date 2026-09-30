@@ -54,8 +54,8 @@ export function launch(t: TestContext): Promise<OwnedBrowser> {
  * the browser sends. It lets a test put a message exactly where a race would.
  */
 export type Gate = {
-  /** A promise to hold the command back for, by method, or undefined to let it go at once. */
-  hold?: (method: string) => Promise<void> | undefined
+  /** A promise to hold the command back for, by method and parameters, or undefined to let it go at once. */
+  hold?: (method: string, params: unknown) => Promise<void> | undefined
   /** Sees every message from the browser before Retest does. */
   watch?: (message: Record<string, unknown>) => void
 }
@@ -92,7 +92,7 @@ function gatedTransport(inner: Transport, gate: Gate): Transport {
     send(text) {
       const message: unknown = JSON.parse(text)
       const method = isRecord(message) ? message['method'] : undefined
-      const held = typeof method === 'string' ? gate.hold?.(method) : undefined
+      const held = typeof method === 'string' && isRecord(message) ? gate.hold?.(method, message['params']) : undefined
       if (held === undefined) return inner.send(text)
       return heldMessage(held, () => inner.send(text))
     },
@@ -223,6 +223,12 @@ export function tap(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<
 
 export function fill(page: OwnedPage, target: Target, value: string, timeoutMs = 2000): Promise<CommandResult> {
   return page.execute({ kind: 'fill', locator: locatorOf(target), value }, timeoutMs)
+}
+
+/** Presses a key on the element `target` names, or, with none, on the page's keyboard. */
+export function press(page: OwnedPage, target: Target | undefined, key: string, timeoutMs = 2000): Promise<CommandResult> {
+  const locator = target === undefined ? {} : { locator: locatorOf(target) }
+  return page.execute({ kind: 'press', ...locator, key }, timeoutMs)
 }
 
 export async function observe(page: OwnedPage, target: Target): Promise<Observation> {

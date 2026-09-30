@@ -57,6 +57,11 @@ export class Sessions {
     if (typeof body !== 'object' || body === null || !('user' in body) || !('password' in body)) return undefined
     const { user, password } = body
     if (typeof user !== 'string' || user === '' || password !== TASK_APP_PASSWORD) return undefined
+    return this.open(user)
+  }
+
+  /** Starts a session for a user the app has already checked, and returns the cookies to set. */
+  open(user: string): string[] {
     const token = randomUUID()
     this.#users.set(token, user)
     return [

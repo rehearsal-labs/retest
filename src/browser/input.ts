@@ -1,14 +1,12 @@
 import type { CdpSession } from './cdp/session.ts'
 import type { Dispatch } from './dispatch.ts'
 import type { Deadline } from '../protocol/deadline.ts'
+import type { Key } from '../protocol/keys.ts'
 import { sendOptions } from './cdp-results.ts'
+import { keyStroke } from './keys.ts'
 
 /** A point in the viewport, in CSS pixels. */
 export type Point = { x: number; y: number }
-
-const deleteKey = { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 }
-// A headed browser on macOS edits text from the key's command, which a synthetic key event must carry itself.
-const deleteCommands = process.platform === 'darwin' ? ['deleteForward'] : []
 
 /** Moves the mouse to the point, then presses and releases the left button there. */
 export async function clickAt(session: CdpSession, point: Point, deadline: Deadline, dispatch: Dispatch): Promise<void> {
@@ -30,6 +28,12 @@ export async function replaceSelection(session: CdpSession, value: string, deadl
     await dispatch.send(session, 'Input.insertText', { text: value }, deadline)
     return
   }
-  await dispatch.send(session, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...deleteKey, commands: deleteCommands }, deadline)
-  await dispatch.send(session, 'Input.dispatchKeyEvent', { type: 'keyUp', ...deleteKey }, deadline)
+  await pressKey(session, { kind: 'named', name: 'Delete', shift: false }, deadline, dispatch)
+}
+
+/** Presses and releases a key, which goes to whatever holds the keyboard focus. */
+export async function pressKey(session: CdpSession, key: Key, deadline: Deadline, dispatch: Dispatch): Promise<void> {
+  const { down, up } = keyStroke(key)
+  await dispatch.send(session, 'Input.dispatchKeyEvent', down, deadline)
+  await dispatch.send(session, 'Input.dispatchKeyEvent', up, deadline)
 }

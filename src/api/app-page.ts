@@ -1,7 +1,9 @@
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { BuiltRecipe } from './locator-recipes.ts'
-import type { Locator, Page } from './page.ts'
+import type { Keyboard, Locator, Page } from './page.ts'
 import type { TestRun } from './test-run.ts'
+import { withLocation } from '../protocol/failures.ts'
+import { parseKey } from '../protocol/keys.ts'
 import { formatValue } from './format-value.ts'
 import { roleRecipe, testIdRecipe, textRecipe } from './locator-recipes.ts'
 import { misuse } from './misuse.ts'
@@ -10,18 +12,23 @@ import { Secret } from './secret.ts'
 /** The test, app and recipe behind a locator, for assertions. */
 export type LocatorTarget = { readonly run: TestRun; readonly app: string; readonly recipe: LocatorRecipe }
 
+/** Where a key goes: a locator's element, or, without a recipe, whatever holds the focus in the app's page. */
+type KeyTarget = Omit<LocatorTarget, 'recipe'> & { readonly recipe?: LocatorRecipe }
+
 let readTarget: ((locator: AppLocator) => LocatorTarget) | undefined
 
 // Types decide which apps offer `tap()`; at run time every page has it, and a page without a touch screen refuses it.
 
 /** An app's page as a test drives it: every command it sends names the app. */
 export class AppPage implements Page<true> {
+  readonly keyboard: AppKeyboard
   readonly #run: TestRun
   readonly #app: string
 
   constructor(run: TestRun, app: string) {
     this.#run = run
     this.#app = app
+    this.keyboard = new AppKeyboard({ run, app })
   }
 
   goto(url: string): Promise<void> {
@@ -77,9 +84,26 @@ export class AppLocator implements Locator<true> {
     return run.action(app, { kind: 'click', locator: recipe }, run.location())
   }
 
+  press(key: unknown): Promise<void> {
+    return press(this.#target, key)
+  }
+
   tap(): Promise<void> {
     const { run, app, recipe } = this.#target
     return run.action(app, { kind: 'tap', locator: recipe }, run.location())
+  }
+}
+
+/** An app's keyboard, which presses keys on whatever holds the focus in its page. */
+export class AppKeyboard implements Keyboard {
+  readonly #target: KeyTarget
+
+  constructor(target: KeyTarget) {
+    this.#target = target
+  }
+
+  press(key: unknown): Promise<void> {
+    return press(this.#target, key)
   }
 }
 
@@ -88,3 +112,11 @@ export function locatorTarget(value: unknown): LocatorTarget | undefined {
   return value instanceof AppLocator ? readTarget?.(value) : undefined
 }
 
+// A key `parseKey` refuses is never sent. The parent reads the key again, since it trusts nothing the test process checked.
+function press({ run, app, recipe }: KeyTarget, key: unknown): Promise<void> {
+  const location = run.location()
+  if (typeof key !== 'string') throw misuse(`press() takes a key as text, such as 'Enter', received ${formatValue(key)}.`, run)
+  const parsed = parseKey(key)
+  if (!parsed.ok) throw run.fail(withLocation(parsed.failure, location))
+  return run.action(app, { kind: 'press', ...(recipe === undefined ? {} : { locator: recipe }), key }, location)
+}

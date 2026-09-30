@@ -20,7 +20,7 @@ type BrowserEvent = { method: string; params: object; address?: string }
  * A page whose browser answers `Page.navigate` with `answer` and then sends `events`, as Chrome does. The page
  * takes each event's address before the navigation hears of it, as `ChromiumPage` does.
  */
-function browserThatNavigates(answer: object, events: BrowserEvent[]): Browser {
+function browserThatNavigates(answer: object, events: BrowserEvent[], proxyServer?: string): Browser {
   let current = new URL(`${origin}/`)
   const scripted = scriptedSession(async (method) => {
     if (method !== 'Page.navigate') return {}
@@ -32,7 +32,7 @@ function browserThatNavigates(answer: object, events: BrowserEvent[]): Browser {
     })
     return answer
   })
-  const context = { session: scripted.session, baseUrl: origin, mainFrameId: () => mainFrame, currentUrl: () => current }
+  const context = { session: scripted.session, baseUrl: origin, mainFrameId: () => mainFrame, currentUrl: () => current, proxyServer }
   return { ...scripted, context }
 }
 
@@ -135,4 +135,44 @@ test('a navigation stopped before it starts is never sent', async () => {
   assert.ok(error instanceof CdpAbortedError, String(error))
   assert.equal(dispatch.sent, false)
   assert.deepEqual(browser.sent, [])
+})
+
+// The browser shows its error page as a document of its own, which commits and loads.
+function failedWith(errorText: string, proxyServer?: string): Browser {
+  const errorPage = { method: 'Page.frameNavigated', params: { frame: { id: mainFrame, loaderId: 'L1', url: 'chrome-error://chromewebdata/' } } }
+  return browserThatNavigates({ frameId: mainFrame, loaderId: 'L1', errorText }, [errorPage, loaded('L1')], proxyServer)
+}
+
+test("a navigation its proxy failed is a setup failure naming the proxy, and any other failed navigation is the page's", async () => {
+  const proxy = 'http://127.0.0.1:8080'
+  const errors = [
+    'net::ERR_PROXY_CONNECTION_FAILED',
+    'net::ERR_TUNNEL_CONNECTION_FAILED',
+    'net::ERR_PROXY_AUTH_UNSUPPORTED',
+    'net::ERR_PROXY_CERTIFICATE_INVALID',
+    'net::ERR_NO_SUPPORTED_PROXIES',
+  ]
+  for (const errorText of errors) {
+    assert.deepEqual(await goto(failedWith(errorText, proxy), '/tasks'), {
+      ok: false,
+      failure: {
+        class: 'setup_failed',
+        message: `Could not open ${origin}/tasks through the proxy ${proxy}: ${errorText}. The proxy failed, not the app.`,
+        details: { url: `${origin}/tasks`, errorText, proxy },
+      },
+    })
+  }
+  // Another error through a proxy, and a proxy error on a page with no proxy of Retest's, are the page's failure.
+  const others = [
+    ['net::ERR_INVALID_AUTH_CREDENTIALS', proxy],
+    ['net::ERR_CONNECTION_REFUSED', proxy],
+    ['net::ERR_PROXY_CONNECTION_FAILED', undefined],
+  ] as const
+  for (const [errorText, server] of others) {
+    assert.deepEqual(
+      await goto(failedWith(errorText, server), '/tasks'),
+      { ok: false, failure: { class: 'not_actionable', message: `Could not open ${origin}/tasks: ${errorText}.`, details: { url: `${origin}/tasks`, errorText } } },
+      errorText,
+    )
+  }
 })

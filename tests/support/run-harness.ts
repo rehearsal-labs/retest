@@ -2,7 +2,7 @@ import type { RetestEvent } from '../../src/protocol/events.ts'
 import type { RunResult, TestResult } from '../../src/protocol/result.ts'
 import type { Timeouts } from '../../src/protocol/timeouts.ts'
 import type { Reporter } from '../../src/reporters/reporter.ts'
-import type { ChildOutput } from '../../src/runner/contract.ts'
+import type { ChildOutput, RunOptions } from '../../src/runner/contract.ts'
 import type { FakeBrowser, FakeOptions } from './fake-browser.ts'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
@@ -39,7 +39,7 @@ export type HarnessOptions = {
   baseUrl?: string
   /** Sees each chunk of the test files' output as it arrives. */
   onOutput?: (chunk: ChildOutput) => void
-}
+} & Pick<RunOptions, 'hostChecks' | 'selection' | 'testEnvironment'>
 
 export type RunRecord = {
   result: RunResult
@@ -80,6 +80,7 @@ export async function runSupportFiles(names: readonly string[], options: Harness
         output.push(chunk)
         options.onOutput?.(chunk)
       },
+      ...runOptions(options),
     },
     options.reporters ?? [],
     launch,
@@ -87,6 +88,16 @@ export async function runSupportFiles(names: readonly string[], options: Harness
   const { events, lines } = readEvents(folder)
   const written = readResult(folder)
   return { result, events, lines, folder, browsers, output, written }
+}
+
+/** The options a harness passes on to the run as they are, each only when given. */
+export function runOptions(options: Pick<RunOptions, 'hostChecks' | 'selection' | 'testEnvironment'>): Pick<RunOptions, 'hostChecks' | 'selection' | 'testEnvironment'> {
+  const { hostChecks, selection, testEnvironment } = options
+  return {
+    ...(hostChecks === undefined ? {} : { hostChecks }),
+    ...(selection === undefined ? {} : { selection }),
+    ...(testEnvironment === undefined ? {} : { testEnvironment }),
+  }
 }
 
 /** Every line of `events.jsonl`, each checked against the version 1 schema, in sequence order. */

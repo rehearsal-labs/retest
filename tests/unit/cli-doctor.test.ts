@@ -175,6 +175,29 @@ describe('doctor', () => {
     assert.match(stdout, /\n {2}Ready\. 1 app, 3 targets\.\n$/)
   })
 
+  test("names each target's proxy, which only a page's context uses, so the launch never checks it", async () => {
+    const config = loadedConfig(project, {
+      apps: {
+        web: app({
+          targets: {
+            chrome: chrome({ proxy: { server: 'http://127.0.0.1:8080', bypass: ['<-loopback>', '*.internal'] } }),
+            direct: chrome(),
+          },
+        }),
+      },
+    })
+    const { code, stdout, calls } = await doctor({ config })
+    assert.equal(code, 0)
+    assert.equal(calls.launches.length, 1, 'the proxy is not a launch setting')
+    assert.match(stdout, new RegExp(`\\n {2}web {3}chrome\\(\\) {17}✓ Chrome 154\\.0\\.7195\\.41 · proxy http://127\\.0\\.0\\.1:8080 · bypass <-loopback>, \\*\\.internal {3}${chromePath}\\n`))
+    const direct = stdout.split('\n').find((line) => line.includes('direct: chrome()')) ?? ''
+    assert.match(direct, /✓ Chrome 154\.0\.7195\.41 +\/Applications\//)
+    assert.doesNotMatch(direct, /proxy/)
+    const help = fakeCli({ cwd: project })
+    await help.cli(['help', 'doctor'])
+    assert.match(help.stdout.text, /A target with a proxy shows its address; the proxy itself is not checked\./)
+  })
+
   test('checks each secret the environment supplies, and never calls a function source', async () => {
     const config = loadedConfig(project, {
       apps: { web: chromium() },

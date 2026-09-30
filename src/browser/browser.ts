@@ -1,6 +1,6 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { ChromiumProcess } from './chromium-process.ts'
-import type { NewPageOptions, OwnedBrowser, OwnedPage } from './contract.ts'
+import type { NewPageOptions, OwnedBrowser, OwnedPage, ProxyOptions } from './contract.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -68,7 +68,7 @@ export class ChromiumBrowser implements OwnedBrowser {
   async newPage(options: NewPageOptions, timeoutMs: number): Promise<OwnedPage> {
     if (this.#disconnectReason !== undefined) throw this.#lost(this.#disconnectReason)
     const deadline = new Deadline(timeoutMs)
-    const { browserContextId } = await this.#request('Target.createBrowserContext', {}, contextSchema, deadline)
+    const { browserContextId } = await this.#request('Target.createBrowserContext', browserContextOptions(options.proxy), contextSchema, deadline)
     try {
       // A download would otherwise land in the person's own Downloads folder, whatever the profile.
       await this.#request('Browser.setDownloadBehavior', { behavior: 'deny', browserContextId }, s.object({}), deadline)
@@ -84,6 +84,7 @@ export class ChromiumBrowser implements OwnedBrowser {
         baseUrl: options.baseUrl,
         emulation: options.emulation,
         restoredOrigins,
+        proxyServer: options.proxy?.server,
         onListenerError: this.#onListenerError,
       }
       return await ChromiumPage.open(pageOptions, deadline)
@@ -148,4 +149,17 @@ export class ChromiumBrowser implements OwnedBrowser {
     this.#disconnectReason = this.#closeRequested ? 'Retest closed the browser' : reason
     this.#disconnects.emit(this.#disconnectReason)
   }
+}
+
+/**
+ * The parameters of `Target.createBrowserContext` for a page. A proxy is a setting of the browser context, so
+ * each page's requests, its frames' and its service workers' included, go through its own. Chrome sends
+ * loopback addresses around a proxy unless the bypass rules hold `<-loopback>`.
+ *
+ * @example browserContextOptions({ server: 'http://127.0.0.1:8080', bypass: ['<-loopback>', '*.internal'] }) // { proxyServer: 'http://127.0.0.1:8080', proxyBypassList: '<-loopback>;*.internal' }
+ */
+export function browserContextOptions(proxy: ProxyOptions | undefined): { proxyServer?: string; proxyBypassList?: string } {
+  if (proxy === undefined) return {}
+  const bypass = proxy.bypass.length === 0 ? {} : { proxyBypassList: proxy.bypass.join(';') }
+  return { proxyServer: proxy.server, ...bypass }
 }

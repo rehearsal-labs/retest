@@ -105,6 +105,31 @@ describe('validateConfig: what it reads', () => {
     assert.equal(await code.source.read(), '482913')
   })
 
+  test('a proxy is kept as its scheme, host and port, with its bypass rules as given, none by default', () => {
+    const config = loaded(
+      defineConfig({
+        apps: {
+          web: app({
+            targets: {
+              hosted: chromium({ proxy: { server: 'HTTP://Proxy.Local:8080/', bypass: ['<-loopback>', '*.internal', ' localhost '] } }),
+              socks: chrome({ proxy: { server: 'socks5://127.0.0.1:1080' } }),
+              local: edge({ proxy: { server: 'https://[::1]:8443', bypass: [] } }),
+              direct: chromium(),
+            },
+          }),
+          admin: chromium({ proxy: { server: 'socks4://proxy.internal' } }),
+        },
+        defaultApp: 'web',
+      }),
+    )
+    const targets = config.apps.get('web')?.targets
+    assert.deepEqual(targets?.get('hosted')?.proxy, { server: 'http://proxy.local:8080', bypass: ['<-loopback>', '*.internal', ' localhost '] })
+    assert.deepEqual(targets?.get('socks')?.proxy, { server: 'socks5://127.0.0.1:1080', bypass: [] })
+    assert.deepEqual(targets?.get('local')?.proxy, { server: 'https://[::1]:8443', bypass: [] })
+    assert.equal(targets?.get('direct')?.proxy, undefined)
+    assert.deepEqual(config.apps.get('admin')?.targets.get('chromium')?.proxy, { server: 'socks4://proxy.internal', bypass: [] })
+  })
+
   test('a key set to undefined counts as absent, at any depth', () => {
     const config = loaded({
       apps: { web: app({ baseUrl: undefined, targets: { beta: chrome({ channel: undefined, emulate: undefined }) } }) },
@@ -232,6 +257,44 @@ describe('validateConfig: what it rejects', () => {
       'apps.phone.emulate.viewport.height: expected integer >= 1, received 0',
       'apps.phone.emulate.hasTouch: unknown key',
     ])
+  })
+
+  test('a proxy: an address of one of four schemes with a host, never a user name or password, and one rule per bypass entry', () => {
+    const at = (proxy: unknown): string[] => problems({ apps: { web: { browser: 'chromium', proxy } } })
+    const signIn = 'apps.web.proxy.server: holds a user name or password, and Retest does not sign in to a proxy. Give the address alone'
+    for (const server of ['http://ada:hunter2@proxy.local:8080', 'socks5://ada:hunter2@127.0.0.1:1080', 'http://hunter2@proxy.local', 'https://:hunter2@proxy.local']) {
+      assert.deepEqual(at({ server }), [signIn], server)
+    }
+    const address = 'apps.web.proxy.server: expected a proxy address such as http://127.0.0.1:8080: the scheme http, https, socks4 or socks5, and a host'
+    for (const server of ['ftp://proxy.local', 'proxy.local:8080', 'ada:hunter2@proxy.local:8080', 'http://proxy.local/hunter2', 'http://proxy.local:8080?key=hunter2', 'http://proxy.local#hunter2', 'socks5://', 'socks5:///hunter2', 'direct://', '']) {
+      assert.deepEqual(at({ server }), [address], server)
+    }
+    assert.deepEqual(at("http://ada:hunter2@proxy.local:8080"), ["apps.web.proxy: expected an object such as { server: 'http://127.0.0.1:8080' }, received a string"])
+    assert.deepEqual(at({ server: 'http://proxy.local:8080', bypass: ['', ' ', 'a.test;b.test', 'ok.test'] }), [
+      'apps.web.proxy.bypass[0]: expected a rule such as localhost or *.internal, received ""',
+      'apps.web.proxy.bypass[1]: expected a rule such as localhost or *.internal, received " "',
+      'apps.web.proxy.bypass[2]: expected one rule, received "a.test;b.test". List each rule on its own',
+    ])
+    assert.deepEqual(at({ bypass: [] }), ['apps.web.proxy.server: missing required key'])
+    assert.deepEqual(at({ server: 8080 }), ['apps.web.proxy.server: expected string, received 8080'])
+    assert.deepEqual(at({ server: 'http://proxy.local:8080', bypass: 'localhost' }), ['apps.web.proxy.bypass: expected array, received "localhost"'])
+    assert.deepEqual(at({ server: 'http://proxy.local:8080', username: 'ada', password: 'hunter2' }), [
+      'apps.web.proxy.username: unknown key',
+      'apps.web.proxy.password: unknown key',
+    ])
+    assert.deepEqual(problems({ apps: { web: app({ targets: { hosted: { browser: 'chrome', proxy: { server: 'http://ada:hunter2@p.local' } } } }) } }), [
+      'apps.web.targets.hosted.proxy.server: holds a user name or password, and Retest does not sign in to a proxy. Give the address alone',
+    ])
+  })
+
+  test('no problem with a proxy quotes its address, which may hold a password', () => {
+    const servers = ['http://ada:hunter2@proxy.local:8080', 'ada:hunter2@proxy.local:8080', 'ftp://ada:hunter2@p', 'http://p/hunter2', 'socks9://ada:hunter2@p']
+    const found = [
+      ...servers.flatMap((server) => problems({ apps: { web: { browser: 'chromium', proxy: { server } } } })),
+      ...servers.flatMap((server) => problems({ apps: { web: { browser: 'chromium', proxy: server } } })),
+    ]
+    assert.equal(found.length, servers.length * 2)
+    for (const line of found) assert.equal(line.includes('hunter2') || line.includes('ada'), false, line)
   })
 
   test('the default app must be an app', () => {

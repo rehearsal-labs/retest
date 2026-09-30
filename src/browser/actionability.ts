@@ -9,19 +9,23 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { describeLocator } from '../protocol/locator.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
 import { CdpTimeoutError } from './cdp/errors.ts'
-import { prepare } from './element-queries.ts'
+import { armKeyboard, describeAction, prepare } from './element-queries.ts'
 import { originRefusal } from './origin-refusal.ts'
 import { originAndPath } from './page-url.ts'
 
-/** Where to press an element that passed every check, and the guard it armed for the input. */
-export type ActionTarget = { ok: true; point: Point; guard: Guard } | { ok: false; failure: Failure }
+/**
+ * Where to press an element that passed every check, and the guard it armed for the input. A key goes to the
+ * focus, not to a point, so its point is null.
+ */
+export type ActionTarget = { ok: true; point: Point | null; guard: Guard } | { ok: false; failure: Failure }
 
 /** A navigation the browser has begun in the main frame. Its document replaces the current one when it commits. */
 export type PendingNavigation = { url: string }
 
 export type ActionabilityOptions = {
   world: IsolatedWorld
-  locator: LocatorRecipe
+  /** The element to act on, or undefined for a key sent to the page's keyboard, which only waits out a navigation. */
+  locator: LocatorRecipe | undefined
   intent: ActionIntent
   deadline: Deadline
   /** The navigation the browser is on, if any. While there is one, the page is not looked at. */
@@ -51,7 +55,8 @@ const becauseOf: Record<Check, string> = {
  * Resolves the locator again and again until one element passes every check, then returns where to press.
  * More than one match, a field `fill` cannot use, or an origin it may not type into fails at once; anything else
  * waits for the deadline. While the browser is opening another document in the frame, the page is not looked
- * at: the element is looked for in the document that arrives.
+ * at: the element is looked for in the document that arrives. A key for the page's keyboard has no element, and
+ * is ready once no such navigation is under way.
  *
  * @example const target = await waitUntilActionable({ world, locator, intent, deadline, pendingNavigation })
  */
@@ -72,6 +77,10 @@ async function look({ world, locator, intent, deadline, pendingNavigation }: Act
   if (pending !== undefined) return { kind: 'unready', unready: { status: 'navigating', url: pending.url } }
   let seen: InDocument<Readiness>
   try {
+    if (locator === undefined) {
+      const { value: token, context } = await armKeyboard(world, deadline)
+      return { kind: 'settled', target: { ok: true, point: null, guard: { context, token } } }
+    }
     seen = await prepare(world, locator, intent, deadline)
   } catch (error) {
     // The deadline ran out during a look, so the previous look is the latest answer there is.
@@ -81,7 +90,7 @@ async function look({ world, locator, intent, deadline, pendingNavigation }: Act
   const { value: readiness, context } = seen
   switch (readiness.status) {
     case 'ready':
-      return { kind: 'settled', target: { ok: true, point: { x: readiness.x, y: readiness.y }, guard: { context, token: readiness.token } } }
+      return { kind: 'settled', target: { ok: true, point: readiness.point, guard: { context, token: readiness.token } } }
     case 'ambiguous':
       return { kind: 'settled', target: failed(ambiguous(readiness.count, locator, intent)) }
     case 'unsupported':
@@ -97,10 +106,10 @@ function failed(failure: Failure): ActionTarget {
   return { ok: false, failure }
 }
 
-function ambiguous(count: number, locator: LocatorRecipe, { action }: ActionIntent): Failure {
+function ambiguous(count: number, locator: LocatorRecipe, intent: ActionIntent): Failure {
   return {
     class: 'ambiguous',
-    message: `Could not ${action} ${describeLocator(locator)}: it matches ${count} elements, and a locator must match exactly one. Retest did not ${action} any of them.`,
+    message: `Could not ${describeAction(intent, locator)}: it matches ${count} elements, and a locator must match exactly one. Retest did not ${intent.action} any of them.`,
     details: { count },
   }
 }
@@ -122,13 +131,13 @@ function unsupported(readiness: Extract<Readiness, { status: 'unsupported' }>, l
   }
 }
 
-function unready(last: Unready, locator: LocatorRecipe, { action }: ActionIntent, deadline: Deadline): Failure {
-  const target = describeLocator(locator)
+function unready(last: Unready, locator: LocatorRecipe | undefined, intent: ActionIntent, deadline: Deadline): Failure {
+  const action = describeAction(intent, locator)
   const waitedMs = deadline.budgetMs
   if (last.status === 'missing') {
     return {
       class: 'not_found',
-      message: `Could not ${action} ${target}: no element matched within ${waitedMs} ms.`,
+      message: `Could not ${action}: no element matched within ${waitedMs} ms.`,
       details: { waitedMs },
     }
   }
@@ -136,7 +145,7 @@ function unready(last: Unready, locator: LocatorRecipe, { action }: ActionIntent
     const opening = describeAddress(last.url)
     return {
       class: 'not_actionable',
-      message: `Could not ${action} ${target} within ${waitedMs} ms: the page was still opening ${opening}, and Retest does not ${action} in a document about to be replaced.`,
+      message: `Could not ${action} within ${waitedMs} ms: the page was still opening ${opening}, and Retest does not ${intent.action} in a document about to be replaced.`,
       details: { check: 'navigation', url: opening, waitedMs },
     }
   }
@@ -144,7 +153,7 @@ function unready(last: Unready, locator: LocatorRecipe, { action }: ActionIntent
   const reason = covering === null ? becauseOf[last.check] : `another element, ${covering}, covers its centre`
   return {
     class: 'not_actionable',
-    message: `Could not ${action} ${target} within ${waitedMs} ms: ${reason}.`,
+    message: `Could not ${action} within ${waitedMs} ms: ${reason}.`,
     details: { check: last.check, covering, waitedMs },
   }
 }

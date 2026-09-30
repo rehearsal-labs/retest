@@ -6,6 +6,7 @@ import { formatLine } from '../protocol/location.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { formatInspectCommand } from './commands.ts'
 import {
+  callLocator,
   callName,
   describeFileProblem,
   describeWait,
@@ -22,11 +23,21 @@ import {
   countParts,
   formatDetail,
   formatDuration,
+  messageLines,
   quoteRecorded,
   runNotes,
   titleWithin,
   totalTests,
 } from './format.ts'
+import {
+  describeHostCheck,
+  describeHostCheckWait,
+  hostCheckExpectation,
+  hostCheckHeading,
+  hostCheckMessageRepeats,
+  hostCheckPage,
+  type FailedHostCheck,
+} from './host-checks.ts'
 import { RunRecord } from './run-record.ts'
 import { acrossTargets, runTargets, targetSummaries, variantLabel, type RunTargets } from './targets.ts'
 
@@ -84,8 +95,10 @@ function cardLines(card: FailureCard): string[] {
   const subject = card.test === undefined ? describeFileProblem(card.fileProblem) : titleWithin(card.test.name, card.test.describePath)
   return [
     `${status} ${where} ${subject}${bracketed(card.variant)}`,
-    ...failureLines(card),
+    ...(card.hostCheck === undefined ? failureLines(card) : hostCheckLines(card.hostCheck)),
     ...unshownDetails(card).map(([key, value]) => `  ${key} ${formatDetail(value)}`),
+    ...card.alsoFailedChecks.flatMap(hostCheckLines),
+    ...card.notRunChecks.map(({ check, app }) => `  not run host check ${describeHostCheck(check, app)}`),
     ...card.screenshots.map((path) => `  screenshot ${path}`),
     ...card.evidenceProblems.map((problem) => `  screenshot not saved: ${problem}`),
     ...card.cleanupFailures.flatMap((cleanup) => indent(failureText(cleanup))),
@@ -96,13 +109,24 @@ function failureLines(card: FailureCard): string[] {
   const { failure, call, test } = card
   const failureClass = failure?.class ?? test?.status ?? 'collection_failed'
   if (call === undefined) return indent(failure === undefined ? [failureClass] : failureText(failure))
-  const locator = call.locator === undefined ? '' : ` ${describeLocator(call.locator)}`
+  const recipe = callLocator(call)
+  const locator = recipe === undefined ? '' : ` ${describeLocator(recipe)}`
   const lines = [`  ${failureClass} ${callName(call)}${locator}`]
-  if (failure !== undefined && !messageRepeatsValues(card)) lines.push(...indent(failure.message.split('\n')))
+  if (failure !== undefined && !messageRepeatsValues(card)) lines.push(...indent(messageLines(failure.message)))
   const waited = `waited ${describeWait(call, milliseconds)}`
   const values = recordedValues(call)
   lines.push(values === undefined ? `  ${waited}` : `  expected ${quoteRecorded(values.expected)} received ${quoteRecorded(values.actual)} ${waited}`)
   if (call.type === 'assertion.failed' && call.comparison !== undefined) lines.push(`  compared ${call.comparison}`)
+  return lines
+}
+
+// One line for what the check asked and what the page showed, then its message when it says more, then its looks.
+function hostCheckLines(check: FailedHostCheck): string[] {
+  const { failure, looked } = check
+  const page = looked === undefined ? '' : `, page ${hostCheckPage(check.check, looked.actual)}`
+  const lines = [`  ${failure.class} ${hostCheckHeading(check.check, check.app)} expected ${hostCheckExpectation(check.check)}${page}`]
+  if (!hostCheckMessageRepeats(check)) lines.push(...indent(messageLines(failure.message)))
+  if (looked !== undefined) lines.push(`  waited ${describeHostCheckWait(looked, milliseconds)}`)
   return lines
 }
 
@@ -113,7 +137,7 @@ function notRunLines(test: TestResult, reason: Failure | undefined, targets: Run
 
 // A failure as `class message`, one line per line of its message.
 function failureText(failure: Failure): string[] {
-  return `${failure.class} ${failure.message}`.split('\n')
+  return messageLines(`${failure.class} ${failure.message}`)
 }
 
 function bracketed(label: string | undefined): string {

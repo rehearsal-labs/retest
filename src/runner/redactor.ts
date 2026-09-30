@@ -1,6 +1,7 @@
 import type { CommandResult, Observation } from '../protocol/commands.ts'
 import type { Failure, FailureDetail } from '../protocol/failures.ts'
 import type { Schema } from '../protocol/schema.ts'
+import { hostCheckRecordSchema } from '../protocol/host-check.ts'
 import { isPlainObject, parse } from '../protocol/schema.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
 
@@ -8,9 +9,10 @@ type Scan = { text: string; held: string }
 type Known = { value: string; placeholder: string }
 
 // The text a page or a person can write a secret into: failure messages and details, what an assertion expected
-// and saw, and every address, since a page puts what it was given into its path or query. Identifiers Retest
-// makes itself (ids, names, locators, variants, file paths) are never rewritten.
-const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls'])
+// and saw, what a look observed, every address, since a page puts what it was given into its path or query, and a
+// text host check's text, which a host writes. Identifiers Retest makes itself (ids, names, locators, variants,
+// file paths) are never rewritten.
+const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls'])
 
 /**
  * Replaces every secret value the run has read with `{{name}}` in free text: page text, addresses, failure
@@ -45,7 +47,8 @@ export class Redactor {
 
   /**
    * A copy of an event or a result with its free text redacted, checked again against its schema: every
-   * `message`, `details`, `expected`, `actual` and address, at any depth. Identifiers and structure stay as they are.
+   * `message`, `details`, `expected`, `actual`, `observed`, address and text host check's text, at any depth.
+   * Identifiers and structure stay as they are.
    *
    * @example redactor.redactFields(runResultSchema, result)
    */
@@ -117,7 +120,7 @@ export class Redactor {
     if (typeof value === 'string') return inText ? this.redact(value) : value
     if (Array.isArray(value)) return value.map((item: unknown) => this.#redactFields(item, inText))
     if (!isPlainObject(value)) return value
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.#redactFields(item, inText || freeText.has(key))]))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.#redactFields(item, inText || freeText.has(key) || isHostCheckText(value, key))]))
   }
 
   #redactDetail(detail: FailureDetail): FailureDetail {
@@ -134,6 +137,12 @@ export class Redactor {
       items: items.map((item) => ({ ...item, text: this.redact(item.text) })),
     }
   }
+}
+
+// A host check is recorded in its events, in `run.started` and in the result, and its text may hold a secret by
+// mistake. A locator's `text` is an identifier and stays as it is.
+function isHostCheckText(record: Record<string, unknown>, key: string): boolean {
+  return key === 'text' && record['kind'] === 'text' && parse(hostCheckRecordSchema, record).ok
 }
 
 // The characters each part of a URL percent-encodes, from the URL standard: every one is encoded in a path,

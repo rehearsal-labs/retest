@@ -1,12 +1,15 @@
-import type { BrowserCommand, LaunchOptions, NewPageOptions, OwnedBrowser, OwnedPage } from '../../src/browser/contract.ts'
+import type { BrowserCommand, LaunchOptions, NewPageOptions, OwnedBrowser, OwnedPage, PageReading, TextQuery } from '../../src/browser/contract.ts'
 import type { CommandResult, Observation } from '../../src/protocol/commands.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
+import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { StorageState, StoredCookie } from '../../src/protocol/storage-state.ts'
 import type { LaunchBrowser } from '../../src/runner/run.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { BrowserError } from '../../src/browser/browser-error.ts'
 import { LaunchError } from '../../src/browser/contract.ts'
 import { describeCommand } from '../../src/protocol/commands.ts'
 import { failureSchema } from '../../src/protocol/failures.ts'
+import { pageTextHolds } from '../../src/protocol/host-check.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { observationOf } from './observation.ts'
@@ -44,20 +47,31 @@ export type FakeOptions = {
   captureFails?: boolean
   /** Called with each command as it arrives, before it runs. */
   onCommand?: (command: BrowserCommand) => void
+  /** Each command's answer waits for this, as the answer of a page that is slow to reply, whatever stopped it meanwhile. */
+  holdAnswer?: (command: BrowserCommand) => Promise<void>
+  /**
+   * Called as each `readPage` begins, with the page and how many reads it answered before, so a test can change
+   * what the page shows, lose the browser, or throw as a read that fails.
+   */
+  onRead?: (page: FakePage, earlierReads: number) => void | Promise<void>
 }
 
 type Element = { text: string; visible: boolean }
-type ElementAction = Extract<BrowserCommand, { kind: 'click' | 'tap' | 'fill' }>
+type Press = Extract<BrowserCommand, { kind: 'press' }>
 
 /** What a `fill` typed, and the secret it came from, if it did. */
 export type Typed = { value: string; secret?: string; url: string | undefined }
+
+/** A key a `press` sent, and the element it went to; none for the page's keyboard. */
+export type Pressed = { key: string; testId?: string }
 
 const sessionCookie = 'session'
 
 /**
  * A page holding a small task app: a title field, a save button and the saved task. `sign-in` sets a session
  * cookie and `session` shows whether one is there; `typed-value` shows the last text typed, as a page that echoes
- * its input would. A page that emulates a touch screen taps where it is asked to click, and says so.
+ * its input would. A page that emulates a touch screen taps where it is asked to click, and says so. Enter in
+ * the title field saves the task, as a form would. Its visible text is the save button's and the saved task's.
  */
 export class FakePage implements OwnedPage {
   readonly #browser: FakeBrowser
@@ -75,6 +89,12 @@ export class FakePage implements OwnedPage {
   readonly typed: Typed[] = []
   /** The commands that were stopped before they sent any input. */
   readonly stopped: BrowserCommand[] = []
+  /** Every key a `press` sent, in order. */
+  readonly pressed: Pressed[] = []
+  /** The queries of each `readPage`, in order. */
+  readonly reads: TextQuery[][] = []
+  /** Whether a read finds the frame opening another document. */
+  navigating = false
 
   constructor(browser: FakeBrowser, options: NewPageOptions) {
     this.#browser = browser
@@ -87,10 +107,27 @@ export class FakePage implements OwnedPage {
     return this.options.baseUrl
   }
 
+  /** The browser the page belongs to. */
+  get browser(): FakeBrowser {
+    return this.#browser
+  }
+
+  /** The page's text as `document.body.innerText` reads it: the save button and the saved task while it shows. */
+  get visibleText(): string {
+    return ['Save', ...(this.saved.visible ? [this.saved.text] : [])].join('\n')
+  }
+
   async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> {
     const options = this.#browser.options
     this.#browser.commands.push(command)
     options.onCommand?.(command)
+    const result = await this.#run(command, timeoutMs, signal)
+    await options.holdAnswer?.(command)
+    return result
+  }
+
+  async #run(command: BrowserCommand, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult> {
+    const options = this.#browser.options
     if (signal?.aborted === true) return this.#stop(command, signal)
     if (options.hang === command.kind) {
       if (await this.#waitUnlessStopped(timeoutMs + (options.overrunMs ?? 0), signal)) return this.#stop(command, signal)
@@ -98,6 +135,7 @@ export class FakePage implements OwnedPage {
     }
     if (options.disconnect?.on === command.kind) return this.#lose(command, options.disconnect.stage, timeoutMs)
     if (command.kind === 'goto') return this.#goto(command.url)
+    if (command.kind === 'press') return this.#press(command, timeoutMs, signal)
     const testId = command.locator.by === 'testId' ? command.locator.value : undefined
     const touch = this.options.emulation?.touch === true
     if (testId === undefined || (command.kind === 'tap' && !touch)) {
@@ -105,7 +143,7 @@ export class FakePage implements OwnedPage {
     }
     if (command.kind === 'observe') return { ok: true, kind: 'observe', observation: this.#observe(testId) }
     const action = command.kind === 'fill' ? command : { kind: touch ? 'tap' : 'click', locator: command.locator } as const
-    const missing = await this.#find(action, testId, timeoutMs, signal)
+    const missing = await this.#find(action, action.locator, timeoutMs, signal)
     if (missing !== undefined) return missing
     if (action.kind === 'fill') this.#fill(action)
     else this.#click(testId)
@@ -120,6 +158,14 @@ export class FakePage implements OwnedPage {
   async screenshot(): Promise<Uint8Array> {
     if (this.#browser.options.screenshotFails === true) throw new Error('The page could not be captured.')
     return new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+  }
+
+  async readPage(queries: readonly TextQuery[]): Promise<PageReading> {
+    const earlier = this.reads.push([...queries]) - 1
+    await this.#browser.options.onRead?.(this, earlier)
+    if (!this.#browser.connected) throw new BrowserError({ class: 'session_lost', message: 'The page lost its browser.' })
+    const text = this.visibleText
+    return { url: this.url, navigating: this.navigating, found: queries.map((query) => pageTextHolds(text, query)) }
   }
 
   onNavigation(listener: (url: string) => void): () => void {
@@ -141,6 +187,21 @@ export class FakePage implements OwnedPage {
     this.url = page
     for (const listener of this.#navigation) listener(page)
     return { ok: true, kind: 'goto', url: page }
+  }
+
+  // A key on the page's keyboard goes to whatever has the focus, which the fake does not track.
+  async #press(command: Press, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult> {
+    const { locator, key } = command
+    if (locator === undefined) {
+      this.pressed.push({ key })
+      return { ok: true, kind: 'press' }
+    }
+    if (locator.by !== 'testId') return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${describeCommand(command)}.` } }
+    const missing = await this.#find(command, locator, timeoutMs, signal)
+    if (missing !== undefined) return missing
+    this.pressed.push({ key, testId: locator.value })
+    if (key === 'Enter' && locator.value === 'task-title') this.#click('save-task')
+    return { ok: true, kind: 'press' }
   }
 
   #fill(command: Extract<BrowserCommand, { kind: 'fill' }>): void {
@@ -210,9 +271,9 @@ export class FakePage implements OwnedPage {
   }
 
   // Undefined when exactly one element matches; otherwise the failure an action gets.
-  async #find(action: ElementAction, testId: string, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult | undefined> {
-    const locator = describeLocator(action.locator)
-    const count = this.#elements(testId).length
+  async #find(action: BrowserCommand, recipe: LocatorRecipe, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult | undefined> {
+    const locator = describeLocator(recipe)
+    const count = recipe.by === 'testId' ? this.#elements(recipe.value).length : 0
     if (count > 1) return { ok: false, failure: { class: 'ambiguous', message: `${locator} matched ${count} elements.` } }
     if (count === 1) return undefined
     if (await this.#waitUnlessStopped(timeoutMs, signal)) return this.#stop(action, signal)

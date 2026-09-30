@@ -1,7 +1,9 @@
 import type { Counts } from '../protocol/events.ts'
 import type { BrowserInfo, RunResult, TestResult } from '../protocol/result.ts'
 import type { RunRecord } from './run-record.ts'
+import { withoutCredentials } from '../protocol/url.ts'
 import { variantKey, variantPairs, type Variant } from '../protocol/variant.ts'
+import { printable } from './format.ts'
 
 /**
  * What a report knows about the targets of a run: the browser each app target ran in, by `app=target`, and for
@@ -90,6 +92,18 @@ export function describeBrowser(browser: Pick<BrowserInfo, 'product' | 'version'
   const { target } = browser
   if (target?.emulation === undefined) return name
   return target.device === undefined ? `${name} · emulated` : `${name} as ${target.device} · emulated`
+}
+
+/**
+ * The proxy a target's pages go through, and its bypass rules. A user name or password never shows, even in a
+ * server address that carries one.
+ *
+ * @example describeProxy({ server: 'http://127.0.0.1:8080', bypass: ['<-loopback>'] }) // 'proxy http://127.0.0.1:8080 · bypass <-loopback>'
+ */
+export function describeProxy(proxy: { readonly server: string; readonly bypass?: readonly string[] | undefined }): string {
+  const bypass = proxy.bypass ?? []
+  const rules = bypass.length === 0 ? '' : ` · bypass ${bypass.map(printable).join(', ')}`
+  return `proxy ${printable(withoutCredentials(proxy.server))}${rules}`
 }
 
 /**

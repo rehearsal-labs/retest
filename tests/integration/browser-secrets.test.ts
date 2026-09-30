@@ -233,11 +233,17 @@ test('a fill waiting for a document that never arrives fails when its time runs 
 
 // Chrome holds Input.insertText while a navigation of the frame is pending and delivers it to the document that
 // arrives. A navigation that begins after the page's ready answer, here one the browser starts, would take the
-// text into that document; its own guard is what stops it, since nothing was armed there.
+// text into that document; its own guard is what stops it, since nothing was armed there. The text is let go at
+// that document's load, so its field must have the focus by then: autofocus waits for a rendering update, which
+// comes after load, so the page focuses its field while it is parsed instead.
+const focusedWhileParsed = `<!doctype html><input data-testid="field">${reportsTyping}<script>
+  document.querySelector('[data-testid="field"]').focus()
+</script>`
+
 test('a document that arrives while the text is on its way never receives it, and the fill names that document', async (t) => {
   const sending = Promise.withResolvers<void>()
   const loaded = Promise.withResolvers<void>()
-  const elsewhere = await servePages(t, { '/': autofocused })
+  const elsewhere = await servePages(t, { '/': focusedWhileParsed })
   const site = await servePages(t, { '/': `<!doctype html><input data-testid="field">${reportsTyping}` })
   let arrived = false
   const browser = await launchGated(t, {

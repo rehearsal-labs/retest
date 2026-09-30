@@ -6,6 +6,7 @@ import type { LocatorRecipe } from '../protocol/locator.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { s } from '../protocol/schema.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
+import { shorten } from '../protocol/text.ts'
 import { isGoneContext } from './isolated-world.ts'
 import { originRefusal } from './origin-refusal.ts'
 import { disarmFunction, strayFunction, verdictFunction } from './page-scripts.ts'
@@ -19,6 +20,7 @@ const guardedEvents = [
   'mouseup',
   'click',
   'keydown',
+  'keypress',
   'beforeinput',
   'input',
   'keyup',
@@ -51,18 +53,19 @@ const firstEvents: Record<ActionIntent['action'], GuardedEvent[]> = {
   click: ['pointerdown'],
   tap: ['pointerdown', 'touchstart'],
   fill: ['keydown', 'beforeinput'],
+  press: ['keydown'],
 }
 
-type Press = Exclude<ActionIntent['action'], 'fill'>
+type Pointer = 'click' | 'tap'
 
-// Which part of a press each guarded event belongs to. A tap's own events all go to the element it touched first,
-// and the click it makes afterwards is hit-tested again.
-const pressStages: Record<Press, Partial<Record<GuardedEvent, 'press' | 'release' | 'click'>>> = {
+// Which part of a pointer's input each guarded event belongs to. A tap's own events all go to the element it
+// touched first, and the click it makes afterwards is hit-tested again.
+const pointerStages: Record<Pointer, Partial<Record<GuardedEvent, 'press' | 'release' | 'click'>>> = {
   click: { pointerdown: 'press', mousedown: 'press', pointerup: 'release', mouseup: 'release', click: 'click' },
   tap: { pointerdown: 'press', touchstart: 'press', pointerup: 'release', touchend: 'release', mousedown: 'click', mouseup: 'click', click: 'click' },
 }
 
-const pressWords: Record<Press, { noun: string; done: string; doneAt: string }> = {
+const pointerWords: Record<Pointer, { noun: string; done: string; doneAt: string }> = {
   click: { noun: 'press', done: 'pressed', doneAt: 'pressed at' },
   tap: { noun: 'touch', done: 'touched it', doneAt: 'touched' },
 }
@@ -126,6 +129,7 @@ export async function disarmGuard(world: IsolatedWorld, guard: Guard, deadline: 
  * @example guardFailure({ kind: 'replaced' }, { action: 'click', multiline: false }, { by: 'testId', value: 'save' })
  */
 export function guardFailure(verdict: GuardVerdict, intent: ActionIntent, locator: LocatorRecipe): Failure | undefined {
+  if (intent.action === 'press') return keyFailure(verdict, intent.key, locator)
   const { action } = intent
   const target = describeLocator(locator)
   if (verdict.kind === 'stopped' && action === 'fill') return typingStopped(verdict.origin, intent, locator)
@@ -138,7 +142,7 @@ export function guardFailure(verdict: GuardVerdict, intent: ActionIntent, locato
   }
   const { reached, intercepted, landed, leaving } = verdict
   if (leaving !== null) return originRefusal({ origin: leaving, leaving: true }, intent, locator)
-  if (intercepted !== null) return action === 'fill' ? typingTaken(target, intercepted) : pressTaken(action, target, intercepted)
+  if (intercepted !== null) return action === 'fill' ? typingTaken(target, intercepted) : pointerTaken(action, target, intercepted)
   if (reached.some((event) => firstEvents[action].includes(event))) return undefined
   const there = landed ?? 'no element'
   if (action === 'fill') {
@@ -148,7 +152,7 @@ export function guardFailure(verdict: GuardVerdict, intent: ActionIntent, locato
       details: { focus: landed },
     }
   }
-  const { noun, doneAt } = pressWords[action]
+  const { noun, doneAt } = pointerWords[action]
   return {
     class: 'outcome_unknown',
     message: `Retest ${doneAt} the centre of ${target}, but the ${noun} never reached the element's document, and ${there} is at that point. Retest cannot tell what received the ${action}.`,
@@ -156,11 +160,46 @@ export function guardFailure(verdict: GuardVerdict, intent: ActionIntent, locato
   }
 }
 
-function pressTaken(action: Press, target: string, { event, by }: Interception): Failure {
+/**
+ * The failure for a key, pressed on an element or, with no locator, on the page's keyboard, or undefined when
+ * its keydown reached the element, or the page's document. The rest of the keystroke belongs to the page. A
+ * keydown another element took was stopped before the page heard it. A key that never reached the document, as
+ * when the focus is inside a frame, or whose document was replaced first, may have done anything.
+ *
+ * @example keyFailure({ kind: 'replaced' }, 'Enter', undefined)
+ */
+export function keyFailure(verdict: GuardVerdict, key: string, locator: LocatorRecipe | undefined): Failure | undefined {
+  const target = locator === undefined ? '' : ` on ${describeLocator(locator)}`
+  const pressed = `${shorten(key)}${target}`
+  if (verdict.kind !== 'seen') {
+    return {
+      class: 'outcome_unknown',
+      message: `The page moved to a new document while Retest pressed ${pressed}, so Retest cannot tell whether the key took effect.`,
+      details: { reason: 'the page moved to a new document' },
+    }
+  }
+  const { reached, intercepted, landed } = verdict
+  if (intercepted !== null) {
+    return {
+      class: 'not_actionable',
+      message: `Could not press ${pressed}: the keyboard focus moved to another element, ${intercepted.by}, before the key arrived. Retest stopped the key before the page received it.`,
+      details: { check: 'focused', focus: intercepted.by, event: intercepted.event },
+    }
+  }
+  if (reached.some((event) => firstEvents.press.includes(event))) return undefined
+  const destination = locator === undefined ? "the page's document" : "the element's document"
+  return {
+    class: 'outcome_unknown',
+    message: `Retest pressed ${pressed}, but the key never reached ${destination}, and the keyboard focus is on ${landed ?? 'no element'}. Retest cannot tell what received the key.`,
+    details: { focus: landed },
+  }
+}
+
+function pointerTaken(action: Pointer, target: string, { event, by }: Interception): Failure {
   const details = { check: 'hit-target', interceptedBy: by, event }
   const failure = (reason: string): Failure => ({ class: 'not_actionable', message: `Could not ${action} ${target}: ${reason}`, details })
-  const { noun, done } = pressWords[action]
-  switch (pressStages[action][event]) {
+  const { noun, done } = pointerWords[action]
+  switch (pointerStages[action][event]) {
     case 'press':
       return failure(`another element, ${by}, was on top of it when Retest ${done}. Retest stopped the ${action} before the page received it.`)
     case 'release':

@@ -3,7 +3,7 @@ import type { GuardVerdict } from '../../src/browser/input-guard.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
-import { guardFailure, guardInput } from '../../src/browser/input-guard.ts'
+import { guardFailure, guardInput, keyFailure } from '../../src/browser/input-guard.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { disarmFunction, strayFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
@@ -223,4 +223,50 @@ test('a disarm the page does not answer fails the action with that timeout', asy
   const { session } = scriptedSession(() => new Promise(() => {}))
   const guarding = guardInput(new IsolatedWorld(session, () => 'F1'), guard, new Deadline(50), async () => {})
   await assert.rejects(guarding, CdpTimeoutError)
+})
+
+const search = { by: 'label', text: 'Search' } as const
+const press: ActionIntent = { action: 'press', key: 'Enter', multiline: false }
+
+test('a key whose keydown reached the element succeeds, whatever the rest of the keystroke did, and even when the page cancelled it', () => {
+  assert.equal(keyFailure(seen({ reached: ['keydown'], landed: '<input id="next">' }), 'Enter', search), undefined)
+  assert.equal(keyFailure(seen({ reached: ['keydown'] }), 'Tab', undefined), undefined)
+  assert.equal(guardFailure(seen({ reached: ['keydown'] }), press, search), undefined, 'guardFailure hands a press to keyFailure')
+})
+
+test('a keydown another element took names it, and says the key was stopped before the page received it', () => {
+  const failure = keyFailure(seen({ intercepted: { event: 'keydown', by: '<div data-testid="dialog">' } }), 'Enter', search)
+  assert.deepEqual(failure, {
+    class: 'not_actionable',
+    message: `Could not press Enter on getByLabel('Search'): the keyboard focus moved to another element, <div data-testid="dialog">, before the key arrived. Retest stopped the key before the page received it.`,
+    details: { check: 'focused', focus: '<div data-testid="dialog">', event: 'keydown' },
+  })
+  assert.deepEqual(guardFailure(seen({ intercepted: { event: 'keydown', by: '<div>' } }), press, search)?.class, 'not_actionable')
+})
+
+test('a key that never reached the document leaves the outcome unknown and names where the focus is', () => {
+  assert.deepEqual(keyFailure(seen({ landed: '<iframe data-testid="frame">' }), 'a', undefined), {
+    class: 'outcome_unknown',
+    message: `Retest pressed a, but the key never reached the page's document, and the keyboard focus is on <iframe data-testid="frame">. Retest cannot tell what received the key.`,
+    details: { focus: '<iframe data-testid="frame">' },
+  })
+  assert.deepEqual(keyFailure(seen({}), 'Shift+Tab', search)?.message, `Retest pressed Shift+Tab on getByLabel('Search'), but the key never reached the element's document, and the keyboard focus is on no element. Retest cannot tell what received the key.`)
+})
+
+test('a key whose document was replaced first leaves the outcome unknown, for a locator and for the keyboard', () => {
+  const stopped = { kind: 'stopped', event: 'keydown', by: '<input>', origin: 'https://evil.example' } as const
+  for (const verdict of [{ kind: 'replaced' } as const, stopped]) {
+    assert.deepEqual(keyFailure(verdict, 'Enter', search), {
+      class: 'outcome_unknown',
+      message: `The page moved to a new document while Retest pressed Enter on getByLabel('Search'), so Retest cannot tell whether the key took effect.`,
+      details: { reason: 'the page moved to a new document' },
+    })
+    assert.match(keyFailure(verdict, 'Enter', undefined)?.message ?? '', /^The page moved to a new document while Retest pressed Enter, so/)
+  }
+})
+
+test('a long key is cut short in a message', () => {
+  const key = 'k'.repeat(300)
+  const message = keyFailure({ kind: 'replaced' }, key, undefined)?.message ?? ''
+  assert.ok(message.length < 300 + 100 && message.includes('k'.repeat(200) + '…'), message)
 })

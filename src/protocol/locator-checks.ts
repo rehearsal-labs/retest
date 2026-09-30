@@ -1,9 +1,59 @@
-import type { Observation } from '../protocol/commands.ts'
-import type { LocatorCheck } from './poll-locator.ts'
-import { observedItemLimit } from '../protocol/commands.ts'
-import { normalizeText } from '../protocol/text.ts'
-import { quoteText } from './format.ts'
-import { textComparison } from './text.ts'
+import type { Observation } from './commands.ts'
+import { observedItemLimit } from './commands.ts'
+import { s, type Schema } from './schema.ts'
+import { normalizeText, quoteText, textComparison } from './text.ts'
+
+/** What a locator assertion looks for in each observation. */
+export type LocatorCheck = {
+  readonly matcher: LocatorCheckRecord['matcher']
+  readonly expected: string
+  readonly comparison?: string
+  /** A check about the one element that matches: none is `not_found`, and several `ambiguous`. */
+  readonly single: boolean
+  passes(observation: Observation): boolean
+  actual(observation: Observation): string | null
+  /** Why the elements that matched did not pass, as a sentence. */
+  mismatch(observation: Observation, locator: string): string
+}
+
+/**
+ * A locator matcher and its arguments, whole. The test process sends it with each locator assertion, and the
+ * parent rebuilds the check from it to judge the observation the assertion names.
+ */
+export type LocatorCheckRecord =
+  | { matcher: 'toBeVisible' | 'toBeHidden' }
+  | { matcher: 'toHaveText'; text: string }
+  | { matcher: 'toHaveText'; texts: string[] }
+  | { matcher: 'toHaveCount'; count: number }
+  | { matcher: 'toHaveValue'; value: string }
+
+export const locatorCheckRecordSchema: Schema<LocatorCheckRecord> = s.union([
+  s.object({ matcher: s.enum(['toBeVisible', 'toBeHidden']) }),
+  s.object({ matcher: s.literal('toHaveText'), text: s.string() }),
+  s.object({ matcher: s.literal('toHaveText'), texts: s.array(s.string()) }),
+  s.object({ matcher: s.literal('toHaveCount'), count: s.number({ integer: true, min: 0 }) }),
+  s.object({ matcher: s.literal('toHaveValue'), value: s.string() }),
+])
+
+/**
+ * The rule the test process polls with and the parent judges with.
+ *
+ * @example locatorCheck({ matcher: 'toHaveText', text: 'Saved' }).passes(observation)
+ */
+export function locatorCheck(record: LocatorCheckRecord): LocatorCheck {
+  switch (record.matcher) {
+    case 'toBeVisible':
+      return visibleCheck()
+    case 'toBeHidden':
+      return hiddenCheck()
+    case 'toHaveText':
+      return 'texts' in record ? textsCheck(record.texts) : textCheck(record.text)
+    case 'toHaveCount':
+      return countCheck(record.count)
+    case 'toHaveValue':
+      return valueCheck(record.value)
+  }
+}
 
 const listComparison = `every match in order, each by ${textComparison}`
 

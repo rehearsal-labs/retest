@@ -9,6 +9,11 @@ import { scriptedSession } from './browser-fixtures.ts'
 
 // A page where every look at the element finds `readiness`, and where role and label find one element.
 function world(readiness: Readiness, sent: unknown[] = []): IsolatedWorld {
+  return answering(readiness, sent)
+}
+
+// A page whose every call answers `value`.
+function answering(value: unknown, sent: unknown[]): IsolatedWorld {
   const { session } = scriptedSession((method, params) => {
     sent.push(params)
     switch (method) {
@@ -19,7 +24,7 @@ function world(readiness: Readiness, sent: unknown[] = []): IsolatedWorld {
       case 'Accessibility.queryAXTree':
         return Promise.resolve({ nodes: [] })
       default:
-        return Promise.resolve({ result: { value: readiness } })
+        return Promise.resolve({ result: { value } })
     }
   })
   return new IsolatedWorld(session, () => 'F1')
@@ -104,7 +109,7 @@ test('an action without origins sends null in their place', async () => {
   assert.deepEqual(call['arguments'][2], { value: null })
 })
 
-const ready: Readiness = { status: 'ready', x: 10, y: 20, token: 1 }
+const ready: Readiness = { status: 'ready', point: { x: 10, y: 20 }, token: 1 }
 const calls = (sent: unknown[]) => sent.filter((params) => isObject(params) && 'functionDeclaration' in params).length
 
 test('while the browser is opening another document, the page is not looked at, and the look resumes in the document that arrives', async () => {
@@ -140,3 +145,56 @@ async function timed<T>(work: Promise<T>): Promise<{ value: T; ms: number }> {
   const start = performance.now()
   return { value: await work, ms: performance.now() - start }
 }
+
+test("a key for the page's keyboard looks at no element: it waits out a navigation, then arms the guard for the document", async () => {
+  const sent: unknown[] = []
+  let polls = 0
+  const pendingNavigation = () => (++polls <= 2 ? { url: 'http://127.0.0.1:4173/next' } : undefined)
+  const keyboard = answering(3, sent)
+  const intent: ActionIntent = { action: 'press', key: 'Enter', multiline: false }
+  const target = await waitUntilActionable({ world: keyboard, locator: undefined, intent, deadline: new Deadline(1000), pendingNavigation })
+  assert.deepEqual(target, { ok: true, point: null, guard: { context: 7, token: 3 } })
+  const [call] = sent.filter((params) => isObject(params) && 'functionDeclaration' in params)
+  assert.ok(isObject(call))
+  assert.match(String(call['functionDeclaration']), /^function armKeyboard\(\)/)
+  assert.deepEqual(call['arguments'], [])
+})
+
+test("a key for the page's keyboard whose page never stops navigating fails naming the key and the address", async () => {
+  const pendingNavigation = () => ({ url: 'http://127.0.0.1:4173/next?code=1234' })
+  const intent: ActionIntent = { action: 'press', key: 'Enter', multiline: false }
+  const target = await waitUntilActionable({ world: world(ready), locator: undefined, intent, deadline: new Deadline(100), pendingNavigation })
+  assert.deepEqual(target, {
+    ok: false,
+    failure: {
+      class: 'not_actionable',
+      message: 'Could not press Enter within 100 ms: the page was still opening http://127.0.0.1:4173/next, and Retest does not press in a document about to be replaced.',
+      details: { check: 'navigation', url: 'http://127.0.0.1:4173/next', waitedMs: 100 },
+    },
+  })
+})
+
+test('a press on an element sends its checks to the page and names the key in every failure', async () => {
+  const sent: unknown[] = []
+  const intent: ActionIntent = { action: 'press', key: 'Shift+Tab', multiline: false }
+  const ambiguous = await failureFor({ status: 'ambiguous', count: 3 }, password, intent, 1000, sent)
+  assert.equal(
+    ambiguous.message,
+    "Could not press Shift+Tab on getByLabel('Password'): it matches 3 elements, and a locator must match exactly one. Retest did not press any of them.",
+  )
+  const [call] = sent.filter((params) => isObject(params) && 'functionDeclaration' in params)
+  assert.ok(isObject(call) && Array.isArray(call['arguments']))
+  assert.deepEqual(call['arguments'].slice(0, 3), [{ value: 'press' }, { value: false }, { value: null }])
+  const unfocused = await failureFor({ status: 'blocked', check: 'focused', detail: null }, byTestId, intent, 50)
+  assert.deepEqual(unfocused, {
+    class: 'not_actionable',
+    message: "Could not press Shift+Tab on getByTestId('password') within 50 ms: it did not keep the keyboard focus.",
+    details: { check: 'focused', covering: null, waitedMs: 50 },
+  })
+})
+
+test('an element ready for a key is ready with no point, since a key goes to the focus', async () => {
+  const intent: ActionIntent = { action: 'press', key: 'a', multiline: false }
+  const target = await waitUntilActionable({ world: world({ status: 'ready', point: null, token: 4 }), locator: byTestId, intent, deadline: new Deadline(1000), pendingNavigation: settled })
+  assert.deepEqual(target, { ok: true, point: null, guard: { context: 7, token: 4 } })
+})

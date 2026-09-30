@@ -1,13 +1,17 @@
 import type { TestStatus } from '../protocol/events.ts'
 import type { Failure, FailureDetail, SourceLocation, TruncatedText } from '../protocol/failures.ts'
+import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { FileResult, RunResult, TestResult } from '../protocol/result.ts'
 import type { Variant } from '../protocol/variant.ts'
+import type { FailedHostCheck, NotRunHostCheck } from './host-checks.ts'
 import type { EventOfType, RunRecord, TestEvent } from './run-record.ts'
 import type { RunTargets } from './targets.ts'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { formatRerunCommand } from './commands.ts'
-import { plural, testTitle } from './format.ts'
+import { describeCommand } from '../protocol/commands.ts'
+import { canRerun, formatRerunCommand } from './commands.ts'
+import { plural, printable, testTitle } from './format.ts'
+import { failedHostChecks, notRunHostChecks } from './host-checks.ts'
 import { namingTargets, variantLabel } from './targets.ts'
 
 /** The action or assertion event that shows how a test failed. */
@@ -37,6 +41,12 @@ export type FailureCard = CardSubject & {
   /** The test's failure, or its first cleanup failure when that is all it has. */
   failure?: Failure
   call?: FailingCall
+  /** The host check the failure names, when no action or assertion does. */
+  hostCheck?: FailedHostCheck
+  /** The test's other failed host checks, in the order they ran. */
+  alsoFailedChecks: FailedHostCheck[]
+  /** Host checks that never ran, because the body failed or the test stopped before them. */
+  notRunChecks: NotRunHostCheck[]
   /** Where the code frame points: the failing call, else the failure, else the test. */
   location?: SourceLocation
   /** Paths inside the run folder, joined to the run folder as it was given. */
@@ -108,13 +118,30 @@ export function notRunReason(result: RunResult, test: TestResult): Failure | und
 
 /**
  * The failure's details that the failing call's own fields do not already show with the same value:
- * the values compared, the comparison, the looks taken and the limit.
+ * the values compared, the comparison, the looks taken and the limit. For a host check, the looks, the limit,
+ * and the other checks that failed, which the card shows each on its own.
  *
  * @example unshownDetails(card) // [['check', 'hit-target'], ['covering', 'div.overlay']]
  */
 export function unshownDetails(card: FailureCard): [string, FailureDetail][] {
-  const shown = shownByCall(card.call)
-  return Object.entries(card.failure?.details ?? {}).filter(([key, value]) => !isDeepStrictEqual(shown.get(key), value))
+  const details = card.failure?.details ?? {}
+  const shown = card.hostCheck === undefined ? shownByCall(card.call) : shownByHostChecks(card.hostCheck, card.alsoFailedChecks, details)
+  return Object.entries(details).filter(([key, value]) => !isDeepStrictEqual(shown.get(key), value))
+}
+
+function shownByHostChecks(
+  lead: FailedHostCheck,
+  others: readonly FailedHostCheck[],
+  details: Readonly<Record<string, FailureDetail>>,
+): ReadonlyMap<string, FailureDetail> {
+  const shown = new Map<string, FailureDetail>()
+  // The block's Expected and Page lines come from the same check the runner wrote these two from.
+  const { expected, received } = details
+  if (expected !== undefined) shown.set('expected', expected)
+  if (received !== undefined) shown.set('received', received)
+  if (lead.looked !== undefined) shown.set('attempts', lead.looked.attempts).set('timeoutMs', lead.looked.timeoutMs)
+  if (others.length > 0) shown.set('also', others.map(({ failure }) => `${failure.class}: ${failure.message}`).join('\n'))
+  return shown
 }
 
 function shownByCall(call: FailingCall | undefined): ReadonlyMap<string, FailureDetail> {
@@ -136,7 +163,9 @@ export function testCard(test: TestResult, options: CardOptions): FailureCard {
   const record = options.record.test(test.testId, test.variantKey)
   const events = record?.events ?? []
   const call = findFailingCall(events, test.failure)
-  const run = options.record.started
+  const failedChecks = failedHostChecks(events, test)
+  const hostCheck = call === undefined ? failedChecks.find((check) => sameFailure(check.failure, test.failure)) : undefined
+  const run = rerunnable(options.record)
   // A test whose only failures came in cleanup leads with the first of them.
   const [failure, ...cleanupFailures] = [
     ...(test.failure === undefined ? [] : [test.failure]),
@@ -159,6 +188,9 @@ export function testCard(test: TestResult, options: CardOptions): FailureCard {
     ...(variant === undefined ? {} : { variant }),
     ...(failure === undefined ? {} : { failure }),
     ...(call === undefined ? {} : { call }),
+    ...(hostCheck === undefined ? {} : { hostCheck }),
+    alsoFailedChecks: failedChecks.filter((check) => check !== hostCheck),
+    notRunChecks: notRunHostChecks(test),
     location: call?.location ?? failure?.location ?? test.location,
     screenshots: evidencePaths(events, test).map((path) => join(options.runFolder, path)),
     evidenceProblems: events.flatMap((event) => (event.type === 'evidence.failed' ? [event.message] : [])),
@@ -168,7 +200,7 @@ export function testCard(test: TestResult, options: CardOptions): FailureCard {
 }
 
 function fileCard(file: FileResult, problem: FileProblem, options: CardOptions): FailureCard {
-  const run = options.record.started
+  const run = rerunnable(options.record)
   const location = file.failure?.location
   return {
     title: file.file,
@@ -176,11 +208,20 @@ function fileCard(file: FileResult, problem: FileProblem, options: CardOptions):
     fileProblem: problem,
     ...(file.failure === undefined ? {} : { failure: file.failure }),
     ...(location === undefined ? {} : { location }),
+    alsoFailedChecks: [],
+    notRunChecks: [],
     screenshots: [],
     evidenceProblems: [],
     cleanupFailures: [],
     ...(run === undefined ? {} : { rerun: formatRerunCommand(run, { file: file.file }) }),
   }
+}
+
+// The start of a run the command line can run again, which a card's rerun command repeats; otherwise the card
+// points to inspect alone.
+function rerunnable(record: RunRecord): EventOfType<'run.started'> | undefined {
+  const run = record.started
+  return run !== undefined && canRerun(run) ? run : undefined
 }
 
 // The evidence events say what was captured; a folder without events still has the result's list.
@@ -194,7 +235,11 @@ function evidencePaths(events: TestEvent[], test: TestResult): string[] {
 function findFailingCall(events: TestEvent[], failure: Failure | undefined): FailingCall | undefined {
   const calls = events.filter(isFailingCall)
   if (failure === undefined) return calls.at(-1)
-  return calls.findLast((call) => call.failure.class === failure.class && call.failure.message === failure.message)
+  return calls.findLast((call) => sameFailure(call.failure, failure))
+}
+
+function sameFailure(found: Failure, failure: Failure | undefined): boolean {
+  return found.class === failure?.class && found.message === failure.message
 }
 
 function isFailingCall(event: TestEvent): event is FailingCall {
@@ -217,9 +262,27 @@ export function messageRepeatsValues(card: FailureCard): boolean {
   return card.failure?.class === 'check_failed' && recordedValues(card.call) !== undefined
 }
 
-/** The matcher or command that failed. */
+/** The matcher or command that failed. A press is written as the test wrote it, with its key. */
 export function callName(call: FailingCall): string {
-  return call.type === 'assertion.failed' ? call.matcher : call.command
+  return call.type === 'assertion.failed' ? call.matcher : (describePress(call) ?? call.command)
+}
+
+/** The locator the failing call used, unless its name already says it. */
+export function callLocator(call: FailingCall): LocatorRecipe | undefined {
+  return call.type === 'action.failed' && describePress(call) !== undefined ? undefined : call.locator
+}
+
+type ActionEvent = EventOfType<'action.completed'> | EventOfType<'action.failed'>
+
+/**
+ * A press as the test wrote it, with its key. Undefined for any other action.
+ *
+ * @example describePress(event) // "getByLabel('Search').press('Enter')"
+ */
+export function describePress(event: ActionEvent): string | undefined {
+  const { key, locator } = event
+  if (event.command !== 'press' || key === undefined) return undefined
+  return printable(describeCommand(locator === undefined ? { kind: 'press', key } : { kind: 'press', locator, key }))
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   type TestStatus,
 } from './events.ts'
 import { failureSchema, sourceLocationSchema, type Failure, type SourceLocation } from './failures.ts'
+import { hostCheckResultSchema, type HostCheckResult } from './host-check.ts'
 import { s, type Schema } from './schema.ts'
 import { variantSchema, type Variant } from './variant.ts'
 
@@ -19,7 +20,8 @@ export type Evidence = { kind: 'screenshot'; path: string; app?: string }
 
 /**
  * One attempt at a test. A test that runs once per target has one result per variant, so a result is unique by
- * `testId` and `variantKey`. `setup` marks a `test.setup`.
+ * `testId` and `variantKey`. `setup` marks a `test.setup`. `hostChecks` lists every host check the test had, in
+ * order, whatever happened to it.
  */
 export type TestResult = {
   testId: string
@@ -36,6 +38,7 @@ export type TestResult = {
   assertionCount: number
   failure?: Failure
   cleanupFailures?: Failure[]
+  hostChecks?: HostCheckResult[]
   evidence: Evidence[]
 }
 
@@ -84,6 +87,7 @@ const testResultSchema = s.object({
   assertionCount: count,
   failure: s.optional(failureSchema),
   cleanupFailures: s.optional(s.array(failureSchema)),
+  hostChecks: s.optional(s.array(hostCheckResultSchema)),
   evidence: s.array(s.object({ kind: s.literal('screenshot'), path: s.string(), app: s.optional(s.string()) })),
 })
 

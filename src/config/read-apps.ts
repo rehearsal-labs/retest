@@ -1,6 +1,6 @@
 import type { Infer, Path } from '../protocol/schema.ts'
 import type { DeviceName } from './devices.ts'
-import type { LoadedApp, LoadedEmulation, LoadedStart, LoadedTarget } from './loaded.ts'
+import type { LoadedApp, LoadedEmulation, LoadedProxy, LoadedStart, LoadedTarget } from './loaded.ts'
 import type { Problems } from './problems.ts'
 import type { CustomEmulation } from './types.ts'
 import { resolve } from 'node:path'
@@ -20,10 +20,15 @@ const customEmulationSchema = s.object({
   isMobile: s.optional(s.boolean()),
   userAgent: s.optional(s.string()),
 })
+// A proxy written as its address alone may hold a password, which a schema issue would quote, so the schema
+// takes a string and `loadProxy` refuses it.
+const proxySchema = s.union([s.object({ server: s.string(), bypass: s.optional(s.array(s.string())) }), s.string()])
 const targetSettings = {
   headless: s.optional(s.boolean()),
   emulate: s.optional(s.union([s.enum(deviceNames), customEmulationSchema])),
+  proxy: s.optional(proxySchema),
 }
+const proxySchemes: readonly string[] = ['http:', 'https:', 'socks4:', 'socks5:']
 const channel = s.optional(s.enum(channels))
 const startSchema = s.object({
   command: s.string(),
@@ -47,6 +52,7 @@ const standaloneTargetSchema = s.discriminatedUnion('browser', [
 
 type ParsedTarget = Infer<typeof targetSchema>
 type ParsedStart = Infer<typeof startSchema>
+type ParsedProxy = Infer<typeof proxySchema>
 
 /**
  * Reads `apps`: each entry with `targets` is an app, and any other is a target that stands for an app of its
@@ -121,7 +127,8 @@ function readTargetShape(entry: unknown, path: Path, problems: Problems): Parsed
 
 function loadTarget(name: string, target: ParsedTarget, path: Path, { problems, folder }: ReadContext): LoadedTarget {
   const emulate = target.emulate === undefined ? {} : { emulate: loadEmulation(target.emulate, [...path, 'emulate'], problems) }
-  const base = { name, headless: target.headless ?? true, ...emulate }
+  const proxy = target.proxy === undefined ? undefined : loadProxy(target.proxy, [...path, 'proxy'], problems)
+  const base = { name, headless: target.headless ?? true, ...emulate, ...(proxy === undefined ? {} : { proxy }) }
   if (target.browser !== 'chromium') return { ...base, browser: target.browser, channel: target.channel ?? 'stable' }
   if (target.executablePath === undefined) return { ...base, browser: 'chromium' }
   problems.checkFilled([...path, 'executablePath'], target.executablePath, 'a path')
@@ -135,6 +142,40 @@ function loadEmulation(emulate: DeviceName | CustomEmulation, path: Path, proble
   if (userAgent !== undefined) problems.checkFilled([...path, 'userAgent'], userAgent, 'a user agent')
   const agent = userAgent === undefined ? {} : { userAgent }
   return { viewport: { width: viewport.width, height: viewport.height }, deviceScaleFactor, touch, isMobile: isMobile ?? false, ...agent }
+}
+
+// A proxy address may hold a password, so no message quotes it.
+function loadProxy(proxy: ParsedProxy, path: Path, problems: Problems): LoadedProxy | undefined {
+  if (typeof proxy === 'string') {
+    problems.add(path, "expected an object such as { server: 'http://127.0.0.1:8080' }, received a string")
+    return undefined
+  }
+  const server = proxyServer(proxy.server, [...path, 'server'], problems)
+  const bypass = proxy.bypass ?? []
+  for (const [index, rule] of bypass.entries()) {
+    const problem = bypassProblem(rule)
+    if (problem !== undefined) problems.add([...path, 'bypass', index], problem)
+  }
+  return server === undefined ? undefined : { server, bypass }
+}
+
+function proxyServer(text: string, path: Path, problems: Problems): string | undefined {
+  const url = URL.parse(text)
+  if (url !== null && (url.username !== '' || url.password !== '')) {
+    problems.add(path, 'holds a user name or password, and Retest does not sign in to a proxy. Give the address alone')
+    return undefined
+  }
+  const bare = url !== null && (url.pathname === '' || url.pathname === '/') && url.search === '' && url.hash === ''
+  if (url !== null && bare && url.hostname !== '' && proxySchemes.includes(url.protocol)) return `${url.protocol}//${url.host}`
+  problems.add(path, 'expected a proxy address such as http://127.0.0.1:8080: the scheme http, https, socks4 or socks5, and a host')
+  return undefined
+}
+
+// Chrome takes the rules as one list joined with ";".
+function bypassProblem(rule: string): string | undefined {
+  if (rule.includes(';')) return `expected one rule, received ${describeValue(rule)}. List each rule on its own`
+  if (rule.trim() === '') return `expected a rule such as localhost or *.internal, received ${describeValue(rule)}`
+  return undefined
 }
 
 type LoadedSettings = Pick<LoadedApp, 'baseUrl' | 'start'>

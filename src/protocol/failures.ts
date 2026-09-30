@@ -2,6 +2,7 @@ import { s, type Schema } from './schema.ts'
 
 const failureClasses = [
   'check_failed',
+  'host_check_failed',
   'not_found',
   'ambiguous',
   'not_actionable',

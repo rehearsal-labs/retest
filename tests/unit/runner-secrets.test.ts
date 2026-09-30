@@ -1,4 +1,4 @@
-import type { LoadedSecret } from '../../src/config/loaded.ts'
+import type { LoadedConfig, LoadedSecret } from '../../src/config/loaded.ts'
 import type { ResolvedSecret } from '../../src/runner/contract.ts'
 import type { FillContext, SecretFill } from '../../src/runner/secrets.ts'
 import assert from 'node:assert/strict'
@@ -11,13 +11,14 @@ const declared = new Map<string, LoadedSecret>([
   ['token', { source: { env: 'TEST_TOKEN' }, origins: [] }],
   ['code', { source: { read: async () => 'unused' }, origins: [] }],
 ])
+const config: LoadedConfig = { file: '/work/retest.config.ts', apps: new Map(), runs: [], secrets: declared, timeouts: {} }
 
 const fill = (secret: string): SecretFill => ({ kind: 'fill', locator: { by: 'testId', value: 'password' }, value: { secret } })
 const on = (pageUrl: string | undefined): FillContext => ({ pageUrl, appOrigins: ['http://127.0.0.1:4173'], timeoutMs: 500 })
 
 describe('resolveSecrets', () => {
   test('reads each env source once and keeps each function source to call on use', () => {
-    const resolved = resolveSecrets(declared, { TEST_PASSWORD: 'hunter2', TEST_TOKEN: 'abcd' })
+    const resolved = resolveSecrets(config, { TEST_PASSWORD: 'hunter2', TEST_TOKEN: 'abcd' })
     assert.ok(resolved.ok)
     assert.deepEqual(resolved.secrets.get('password'), { value: 'hunter2' })
     assert.deepEqual(resolved.secrets.get('token'), { value: 'abcd' })
@@ -26,7 +27,7 @@ describe('resolveSecrets', () => {
   })
 
   test('a variable that is missing or empty is a setup failure naming every such secret', () => {
-    assert.deepEqual(resolveSecrets(declared, { TEST_TOKEN: '' }), {
+    assert.deepEqual(resolveSecrets(config, { TEST_TOKEN: '' }), {
       ok: false,
       failure: {
         class: 'setup_failed',
@@ -37,7 +38,7 @@ describe('resolveSecrets', () => {
   })
 
   test('a value shorter than four characters is a setup failure that never quotes it', () => {
-    const resolved = resolveSecrets(declared, { TEST_PASSWORD: 'x7z', TEST_TOKEN: 'long enough' })
+    const resolved = resolveSecrets(config, { TEST_PASSWORD: 'x7z', TEST_TOKEN: 'long enough' })
     assert.deepEqual(resolved, {
       ok: false,
       failure: {
@@ -46,7 +47,7 @@ describe('resolveSecrets', () => {
       },
     })
     assert.ok(!resolved.ok && !resolved.failure.message.includes('x7z'))
-    assert.equal(resolveSecrets(declared, { TEST_PASSWORD: 'abcd', TEST_TOKEN: 'long enough' }).ok, true)
+    assert.equal(resolveSecrets(config, { TEST_PASSWORD: 'abcd', TEST_TOKEN: 'long enough' }).ok, true)
   })
 
   test('values given ready are held to the same length', () => {

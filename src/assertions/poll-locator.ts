@@ -1,31 +1,21 @@
 import type { TestRun } from '../api/test-run.ts'
 import type { Observation } from '../protocol/commands.ts'
 import type { Failure, SourceLocation, TruncatedText } from '../protocol/failures.ts'
+import type { LocatorCheck, LocatorCheckRecord } from '../protocol/locator-checks.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
 import { failure, truncateText, withLocation } from '../protocol/failures.ts'
+import { locatorCheck } from '../protocol/locator-checks.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { reportAssertion } from './report.ts'
-
-/** What a locator assertion looks for in each observation. */
-export type LocatorCheck = {
-  readonly matcher: 'toBeVisible' | 'toBeHidden' | 'toHaveText' | 'toHaveCount' | 'toHaveValue'
-  readonly expected: string
-  readonly comparison?: string
-  /** A check about the one element that matches: none is `not_found`, and several `ambiguous`. */
-  readonly single: boolean
-  passes(observation: Observation): boolean
-  actual(observation: Observation): string | null
-  /** Why the elements that matched did not pass, as a sentence. */
-  mismatch(observation: Observation, locator: string): string
-}
 
 export type PollOptions = {
   run: TestRun
   stepId: string | undefined
   app: string
   recipe: LocatorRecipe
-  check: LocatorCheck
+  /** The matcher and its arguments. Each look is judged by the check `locatorCheck` builds from it, as the parent judges. */
+  record: LocatorCheckRecord
   location: SourceLocation | undefined
   /** From `expect.soft`: a check that does not pass is recorded, and the test goes on. */
   soft: boolean
@@ -41,16 +31,20 @@ export function pollDelay(attempt: number): number {
 
 /**
  * Looks at an app's page until the check passes or the assertion's time runs out. It only ever reads the
- * page: it never repeats the action that came before it. The last look happens at the deadline.
+ * page: it never repeats the action that came before it. The last look happens at the deadline. The event names
+ * the look its `actual` came from, by the id the parent served it with, and carries the check whole, so the
+ * parent can judge that look again.
  */
 export async function pollLocator(options: PollOptions): Promise<void> {
-  const { run, app, recipe, check, location } = options
+  const { run, app, recipe, record, location } = options
+  const check = locatorCheck(record)
   const timeoutMs = run.assertionBudget()
   const { now, sleep } = run.time
   const startedAt = now()
   const deadline = new Deadline(timeoutMs, { startedAt, clock: now })
   let attempts = 0
   let last: Observation | undefined
+  let lastId: string | undefined
   let stopped: Failure | undefined
   for (;;) {
     const delay = smallestBudget(pollDelay(attempts), deadline.remainingMs)
@@ -59,6 +53,7 @@ export async function pollLocator(options: PollOptions): Promise<void> {
     attempts++
     if (result.ok && result.kind === 'observe') {
       last = result.observation
+      lastId = result.observationId
       if (check.passes(last)) break
     } else if (!result.ok && !(result.failure.class === 'timeout' && deadline.expired && last !== undefined)) {
       // A look that fails for any reason other than reaching this assertion's own deadline ends it.
@@ -82,6 +77,8 @@ export async function pollLocator(options: PollOptions): Promise<void> {
     timeoutMs,
     durationMs: elapsedMs(startedAt, now),
     ...(location === undefined ? {} : { location }),
+    ...(lastId === undefined ? {} : { observationId: lastId }),
+    check: record,
   }
   if (passed) return reportAssertion(run, fields, undefined, false)
   // Only the check's own verdict is softened; a page that could not be read stops the test as usual.

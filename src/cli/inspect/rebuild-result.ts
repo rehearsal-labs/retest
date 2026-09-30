@@ -1,7 +1,8 @@
 import type { RetestEvent } from '../../protocol/events.ts'
 import type { Failure } from '../../protocol/failures.ts'
+import type { HostCheckResult } from '../../protocol/host-check.ts'
 import type { BrowserInfo, FileResult, RunResult, TestResult } from '../../protocol/result.ts'
-import type { EventOfType } from '../../reporters/run-record.ts'
+import type { EventOfType, TestEvent } from '../../reporters/run-record.ts'
 import { failure, withAlso } from '../../protocol/failures.ts'
 import { eventsFile, resultFile } from '../../protocol/run-folder.ts'
 import { recordEvents, type FileRecord, type TestRecord } from '../../reporters/run-record.ts'
@@ -11,9 +12,10 @@ import { CliError } from '../errors.ts'
 /**
  * The result of a run that ended before writing `result.json`, from its events. It is always
  * incomplete, with status `error` and exit code 2, so it can never read as a completed pass. A test that
- * started and never finished is an `error`; a test that never started did not run. A file keeps the
- * failure of its process that `file.failed` recorded. The run's failure says whether it stopped early or
- * finished without its result.
+ * started and never finished is an `error`; a test that never started did not run. A test lists the host
+ * checks its events recorded; one the run stopped before it ended has no event and is never listed as passed.
+ * A file keeps the failure of its process that `file.failed` recorded. The run's failure says whether it
+ * stopped early or finished without its result.
  *
  * @example rebuildResult(readEvents(text).events).complete // false
  */
@@ -91,6 +93,8 @@ function testResult(test: TestRecord, endMs: number): TestResult {
     return [{ kind: event.kind, path: event.path, ...(app === undefined ? {} : { app }) }]
   })
   const { started, finished } = test
+  const recorded = recordedHostChecks(test.events)
+  const hostChecks = recorded.length === 0 ? {} : { hostChecks: recorded }
   if (finished !== undefined) {
     return {
       ...described,
@@ -100,6 +104,7 @@ function testResult(test: TestRecord, endMs: number): TestResult {
       assertionCount: finished.assertionCount,
       ...(finished.failure === undefined ? {} : { failure: finished.failure }),
       ...(finished.cleanupFailures === undefined ? {} : { cleanupFailures: finished.cleanupFailures }),
+      ...hostChecks,
       evidence,
     }
   }
@@ -113,6 +118,7 @@ function testResult(test: TestRecord, endMs: number): TestResult {
         (event) => event.type === 'assertion.passed' || event.type === 'assertion.failed',
       ).length,
       failure: stopped('The run stopped before this test finished.'),
+      ...hostChecks,
       evidence,
     }
   }
@@ -125,6 +131,15 @@ function testResult(test: TestRecord, endMs: number): TestResult {
     failure: stopped('The run stopped before this test started.'),
     evidence,
   }
+}
+
+// A check the run stopped before it ended has no event, so it is never listed, least of all as passed.
+function recordedHostChecks(events: readonly TestEvent[]): HostCheckResult[] {
+  return events.flatMap((event): HostCheckResult[] => {
+    if (event.type === 'host_check.passed') return [{ check: event.check, app: event.session, status: 'passed' }]
+    if (event.type === 'host_check.failed') return [{ check: event.check, app: event.session, status: 'failed', failure: event.failure }]
+    return []
+  })
 }
 
 function stopped(message: string): Failure {

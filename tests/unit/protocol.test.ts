@@ -18,6 +18,7 @@ import {
 } from '../../src/protocol/events.ts'
 import { truncateText, type Failure, type SourceLocation } from '../../src/protocol/failures.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
+import { observedRecord } from '../../src/protocol/observation-record.ts'
 import {
   childMessageSchema,
   parentMessageSchema,
@@ -122,6 +123,26 @@ const parentEvents: EventBody[] = [
     options: { config: 'retest.config.ts', baseUrls: { web: 'https://preview.example.test' }, timeouts: defaultTimeouts, reporter: 'human' },
   },
   {
+    type: 'run.started',
+    retestVersion: '0.0.0',
+    node: 'v24.12.0',
+    platform: 'darwin',
+    rootDir: '/work',
+    files: ['tests/checkout.retest.ts'],
+    options: {
+      config: 'host.config.ts',
+      timeouts: defaultTimeouts,
+      reporter: 'host',
+      hostChecks: {
+        'tests/checkout.retest.ts': [
+          { kind: 'address', origin: 'https://shop.example', path: { pattern: '^\\/orders\\/\\d+$', flags: '' } },
+          { kind: 'text', text: 'Payment failed', ignoreCase: true, absent: true },
+        ],
+        'tests/checkout.retest.ts > places an order': [{ kind: 'address', name: 'on the done page', origin: 'https://shop.example', path: '/done' }],
+      },
+    },
+  },
+  {
     type: 'browser.started',
     product: 'Chrome',
     version: '141.0.0.0',
@@ -138,6 +159,16 @@ const parentEvents: EventBody[] = [
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     app: 'mobile',
     target: { name: 'pixel', device: 'Pixel 9', emulation: { ...pixel, userAgent: 'Mozilla/5.0 (Linux; Android 10; K)' } },
+  },
+  {
+    type: 'browser.started',
+    product: 'Chrome',
+    version: '141.0.0.0',
+    userAgent: 'Mozilla/5.0',
+    pid: 4242,
+    executablePath: '/usr/bin/chromium',
+    app: 'web',
+    target: { name: 'hosted', proxy: { server: 'http://127.0.0.1:8080', bypass: ['<-loopback>', '*.internal'] } },
   },
   { type: 'app.started', app: 'web', ready: 'http://127.0.0.1:4173/health', pid: 5151, durationMs: 2100 },
   { type: 'app.reused', app: 'web', ready: 'http://127.0.0.1:4173/health' },
@@ -169,6 +200,36 @@ const parentEvents: EventBody[] = [
   { type: 'action.completed', ...scope, stepId: 'step-1', command: 'fill', locator, pageUrl, durationMs: 8, valueLength: 17 },
   { type: 'action.completed', ...scope, ...variant, command: 'fill', locator: { by: 'label', text: 'Password' }, durationMs: 8, secret: 'password', session: 'web' },
   { type: 'action.completed', ...scope, ...variant, command: 'tap', locator: { by: 'role', role: 'button', name: 'Menu' }, durationMs: 30, session: 'mobile' },
+  { type: 'action.completed', ...scope, command: 'press', locator: { by: 'label', text: 'Search' }, key: 'Enter', pageUrl, durationMs: 12, session: 'page' },
+  { type: 'action.completed', ...scope, command: 'press', key: 'Shift+Tab', durationMs: 9, session: 'page' },
+  {
+    type: 'assertion.passed',
+    ...scope,
+    ...variant,
+    matcher: 'toHaveText',
+    locator,
+    expected: truncateText('Release checklist'),
+    actual: truncateText('Release checklist'),
+    comparison: 'whole text, ends trimmed, each run of spaces or line breaks read as one space',
+    attempts: 3,
+    timeoutMs: 5000,
+    durationMs: 120,
+    pageUrl,
+    observationId: 'o7',
+    judgedBy: 'parent',
+    session: 'web',
+  },
+  {
+    type: 'assertion.passed',
+    ...scope,
+    matcher: 'toBe',
+    expected: truncateText('2'),
+    actual: truncateText('2'),
+    comparison: 'Object.is',
+    attempts: 1,
+    durationMs: 0,
+    judgedBy: 'child',
+  },
   {
     type: 'action.failed',
     ...scope,
@@ -179,6 +240,41 @@ const parentEvents: EventBody[] = [
     failure: { class: 'not_actionable', message: 'Another element receives the click.' },
   },
   { type: 'navigation', ...scope, url: pageUrl, session: 'page' },
+  {
+    type: 'observation',
+    ...scope,
+    ...variant,
+    stepId: 'step-1',
+    session: 'web',
+    observationId: 'o7',
+    locator,
+    pageUrl,
+    observed: observedRecord(observationOf([{ text: 'Your code is {{code}}', visible: true }])),
+    durationMs: 14,
+  },
+  { type: 'observation', ...scope, observationId: 'o1', locator: { by: 'role', role: 'dialog' }, observed: observedRecord(observationOf([])), durationMs: 3 },
+  {
+    type: 'host_check.passed',
+    ...scope,
+    ...variant,
+    session: 'web',
+    check: { kind: 'address', origin: 'https://shop.example', path: { pattern: '^\\/orders\\/\\d+$', flags: '' } },
+    actual: { url: 'https://shop.example/orders/42' },
+    attempts: 1,
+    timeoutMs: 5000,
+    durationMs: 4,
+  },
+  {
+    type: 'host_check.failed',
+    ...scope,
+    session: 'web',
+    check: { kind: 'text', name: 'no payment error', text: 'Payment failed', ignoreCase: true, absent: true },
+    actual: { url: 'https://shop.example/checkout', found: true },
+    attempts: 11,
+    timeoutMs: 5000,
+    durationMs: 5003,
+    failure: { class: 'host_check_failed', message: 'The page shows "Payment failed", expected it absent. Looked 11 times in 5000 ms.' },
+  },
   { type: 'evidence.captured', ...scope, kind: 'screenshot', path: 'artifacts/saves-a-task-failure.png', reason: 'failure' },
   { type: 'evidence.failed', ...scope, kind: 'screenshot', reason: 'failure', message: 'The browser closed.' },
   {
@@ -301,8 +397,24 @@ describe('events', () => {
       { path: '$.pid', message: 'expected integer >= 1, received 0' },
     ])
     assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), command: 'hover' }), [
-      { path: '$.command', message: 'expected one of "goto", "fill", "click", "tap", received "hover"' },
+      { path: '$.command', message: 'expected one of "goto", "fill", "click", "tap", "press", received "hover"' },
     ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('browser.started'), target: { name: 'hosted', proxy: { server: 'http://p:1', username: 'ada' } } }), [
+      { path: '$.target.proxy.username', message: 'unknown key' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, without(sample('host_check.passed'), 'session')), [{ path: '$.session', message: 'missing required key' }])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('host_check.passed'), actual: { url: pageUrl, text: 'Thank you' } }), [
+      { path: '$.actual.text', message: 'unknown key' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('host_check.failed'), timeoutMs: 0 }), [{ path: '$.timeoutMs', message: 'expected integer >= 1, received 0' }])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('host_check.passed'), check: { kind: 'address', origin: 'https://shop.example', app: 'web' } }), [
+      { path: '$.check.app', message: 'unknown key' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('observation'), observed: observationOf([{ text: 'Saved', visible: true }]) }), [
+      { path: '$.observed.text', message: 'expected object or null, received "Saved"' },
+      { path: '$.observed.items[0].text', message: 'expected object, received "Saved"' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, without(sample('observation'), 'observationId')), [{ path: '$.observationId', message: 'missing required key' }])
     assert.deepEqual(issues(retestEventSchema, { ...sample('run.finished'), exitCode: 3 }), [
       { path: '$.exitCode', message: 'expected 0 or 1 or 2 or 130 or 143, received 3' },
     ])
@@ -346,6 +458,36 @@ describe('events', () => {
     assert.match(issues(childEventSchema, testFinished)[0]?.message ?? '', /^expected one of "step.started", /)
   })
 
+  test('a locator assertion the test process sends names its look and carries its check; the parent reads check and never writes it', () => {
+    const sent: ChildEvent = {
+      type: 'assertion.passed',
+      ...scope,
+      matcher: 'toHaveText',
+      locator,
+      expected: truncateText('x'.repeat(5000)),
+      actual: null,
+      attempts: 2,
+      durationMs: 60,
+      observationId: 'o2',
+      check: { matcher: 'toHaveText', text: 'x'.repeat(5000) },
+    }
+    roundTrips(childEventSchema, sent)
+    roundTrips(childEventSchema, { ...sent, type: 'assertion.failed', failure, check: { matcher: 'toHaveCount', count: 3 } })
+    assert.deepEqual(issues(retestEventSchema, { ...stamp, ...sent }), [{ path: '$.check', message: 'unknown key' }])
+    assert.deepEqual(issues(childEventSchema, { ...sent, check: { matcher: 'toBe' } }).map((issue) => issue.path), ['$.check.matcher'])
+  })
+
+  test('judgedBy is the parent\'s mark on a passed assertion, never the test process\'s, and never on a failure', () => {
+    const passed: ChildEvent = { type: 'assertion.passed', ...scope, matcher: 'toBe', expected: truncateText('2'), actual: truncateText('2'), attempts: 1, durationMs: 0 }
+    roundTrips(childEventSchema, passed)
+    assert.deepEqual(issues(childEventSchema, { ...passed, judgedBy: 'child' }), [{ path: '$.judgedBy', message: 'unknown key' }])
+    roundTrips(retestEventSchema, { ...stamp, origin: 'child', ...passed, judgedBy: 'child' })
+    assert.deepEqual(issues(retestEventSchema, { ...sample('assertion.failed'), judgedBy: 'parent' }), [{ path: '$.judgedBy', message: 'unknown key' }])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('assertion.passed'), judgedBy: 'browser' }), [
+      { path: '$.judgedBy', message: 'expected one of "parent", "child", received "browser"' },
+    ])
+  })
+
   test('the JSON Schema has one closed object per event type', () => {
     const schema = toJsonSchema(retestEventSchema)
     assert.equal(schema.oneOf?.length, new Set(events.map((event) => event.type)).size)
@@ -354,7 +496,9 @@ describe('events', () => {
       for (const key of ['schemaVersion', 'type', 'runId', 'sequence', 'time', 'elapsedMs', 'origin']) {
         assert.ok(option.required?.includes(key), `${JSON.stringify(option.properties?.['type'])} requires ${key}`)
       }
-      assert.equal(option.required?.includes('session'), false)
+      // A host check always names the app whose page it read.
+      const type = option.properties?.['type']?.const
+      assert.equal(option.required?.includes('session'), type === 'host_check.passed' || type === 'host_check.failed', String(type))
     }
   })
 })
@@ -366,6 +510,8 @@ describe('commands', () => {
     { kind: 'fill', locator: { by: 'label', text: 'Password' }, value: { secret: 'password' } },
     { kind: 'click', locator: { by: 'testId', value: 'save-task' } },
     { kind: 'tap', locator: { by: 'role', role: 'button', name: 'Menu', exact: false } },
+    { kind: 'press', locator: { by: 'label', text: 'Search' }, key: 'Enter' },
+    { kind: 'press', key: 'Shift+Tab' },
     { kind: 'observe', locator },
     { kind: 'observe', locator: { by: 'text', text: 'Saved' } },
   ]
@@ -375,7 +521,9 @@ describe('commands', () => {
     { ok: true, kind: 'fill' },
     { ok: true, kind: 'click' },
     { ok: true, kind: 'tap' },
+    { ok: true, kind: 'press' },
     { ok: true, kind: 'observe', observation: observationOf([{ text: 'Release checklist', visible: true }]) },
+    { ok: true, kind: 'observe', observation: observationOf([{ text: 'Saved', visible: true }]), observationId: 'o3' },
     { ok: true, kind: 'observe', observation: observationOf([{ text: '', visible: true }], 'Release checklist') },
     { ok: true, kind: 'observe', observation: observationOf([]) },
     { ok: true, kind: 'observe', observation: observationOf(many) },
@@ -389,8 +537,12 @@ describe('commands', () => {
 
   test('malformed commands and results are rejected', () => {
     assert.deepEqual(issues(pageCommandSchema, { kind: 'hover', locator }), [
-      { path: '$.kind', message: 'expected one of "goto", "fill", "click", "tap", "observe", received "hover"' },
+      { path: '$.kind', message: 'expected one of "goto", "fill", "click", "tap", "press", "observe", received "hover"' },
     ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'press', locator }), [{ path: '$.key', message: 'missing required key' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'press', key: 13 }), [{ path: '$.key', message: 'expected string, received 13' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'press', key: 'a', modifiers: ['Control'] }), [{ path: '$.modifiers', message: 'unknown key' }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'press', observationId: 'o1' }), [{ path: '$.observationId', message: 'unknown key' }])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'fill', locator, value: { secret: 'password', value: 'hunter2' } }), [
       { path: '$.value.value', message: 'unknown key' },
     ])
@@ -423,6 +575,10 @@ describe('commands', () => {
     assert.equal(describeCommand({ kind: 'fill', locator: quoted, value: 'secret' }), "getByTestId('it\\'s').fill()")
     assert.equal(describeCommand({ kind: 'observe', locator: quoted }), "a look at getByTestId('it\\'s')")
     assert.equal(describeCommand({ kind: 'tap', locator: quoted }), "getByTestId('it\\'s').tap()")
+    assert.equal(describeCommand({ kind: 'press', locator: { by: 'label', text: 'Search' }, key: 'Enter' }), "getByLabel('Search').press('Enter')")
+    assert.equal(describeCommand({ kind: 'press', key: 'Enter' }), "page.keyboard.press('Enter')")
+    assert.equal(describeCommand({ kind: 'press', key: "'" }), "page.keyboard.press('\\'')")
+    assert.equal(describeCommand({ kind: 'press', key: 'x'.repeat(500) }), `page.keyboard.press('${'x'.repeat(200)}…')`)
     assert.equal(
       describeCommand({ kind: 'fill', locator: { by: 'label', text: 'Password' }, value: { secret: 'password' } }),
       `getByLabel('Password').fill(secret("password"))`,
@@ -568,6 +724,32 @@ describe('result', () => {
             cleanupFailures: [{ class: 'cleanup_failed', message: 'The context did not close.' }],
             evidence: [{ kind: 'screenshot', path: 'artifacts/shows-the-count-failure.png' }],
           },
+          {
+            ...scope,
+            name: 'places an order',
+            file: 'examples/task.retest.ts',
+            location,
+            status: 'failed',
+            durationMs: 2100,
+            assertionCount: 2,
+            failure: { class: 'check_failed', message: 'The page is on /login, expected /done.' },
+            hostChecks: [
+              { check: { kind: 'address', origin: 'https://shop.example', path: '/done' }, app: 'web', status: 'failed', failure: { class: 'check_failed', message: 'x' } },
+              { check: { kind: 'text', text: 'Payment failed', absent: true }, app: 'web', status: 'passed' },
+            ],
+            evidence: [{ kind: 'screenshot', path: 'artifacts/places-an-order-failure.png', app: 'web' }],
+          },
+          {
+            ...scope,
+            name: 'never started',
+            file: 'examples/task.retest.ts',
+            location,
+            status: 'not_run',
+            durationMs: 0,
+            assertionCount: 0,
+            hostChecks: [{ check: { kind: 'text', text: 'Saved' }, app: 'web', status: 'not_run' }],
+            evidence: [],
+          },
           { ...scope, name: 'never ran', file: 'examples/task.retest.ts', location, status: 'not_run', durationMs: 0, assertionCount: 0, evidence: [] },
           {
             ...scope,
@@ -609,6 +791,10 @@ describe('result', () => {
       message: 'expected "screenshot", received "video"',
     })
     assert.deepEqual(issues(runResultSchema, without(result, 'browser')), [{ path: '$.browser', message: 'missing required key' }])
+    const unknownStatus = { ...file, tests: [{ ...file.tests[0], hostChecks: [{ check: { kind: 'text', text: 'Saved' }, app: 'web', status: 'skipped' }] }] }
+    assert.deepEqual(issues(runResultSchema, { ...result, files: [unknownStatus] }), [
+      { path: '$.files[0].tests[0].hostChecks[0].status', message: 'expected one of "passed", "failed", "not_run", received "skipped"' },
+    ])
     assert.deepEqual(issues(runResultSchema, { ...result, counts: without(result.counts, 'notRun') }), [
       { path: '$.counts.notRun', message: 'missing required key' },
     ])

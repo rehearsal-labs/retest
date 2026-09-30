@@ -160,11 +160,21 @@ describe('agent reporter with targets', () => {
 
 describe('rerun lines from a config', () => {
   test('repeat a config at another path and the base URLs the command line gave', () => {
-    const events = variantRun(root, { config: 'e2e/retest.config.ts', baseUrls: { web: 'https://preview.example.com' } })
+    const events = variantRun(variantProject('e2e/retest.config.ts'), { config: 'e2e/retest.config.ts', baseUrls: { web: 'https://preview.example.com' } })
     assert.match(
       human(events),
       /Rerun {12}npx retest run tests\/tasks\.retest\.ts:8 --config e2e\/retest\.config\.ts --base-url web=https:\/\/preview\.example\.com --target web=pixel\n/,
     )
+  })
+
+  // A program may build its config in memory and name it with a path that has no file. No command runs that again.
+  test('a config with no file behind it gets no rerun command, and the card and the next line point to inspect', () => {
+    const events = variantRun(root, { config: 'in-memory.config.ts' })
+    const report = human(events)
+    assert.doesNotMatch(report, /Rerun|retest run/)
+    assert.match(report, /\n {4}Inspect {10}npx retest inspect \S+ --test "tests\/tasks\.retest\.ts > tasks > saves a task" --target web=pixel\n/)
+    assert.doesNotMatch(agent(events), /retest run/)
+    assert.match(agent(events), /\nnext: npx retest inspect \S+ --test "tests\/tasks\.retest\.ts > tasks > saves a task" --target web=pixel --json\n$/)
   })
 })
 

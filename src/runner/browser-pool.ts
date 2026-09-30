@@ -1,5 +1,5 @@
-import type { LaunchOptions, OwnedBrowser } from '../browser/contract.ts'
-import type { LoadedApp, LoadedTarget } from '../config/loaded.ts'
+import type { LaunchOptions, OwnedBrowser, ProxyOptions } from '../browser/contract.ts'
+import type { LoadedApp, LoadedProxy, LoadedTarget } from '../config/loaded.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { TargetInfo } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
@@ -9,6 +9,7 @@ import type { Bounded } from './bounded.ts'
 import { closeGraceMs, LaunchError } from '../browser/contract.ts'
 import { emulationFor } from '../config/devices.ts'
 import { errorMessage, failure } from '../protocol/failures.ts'
+import { withoutCredentials } from '../protocol/url.ts'
 import { bounded } from './bounded.ts'
 import { abortGraceMs } from './running-test.ts'
 
@@ -18,8 +19,11 @@ export type LaunchBrowser = (options: LaunchOptions, timeoutMs: number) => Promi
 /** Finds the executable a target launches, or says why there is none, naming the paths it tried. */
 export type FindExecutable = (target: LoadedTarget) => Promise<{ ok: true; path: string } | { ok: false; failure: Failure }>
 
-/** An app target ready for pages: its browser, and what its pages emulate. */
-export type ReadyTarget = { browser: OwnedBrowser; emulation?: Emulation }
+/**
+ * An app target ready for pages: its browser, what its pages emulate, and the proxy each page's browser context
+ * sends its requests through.
+ */
+export type ReadyTarget = { browser: OwnedBrowser; emulation?: Emulation; proxy?: ProxyOptions }
 
 export type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
 
@@ -50,7 +54,8 @@ type AppTarget = { ok: true; key: string; emulation?: Emulation } | { ok: false;
 
 /**
  * The run's browsers. Each distinct target, its executable with its headless setting and emulation, launches
- * once, the first time a test needs it, and app targets that are the same share it. A browser that fails to
+ * once, the first time a test needs it, and app targets that are the same share it. A proxy belongs to each
+ * page's browser context, so targets that differ only by proxy share a browser too. A browser that fails to
  * launch, or is lost, is not launched again: every later test that needs it does not run.
  */
 export class BrowserPool {
@@ -84,7 +89,8 @@ export class BrowserPool {
     if (this.#closing !== undefined) return { ok: false, failure: failure('setup_failed', 'The browser was closed.') }
     if (launched?.kind !== 'ready') return { ok: false, failure: launched?.failure ?? failure('setup_failed', 'The browser was closed.') }
     const emulation = known.emulation === undefined ? {} : { emulation: known.emulation }
-    return { ok: true, value: { browser: launched.browser, ...emulation } }
+    const proxy = target.proxy === undefined ? {} : { proxy: target.proxy }
+    return { ok: true, value: { browser: launched.browser, ...emulation, ...proxy } }
   }
 
   /** Closes every browser within the cleanup budget, and waits for any launch the run gave up on. A second call waits for the first. */
@@ -142,12 +148,18 @@ export class BrowserPool {
   #announce(app: LoadedApp, target: LoadedTarget, browser: OwnedBrowser, emulation: Emulation | undefined): void {
     const { product, version, userAgent, pid, executablePath } = browser
     const device = typeof target.emulate === 'string' ? { device: target.emulate } : {}
-    const described: TargetInfo = { name: target.name, ...(emulation === undefined ? {} : { emulation }), ...device }
+    const proxy = target.proxy === undefined ? {} : { proxy: recordedProxy(target.proxy) }
+    const described: TargetInfo = { name: target.name, ...(emulation === undefined ? {} : { emulation }), ...device, ...proxy }
     const named = this.#options.named ? { app: app.name, target: described } : {}
     const started: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid }
     this.#started.push(started)
     this.#options.onStarted(started)
   }
+}
+
+// The proxy's address and bypass rules as events record them; a user name or password never is.
+function recordedProxy({ server, bypass }: LoadedProxy): NonNullable<TargetInfo['proxy']> {
+  return { server: withoutCredentials(server), ...(bypass.length === 0 ? {} : { bypass: [...bypass] }) }
 }
 
 function launchFailure(launched: Exclude<Bounded<OwnedBrowser>, { status: 'done' }>, setupMs: number): Failure {

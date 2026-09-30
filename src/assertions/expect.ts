@@ -2,7 +2,7 @@ import type { LocatorTarget } from '../api/app-page.ts'
 import type { Scope } from '../api/context.ts'
 import type { Locator } from '../api/page.ts'
 import type { RetestTypeError } from '../config/register.ts'
-import type { LocatorCheck } from './poll-locator.ts'
+import type { LocatorCheckRecord } from '../protocol/locator-checks.ts'
 import type { ValueCheck } from './value-checks.ts'
 import { locatorTarget } from '../api/app-page.ts'
 import { requireScope } from '../api/context.ts'
@@ -12,7 +12,6 @@ import { isThenable } from '../api/operation.ts'
 import { Secret } from '../api/secret.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
-import { countCheck, hiddenCheck, textCheck, textsCheck, valueCheck, visibleCheck } from './locator-checks.ts'
 import { pollLocator } from './poll-locator.ts'
 import { pollValue } from './poll-value.ts'
 import { assertValue } from './value.ts'
@@ -221,26 +220,27 @@ class LocatorExpectation {
   }
 
   toBeVisible(): Promise<void> {
-    return this.#assert(visibleCheck())
+    return this.#assert({ matcher: 'toBeVisible' })
   }
 
   toBeHidden(): Promise<void> {
-    return this.#assert(hiddenCheck())
+    return this.#assert({ matcher: 'toBeHidden' })
   }
 
   toHaveText(expected: unknown): Promise<void> {
-    if (typeof expected === 'string') return this.#assert(textCheck(expected))
-    if (isTextList(expected)) return this.#assert(textsCheck(expected))
+    if (typeof expected === 'string') return this.#assert({ matcher: 'toHaveText', text: expected })
+    // A copy, so the list the event sends is the one the assertion compared, whatever the test does to its own.
+    if (isTextList(expected)) return this.#assert({ matcher: 'toHaveText', texts: [...expected] })
     throw misuse(`toHaveText() takes the expected text as a string, or a list of texts, received ${formatValue(expected)}.`, this.#scope.run)
   }
 
   toHaveCount(count: unknown): Promise<void> {
-    if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) return this.#assert(countCheck(count))
+    if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) return this.#assert({ matcher: 'toHaveCount', count })
     throw misuse(`toHaveCount() takes a whole number of elements, received ${formatValue(count)}.`, this.#scope.run)
   }
 
   toHaveValue(value: unknown): Promise<void> {
-    if (typeof value === 'string') return this.#assert(valueCheck(value))
+    if (typeof value === 'string') return this.#assert({ matcher: 'toHaveValue', value })
     throw misuse(`toHaveValue() takes the expected value as a string, received ${formatValue(value)}.`, this.#scope.run)
   }
 
@@ -260,14 +260,14 @@ class LocatorExpectation {
     throw misuse(misplaced.toMatch, this.#scope.run)
   }
 
-  #assert(check: LocatorCheck): Promise<void> {
+  #assert(record: LocatorCheckRecord): Promise<void> {
     const { run, stepId } = this.#scope
     const { app, recipe } = this.#target
     const location = run.location()
     if (this.#target.run !== run) throw misuse('This locator belongs to another test. Find it again with its page.', run)
-    const label = `${this.#soft ? 'expect.soft' : 'expect'}(${describeLocator(recipe)}).${check.matcher}()`
+    const label = `${this.#soft ? 'expect.soft' : 'expect'}(${describeLocator(recipe)}).${record.matcher}()`
     const soft = this.#soft
-    return run.assertion(label, location, () => pollLocator({ run, stepId, app, recipe, check, location, soft }), app)
+    return run.assertion(label, location, () => pollLocator({ run, stepId, app, recipe, record, location, soft }), app)
   }
 }
 

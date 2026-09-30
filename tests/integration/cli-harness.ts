@@ -7,9 +7,9 @@ import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +20,7 @@ import { runResultSchema } from '../../src/protocol/result.ts'
 import { childLogFile, eventsFile, resultFile, statesFolder } from '../../src/protocol/run-folder.ts'
 import { parse, type Schema } from '../../src/protocol/schema.ts'
 import { errorCode } from '../../src/shared/error-code.ts'
+import { tempFolder } from '../support/temp-folder.ts'
 import { browserPath, processesUsing, waitForGroupEnd } from './browser-harness.ts'
 
 export const repositoryRoot: string = fileURLToPath(new URL('../../', import.meta.url))
@@ -74,9 +75,9 @@ const profilePrefix = 'retest-profile-'
 const retestPrefix = 'retest-'
 const releaseWaitMs = 5000
 
-/** A temporary folder removed after the test, even when it fails. */
+/** A temporary folder removed after the test, even when it fails, under the test process's own root. */
 export async function scratchFolder(t: TestContext, prefix = 'retest-cli-'): Promise<string> {
-  const folder = await mkdtemp(join(tmpdir(), prefix))
+  const folder = tempFolder(prefix)
   t.after(() => rm(folder, { recursive: true, force: true }))
   return folder
 }
@@ -293,14 +294,40 @@ export async function runRetest(t: TestContext, request: RunRequest): Promise<Fi
   return finishRun(await startRun(t, request))
 }
 
-/** Waits for the run to end and reads its folder, without checking what it left behind. */
+/**
+ * Waits for the run to end and reads its folder, without checking what it left behind. Every passed assertion must
+ * say who judged it (`assertJudged`).
+ */
 export async function readFinishedRun({ retest, output }: StartedRun): Promise<FinishedRun> {
   const exit = await retest.exited
   const events = existsSync(join(output, eventsFile)) ? readEvents(readFileSync(join(output, eventsFile), 'utf8')) : []
   for (const group of reportedGroups(events)) retest.ownGroup(group)
+  assertJudged(events)
   const result = existsSync(join(output, resultFile)) ? readResult(readFileSync(join(output, resultFile), 'utf8')) : undefined
   const { stdout, stderr, durationMs } = retest
   return { exit, stdout, stderr, durationMs, output, events, result }
+}
+
+/**
+ * Checks who judged each passed assertion. A locator assertion is judged by the parent, on the look it names: an
+ * `observation` the parent wrote earlier in the same attempt, for the same app and locator. A value assertion's pass
+ * is the test process's claim, and names no look.
+ */
+export function assertJudged(events: readonly RetestEvent[]): void {
+  for (const [index, event] of events.entries()) {
+    if (event.type !== 'assertion.passed') continue
+    const passed = `assertion.passed ${event.matcher} at sequence ${event.sequence}`
+    if (event.locator === undefined) {
+      assert.deepEqual([event.judgedBy, event.observationId], ['child', undefined], `${passed} is the test process's claim`)
+      continue
+    }
+    assert.equal(event.judgedBy, 'parent', `${passed} was judged by the parent`)
+    const look = eventsOf(events.slice(0, index), 'observation').find(
+      (earlier) => earlier.attemptId === event.attemptId && earlier.observationId === event.observationId,
+    )
+    assert.ok(look !== undefined, `${passed} names ${event.observationId}, a look the parent wrote earlier in its attempt`)
+    assert.deepEqual([look.origin, look.session, look.locator], ['parent', event.session, event.locator], `${passed} rests on a look at its own locator`)
+  }
 }
 
 /**
@@ -448,6 +475,83 @@ export async function runCli(t: TestContext, args: readonly string[], options: O
   const exit = await retest.exited
   await assertReleased(retest, [])
   return { exit, stdout: retest.stdout, stderr: retest.stderr }
+}
+
+/** A host's run: what `finishRun` reads, and the result `runFiles` returned to the host, which it printed. */
+export type HostRun = FinishedRun & { returned: RunResult }
+
+export type HostRequest = {
+  cwd: string
+  /** The program and the arguments before the run folder, which comes last. */
+  command: readonly string[]
+  env?: Readonly<Record<string, string>>
+}
+
+/**
+ * Runs a host's own program, one that calls `runFiles` itself, with a new run folder as its last argument, in its
+ * own process group with its own temporary folder. Besides what `finishRun` checks, stdout must be exactly the
+ * events its reporter received, as JSON lines, and the result it printed on stderr as `result <json>` must be
+ * `result.json`.
+ */
+export async function runHost(t: TestContext, request: HostRequest): Promise<HostRun> {
+  const output = join(await scratchFolder(t), 'run')
+  const [executable = process.execPath, ...leading] = request.command
+  const retest = await RetestProcess.start(t, { cwd: request.cwd, command: [executable], args: [...leading, output], env: request.env ?? {} })
+  const run = await finishRun({ retest, output })
+  assertStdoutIsEvents(run)
+  const printed = /^result (.+)$/m.exec(run.stderr)?.[1]
+  assert.ok(printed !== undefined, `the host printed the result runFiles returned. stderr:\n${run.stderr}`)
+  const returned = parseLine(runResultSchema, printed, 'the result runFiles returned')
+  assert.deepEqual(returned, resultOf(run), 'the result runFiles returned is result.json')
+  assert.equal(run.exit.code, returned.exitCode, 'the host exits with the run exit code')
+  return { ...run, returned }
+}
+
+export type HostScript = {
+  /** The object `defineConfig` receives, as TypeScript source. */
+  config: string
+  files: readonly string[]
+  /** More `RunOptions`, as TypeScript source, such as `hostChecks: { ... }`. */
+  options?: string
+}
+
+/**
+ * The source of a host's script, which imports Retest by its package name: it builds `config` in memory, validates
+ * it under a label with no file behind it, resolves its secrets, and runs `files` from the project folder with short
+ * budgets and `options`. Its reporter prints each event as a JSON line as it arrives, and at the end it prints the
+ * result `runFiles` returned, as `runHost` reads them, and exits with the run's exit code.
+ */
+export function hostScript(script: HostScript): string {
+  return `import type { Reporter } from '@rehearsal-labs/retest/runner'
+import { chrome, defineConfig } from '@rehearsal-labs/retest'
+import { resolveSecrets, runFiles, validateConfig } from '@rehearsal-labs/retest/runner'
+
+const outputDir = process.argv.at(-1) ?? ''
+const loaded = validateConfig(defineConfig(${script.config}), \`\${process.cwd()}/host.config.ts\`)
+if (!loaded.ok) throw new Error(loaded.failure.message)
+const secrets = resolveSecrets(loaded.config, {})
+if (!secrets.ok) throw new Error(secrets.failure.message)
+const reporter: Reporter = {
+  name: 'host',
+  onEvent: (event) => void process.stdout.write(\`\${JSON.stringify(event)}\\n\`),
+  onRunEnd: () => undefined,
+}
+const result = await runFiles(
+  {
+    files: ${JSON.stringify(script.files)},
+    rootDir: process.cwd(),
+    apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets },
+    timeouts: ${JSON.stringify(shortBudgets)},
+    outputDir,
+    headless: true,
+    signal: new AbortController().signal,
+    ${script.options ?? ''}
+  },
+  [reporter],
+)
+process.stderr.write(\`result \${JSON.stringify(result)}\\n\`)
+process.exitCode = result.exitCode
+`
 }
 
 const defaultSecondBrowser = join(

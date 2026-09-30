@@ -12,14 +12,20 @@ import type { ProcessEvent, TestFileMessage, TestFileProcess } from './test-file
 import { describeCommand } from '../protocol/commands.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
 import { errorMessage, failure, withAlso, withLocation } from '../protocol/failures.ts'
+import { parseKey } from '../protocol/keys.ts'
+import { observedRecord } from '../protocol/observation-record.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { bounded } from './bounded.ts'
+import { ServedObservations } from './observations.ts'
 
 /** How long a stopped test's process has to answer, and a page that lost its browser has to say so. */
 export const abortGraceMs = 1000
 
+/** What a running test needs of its file's process. */
+export type TestProcess = Pick<TestFileProcess, 'exit' | 'closed' | 'listen' | 'send' | 'kill'>
+
 export type RunningTestOptions = {
-  process: TestFileProcess
+  process: TestProcess
   /** Each app's page, in the order the test declared its apps. Commands name the app whose page takes them. */
   pages: ReadonlyMap<string, OwnedPage>
   testId: string
@@ -55,6 +61,8 @@ type InFlight = {
   message: CommandMessage
   /** The page of the app the command names. */
   page: OwnedPage
+  /** The address the parent last saw that page commit when the command arrived. */
+  pageUrl: string | undefined
   startedAt: number
   /** Settles once the page has answered. It exists before the page is called, which may lose its browser at once. */
   done: PromiseWithResolvers<void>
@@ -69,7 +77,9 @@ const lossClasses: ReadonlySet<FailureClass> = new Set<FailureClass>(['session_l
 
 /**
  * The parent's side of one test body. It forwards the child's page commands to the browser, reports
- * each action, and enforces the test's deadline. Stopping a test revokes it: later commands are refused,
+ * each action, writes down each look it serves, judges each assertion against the look it names, and
+ * enforces the test's deadline. An assertion it cannot accept ends the test as a protocol violation.
+ * Stopping a test revokes it: later commands are refused,
  * commands in flight are answered and stopped in the page, the child is asked to abort, and a child that
  * does not answer within the grace period is killed. A test that runs out of time also ends its process,
  * whether it answered or not, because code from it may still be running there.
@@ -82,6 +92,7 @@ export class RunningTest {
   #testTimer: NodeJS.Timeout | undefined
   #killTimer: NodeJS.Timeout | undefined
   readonly #pageUrls = new Map<string, string>()
+  readonly #observations = new ServedObservations()
   #stepId: string | undefined
   #revocation: Failure | undefined
   /** The page's latest answer saying that it or the browser was gone. */
@@ -194,6 +205,7 @@ export class RunningTest {
     const entry: InFlight = {
       message,
       page,
+      pageUrl: this.#pageUrls.get(message.app),
       startedAt: monotonicClock(),
       done: Promise.withResolvers(),
       stop: new AbortController(),
@@ -206,7 +218,6 @@ export class RunningTest {
 
   async #execute(entry: InFlight, timeoutMs: number): Promise<void> {
     const { command, location, app } = entry.message
-    const pageUrl = this.#pageUrls.get(app)
     let result: CommandResult
     try {
       result = await this.#run(entry, timeoutMs)
@@ -217,13 +228,18 @@ export class RunningTest {
     if (result.ok && result.kind === 'goto') this.#pageUrls.set(app, result.url)
     const reported: CommandResult = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
     if (!reported.ok && lossClasses.has(reported.failure.class)) this.#lossAnswer = reported.failure
-    this.#reportAction(entry, reported, result.ok && result.kind === 'goto' ? result.url : pageUrl)
+    this.#reportAction(entry, reported, result.ok && result.kind === 'goto' ? result.url : entry.pageUrl)
     this.#answer(entry, reported)
   }
 
-  // A secret is read, within the command's own time, only once its page's origin may take it.
+  // A secret is read, within the command's own time, only once its page's origin may take it. A key is read
+  // again here, since the test process may send one its own check never saw.
   async #run({ message, page, stop }: InFlight, timeoutMs: number): Promise<CommandResult> {
     const { command, app } = message
+    if (command.kind === 'press') {
+      const parsed = parseKey(command.key)
+      if (!parsed.ok) return { ok: false, failure: parsed.failure }
+    }
     if (command.kind !== 'fill') return page.execute(command, timeoutMs, stop.signal)
     const { locator, value } = command
     if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal)
@@ -245,7 +261,8 @@ export class RunningTest {
       ...(stepId === undefined ? {} : { stepId }),
       session: app,
       command: recordedKind(command.kind, result, this.#options.touch?.has(app) === true),
-      ...(command.kind === 'goto' ? {} : { locator: command.locator }),
+      ...('locator' in command && command.locator !== undefined ? { locator: command.locator } : {}),
+      ...(command.kind === 'press' ? { key: command.key } : {}),
       ...(pageUrl === undefined ? {} : { pageUrl }),
       durationMs: elapsedMs(entry.startedAt),
       ...(location === undefined ? {} : { location }),
@@ -257,13 +274,31 @@ export class RunningTest {
   #answer(entry: InFlight, result: CommandResult): void {
     if (entry.answered || this.#report !== undefined) return
     entry.answered = true
-    this.#send(entry.message.id, result)
+    this.#options.process.send({ type: 'command-result', id: entry.message.id, result: this.#serve(entry, this.#redacted(result)) })
+  }
+
+  #send(id: number, result: CommandResult): void {
+    this.#options.process.send({ type: 'command-result', id, result: this.#redacted(result) })
   }
 
   // Page text, a URL or a failure may quote a secret value the page showed, so the child gets it redacted.
-  #send(id: number, result: CommandResult): void {
-    const redacted = this.#options.redactor?.redactCommandResult(result) ?? result
-    this.#options.process.send({ type: 'command-result', id, result: redacted })
+  #redacted(result: CommandResult): CommandResult {
+    return this.#options.redactor?.redactCommandResult(result) ?? result
+  }
+
+  // A look the page answered is written down, as the test process receives it, before the answer goes; the
+  // id it carries is how an assertion names it.
+  #serve({ message, pageUrl, startedAt }: InFlight, result: CommandResult): CommandResult {
+    const { command, app, stepId } = message
+    if (!result.ok || result.kind !== 'observe' || command.kind !== 'observe') return result
+    const { locator } = command
+    const { observation } = result
+    const page = pageUrl === undefined ? {} : { pageUrl }
+    const observationId = this.#observations.serve({ app, locator, observation, ...page })
+    const { testId, attemptId } = this.#options
+    const step = stepId === undefined ? {} : { stepId }
+    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(startedAt) })
+    return { ...result, observationId }
   }
 
   // The page's own answer when it gave one. An action it never answered may have taken effect.
@@ -279,16 +314,17 @@ export class RunningTest {
     return this.#lossAnswer ?? failure('session_lost', `The browser was lost: ${reason}`)
   }
 
+  // An assertion is written only as the parent judged it; one the parent cannot accept ends the test.
   #childEvent(event: ChildEvent): void {
     if (!this.#isOwn(event)) return this.#violation(`sent ${event.type} for ${describeScope(event)} while ${describeScope(this.#options)} was running`)
     if (event.type !== 'assertion.passed' && event.type !== 'assertion.failed') return this.#options.emit(event, 'child')
-    this.#assertionsSeen++
     // An assertion that names no app looks at the test's first one, as milestone 1's single page.
     const [firstApp] = this.#options.pages.keys()
     const app = event.session ?? firstApp
-    const pageUrl = app === undefined ? undefined : this.#pageUrls.get(app)
-    if (event.locator === undefined || event.pageUrl !== undefined || pageUrl === undefined) return this.#options.emit(event, 'child')
-    this.#options.emit({ ...event, pageUrl }, 'child')
+    const judged = this.#observations.judge(event, { app, pageUrl: app === undefined ? undefined : this.#pageUrls.get(app) })
+    if (!judged.ok) return this.#violation(judged.problem)
+    this.#assertionsSeen++
+    this.#options.emit(judged.event, 'child')
   }
 
   #childFinished(message: Extract<TestFileMessage, { type: 'test-finished' }>): void {

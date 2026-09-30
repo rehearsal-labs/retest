@@ -92,11 +92,15 @@ const describeHelper = String.raw`
 // Typing that arrives while nothing is armed for it was meant for a document this one replaced, or for an
 // element outside this document, so it is stopped and noted: no text Retest sends reaches a document it did not
 // check.
+// A key's press decides at its keydown, which must reach the element. The rest of the keystroke then belongs to
+// the page, which may have moved the focus or submitted a form, and the arming lasts until the key is released,
+// so none of it is stopped as stray typing.
 const guardHelpers = String.raw`
   const guarded = {
     click: { events: ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'], last: 'click' },
     tap: { events: ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mousedown', 'mouseup', 'click'], last: 'click' },
     fill: { events: ['keydown', 'beforeinput', 'input', 'keyup'], last: 'input' },
+    press: { events: ['keydown', 'keypress', 'beforeinput', 'input', 'keyup'], last: 'keyup', decides: 'keydown' },
   }
   const installGuard = () => {
     if (globalThis.retestGuard !== undefined) return globalThis.retestGuard
@@ -121,15 +125,21 @@ const guardHelpers = String.raw`
         guard.stray ??= { event: event.type, by: target instanceof Element ? describe(target) : 'the page', origin: location.origin }
         return
       }
-      if (armed.leaving !== null) {
+      if (armed.leaving !== null || armed.decided === 'stopped') {
         stop(event)
+      } else if (armed.decided === 'reached') {
+        // The rest of the keystroke belongs to the page.
       } else if (target instanceof Node && armed.element.contains(target)) {
         armed.reached.push(event.type)
         // A page that moved the caret since Retest selected the value would otherwise keep part of it.
-        if (event.type === 'beforeinput') armed.element.select()
+        if (armed.action === 'fill' && event.type === 'beforeinput') armed.element.select()
       } else {
         stop(event)
         armed.intercepted ??= { event: event.type, by: target instanceof Element ? describe(target) : 'the page' }
+      }
+      if (event.type === armed.decides) {
+        armed.decided = armed.intercepted === null ? 'reached' : 'stopped'
+        armed.report()
       }
       // Later events belong to the page, such as the click a label passes on to its field.
       if (event.type === armed.last) armed.settle()
@@ -151,12 +161,16 @@ const armHelper = String.raw`
     const verdict = new Promise((settle) => {
       resolve = settle
     })
-    const armed = { element, ...guarded[action], origins, leaving: null, reached: [], intercepted: null }
+    const armed = { element, action, ...guarded[action], origins, leaving: null, reached: [], intercepted: null, decided: null }
+    // What the guard saw so far, once: an action whose input decides early answers before the rest arrives.
+    armed.report = () => {
+      const landed = point === null ? document.activeElement : document.elementFromPoint(point.x, point.y)
+      const { reached, intercepted, leaving } = armed
+      resolve({ reached: [...reached], intercepted, landed: landed === null ? null : describe(landed), leaving })
+    }
     armed.settle = () => {
       if (guard.armed === armed) guard.armed = null
-      const landed = action === 'fill' ? document.activeElement : document.elementFromPoint(point.x, point.y)
-      const { reached, intercepted, leaving } = armed
-      resolve({ reached, intercepted, landed: landed === null ? null : describe(landed), leaving })
+      armed.report()
     }
     guard.count += 1
     guard.armed = armed
@@ -198,6 +212,15 @@ const actionHelpers = String.raw`
   const sameBox = (first, second) =>
     first.x === second.x && first.y === second.y && first.width === second.width && first.height === second.height
   const blocked = (check, detail = null) => ({ status: 'blocked', check, detail })
+  // A key goes to whatever holds the keyboard focus, never through a point, so there is no hit test.
+  const readyForKeys = (element) => {
+    if (element.matches(':disabled')) return blocked('enabled')
+    const armed = arm(element, 'press', null, null)
+    element.focus()
+    if (document.activeElement === element) return { status: 'ready', point: null, token: armed.token }
+    armed.settle()
+    return blocked('focused')
+  }
 `
 
 /** Installs the input guard in each new document, before the page's own scripts run. */
@@ -228,7 +251,9 @@ export const observeFunction: string = `function observe(limit, query, ...elemen
  * returns the point to press. Once every check passes it arms the input guard for the element, all in the same
  * task as the hit test, so no page script runs between them. For `fill` it then focuses the field and selects its
  * whole value. `origins`, when not null, are the only origins the text may reach: a document on another is
- * refused, and so is one the focus sets off to leave, which the armed guard keeps from going.
+ * refused, and so is one the focus sets off to leave, which the armed guard keeps from going. A `press` checks
+ * that the element is visible and enabled, arms the guard and focuses it, and is ready with no point once it
+ * keeps the focus.
  */
 export const prepareFunction: string = `async function prepare(action, multiline, origins, query, ...elements) {
   ${helpers}
@@ -248,6 +273,7 @@ export const prepareFunction: string = `async function prepare(action, multiline
     }
   }
   if (!isVisible(element)) return blocked('visible')
+  if (action === 'press') return readyForKeys(element)
   if (!isCentreInView(element.getBoundingClientRect())) {
     element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
   }
@@ -263,7 +289,7 @@ export const prepareFunction: string = `async function prepare(action, multiline
   const hit = document.elementFromPoint(point.x, point.y)
   if (hit === null) return blocked('hit-target')
   if (hit !== element && !element.contains(hit)) return blocked('hit-target', describe(hit))
-  const armed = arm(element, action, point, origins)
+  const armed = arm(element, action, action === 'fill' ? null : point, origins)
   if (action === 'fill') {
     element.focus()
     element.select()
@@ -274,7 +300,18 @@ export const prepareFunction: string = `async function prepare(action, multiline
       return unready
     }
   }
-  return { status: 'ready', x: point.x, y: point.y, token: armed.token }
+  return { status: 'ready', point, token: armed.token }
+}`
+
+/**
+ * Arms the guard for a key sent to the page's keyboard, which goes to whatever holds the focus: any element of
+ * this document may take it. Returns the arming's token.
+ */
+export const armKeyboardFunction: string = `function armKeyboard() {
+  ${describeHelper}
+  ${guardHelpers}
+  ${armHelper}
+  return arm(document, 'press', null, null).token
 }`
 
 /** Waits until the guard armed with `token` has seen its input through, and returns what it saw. */
@@ -295,6 +332,18 @@ export const disarmFunction: string = `function disarm(token) {
 /** The first typing this document's guard stopped while nothing was armed for it, or null: text meant for another document. */
 export const strayFunction: string = `function stray() {
   return globalThis.retestGuard?.stray ?? null
+}`
+
+/**
+ * Whether the visible text of the document, `document.body.innerText`, holds each query, read as
+ * `pageTextHolds` reads it: whitespace normalised, and in any case when the query ignores case. Only the
+ * answers leave the page.
+ */
+export const readPageFunction: string = `function readPage(queries) {
+  ${textMatchHelper}
+  const text = normalize(document.body?.innerText ?? '')
+  const lowered = text.toLowerCase()
+  return queries.map((query) => (query.ignoreCase ? lowered.includes(normalize(query.text).toLowerCase()) : text.includes(normalize(query.text))))
 }`
 
 /** Reads the document origin's `localStorage`, or null when the document may not use it. */

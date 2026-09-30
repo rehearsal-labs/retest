@@ -327,7 +327,8 @@ function checkDiscriminated(node: DiscriminatedUnionNode, value: unknown, path: 
   checkObject(option, value, path, found)
 }
 
-function isArray(value: unknown): value is readonly unknown[] {
+/** True for an array, read as a list of values of unknown type. */
+export function isArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value)
 }
 

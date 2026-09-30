@@ -39,10 +39,25 @@ export type AppSettings = {
   readonly start?: StartCommand | undefined
 }
 
-/** What every target takes. `headless` defaults to true; `emulate` names a device or describes a screen. */
+/**
+ * A proxy the target's pages send their requests through. Chrome sends loopback addresses around it unless
+ * `bypass` holds `<-loopback>`.
+ */
+export type ProxySettings = {
+  /** The proxy's address: http, https, socks4 or socks5, with no user name or password in it. */
+  readonly server: string
+  /** Chrome's bypass rules, such as 'localhost', '*.internal' or '<-loopback>'. */
+  readonly bypass?: readonly string[] | undefined
+}
+
+/**
+ * What every target takes. `headless` defaults to true; `emulate` names a device or describes a screen; `proxy`
+ * sends the pages' requests through a proxy.
+ */
 export type TargetSettings = {
   readonly headless?: boolean | undefined
   readonly emulate?: DeviceName | CustomEmulation | undefined
+  readonly proxy?: ProxySettings | undefined
 }
 
 /** `executablePath` is relative to the config's folder, and falls back to the RETEST_CHROMIUM environment variable. */

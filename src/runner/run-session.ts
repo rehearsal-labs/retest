@@ -1,6 +1,7 @@
 import type { NewPageOptions, OwnedBrowser } from '../browser/contract.ts'
 import type { EventBody, EventOrigin } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
+import type { HostCheckResult } from '../protocol/host-check.ts'
 import type { Evidence, FileResult, RunResult, TestResult } from '../protocol/result.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 import type { Variant } from '../protocol/variant.ts'
@@ -9,6 +10,7 @@ import type { ProcessExit } from '../shared/process-exit.ts'
 import type { RunStore } from '../store/run-store.ts'
 import type { FindExecutable, LaunchBrowser, ReadyTarget } from './browser-pool.ts'
 import type { ChildOutput, RunOptions } from './contract.ts'
+import type { HostChecks, TestHostCheck } from './host-checks.ts'
 import type { RunOutcome } from './outcome.ts'
 import type { CollectedTests, Plan, PlannedTest } from './plan.ts'
 import type { RunConfig } from './run-config.ts'
@@ -32,6 +34,7 @@ import { newAttemptId } from './attempt-id.ts'
 import { bounded } from './bounded.ts'
 import { BrowserPool } from './browser-pool.ts'
 import { EventLog } from './event-log.ts'
+import { hostChecksScopeProblem, hostChecksShapeProblem, notRunHostChecks, recordedHostChecks, testHostChecks } from './host-checks.ts'
 import { lastRunOf, writeLastRun } from './last-run.ts'
 import { loadTests, missingFileFailure } from './load-tests.ts'
 import { runOutcome, stopSignalOf, testStatus } from './outcome.ts'
@@ -39,6 +42,7 @@ import { collectedTest, planTests } from './plan.ts'
 import { endedBeforeTest, fileProcessFailure, laterTestsReason, reportedErrors } from './process-failures.ts'
 import { Redactor } from './redactor.ts'
 import { runConfig } from './run-config.ts'
+import { runHostChecks } from './run-host-checks.ts'
 import { abortGraceMs, RunningTest } from './running-test.ts'
 import { scheduleRun } from './schedule.ts'
 import { SecretFiller, secretValuesProblem, secretVariables } from './secrets.ts'
@@ -56,10 +60,21 @@ export type RunSessionOptions = {
 }
 
 type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
-/** One attempt as its events and result name it. `variant` is absent in milestone 1's mode. */
-type Described = { testId: string; attemptId: string; test: PlannedTest; targets: Variant; variant?: Variant }
+/**
+ * One attempt as its events and result name it, and the host checks it has. `variant` is absent in milestone 1's
+ * mode.
+ */
+type Described = { testId: string; attemptId: string; test: PlannedTest; targets: Variant; variant?: Variant; hostChecks: TestHostCheck[] }
 type TestOutcome = { result: TestResult; laterTests?: Failure }
-type Finished = Described & { startedAt: number; failure: Failure | undefined; assertionCount: number; evidence: Evidence[]; cleanupFailures: Failure[] }
+/** `checked` is each host check's result once they ran; without it, every check is listed as not run. */
+type Finished = Described & {
+  startedAt: number
+  failure: Failure | undefined
+  assertionCount: number
+  evidence: Evidence[]
+  cleanupFailures: Failure[]
+  checked?: HostCheckResult[]
+}
 /** What a file's visits added up to: its results in the order they ran, and its process failures. */
 type FileRecord = { tests: TestResult[]; failures: Failure[] }
 type Output = { write: (stream: ChildOutput['stream'], text: string) => void; end: () => void }
@@ -99,6 +114,9 @@ export class RunSession {
   readonly #servers: AppServers
   readonly #secrets: SecretFiller
   readonly #hiddenVariables: string[]
+  /** The run's host checks, once their shape is known to be right. */
+  readonly #hostChecks: HostChecks | undefined
+  readonly #hostChecksProblem: Failure | undefined
   #stopReason: Failure | undefined
   #interruption: Failure | undefined
   #test: { running: RunningTest; browsers: readonly OwnedBrowser[] } | undefined
@@ -145,6 +163,8 @@ export class RunSession {
     const declared = apps.kind === 'config' ? apps.config.secrets : new Map()
     this.#secrets = new SecretFiller(apps.kind === 'config' ? apps.secrets : new Map(), declared, this.#redactor)
     this.#hiddenVariables = secretVariables(declared)
+    this.#hostChecksProblem = options.hostChecks === undefined ? undefined : hostChecksShapeProblem(options.hostChecks)
+    this.#hostChecks = this.#hostChecksProblem === undefined ? options.hostChecks : undefined
   }
 
   async run(): Promise<RunResult> {
@@ -164,12 +184,14 @@ export class RunSession {
     }
   }
 
+  // Checks whose shape is wrong are left out: the run refuses them before it loads anything.
   #emitRunStarted(): void {
     const { apps, timeouts, commandLineTimeouts } = this.#options
     const recorded =
       apps.kind === 'config'
         ? { config: relativePosixPath(this.#rootDir, apps.config.file), ...recordedBaseUrls(apps.baseUrls) }
         : { ...(apps.baseUrl === undefined ? {} : { baseUrl: withoutCredentials(apps.baseUrl) }), browserPath: apps.browserPath }
+    const checks = this.#hostChecks === undefined ? {} : { hostChecks: recordedHostChecks(this.#hostChecks) }
     this.#events.emit({
       type: 'run.started',
       retestVersion,
@@ -177,23 +199,26 @@ export class RunSession {
       platform: `${process.platform}-${process.arch}`,
       rootDir: this.#rootDir,
       files: this.#files,
-      options: { ...recorded, timeouts, ...(commandLineTimeouts === undefined ? {} : { commandLineTimeouts }), reporter: this.#reporterNames },
+      options: { ...recorded, timeouts, ...(commandLineTimeouts === undefined ? {} : { commandLineTimeouts }), reporter: this.#reporterNames, ...checks },
     })
   }
 
-  // A run the command line set up wrongly loads nothing, and neither does one that matches no test.
+  // A run the command line or the caller set up wrongly loads nothing, and neither does one that matches no
+  // test. Host checks that name no test the run will run, or an app a test does not use, start nothing.
   async #runFiles(): Promise<FileResult[]> {
     const { apps } = this.#options
     const configured = runConfig(apps)
     const selection = this.#options.selection ?? {}
     const problem = configured.ok ? selectionProblem(selection, this.#files, configured.config) : configured.failure
     const secrets = apps.kind === 'config' ? secretValuesProblem(apps.secrets) : undefined
-    for (const found of [problem, secrets]) if (found !== undefined) this.#failRun(found)
+    for (const found of [problem, secrets, this.#hostChecksProblem]) if (found !== undefined) this.#failRun(found)
     if (!configured.ok) return this.#files.map((file) => this.#collectionFailed(file, this.#notLoaded()))
     const planned: Planned = { config: configured.config, plan: await this.#plan(configured.config) }
     const schedule = scheduleRun(planned.plan, selection, planned.config.variants)
     const collected = planned.plan.files.some((file) => file.ok && file.tests.length > 0)
     if (this.#stopReason === undefined && schedule.selected === 0 && collected) this.#failRun(emptySelectionFailure(selection))
+    const checks = this.#stopReason === undefined ? this.#hostChecksScope(planned.plan, schedule.visits) : undefined
+    if (checks !== undefined) this.#failRun(checks)
     for (const visit of schedule.visits) await this.#runVisit(visit, planned)
     return planned.plan.files.map((file) => (file.ok ? this.#fileResult(file.file) : { file: file.file, collection: 'failed', failure: file.failure, tests: [] }))
   }
@@ -201,6 +226,13 @@ export class RunSession {
   #failRun(problem: Failure): void {
     this.#runFailures.push(problem)
     this.#stopReason ??= problem
+  }
+
+  #hostChecksScope(plan: Plan, visits: readonly Visit[]): Failure | undefined {
+    if (this.#hostChecks === undefined) return undefined
+    const tests = [...new Map(visits.flatMap((visit) => visit.attempts).map(({ test }) => [test.testId, test])).values()]
+    const unloaded = plan.files.flatMap((file) => (file.ok ? [] : [file.file]))
+    return hostChecksScopeProblem(this.#hostChecks, tests, unloaded)
   }
 
   async #plan(config: RunConfig): Promise<Plan> {
@@ -317,11 +349,15 @@ export class RunSession {
     if (child.exit !== undefined) return { result: await this.#bodyNotRun(context, described, pages, child.exit) }
     const report = await this.#runBody(child, pages, described, planned.config)
     if (report.endedBeforeStart !== undefined) return { result: await this.#bodyNotRun(context, described, pages, report.endedBeforeStart) }
-    const evidence = report.failure === undefined ? [] : await captureFailure(context, pages)
-    const unsaved = report.failure === undefined ? await this.#saveSetupState(context, described, pages) : undefined
+    // Host checks read the pages as the body left them, so they come before the screenshot and the saved state.
+    const checked = report.failure === undefined ? await runHostChecks(context, pages, described.hostChecks) : undefined
+    const verdict = report.failure ?? checked?.failure
+    const evidence = verdict === undefined ? [] : await captureFailure(context, pages)
+    const unsaved = verdict === undefined ? await this.#saveSetupState(context, described, pages) : undefined
     const cleanupFailures = await disposePages(context, pages)
-    const problem = report.failure ?? unsaved
-    const result = this.#finishTest({ ...finished, failure: problem, assertionCount: report.assertionCount, evidence, cleanupFailures })
+    const problem = verdict ?? unsaved
+    const ran = checked === undefined ? {} : { checked: checked.results }
+    const result = this.#finishTest({ ...finished, failure: problem, assertionCount: report.assertionCount, evidence, cleanupFailures, ...ran })
     const laterTests = laterTestsReason(test.registered.name, report)
     return laterTests === undefined ? { result } : { result, laterTests }
   }
@@ -345,7 +381,7 @@ export class RunSession {
 
   async #openPages(context: PagesContext, described: Described, ready: ReadonlyMap<string, ReadyTarget>, config: RunConfig): Promise<Opened<AppPage[]>> {
     const pages: AppPage[] = []
-    for (const [app, { browser, emulation }] of ready) {
+    for (const [app, { browser, emulation, proxy }] of ready) {
       const state = this.#restoredState(described, app)
       if (state !== undefined && !state.ok) {
         await disposePages(context, pages)
@@ -356,6 +392,7 @@ export class RunSession {
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(emulation === undefined ? {} : { emulation }),
         ...(state === undefined ? {} : { storageState: state.value.storage }),
+        ...(proxy === undefined ? {} : { proxy }),
       }
       const opened = await openPage(context, browser, options)
       if (!opened.ok) {
@@ -454,14 +491,16 @@ export class RunSession {
     }
     const { testId: id, attemptId, assertionCount } = finished
     this.#emitFor(finished, { type: 'test.finished', testId: id, attemptId, status, durationMs, assertionCount, ...outcome })
-    return this.#settled(finished, { ...this.#resultHead(finished), status, durationMs, assertionCount, ...outcome, evidence: finished.evidence })
+    const checks = hostCheckResults(finished.checked ?? notRunHostChecks(finished.hostChecks))
+    return this.#settled(finished, { ...this.#resultHead(finished), status, durationMs, assertionCount, ...outcome, ...checks, evidence: finished.evidence })
   }
 
   #notRun(described: Described, reason: Failure, cleanupFailures: Failure[] = []): TestResult {
     const cleanup = cleanupFailures.length === 0 ? {} : { cleanupFailures }
     const { testId: id, attemptId } = described
     this.#emitFor(described, { type: 'test.finished', testId: id, attemptId, status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup })
-    return this.#settled(described, { ...this.#resultHead(described), status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup, evidence: [] })
+    const checks = hostCheckResults(notRunHostChecks(described.hostChecks))
+    return this.#settled(described, { ...this.#resultHead(described), status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup, ...checks, evidence: [] })
   }
 
   #resultHead({ test, testId: id, attemptId, variant }: Described): Pick<TestResult, 'testId' | 'name' | 'file' | 'location' | 'describePath' | 'variant' | 'variantKey' | 'setup' | 'attemptId'> {
@@ -471,7 +510,7 @@ export class RunSession {
   }
 
   #describe({ test, targets }: Attempt, planned: Planned): Described {
-    const described = { testId: test.testId, attemptId: newAttemptId(), test, targets }
+    const described = { testId: test.testId, attemptId: newAttemptId(), test, targets, hostChecks: testHostChecks(this.#hostChecks, test) }
     return planned.config.variants ? { ...described, variant: targets } : described
   }
 
@@ -524,7 +563,9 @@ export class RunSession {
   }
 
   #spawn(onOutput: Output['write']): TestFileProcess {
-    const child = TestFileProcess.spawn({ onOutput, hiddenVariables: this.#hiddenVariables })
+    const { testEnvironment } = this.#options
+    const environment = testEnvironment === undefined ? {} : { environment: testEnvironment }
+    const child = TestFileProcess.spawn({ onOutput, hiddenVariables: this.#hiddenVariables, ...environment })
     this.#processes.add(child)
     return child
   }
@@ -642,6 +683,11 @@ function withOutcome(facts: ResultFacts, outcome: RunOutcome): RunResult {
   const { files, ...head } = facts
   const { complete, status, exitCode, counts, failure: problem } = outcome
   return { ...head, complete, status, exitCode, counts, ...(problem === undefined ? {} : { failure: problem }), files }
+}
+
+// A result lists host checks only for a test that had some.
+function hostCheckResults(results: HostCheckResult[]): { hostChecks?: HostCheckResult[] } {
+  return results.length === 0 ? {} : { hostChecks: results }
 }
 
 function describePath(test: PlannedTest): { describePath?: string[] } {

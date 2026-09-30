@@ -5,6 +5,7 @@ import { readCodeFrame } from './code-frame.ts'
 import { formatInspectCommand } from './commands.ts'
 import { diffLines } from './diff.ts'
 import {
+  callLocator,
   callName,
   describeFileProblem,
   describeWait,
@@ -18,10 +19,20 @@ import {
   failureLabel,
   formatDetail,
   formatDuration,
+  messageLines,
   quoteRecorded,
   shownValueLength,
   statusLabel,
 } from './format.ts'
+import {
+  describeHostCheck,
+  describeHostCheckWait,
+  hostCheckExpectation,
+  hostCheckHeading,
+  hostCheckMessageRepeats,
+  hostCheckPage,
+  type FailedHostCheck,
+} from './host-checks.ts'
 import { visibleLength, type Style } from './style.ts'
 
 export type HumanCardOptions = {
@@ -57,18 +68,42 @@ function heading(card: FailureCard, style: Style): string {
   return `  ${style.red('✗')} ${style.bold(card.title)}${variant}  ${style.dim(after)}`
 }
 
+// The failure first, then each other host check that failed, then the host checks that never ran.
 function summary(card: FailureCard, style: Style): string[] {
+  const lines = card.hostCheck === undefined ? callLines(card, style) : hostCheckLines(card.hostCheck, style)
+  for (const [key, value] of unshownDetails(card)) lines.push(field(key, formatDetail(value)))
+  for (const check of card.alsoFailedChecks) lines.push('', ...hostCheckLines(check, style))
+  if (card.notRunChecks.length > 0) lines.push('')
+  for (const { check, app } of card.notRunChecks) lines.push(field('Not run', `host check ${describeHostCheck(check, app)}`))
+  return lines
+}
+
+function callLines(card: FailureCard, style: Style): string[] {
   const { failure, call } = card
   const values = recordedValues(call)
+  const locator = call === undefined ? undefined : callLocator(call)
   const lines = [field(style.red(style.bold(headline(card))), call === undefined ? '' : callName(call))]
-  if (failure !== undefined && !messageRepeatsValues(card)) lines.push(...failure.message.split('\n').map((line) => indent + line))
-  if (call?.locator !== undefined) lines.push(field('Locator', describeLocator(call.locator)))
+  if (failure !== undefined && !messageRepeatsValues(card)) lines.push(...indented(failure.message))
+  if (locator !== undefined) lines.push(field('Locator', describeLocator(locator)))
   if (call?.pageUrl !== undefined) lines.push(field('Page', call.pageUrl))
   if (values !== undefined) lines.push(...valueLines(values, style))
   if (call?.type === 'assertion.failed' && call.comparison !== undefined) lines.push(field('Compared', call.comparison))
   if (call !== undefined) lines.push(field('Waited', describeWait(call, formatDuration)))
-  for (const [key, value] of unshownDetails(card)) lines.push(field(key, formatDetail(value)))
   return lines
+}
+
+// What the check asked, what the page showed it, and how long it looked.
+function hostCheckLines(check: FailedHostCheck, style: Style): string[] {
+  const { failure, looked } = check
+  const lines = [field(style.red(style.bold(failureLabel(failure.class))), hostCheckHeading(check.check, check.app))]
+  if (!hostCheckMessageRepeats(check)) lines.push(...indented(failure.message))
+  lines.push(field('Expected', hostCheckExpectation(check.check)))
+  if (looked !== undefined) lines.push(field('Page', hostCheckPage(check.check, looked.actual)), field('Waited', describeHostCheckWait(looked, formatDuration)))
+  return lines
+}
+
+function indented(message: string): string[] {
+  return messageLines(message).map((line) => indent + line)
 }
 
 function headline(card: FailureCard): string {
@@ -122,7 +157,7 @@ function closing(card: FailureCard, options: HumanCardOptions): string[] {
   const lines = card.screenshots.map((path) => field('Screenshot', path))
   for (const problem of card.evidenceProblems) lines.push(field('Screenshot', `not saved: ${problem}`))
   for (const failure of card.cleanupFailures) {
-    lines.push(field(options.style.red(failureLabel(failure.class)), failure.message))
+    lines.push(field(options.style.red(failureLabel(failure.class)), messageLines(failure.message).join('\n')))
   }
   if (card.rerun !== undefined) lines.push(field('Rerun', card.rerun))
   const inspect = formatInspectCommand({ runFolder: options.runFolder, testId: card.test?.testId, targets: card.test?.targets })

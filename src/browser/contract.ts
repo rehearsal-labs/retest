@@ -1,20 +1,35 @@
 import type { CommandResult, PageCommand } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { Failure } from '../protocol/failures.ts'
+import type { TextQuery } from '../protocol/host-check.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 
 export type { Emulation } from '../protocol/emulation.ts'
+export type { TextQuery } from '../protocol/host-check.ts'
 
 export type LaunchOptions = { executablePath: string; logFile: string; headless: boolean }
+
+/**
+ * A browser context's proxy: Chrome's proxy server, `scheme://host:port`, and its bypass rules. Loopback
+ * addresses go around the proxy unless `bypass` holds `<-loopback>`.
+ */
+export type ProxyOptions = { server: string; bypass: readonly string[] }
 
 /**
  * How to open a page. Relative `goto` URLs resolve against `baseUrl`. `emulation` applies before the page loads
  * anything; without its `userAgent` the page keeps the browser's own. `storageState` is restored before the
  * test's first command: its cookies in the new context, and each origin's `localStorage` before that origin's
- * own scripts run.
+ * own scripts run. `proxy` is a setting of the page's new browser context, so every request of the page goes
+ * through it.
  */
-export type NewPageOptions = { baseUrl?: string; emulation?: Emulation; storageState?: StorageState }
+export type NewPageOptions = { baseUrl?: string; emulation?: Emulation; storageState?: StorageState; proxy?: ProxyOptions }
+
+/**
+ * What `readPage` saw. `url` is the main frame's origin and path as of its latest commit. `navigating` is true
+ * while the frame is opening another document. `found` answers each query in order.
+ */
+export type PageReading = { url: string | undefined; navigating: boolean; found: boolean[] }
 
 /**
  * A `fill` whose value is the text to type. The parent reads a secret, and checks the page's origin may take
@@ -30,7 +45,7 @@ export type NewPageOptions = { baseUrl?: string; emulation?: Emulation; storageS
  */
 export type ResolvedFill = { kind: 'fill'; locator: LocatorRecipe; value: string; secret?: string; allowedOrigins?: readonly string[] }
 
-/** A page command as the page runs it: every `fill` carries the text to type. */
+/** A page command as the page runs it: every `fill` carries the text to type, and every other command is as the test sent it. */
 export type BrowserCommand = Exclude<PageCommand, { kind: 'fill' }> | ResolvedFill
 
 /**
@@ -75,6 +90,12 @@ export interface OwnedPage {
    * it returns holds session cookies: it goes to the run folder's `states` and nowhere else.
    */
   captureState(timeoutMs: number): Promise<StorageState>
+  /**
+   * Reads the page's address and whether its visible text holds each query, within `timeoutMs`. Sends no input.
+   * The visible text is `document.body.innerText` of the top-level document, read by `pageTextHolds`, and never
+   * leaves the page: only the answers do.
+   */
+  readPage(queries: readonly TextQuery[], timeoutMs: number): Promise<PageReading>
   /** Main frame navigations. `url` is the origin and path. Returns a function that removes the listener. */
   onNavigation(listener: (url: string) => void): () => void
   /** Disposes the page's browser context. */

@@ -57,7 +57,7 @@ export async function inOriginDocuments<T>(
 
 async function openOrigin(session: CdpSession, origin: string, deadline: Deadline): Promise<IsolatedWorld> {
   const frameId = await mainFrameId(session, deadline)
-  const context = { session, baseUrl: undefined, mainFrameId: () => frameId, currentUrl: () => undefined }
+  const context = { session, baseUrl: undefined, mainFrameId: () => frameId, currentUrl: () => undefined, proxyServer: undefined }
   const opened = await navigate(context, new URL('/', origin).href, deadline, new Dispatch())
   if (!opened.ok) {
     throw new BrowserError({ class: 'setup_failed', message: `Could not open an empty document of ${origin}: ${opened.failure.message}` })

@@ -13,6 +13,7 @@ export type TaskAppMode =
   | 'noisy'
   | 'covered-on-press'
   | 'covered-on-hover'
+  | 'wrong-page'
 
 export type Mode = {
   readonly page?: PageChanges
@@ -83,6 +84,12 @@ document.querySelector('[data-testid="save-task"]').addEventListener('click', ()
 })
 `
 
+// A save moves the page's address to /drafts, and the page still shows the saved task, as an app that files it in
+// the wrong place would.
+const MOVE_ON_SAVE = `
+document.querySelector('[data-testid="save-task"]').addEventListener('click', () => history.pushState(null, '', '/drafts'))
+`
+
 export const MODES: Readonly<Record<TaskAppMode, Mode>> = {
   ok: {},
   broken: { save: (title) => Array.from(title).slice(0, -1).join('') },
@@ -96,6 +103,7 @@ export const MODES: Readonly<Record<TaskAppMode, Mode>> = {
   noisy: { page: { script: LOG_TO_CONSOLE } },
   'covered-on-press': { page: { script: COVER_ON_PRESS } },
   'covered-on-hover': { page: { script: COVER_ON_HOVER } },
+  'wrong-page': { page: { script: MOVE_ON_SAVE } },
 }
 
 export function isTaskAppMode(value: string): value is TaskAppMode {

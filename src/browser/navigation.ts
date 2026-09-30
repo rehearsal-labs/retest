@@ -10,12 +10,16 @@ import { readProtocol } from './cdp-results.ts'
 import { connectionEnded } from './command-failures.ts'
 import { originAndPath } from './page-url.ts'
 
-/** What navigation needs from a page. `currentUrl` is the main frame's address as the browser last reported it. */
+/**
+ * What navigation needs from a page. `currentUrl` is the main frame's address as the browser last reported it,
+ * and `proxyServer` the proxy the page's context sends its requests through, if any.
+ */
 export type NavigationContext = {
   session: CdpSession
   baseUrl: string | undefined
   mainFrameId: () => string
   currentUrl: () => URL | undefined
+  proxyServer: string | undefined
 }
 
 // A session that detached or was blocked will never report the load.
@@ -28,6 +32,15 @@ const navigateSchema: Schema<Navigation> = s.object({ loaderId: s.optional(s.str
 const lifecycleSchema = s.object({ loaderId: s.string(), name: s.string() })
 const committedSchema = s.object({ frame: s.object({ parentId: s.optional(s.string()), loaderId: s.string() }) })
 const sameDocumentSchema = s.object({ frameId: s.string() })
+
+// The errors Chrome gives a navigation its proxy failed, rather than the site.
+const proxyErrors: ReadonlySet<string> = new Set([
+  'net::ERR_PROXY_CONNECTION_FAILED',
+  'net::ERR_TUNNEL_CONNECTION_FAILED',
+  'net::ERR_PROXY_AUTH_UNSUPPORTED',
+  'net::ERR_PROXY_CERTIFICATE_INVALID',
+  'net::ERR_NO_SUPPORTED_PROXIES',
+])
 
 /**
  * Opens a URL in the main frame and waits for the `load` event of the document it returned, or of a document
@@ -51,7 +64,7 @@ export async function navigate(page: NavigationContext, url: string, deadline: D
     if (started.errorText !== undefined) {
       // The browser shows its error page as a document of its own; waiting for it lets a screenshot show it.
       if (started.loaderId !== undefined) await watcher.loaded(started.loaderId, deadline)
-      return { ok: false, failure: navigationFailed(address, started.errorText) }
+      return { ok: false, failure: navigationFailed(address, started.errorText, page.proxyServer) }
     }
     const outcome =
       started.loaderId === undefined ? await watcher.movedWithinDocument(deadline) : await watcher.loaded(started.loaderId, deadline)
@@ -93,9 +106,17 @@ function notLoaded(address: URL, deadline: Deadline): CommandResult {
   }
 }
 
-function navigationFailed(address: URL, errorText: string): Failure {
+// A proxy that failed is a problem of the setup, not of the app.
+function navigationFailed(address: URL, errorText: string, proxy: string | undefined): Failure {
   const url = originAndPath(address)
-  return { class: 'not_actionable', message: `Could not open ${url}: ${errorText}.`, details: { url, errorText } }
+  if (proxy === undefined || !proxyErrors.has(errorText)) {
+    return { class: 'not_actionable', message: `Could not open ${url}: ${errorText}.`, details: { url, errorText } }
+  }
+  return {
+    class: 'setup_failed',
+    message: `Could not open ${url} through the proxy ${proxy}: ${errorText}. The proxy failed, not the app.`,
+    details: { url, errorText, proxy },
+  }
 }
 
 /** Collects the main frame's navigation events from the moment it is made, so none can arrive before Retest listens. */
