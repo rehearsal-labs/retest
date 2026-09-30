@@ -10,16 +10,32 @@ import { readProtocol, request, sendOptions } from './cdp-results.ts'
 /** A value a page function returned, and the execution context of the document it ran in. */
 export type InDocument<T> = { value: T; context: number }
 
+/** An argument to a page function: a JSON value, or an object that lives in the world the function runs in. */
+export type WorldArgument = { value: unknown } | { objectId: string }
+
+/**
+ * One document's world while a call's arguments are made in it. Objects made there for the call belong to
+ * `objectGroup`, which is released once the call is done.
+ */
+export type WorldScope = { session: CdpSession; context: number; objectGroup: string }
+
+/** Makes a call's arguments in the world of the document it runs in, such as elements found there. */
+export type ArgumentsIn = (scope: WorldScope, deadline: Deadline) => Promise<readonly WorldArgument[]>
+
+/** A page function's arguments: JSON values, or arguments made afresh in each document the call reaches. */
+export type WorldArguments = readonly unknown[] | ArgumentsIn
+
 type Creation = { readonly promise: Promise<number>; context: number | undefined }
 
 const worldName = 'retest'
 const retryPauseMs = 10
 
-// What Chrome answers when a call reaches a world whose document has gone.
+// What Chrome answers when a call reaches a world whose document has gone, or is cut off by a navigation.
 const goneContextMessages = new Set([
   'Cannot find context with specified id',
   'Execution context was destroyed.',
   'No frame for given id found',
+  'Inspected target navigated or closed',
 ])
 
 const worldSchema = s.object({ executionContextId: s.number({ integer: true }) })
@@ -35,6 +51,7 @@ export class IsolatedWorld {
   readonly #session: CdpSession
   readonly #frameId: () => string
   #creation: Creation | undefined
+  #calls = 0
 
   constructor(session: CdpSession, frameId: () => string) {
     this.#session = session
@@ -53,19 +70,23 @@ export class IsolatedWorld {
   }
 
   /**
-   * Calls a function in the world with JSON arguments and validates what it returns. A document that
-   * goes away during the call is not an answer, so the call runs again in the next document's world.
+   * Calls a function in the world and validates what it returns. A document that goes away during the call is
+   * not an answer, so the call runs again in the next document's world, with its arguments made again there.
    */
-  async call<T>(functionDeclaration: string, args: readonly unknown[], schema: Schema<T>, deadline: Deadline): Promise<T> {
+  async call<T>(functionDeclaration: string, args: WorldArguments, schema: Schema<T>, deadline: Deadline): Promise<T> {
     return (await this.enter(functionDeclaration, args, schema, deadline)).value
   }
 
   /** Like `call`, and also names the context it ran in, so that `callIn` can stay in that document. */
-  async enter<T>(functionDeclaration: string, args: readonly unknown[], schema: Schema<T>, deadline: Deadline): Promise<InDocument<T>> {
+  async enter<T>(functionDeclaration: string, args: WorldArguments, schema: Schema<T>, deadline: Deadline): Promise<InDocument<T>> {
     for (;;) {
       const context = await this.#context(deadline)
       try {
-        return { value: await this.callIn(context, functionDeclaration, args, schema, deadline), context }
+        const value =
+          typeof args === 'function'
+            ? await this.#callWithObjects(context, functionDeclaration, args, schema, deadline)
+            : await this.callIn(context, functionDeclaration, args, schema, deadline)
+        return { value, context }
       } catch (error) {
         if (!isGoneContext(error)) throw error
         if (this.#creation?.context === context) this.#creation = undefined
@@ -82,13 +103,35 @@ export class IsolatedWorld {
     schema: Schema<T>,
     deadline: Deadline,
   ): Promise<T> {
-    const params = {
-      functionDeclaration,
-      executionContextId: context,
-      arguments: args.map((value) => ({ value })),
-      returnByValue: true,
-      awaitPromise: true,
+    return this.#invoke(context, functionDeclaration, args.map((value) => ({ value })), schema, deadline)
+  }
+
+  async #callWithObjects<T>(
+    context: number,
+    functionDeclaration: string,
+    args: ArgumentsIn,
+    schema: Schema<T>,
+    deadline: Deadline,
+  ): Promise<T> {
+    this.#calls += 1
+    const scope = { session: this.#session, context, objectGroup: `retest-call-${this.#calls}` }
+    try {
+      return await this.#invoke(context, functionDeclaration, await args(scope, deadline), schema, deadline)
+    } finally {
+      this.#session.send('Runtime.releaseObjectGroup', { objectGroup: scope.objectGroup }).catch(() => {
+        // The objects go with their document, so a release that fails holds them only until it closes.
+      })
     }
+  }
+
+  async #invoke<T>(
+    context: number,
+    functionDeclaration: string,
+    args: readonly WorldArgument[],
+    schema: Schema<T>,
+    deadline: Deadline,
+  ): Promise<T> {
+    const params = { functionDeclaration, executionContextId: context, arguments: args, returnByValue: true, awaitPromise: true }
     const raw = await this.#session.send('Runtime.callFunctionOn', params, sendOptions(deadline))
     const source = callIdentity(this.#session)
     const { exceptionDetails } = readProtocol(exceptionSchema, raw, source)

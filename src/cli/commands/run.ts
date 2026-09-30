@@ -1,34 +1,46 @@
+import type { LoadedConfig } from '../../config/loaded.ts'
 import type { RunResult } from '../../protocol/result.ts'
 import type { Reporter } from '../../reporters/reporter.ts'
-import type { ChildOutput, RunOptions } from '../../runner/contract.ts'
+import type { ChildOutput, RunApps, RunOptions } from '../../runner/contract.ts'
 import type { CliDependencies, Command } from '../command.ts'
 import { readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { defaultRunFolder } from '../../protocol/run-folder.ts'
-import { defaultTimeouts, parseTimeouts, type Timeouts } from '../../protocol/timeouts.ts'
+import { defaultTimeouts, formatTimeouts, mergeTimeouts, parseTimeouts, type Timeouts } from '../../protocol/timeouts.ts'
 import { createAgentReporter } from '../../reporters/agent.ts'
+import { retestCommand } from '../../reporters/commands.ts'
 import { createHumanReporter } from '../../reporters/human.ts'
 import { createJsonlReporter } from '../../reporters/jsonl.ts'
 import { createStyle } from '../../reporters/style.ts'
 import { interruptedExitCode } from '../../runner/outcome.ts'
+import { resolveSecrets } from '../../runner/secrets.ts'
+import { listWords } from '../../shared/list-words.ts'
 import { isCodingAgent } from '../agent-detection.ts'
-import { flag, listWords, parseArguments, value, type ParsedArguments } from '../arguments.ts'
+import { flag, list, parseArguments, value, type ParsedArguments } from '../arguments.ts'
+import { configBaseUrls, singleBaseUrl } from '../base-urls.ts'
+import { defaultConfigFile, findConfig } from '../config-file.ts'
 import { CliError, UsageError } from '../errors.ts'
 import { statIfPresent } from '../file-system.ts'
+import { readTestScope, selectionArguments, selectionOptions } from '../selection.ts'
 import { shouldUseColor } from '../terminal.ts'
-import { resolveTestFiles } from '../test-files.ts'
 
 const reporterNames = ['human', 'jsonl', 'agent'] as const
 type ReporterName = (typeof reporterNames)[number]
 
-const timeoutList = Object.entries(defaultTimeouts)
-  .map(([name, milliseconds]) => `${name}=${milliseconds}`)
-  .join(',')
+const timeoutList = formatTimeouts(defaultTimeouts)
 
 const options = {
-  browser: value({ placeholder: '<path>', description: 'Chromium or Chrome executable to launch. Required.' }),
-  'base-url': value({ placeholder: '<url>', description: 'Address that relative page.goto paths resolve against' }),
+  config: value({ placeholder: '<path>', description: `Config file. Default: ${defaultConfigFile}` }),
+  browser: value({
+    placeholder: '<path>',
+    description: 'Run without a config, in this Chromium or Chrome executable.\nNot allowed when a config exists',
+  }),
+  'base-url': list({
+    placeholder: '<url>',
+    description: 'Address relative page.goto paths resolve against.\nWith a config, app=url sets one app. Repeat for other apps',
+  }),
+  ...selectionOptions,
   reporter: value({
     placeholder: '<name>',
     description: `Terminal output: ${listWords(reporterNames)}. jsonl prints only event lines`,
@@ -39,18 +51,20 @@ const options = {
     placeholder: '<list>',
     description: `Budgets in milliseconds, such as action=500,test=3000.\nDefaults: ${timeoutList}`,
   }),
-  headed: flag('Show the browser window'),
+  headed: flag('Show every browser window'),
   agent: flag('Print the short report for coding agents'),
   'no-agent': flag('Print the report for people, even when a coding agent is detected'),
 }
 
 export const runCommand: Command = {
   name: 'run',
-  usage: '<files...> --browser <path> [options]',
-  summary: 'Run the tests in each file in Chromium',
+  usage: '[files...] [options]',
+  summary: 'Run the tests in each file',
   description: [
-    'Runs the tests in each file, one file after another, in a Chromium browser launched for this run.',
-    'Files end in .retest.ts. Pass files, not folders.',
+    `Runs the tests with the apps and browsers in ${defaultConfigFile}, one file after another.`,
+    'With no files, it runs every .retest.ts file under this folder. Add :line to a file to run the test on that line.',
+    'Add #row after the line to run one row of a test.for, counted from 1, such as a.retest.ts:12#2.',
+    'Without a config, --browser runs the named files in one browser.',
     'The run folder keeps events.jsonl, result.json, logs and screenshots.',
     'When a coding agent is detected, the short agent report is printed unless you pick --reporter or --no-agent.',
   ].join('\n'),
@@ -58,7 +72,7 @@ export const runCommand: Command = {
   notes:
     'Exit codes: 0 every test passed, 1 a test failed its checks, 2 the run could not check everything, 130 interrupted, 143 stopped by SIGTERM.',
   async run(args, dependencies) {
-    const plan = planRun(parseArguments(options, args), dependencies)
+    const plan = await planRun(parseArguments(options, args), dependencies)
     const { reporter, onOutput } = createReporter(plan.reporter, plan.runFolder, dependencies)
     const watched = watchRunEnd(reporter)
     const runOptions = { ...plan.options, ...(onOutput === undefined ? {} : { onOutput }) }
@@ -92,15 +106,15 @@ function watchRunEnd(reporter: Reporter): WatchedReporter {
 }
 
 type RunPlan = { options: RunOptions; reporter: ReporterName; runFolder: string }
+type Parsed = ParsedArguments<typeof options>
 
 // Every check happens here, before the runner starts, so a bad command line never begins a run.
-function planRun(parsed: ParsedArguments<typeof options>, dependencies: CliDependencies): RunPlan {
+async function planRun(parsed: Parsed, dependencies: CliDependencies): Promise<RunPlan> {
   const { cwd } = dependencies
-  const files = resolveTestFiles(cwd, parsed.positionals)
-  const browser = parsed.value('browser')
-  if (browser === undefined) throw new UsageError('Name the browser to run in: --browser <path>.')
-  const baseUrl = checkBaseUrl(parsed.value('base-url'))
-  const timeouts = readTimeouts(parsed.value('timeouts'))
+  const mode = await chooseMode(parsed, dependencies)
+  const config = mode.kind === 'config' ? mode.config : undefined
+  const scope = readTestScope({ cwd, positionals: parsed.positionals, config, flags: selectionArguments(parsed) })
+  const commandLineTimeouts = readTimeouts(parsed.value('timeouts'))
   const reporter = chooseReporter({
     reporter: parsed.value('reporter'),
     agent: parsed.flag('agent'),
@@ -110,33 +124,58 @@ function planRun(parsed: ParsedArguments<typeof options>, dependencies: CliDepen
   const runFolder = parsed.value('output') ?? defaultRunFolder(new Date())
   const outputDir = resolve(cwd, runFolder)
   checkRunFolder(runFolder, outputDir)
+  const apps = mode.kind === 'config' ? configApps(parsed, mode.config, dependencies) : browserApps(parsed, mode.browser, cwd)
   const runOptions: RunOptions = {
-    files,
+    files: scope.files,
     rootDir: cwd,
-    browserPath: resolve(cwd, browser),
-    ...(baseUrl === undefined ? {} : { baseUrl }),
-    timeouts,
+    apps,
+    timeouts: mergeTimeouts(defaultTimeouts, config?.timeouts ?? {}, commandLineTimeouts),
+    commandLineTimeouts,
     outputDir,
     headless: !parsed.flag('headed'),
+    ...(scope.selection === undefined ? {} : { selection: scope.selection }),
     signal: dependencies.signal,
   }
   return { options: runOptions, reporter, runFolder }
 }
 
-function checkBaseUrl(text: string | undefined): string | undefined {
-  if (text === undefined) return undefined
-  const url = URL.parse(text)
-  if (url?.protocol === 'http:' || url?.protocol === 'https:') return text
-  throw new UsageError(
-    `--base-url must be a full http or https address, such as http://127.0.0.1:4173, received ${JSON.stringify(text)}.`,
-  )
+type Mode = { kind: 'browser'; browser: string } | { kind: 'config'; config: LoadedConfig }
+
+// A config and --browser are two ways to say what to run in, so only one may be given.
+async function chooseMode(parsed: Parsed, dependencies: CliDependencies): Promise<Mode> {
+  const given = parsed.value('config')
+  const browser = parsed.value('browser')
+  if (browser === undefined) {
+    const config = await findConfig({ cwd: dependencies.cwd, given }, dependencies)
+    if (config !== undefined) return { kind: 'config', config }
+    throw new UsageError(
+      `No ${defaultConfigFile} here. Run ${retestCommand} init to write one, or pass --browser <path> to run without a config.`,
+    )
+  }
+  if (given !== undefined) throw new UsageError('--browser runs without a config, so it cannot go with --config.')
+  if (statIfPresent(resolve(dependencies.cwd, defaultConfigFile)) !== undefined) {
+    throw new UsageError(`--browser runs without a config, but ${defaultConfigFile} is here. Leave out --browser to use its targets.`)
+  }
+  return { kind: 'browser', browser }
 }
 
-function readTimeouts(text: string | undefined): Timeouts {
-  if (text === undefined) return { ...defaultTimeouts }
+function browserApps(parsed: Parsed, browser: string, cwd: string): RunApps {
+  const baseUrl = singleBaseUrl(parsed.list('base-url'))
+  return { kind: 'browser', browserPath: resolve(cwd, browser), ...(baseUrl === undefined ? {} : { baseUrl }) }
+}
+
+function configApps(parsed: Parsed, config: LoadedConfig, dependencies: CliDependencies): RunApps {
+  const baseUrls = configBaseUrls(parsed.list('base-url'), config)
+  const secrets = resolveSecrets(config.secrets, dependencies.env)
+  if (!secrets.ok) throw new CliError(secrets.failure.message)
+  return { kind: 'config', config, ...(baseUrls === undefined ? {} : { baseUrls }), secrets: secrets.secrets }
+}
+
+function readTimeouts(text: string | undefined): Partial<Timeouts> {
+  if (text === undefined) return {}
   const parsed = parseTimeouts(text)
   if (!parsed.ok) throw new UsageError(`--timeouts: ${parsed.failure.message}`)
-  return { ...defaultTimeouts, ...parsed.value }
+  return parsed.value
 }
 
 type ReporterChoice = { reporter: string | undefined; agent: boolean; noAgent: boolean; detected: boolean }

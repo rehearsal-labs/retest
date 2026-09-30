@@ -4,6 +4,7 @@ import type { CommandResult } from '../protocol/commands.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
 import { s, type Schema } from '../protocol/schema.ts'
+import { isWebUrl } from '../protocol/url.ts'
 import { CdpAbortedError, CdpTimeoutError } from './cdp/errors.ts'
 import { readProtocol } from './cdp-results.ts'
 import { connectionEnded } from './command-failures.ts'
@@ -69,7 +70,7 @@ type Resolved = { ok: true; url: URL } | { ok: false; failure: Failure }
 function resolveTarget(url: string, baseUrl: string | undefined): Resolved {
   const target = URL.parse(url) ?? (baseUrl === undefined ? null : URL.parse(url, baseUrl))
   if (target === null) return { ok: false, failure: { class: 'usage', message: unresolvable(url, baseUrl) } }
-  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+  if (!isWebUrl(target)) {
     return {
       ok: false,
       failure: { class: 'unsupported', message: `goto opens http and https addresses, not ${target.protocol} ones.` },

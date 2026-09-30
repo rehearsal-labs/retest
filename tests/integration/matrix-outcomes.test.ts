@@ -26,7 +26,7 @@ test('passing save: one action sequence, the exact text, a passing result and ex
   assert.deepEqual(result.counts, { passed: 1, failed: 0, error: 0, notRun: 0, inconclusive: 0 })
   const browser = onlyEvent(run.events, 'browser.started')
   assert.deepEqual(result.browser, { product: browser.product, version: browser.version, executablePath: browser.executablePath })
-  const actions = eventsOf(run.events, 'action.completed').map((event) => [event.command, event.locator?.value ?? null])
+  const actions = eventsOf(run.events, 'action.completed').map((event) => [event.command, event.locator?.by === 'testId' ? event.locator.value : null])
   assert.deepEqual(actions, [
     ['goto', null],
     ['fill', 'task-title'],
@@ -97,7 +97,8 @@ test('unawaited work: a failed assertion nothing awaited still fails the test', 
   const swallowed = onlyTest(run)
   assert.equal(swallowed.status, 'failed')
   assert.equal(swallowed.failure?.class, 'not_found')
-  assert.equal(onlyEvent(run.events, 'assertion.failed').locator?.value, 'missing-task')
+  const missing = onlyEvent(run.events, 'assertion.failed').locator
+  assert.equal(missing?.by === 'testId' ? missing.value : undefined, 'missing-task')
   assert.ok(eventsOf(run.events, 'assertion.passed').length === 1, 'the later value check still ran and passed')
 })
 

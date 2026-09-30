@@ -27,7 +27,8 @@ import {
 import { runResultSchema, type RunResult } from '../../src/protocol/result.ts'
 import { parse, toJsonSchema, type Issue } from '../../src/protocol/schema.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
-import { withoutCredentials } from '../../src/protocol/url.ts'
+import { isWebUrl, originOf, readOrigin, withoutCredentials } from '../../src/protocol/url.ts'
+import { observationOf } from '../support/observation.ts'
 
 type AnySchema = Parameters<typeof parse>[0]
 
@@ -35,12 +36,22 @@ const location: SourceLocation = { file: 'examples/task.retest.ts', line: 7, col
 const failure: Failure = { class: 'check_failed', message: 'Expected "Release checklist", received "Release".', location }
 const locator: LocatorRecipe = { by: 'testId', value: 'saved-task' }
 const scope = { testId: 'examples/task.retest.ts > saves a task', attemptId: 'attempt-1' }
+const variant = { variant: { web: 'beta', mobile: 'pixel' }, variantKey: 'mobile=pixel,web=beta' }
 const pageUrl = 'http://127.0.0.1:4173/'
-const stamp: EventStamp = { schemaVersion: 1, runId: 'run-1', sequence: 0, time: '2026-09-30T09:15:00.000Z', elapsedMs: 0 }
+const pixel = { viewport: { width: 412, height: 923 }, deviceScaleFactor: 2.625, touch: true, isMobile: true }
+const stamp: EventStamp = {
+  schemaVersion: 1,
+  runId: 'run-1',
+  sequence: 0,
+  time: '2026-09-30T09:15:00.000Z',
+  elapsedMs: 0,
+  origin: 'parent',
+}
 
 const childEvents: ChildEvent[] = [
   { type: 'step.started', ...scope, stepId: 'step-1', name: 'save the task', location, session: 'page' },
   { type: 'step.started', ...scope, stepId: 'step-2', parentStepId: 'step-1', name: 'inner' },
+  { type: 'step.started', ...scope, stepId: 'step-3', name: 'beforeEach', hook: 'beforeEach', session: 'owner' },
   { type: 'step.finished', ...scope, stepId: 'step-2', status: 'passed', durationMs: 1.25 },
   { type: 'step.finished', ...scope, stepId: 'step-1', status: 'failed', durationMs: 12.5, failure },
   {
@@ -71,6 +82,19 @@ const childEvents: ChildEvent[] = [
     pageUrl,
     failure,
   },
+  {
+    type: 'assertion.failed',
+    ...scope,
+    matcher: 'toHaveCount',
+    locator: { by: 'role', role: 'listitem' },
+    expected: truncateText('3'),
+    actual: truncateText('2'),
+    attempts: 1,
+    durationMs: 5001,
+    soft: true,
+    session: 'member',
+    failure,
+  },
 ]
 
 const parentEvents: EventBody[] = [
@@ -89,6 +113,15 @@ const parentEvents: EventBody[] = [
     },
   },
   {
+    type: 'run.started',
+    retestVersion: '0.0.0',
+    node: 'v24.12.0',
+    platform: 'darwin',
+    rootDir: '/work',
+    files: ['examples/task.retest.ts'],
+    options: { config: 'retest.config.ts', baseUrls: { web: 'https://preview.example.test' }, timeouts: defaultTimeouts, reporter: 'human' },
+  },
+  {
     type: 'browser.started',
     product: 'Chrome',
     version: '141.0.0.0',
@@ -96,12 +129,46 @@ const parentEvents: EventBody[] = [
     pid: 4242,
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   },
+  {
+    type: 'browser.started',
+    product: 'Chrome',
+    version: '141.0.0.0',
+    userAgent: 'Mozilla/5.0',
+    pid: 4242,
+    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    app: 'mobile',
+    target: { name: 'pixel', device: 'Pixel 9', emulation: { ...pixel, userAgent: 'Mozilla/5.0 (Linux; Android 10; K)' } },
+  },
+  { type: 'app.started', app: 'web', ready: 'http://127.0.0.1:4173/health', pid: 5151, durationMs: 2100 },
+  { type: 'app.reused', app: 'web', ready: 'http://127.0.0.1:4173/health' },
+  { type: 'app.failed', app: 'web', ready: 'http://127.0.0.1:4173/health', failure: { class: 'setup_failed', message: 'Nothing answered.' } },
   { type: 'collection.completed', file: 'examples/task.retest.ts', tests: [{ testId: scope.testId, name: 'saves a task', location }] },
+  {
+    type: 'collection.completed',
+    file: 'tests/archive.retest.ts',
+    tests: [
+      {
+        testId: 'tests/archive.retest.ts > archive > archives a task',
+        name: 'archives a task',
+        location,
+        describePath: ['archive'],
+        tags: ['smoke'],
+        apps: ['web', 'mobile'],
+        variants: [variant.variant, { web: 'chromium', mobile: 'iphone' }],
+      },
+      { testId: 'tests/archive.retest.ts > signed-in', name: 'signed-in', location, apps: ['web'], setup: true, variants: [{ web: 'beta' }] },
+    ],
+  },
   { type: 'collection.failed', file: 'broken.retest.ts', failure: { class: 'collection_failed', message: 'Unexpected token.' } },
   { type: 'file.failed', file: 'examples/task.retest.ts', failure: { class: 'test_error', message: 'examples/task.retest.ts threw an error while no test was running: Error: late' } },
   { type: 'test.started', ...scope, name: 'saves a task', file: 'examples/task.retest.ts', location },
+  { type: 'test.started', ...scope, ...variant, name: 'archives a task', file: 'tests/archive.retest.ts', location, describePath: ['archive'], setup: true },
+  { type: 'state.saved', ...scope, ...variant, state: 'signed-in', app: 'web', target: 'beta' },
+  { type: 'state.restored', ...scope, ...variant, state: 'signed-in', app: 'web', target: 'beta' },
   { type: 'action.completed', ...scope, command: 'goto', pageUrl, durationMs: 40, location, session: 'page' },
   { type: 'action.completed', ...scope, stepId: 'step-1', command: 'fill', locator, pageUrl, durationMs: 8, valueLength: 17 },
+  { type: 'action.completed', ...scope, ...variant, command: 'fill', locator: { by: 'label', text: 'Password' }, durationMs: 8, secret: 'password', session: 'web' },
+  { type: 'action.completed', ...scope, ...variant, command: 'tap', locator: { by: 'role', role: 'button', name: 'Menu' }, durationMs: 30, session: 'mobile' },
   {
     type: 'action.failed',
     ...scope,
@@ -142,7 +209,11 @@ const parentEvents: EventBody[] = [
   },
 ]
 
-const events: RetestEvent[] = [...parentEvents, ...childEvents].map((body, sequence) => ({ ...stamp, sequence, ...body }))
+const events: RetestEvent[] = [
+  ...parentEvents.map((body): RetestEvent => ({ ...stamp, ...body })),
+  ...childEvents.map((body): RetestEvent => ({ ...stamp, origin: 'child', ...body })),
+  ...childEvents.map((body): RetestEvent => ({ ...stamp, origin: 'child', ...variant, ...body })),
+].map((event, sequence) => ({ ...event, sequence }))
 
 function roundTrips(schema: AnySchema, value: unknown): void {
   assert.deepEqual(parse(schema, JSON.parse(JSON.stringify(value))), { ok: true, value })
@@ -208,8 +279,29 @@ describe('events', () => {
     assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), value: 'Release checklist' }), [
       { path: '$.value', message: 'unknown key' },
     ])
-    assert.deepEqual(issues(retestEventSchema, { ...sample('action.failed'), locator: { by: 'role', value: 'button' } }), [
-      { path: '$.locator.by', message: 'expected "testId", received "role"' },
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.failed'), locator: { by: 'css', value: 'button' } }), [
+      { path: '$.locator.by', message: 'expected one of "testId", "role", "label", "text", received "css"' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('navigation'), origin: 'browser' }), [
+      { path: '$.origin', message: 'expected one of "parent", "child", received "browser"' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, without(sample('navigation'), 'origin')), [
+      { path: '$.origin', message: 'missing required key' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('test.finished'), variant: { web: 1 } }), [
+      { path: '$.variant.web', message: 'expected string, received 1' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('test.started'), setup: false }), [
+      { path: '$.setup', message: 'expected true, received false' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('state.saved'), cookies: [] }), [
+      { path: '$.cookies', message: 'unknown key' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('app.started'), pid: 0 }), [
+      { path: '$.pid', message: 'expected integer >= 1, received 0' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), command: 'hover' }), [
+      { path: '$.command', message: 'expected one of "goto", "fill", "click", "tap", received "hover"' },
     ])
     assert.deepEqual(issues(retestEventSchema, { ...sample('run.finished'), exitCode: 3 }), [
       { path: '$.exitCode', message: 'expected 0 or 1 or 2 or 130 or 143, received 3' },
@@ -244,8 +336,12 @@ describe('events', () => {
     }
     assert.deepEqual(
       issues(childEventSchema, { ...stamp, ...childEvents[0] }).map((issue) => issue.path),
-      ['$.schemaVersion', '$.runId', '$.sequence', '$.time', '$.elapsedMs'],
+      ['$.schemaVersion', '$.runId', '$.sequence', '$.time', '$.elapsedMs', '$.origin'],
     )
+    assert.deepEqual(issues(childEventSchema, { ...childEvents[0], ...variant }), [
+      { path: '$.variant', message: 'unknown key' },
+      { path: '$.variantKey', message: 'unknown key' },
+    ])
     const testFinished = without(sample('test.finished'), 'schemaVersion')
     assert.match(issues(childEventSchema, testFinished)[0]?.message ?? '', /^expected one of "step.started", /)
   })
@@ -255,7 +351,7 @@ describe('events', () => {
     assert.equal(schema.oneOf?.length, new Set(events.map((event) => event.type)).size)
     for (const option of schema.oneOf ?? []) {
       assert.equal(option.additionalProperties, false)
-      for (const key of ['schemaVersion', 'type', 'runId', 'sequence', 'time', 'elapsedMs']) {
+      for (const key of ['schemaVersion', 'type', 'runId', 'sequence', 'time', 'elapsedMs', 'origin']) {
         assert.ok(option.required?.includes(key), `${JSON.stringify(option.properties?.['type'])} requires ${key}`)
       }
       assert.equal(option.required?.includes('session'), false)
@@ -267,15 +363,22 @@ describe('commands', () => {
   const commands: PageCommand[] = [
     { kind: 'goto', url: '/' },
     { kind: 'fill', locator: { by: 'testId', value: 'task-title' }, value: 'Release checklist' },
+    { kind: 'fill', locator: { by: 'label', text: 'Password' }, value: { secret: 'password' } },
     { kind: 'click', locator: { by: 'testId', value: 'save-task' } },
+    { kind: 'tap', locator: { by: 'role', role: 'button', name: 'Menu', exact: false } },
     { kind: 'observe', locator },
+    { kind: 'observe', locator: { by: 'text', text: 'Saved' } },
   ]
+  const many = Array.from({ length: 101 }, (_, index) => ({ text: `Task ${index}`, visible: index % 2 === 0 }))
   const results: CommandResult[] = [
     { ok: true, kind: 'goto', url: pageUrl },
     { ok: true, kind: 'fill' },
     { ok: true, kind: 'click' },
-    { ok: true, kind: 'observe', observation: { count: 1, visible: true, text: 'Release checklist' } },
-    { ok: true, kind: 'observe', observation: { count: 0, visible: null, text: null } },
+    { ok: true, kind: 'tap' },
+    { ok: true, kind: 'observe', observation: observationOf([{ text: 'Release checklist', visible: true }]) },
+    { ok: true, kind: 'observe', observation: observationOf([{ text: '', visible: true }], 'Release checklist') },
+    { ok: true, kind: 'observe', observation: observationOf([]) },
+    { ok: true, kind: 'observe', observation: observationOf(many) },
     { ok: false, failure: { class: 'ambiguous', message: 'Two elements match.' } },
   ]
 
@@ -286,13 +389,26 @@ describe('commands', () => {
 
   test('malformed commands and results are rejected', () => {
     assert.deepEqual(issues(pageCommandSchema, { kind: 'hover', locator }), [
-      { path: '$.kind', message: 'expected one of "goto", "fill", "click", "observe", received "hover"' },
+      { path: '$.kind', message: 'expected one of "goto", "fill", "click", "tap", "observe", received "hover"' },
+    ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'fill', locator, value: { secret: 'password', value: 'hunter2' } }), [
+      { path: '$.value.value', message: 'unknown key' },
+    ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'fill', locator, value: 42 }), [
+      { path: '$.value', message: 'expected string or object, received 42' },
     ])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'click', locator, force: true }), [
       { path: '$.force', message: 'unknown key' },
     ])
-    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'observe', observation: { count: 1, visible: 'yes', text: null } }), [
+    const observation = observationOf([{ text: 'x', visible: true }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'observe', observation: { ...observation, visible: 'yes' } }), [
       { path: '$.observation.visible', message: 'expected boolean or null, received "yes"' },
+    ])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'observe', observation: without(observation, 'items') }), [
+      { path: '$.observation.items', message: 'missing required key' },
+    ])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'observe', observation: { ...observation, items: [{ text: 'x' }] } }), [
+      { path: '$.observation.items[0].visible', message: 'missing required key' },
     ])
     assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'fill', url: pageUrl }), [
       { path: '$.url', message: 'unknown key' },
@@ -306,6 +422,11 @@ describe('commands', () => {
     assert.equal(describeCommand({ kind: 'click', locator: quoted }), "getByTestId('it\\'s').click()")
     assert.equal(describeCommand({ kind: 'fill', locator: quoted, value: 'secret' }), "getByTestId('it\\'s').fill()")
     assert.equal(describeCommand({ kind: 'observe', locator: quoted }), "a look at getByTestId('it\\'s')")
+    assert.equal(describeCommand({ kind: 'tap', locator: quoted }), "getByTestId('it\\'s').tap()")
+    assert.equal(
+      describeCommand({ kind: 'fill', locator: { by: 'label', text: 'Password' }, value: { secret: 'password' } }),
+      `getByLabel('Password').fill(secret("password"))`,
+    )
   })
 })
 
@@ -316,12 +437,24 @@ describe('recorded URLs', () => {
     assert.equal(withoutCredentials('http://127.0.0.1:4173'), 'http://127.0.0.1:4173')
     assert.equal(withoutCredentials('not a url'), 'not a url')
   })
+
+  test('are web addresses only when http or https, and name their origin then', () => {
+    assert.deepEqual(['https://a.test/x', 'http://127.0.0.1:1', 'about:blank', 'file:///tmp/a', 'ws://a.test'].map((text) => isWebUrl(URL.parse(text))), [true, true, false, false, false])
+    assert.equal(isWebUrl(null), false)
+    assert.deepEqual(['http://127.0.0.1:4173/login?next=/', 'about:blank', 'data:text/html,x', 'nonsense', undefined].map(originOf), ['http://127.0.0.1:4173', undefined, undefined, undefined, undefined])
+  })
+
+  test('name an origin only when they are one, with or without a trailing slash', () => {
+    assert.deepEqual(['https://Example.test/', 'https://example.test', 'http://127.0.0.1:4173'].map(readOrigin), ['https://example.test', 'https://example.test', 'http://127.0.0.1:4173'])
+    assert.deepEqual(['https://example.test/login', 'https://example.test/?a=1', 'https://example.test/#top', 'ftp://example.test', 'example.test'].map(readOrigin), [undefined, undefined, undefined, undefined, undefined])
+  })
 })
 
 describe('messages', () => {
   const parentMessages: ParentMessage[] = [
     { type: 'collect', file: '/work/examples/task.retest.ts', rootDir: '/work' },
-    { type: 'run', ...scope, timeouts: { ...defaultTimeouts, action: 500 } },
+    { type: 'run', ...scope, timeouts: { ...defaultTimeouts, action: 500 }, apps: ['page'] },
+    { type: 'run', ...scope, timeouts: defaultTimeouts, apps: ['web', 'mobile'], variant: variant.variant },
     { type: 'command-result', id: 1, result: { ok: true, kind: 'goto', url: pageUrl } },
     { type: 'command-result', id: 2, result: { ok: false, failure: { class: 'timeout', message: 'Out of time.' } } },
     { type: 'abort', reason: 'The test ran out of time.' },
@@ -329,11 +462,28 @@ describe('messages', () => {
   ]
   const childMessages: ChildMessage[] = [
     { type: 'collected', tests: [{ name: 'saves a task', location }, { name: 'slow', location, timeout: 90_000 }] },
+    {
+      type: 'collected',
+      tests: [
+        {
+          name: 'archives "Release checklist"',
+          location,
+          describes: [{ name: 'archive', location: { ...location, line: 2 } }],
+          tags: ['smoke'],
+          apps: ['owner', 'member'],
+          state: { owner: 'owner-signed-in', member: 'member-signed-in' },
+          row: { template: 'archives "$title"', index: 0 },
+        },
+        { name: 'signed-in', location, apps: ['web'], setup: true },
+        { name: 'uses a state', location, state: 'signed-in' },
+      ],
+    },
     { type: 'collected', tests: [] },
     { type: 'collection-failed', failure: { class: 'collection_failed', message: 'Two tests are named "saves a task".' } },
-    { type: 'command', id: 1, command: { kind: 'goto', url: '/' }, timeoutMs: 30_000 },
-    { type: 'command', id: 2, command: { kind: 'click', locator }, location, timeoutMs: 0 },
-    { type: 'command', id: 3, command: { kind: 'observe', locator }, location, stepId: 'step-2', timeoutMs: 300 },
+    { type: 'command', id: 1, app: 'page', command: { kind: 'goto', url: '/' }, timeoutMs: 30_000 },
+    { type: 'command', id: 2, app: 'page', command: { kind: 'click', locator }, location, timeoutMs: 0 },
+    { type: 'command', id: 3, app: 'owner', command: { kind: 'observe', locator }, location, stepId: 'step-2', timeoutMs: 300 },
+    { type: 'command', id: 4, app: 'member', command: { kind: 'fill', locator, value: { secret: 'password' } }, timeoutMs: 300 },
     ...childEvents.map((event): ChildMessage => ({ type: 'event', event })),
     { type: 'test-finished', ...scope, status: 'passed', assertionCount: 2, durationMs: 120 },
     { type: 'test-finished', ...scope, status: 'failed', failure, assertionCount: 0, durationMs: 5 },
@@ -349,19 +499,34 @@ describe('messages', () => {
     assert.deepEqual(issues(parentMessageSchema, { type: 'close', reason: 'done' }), [
       { path: '$.reason', message: 'unknown key' },
     ])
-    assert.deepEqual(issues(parentMessageSchema, { type: 'run', ...scope, timeouts: without(defaultTimeouts, 'action') }), [
+    assert.deepEqual(issues(parentMessageSchema, { type: 'run', ...scope, timeouts: without(defaultTimeouts, 'action'), apps: [] }), [
       { path: '$.timeouts.action', message: 'missing required key' },
+    ])
+    assert.deepEqual(issues(parentMessageSchema, { type: 'run', ...scope, timeouts: defaultTimeouts }), [
+      { path: '$.apps', message: 'missing required key' },
+    ])
+    assert.deepEqual(issues(childMessageSchema, { type: 'command', id: 1, command: { kind: 'goto', url: '/' }, timeoutMs: 1 }), [
+      { path: '$.app', message: 'missing required key' },
+    ])
+    assert.deepEqual(issues(childMessageSchema, { type: 'collected', tests: [{ name: 'x', location, setup: false }] }), [
+      { path: '$.tests[0].setup', message: 'expected true, received false' },
+    ])
+    assert.deepEqual(issues(childMessageSchema, { type: 'collected', tests: [{ name: 'x', location, state: ['a'] }] }), [
+      { path: '$.tests[0].state', message: 'expected string or object, received array' },
+    ])
+    assert.deepEqual(issues(childMessageSchema, { type: 'collected', tests: [{ name: 'x', location, row: { template: 'x', index: -1 } }] }), [
+      { path: '$.tests[0].row.index', message: 'expected integer >= 0, received -1' },
     ])
     assert.deepEqual(issues(parentMessageSchema, 'close'), [{ path: '$', message: 'expected object, received "close"' }])
     assert.deepEqual(issues(childMessageSchema, { type: 'collected', tests: [{ name: 'x', location, timeout: 0 }] }), [
       { path: '$.tests[0].timeout', message: 'expected integer >= 1, received 0' },
     ])
-    assert.deepEqual(issues(childMessageSchema, { type: 'command', id: 1.5, command: { kind: 'goto', url: '/' }, timeoutMs: 1 }), [
+    assert.deepEqual(issues(childMessageSchema, { type: 'command', id: 1.5, app: 'page', command: { kind: 'goto', url: '/' }, timeoutMs: 1 }), [
       { path: '$.id', message: 'expected integer >= 0, received 1.5' },
     ])
     assert.deepEqual(
       issues(childMessageSchema, { type: 'event', event: { ...stamp, ...childEvents[0] } }).map((issue) => issue.path),
-      ['$.event.schemaVersion', '$.event.runId', '$.event.sequence', '$.event.time', '$.event.elapsedMs'],
+      ['$.event.schemaVersion', '$.event.runId', '$.event.sequence', '$.event.time', '$.event.elapsedMs', '$.event.origin'],
     )
     assert.deepEqual(issues(childMessageSchema, { type: 'test-finished', ...scope, status: 'error', assertionCount: 0, durationMs: 1 }), [
       { path: '$.status', message: 'expected one of "passed", "failed", received "error"' },
@@ -404,6 +569,23 @@ describe('result', () => {
             evidence: [{ kind: 'screenshot', path: 'artifacts/shows-the-count-failure.png' }],
           },
           { ...scope, name: 'never ran', file: 'examples/task.retest.ts', location, status: 'not_run', durationMs: 0, assertionCount: 0, evidence: [] },
+          {
+            ...scope,
+            ...variant,
+            name: 'signed-in',
+            file: 'examples/task.retest.ts',
+            location,
+            describePath: ['archive'],
+            setup: true,
+            status: 'failed',
+            durationMs: 900,
+            assertionCount: 1,
+            failure,
+            evidence: [
+              { kind: 'screenshot', path: 'artifacts/signed-in-web-failure.png', app: 'web' },
+              { kind: 'screenshot', path: 'artifacts/signed-in-mobile-failure.png', app: 'mobile' },
+            ],
+          },
         ],
       },
       { file: 'broken.retest.ts', collection: 'failed', failure: { class: 'collection_failed', message: 'x' }, tests: [] },
@@ -414,6 +596,8 @@ describe('result', () => {
     roundTrips(runResultSchema, result)
     roundTrips(runResultSchema, { ...result, browser: null })
     roundTrips(runResultSchema, { ...result, failure: { class: 'reporting_failed', message: 'Retest could not write events.jsonl.' } })
+    const pixelBrowser = { ...result.browser, app: 'mobile', target: { name: 'pixel', device: 'Pixel 9', emulation: pixel } }
+    roundTrips(runResultSchema, { ...result, browsers: [{ ...result.browser, app: 'web', target: { name: 'beta' } }, pixelBrowser] })
   })
 
   test('malformed results are rejected with the path to the problem', () => {

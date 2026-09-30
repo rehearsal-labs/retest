@@ -1,11 +1,6 @@
-import type { Counts, RunStatus, TestStatus } from '../protocol/events.ts'
-import {
-  truncateText,
-  type FailureClass,
-  type FailureDetail,
-  type SourceLocation,
-  type TruncatedText,
-} from '../protocol/failures.ts'
+import type { Counts, RetestEvent, RunStatus, TestStatus } from '../protocol/events.ts'
+import { truncateText, type FailureClass, type FailureDetail, type TruncatedText } from '../protocol/failures.ts'
+import { listWords } from '../shared/list-words.ts'
 
 /** How many characters of a recorded value a terminal report shows. `inspect --json` keeps them all. */
 export const shownValueLength = 300
@@ -117,17 +112,63 @@ export function formatDetail(value: FailureDetail): string {
   return quoteRecorded(value)
 }
 
-/** @example formatLocation({ file: 'a.retest.ts', line: 7, column: 3 }) // 'a.retest.ts:7:3' */
-export function formatLocation(location: SourceLocation): string {
-  return `${location.file}:${location.line}:${location.column}`
-}
-
-/** @example formatLine({ file: 'a.retest.ts', line: 7, column: 3 }) // 'a.retest.ts:7' */
-export function formatLine(location: SourceLocation): string {
-  return `${location.file}:${location.line}`
+/**
+ * A test's name inside its `test.describe` blocks, outermost first.
+ *
+ * @example titleWithin('archives a task', ['archive']) // 'archive › archives a task'
+ */
+export function titleWithin(name: string, describePath: readonly string[] = []): string {
+  return [...describePath, name].join(' › ')
 }
 
 /** A test as a heading. Commands use the ASCII `>` of the test id instead. */
-export function testTitle(file: string, name: string): string {
-  return `${file} › ${name}`
+export function testTitle(file: string, name: string, describePath?: readonly string[]): string {
+  return `${file} › ${titleWithin(name, describePath)}`
+}
+
+type AppEvent = Extract<RetestEvent, { type: 'app.started' | 'app.reused' | 'app.failed' }>
+type StateEvent = Extract<RetestEvent, { type: 'state.saved' | 'state.restored' }>
+
+/**
+ * What happened to an app's server, in one line.
+ *
+ * @example describeAppEvent(started) // 'started, http://localhost:3000 answered after 2.1s'
+ */
+export function describeAppEvent(event: AppEvent): string {
+  switch (event.type) {
+    case 'app.started':
+      return describeStarted(event.ready, event.durationMs)
+    case 'app.reused':
+      return describeRunning(event.ready)
+    case 'app.failed':
+      return event.failure.message.split('\n')[0] ?? ''
+  }
+}
+
+/** @example describeStarted('http://localhost:3000', 2100) // 'started, http://localhost:3000 answered after 2.1s' */
+export function describeStarted(ready: string, durationMs: number): string {
+  return `started, ${ready} answered after ${formatDuration(durationMs)}`
+}
+
+/** @example describeRunning('http://localhost:3000', 200) // 'already running, http://localhost:3000 answered 200' */
+export function describeRunning(ready: string, status?: number): string {
+  return `already running, ${ready} answered${status === undefined ? '' : ` ${status}`}`
+}
+
+/**
+ * A sign-in state saved or restored, by name and never by contents.
+ *
+ * @example describeStateEvent(saved) // 'saved state signed-in for web'
+ */
+export function describeStateEvent(event: StateEvent): string {
+  return `${event.type === 'state.saved' ? 'saved' : 'restored'} state ${event.state} for ${event.app}`
+}
+
+/**
+ * A setup the run took from a file it was not given, and the files it ran for.
+ *
+ * @example describeBorrowedSetup('signed-in', 'tests/sign-in.retest.ts', ['tests/archive.retest.ts']) // 'ran setup signed-in from tests/sign-in.retest.ts for tests/archive.retest.ts'
+ */
+export function describeBorrowedSetup(name: string, file: string, dependents: readonly string[]): string {
+  return `ran setup ${name} from ${file} for ${listWords(dependents, 'and')}`
 }

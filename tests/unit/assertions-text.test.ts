@@ -1,10 +1,13 @@
+import type { Observation } from '../../src/protocol/commands.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { formatValue } from '../../src/api/format-value.ts'
 import { quoteText, shorten } from '../../src/assertions/format.ts'
 import { textCheck, visibleCheck } from '../../src/assertions/locator-checks.ts'
 import { pollDelay } from '../../src/assertions/poll-locator.ts'
-import { normalizeText, textComparison } from '../../src/assertions/text.ts'
+import { textComparison } from '../../src/assertions/text.ts'
+import { normalizeText } from '../../src/protocol/text.ts'
+import { observationOf } from '../support/observation.ts'
 
 describe('text comparison', () => {
   test('trims both ends and reads each run of spaces or line breaks as one space', () => {
@@ -27,19 +30,17 @@ describe('text comparison', () => {
 })
 
 describe('locator checks', () => {
-  const one = (text: string | null, visible = true): { count: number; visible: boolean | null; text: string | null } => ({
-    count: 1,
-    visible,
-    text,
-  })
+  const one = (text: string, visible = true): Observation => observationOf([{ text, visible }])
+  const twice = observationOf([{ text: 'x', visible: true }, { text: 'x', visible: true }])
+  const none = observationOf([])
 
   test('toHaveText needs exactly one element whose whole text matches', () => {
     const check = textCheck('Release checklist')
     assert.equal(check.passes(one('\n Release   checklist ')), true)
     assert.equal(check.passes(one('Release checklist!')), false)
     assert.equal(check.passes(one('Release')), false, 'no substring match')
-    assert.equal(check.passes({ count: 2, visible: null, text: null }), false)
-    assert.equal(check.passes({ count: 0, visible: null, text: null }), false)
+    assert.equal(check.passes(twice), false)
+    assert.equal(check.passes(none), false)
     assert.equal(check.comparison, textComparison)
     assert.equal(
       check.mismatch(one('Draft'), "getByTestId('saved-task')"),
@@ -55,9 +56,9 @@ describe('locator checks', () => {
     const check = visibleCheck()
     assert.equal(check.passes(one('x')), true)
     assert.equal(check.passes(one('x', false)), false)
-    assert.equal(check.passes({ count: 2, visible: null, text: null }), false)
+    assert.equal(check.passes(twice), false)
     assert.equal(check.actual(one('x', false)), 'hidden')
-    assert.equal(check.actual({ count: 0, visible: null, text: null }), null)
+    assert.equal(check.actual(none), null)
   })
 })
 

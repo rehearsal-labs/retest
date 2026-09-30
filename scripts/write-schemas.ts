@@ -1,12 +1,13 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { retestEventSchema } from '../src/protocol/events.ts'
+import { eventSchemaFileName, resultSchemaFileName } from '../src/protocol/json-schemas.ts'
 import { runResultSchema } from '../src/protocol/result.ts'
 import { toJsonSchema } from '../src/protocol/schema.ts'
 
 const directory = new URL('../dist/schemas/', import.meta.url)
 const schemas = {
-  'event-v1.schema.json': retestEventSchema,
-  'result-v1.schema.json': runResultSchema,
+  [eventSchemaFileName]: retestEventSchema,
+  [resultSchemaFileName]: runResultSchema,
 }
 
 await mkdir(directory, { recursive: true })

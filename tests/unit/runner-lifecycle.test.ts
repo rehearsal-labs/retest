@@ -1,7 +1,7 @@
 import type { Failure } from '../../src/protocol/failures.ts'
 import type { RunResult } from '../../src/protocol/result.ts'
 import type { Reporter } from '../../src/reporters/reporter.ts'
-import type { ChildOutput } from '../../src/runner/contract.ts'
+import type { ChildOutput, RunOptions } from '../../src/runner/contract.ts'
 import type { RunRecord } from '../support/run-harness.ts'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -258,8 +258,12 @@ describe('interruption', () => {
     assert.equal(stopped.status, 'error')
     assert.equal(stopped.failure?.class, 'interrupted')
     assert.equal(testNamed(record.result, 'runs next').status, 'not_run')
-    assert.equal(record.result.files[1]?.collection, 'failed')
-    assert.equal(record.result.files[1]?.failure?.class, 'interrupted')
+    assert.equal(record.result.files[1]?.collection, 'ok', 'every file was collected before any test ran')
+    assert.deepEqual(record.result.files[1]?.tests.map((test) => [test.status, test.failure?.class]), [
+      ['not_run', 'interrupted'],
+      ['not_run', 'interrupted'],
+      ['not_run', 'interrupted'],
+    ])
     const [click] = eventsOfType(record.events, 'action.failed')
     assert.deepEqual(click?.failure, {
       class: 'interrupted',
@@ -346,7 +350,7 @@ describe('reporters', () => {
     assert.equal(testNamed(record.result, 'saves a task').status, 'passed')
     const skipped = testNamed(record.result, 'returns values from nested steps')
     assert.deepEqual(skipped.failure, lost)
-    assert.equal(record.result.files[1]?.collection, 'failed')
+    assert.ok(record.result.files[1]?.tests.every((test) => test.status === 'not_run' && test.failure?.class === 'reporting_failed'))
     assert.equal(seen.at(-1), 'end', 'the other reporter still received everything')
     assert.equal(seen.at(-2), 'run.finished')
     assert.deepEqual(record.written, record.result)
@@ -590,6 +594,21 @@ describe('the child process', () => {
     assert.ok(performance.now() - started < 2000, 'the test did not wait for its timeout')
   })
 
+  test("a secret fill in milestone 1's mode fails as usage, and types nothing", async () => {
+    const record = await runSupportFiles(['secret-fill.retest.ts'])
+    const test = testNamed(record.result, 'fills a secret without a config')
+    assert.deepEqual([test.failure?.class, test.failure?.message], ['usage', 'secret("password") needs a config that declares it. This run has no secrets.'])
+    assert.deepEqual(record.browsers[0]?.commands, [])
+    assert.equal(eventsOfType(record.events, 'action.failed')[0]?.secret, 'password')
+  })
+
+  test('a command for an app the test does not use is a violation, and reaches no page', async () => {
+    const record = await runSupportFiles(['foreign-app.retest.ts'])
+    const test = testNamed(record.result, 'sends a command for an app it does not use')
+    assert.deepEqual([test.failure?.class, test.failure?.message], ['test_error', 'The process for this file sent a command for the app "admin", which this test does not use.'])
+    assert.deepEqual(record.browsers[0]?.commands, [])
+  })
+
   test('an error from code an earlier test left behind fails the running test and names that test', async () => {
     const name = 'earlier-callback.retest.ts'
     const record = await runSupportFiles([name])
@@ -641,10 +660,10 @@ describe('the run folder', () => {
     const folder = tempFolder('taken-')
     writeFileSync(join(folder, 'result.json'), '{}')
     const { launch, browsers } = fakeLauncher()
-    const options = {
+    const options: RunOptions = {
       files: [supportFile('passing.retest.ts')],
       rootDir,
-      browserPath: '/fake/chromium',
+      apps: { kind: 'browser', browserPath: '/fake/chromium' },
       timeouts: defaultTimeouts,
       outputDir: folder,
       headless: true,

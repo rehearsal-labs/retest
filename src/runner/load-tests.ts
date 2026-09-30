@@ -1,9 +1,7 @@
-import type { CollectedTest } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { RegisteredTest } from '../protocol/messages.ts'
 import type { TestFileProcess } from './test-file-process.ts'
 import { failure } from '../protocol/failures.ts'
-import { testId } from '../protocol/run-folder.ts'
 import { describeExit } from '../shared/process-exit.ts'
 
 export type Loaded = { ok: true; tests: RegisteredTest[] } | { ok: false; failure: Failure }
@@ -46,11 +44,6 @@ export function loadTests(child: TestFileProcess, options: LoadOptions): Promise
     clearTimeout(timer)
     child.listen(undefined)
   })
-}
-
-/** The collected tests of a file, with their ids. */
-export function collectedTests(file: string, tests: readonly RegisteredTest[]): CollectedTest[] {
-  return tests.map(({ name, location }) => ({ testId: testId(file, name), name, location }))
 }
 
 export function missingFileFailure(file: string): Failure {

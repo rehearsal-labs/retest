@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CdpAbortedError, CdpProtocolError, CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
-import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
+import { IsolatedWorld, isGoneContext } from '../../src/browser/isolated-world.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { s } from '../../src/protocol/schema.ts'
 import { count, never, protocolError, scriptedSession } from './browser-fixtures.ts'
@@ -125,6 +125,15 @@ test('a call that fails for a reason other than a lost document keeps the world 
   assert.equal(count(sent, createWorld), 1)
 })
 
+// Found in the milestone 2 review: Chrome cuts a call waiting on a promise off with the last message when the
+// frame navigates, and the guard's verdict is such a call.
+test('every answer Chrome gives for a document that has gone counts as one', () => {
+  const gone = ['Cannot find context with specified id', 'Execution context was destroyed.', 'No frame for given id found', 'Inspected target navigated or closed']
+  for (const message of gone) assert.equal(isGoneContext(protocolError(callFunction, message)), true, message)
+  assert.equal(isGoneContext(protocolError(callFunction, 'Object reference chain is too long')), false)
+  assert.equal(isGoneContext(new Error('Inspected target navigated or closed')), false, 'only a protocol error counts')
+})
+
 test('a call whose document went away runs again in the world of the next one', async () => {
   let next = 7
   const { session, sent } = scriptedSession((method, params) => {
@@ -182,4 +191,75 @@ test('a page function that throws fails the call with its message', async () => 
   )
   const world = new IsolatedWorld(session, () => 'F1')
   await assert.rejects(read(world, 2000), /Retest's page script failed: TypeError: boom/)
+})
+
+const release = 'Runtime.releaseObjectGroup'
+
+function releasedGroups(sent: { method: string; params: unknown }[]): unknown[] {
+  return sent.filter((command) => command.method === release).map((command) => command.params)
+}
+
+test('arguments made in the world are made for the document the call runs in, and their objects released after it', async () => {
+  const { session, sent } = scriptedSession((method) => (method === createWorld ? created(7) : answered('seen')))
+  const world = new IsolatedWorld(session, () => 'F1')
+  const scopes: unknown[] = []
+  const value = await world.call(
+    readValue,
+    async (scope) => {
+      scopes.push({ context: scope.context, objectGroup: scope.objectGroup, session: scope.session === session })
+      return [{ value: 5 }, { objectId: 'element-1' }]
+    },
+    s.string(),
+    new Deadline(2000),
+  )
+  assert.equal(value, 'seen')
+  assert.deepEqual(scopes, [{ context: 7, objectGroup: 'retest-call-1', session: true }])
+  const [call] = sent.filter((command) => command.method === callFunction)
+  assert.deepEqual(call?.params, {
+    functionDeclaration: readValue,
+    executionContextId: 7,
+    arguments: [{ value: 5 }, { objectId: 'element-1' }],
+    returnByValue: true,
+    awaitPromise: true,
+  })
+  assert.deepEqual(releasedGroups(sent), [{ objectGroup: 'retest-call-1' }])
+})
+
+test('when the document goes away, the arguments are made again in the next one, and every group is released', async () => {
+  let next = 7
+  const { session, sent } = scriptedSession((method, params) => {
+    if (method === createWorld) return created(next++)
+    if (method === release) return Promise.resolve({})
+    return contextOf(params) === 7 ? Promise.reject(protocolError(callFunction, goneContext)) : answered('seen')
+  })
+  const world = new IsolatedWorld(session, () => 'F1')
+  const contexts: number[] = []
+  const args = async ({ context }: { context: number }) => {
+    contexts.push(context)
+    return [{ objectId: `element-in-${context}` }]
+  }
+  assert.equal(await world.call(readValue, args, s.string(), new Deadline(2000)), 'seen')
+  assert.deepEqual(contexts, [7, 8])
+  assert.deepEqual(releasedGroups(sent), [{ objectGroup: 'retest-call-1' }, { objectGroup: 'retest-call-2' }])
+})
+
+test('a document that goes away while the arguments are made is followed to the next one too', async () => {
+  let next = 7
+  const { session } = scriptedSession((method) => (method === createWorld ? created(next++) : answered('seen')))
+  const world = new IsolatedWorld(session, () => 'F1')
+  const args = async ({ context }: { context: number }) => {
+    if (context === 7) throw protocolError('DOM.resolveNode', goneContext)
+    return []
+  }
+  assert.equal(await world.call(readValue, args, s.string(), new Deadline(2000)), 'seen')
+})
+
+test('a release that fails does not fail the call', async () => {
+  const { session } = scriptedSession((method) => {
+    if (method === createWorld) return created(7)
+    if (method === release) return Promise.reject(protocolError(release, 'Internal error'))
+    return answered('seen')
+  })
+  const world = new IsolatedWorld(session, () => 'F1')
+  assert.equal(await world.call(readValue, async () => [], s.string(), new Deadline(2000)), 'seen')
 })

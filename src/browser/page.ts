@@ -1,50 +1,66 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { CdpSession } from './cdp/session.ts'
-import type { OwnedPage } from './contract.ts'
+import type { BrowserCommand, OwnedPage } from './contract.ts'
 import type { ActionIntent } from './element-queries.ts'
-import type { CommandResult, PageCommand } from '../protocol/commands.ts'
+import type { CommandResult } from '../protocol/commands.ts'
+import type { Emulation } from '../protocol/emulation.ts'
 import type { Failure } from '../protocol/failures.ts'
+import type { StorageState, StoredOrigin } from '../protocol/storage-state.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { s } from '../protocol/schema.ts'
-import { waitUntilActionable } from './actionability.ts'
+import { secretPlaceholder } from '../protocol/secret.ts'
+import { isWebUrl } from '../protocol/url.ts'
+import { waitUntilActionable, type PendingNavigation } from './actionability.ts'
 import { BrowserError } from './browser-error.ts'
 import { CdpClosedError, CdpDisconnectedError, CdpProtocolError, CdpTimeoutError } from './cdp/errors.ts'
 import { readProtocol, request, sendOptions } from './cdp-results.ts'
 import { commandStopped, connectionEnded, dialogOpened, failureFromError } from './command-failures.ts'
 import { Dispatch } from './dispatch.ts'
 import { observe } from './element-queries.ts'
-import { clickAt, replaceSelection, type Point } from './input.ts'
-import { guardFailure, guardInput } from './input-guard.ts'
+import { applyEmulation } from './emulation.ts'
+import { clickAt, replaceSelection, tapAt, type Point } from './input.ts'
+import { disarmGuard, guardFailure, guardInput } from './input-guard.ts'
 import { IsolatedWorld } from './isolated-world.ts'
 import { Listeners } from './listeners.ts'
 import { navigate } from './navigation.ts'
 import { guardScript } from './page-scripts.ts'
 import { originAndPath } from './page-url.ts'
+import { readCookies, readLocalStorage, readOriginStorage } from './storage-state.ts'
 
 export type PageOptions = {
   connection: CdpConnection
   session: CdpSession
   browserContextId: string
   baseUrl: string | undefined
+  /** Applied before the page opens anything. A touch screen makes every click a tap. */
+  emulation: Emulation | undefined
+  /** Origins whose storage the page's context already holds, from a restored state. */
+  restoredOrigins: readonly string[]
   /** Receives errors thrown by navigation listeners. */
   onListenerError: (error: unknown) => void
 }
 
-type ElementAction = Extract<PageCommand, { kind: 'click' | 'fill' }>
+type ElementAction = Exclude<BrowserCommand, { kind: 'goto' | 'observe' }>
 
 const retryPauseMs = 20
 const screenshotCommand = 'take a screenshot'
+const captureCommand = 'save the sign-in state'
 
 const frameTreeSchema = s.object({ frameTree: s.object({ frame: s.object({ id: s.string(), url: s.string() }) }) })
 const frameNavigatedSchema = s.object({
   frame: s.object({ id: s.string(), parentId: s.optional(s.string()), url: s.string() }),
 })
 const sameDocumentSchema = s.object({ frameId: s.string(), url: s.string() })
+const navigatingSchema = s.object({ frameId: s.string(), url: s.string(), navigationType: s.string() })
+const frameSchema = s.object({ frameId: s.string() })
 const screenshotSchema = s.object({ data: s.string() })
 const dialogSchema = s.object({ type: s.string() })
+
+// Navigations that keep the document. Any other replaces it when it commits.
+const withinDocument: ReadonlySet<string> = new Set(['sameDocument', 'historySameDocument'])
 
 /** One page in a browser context of its own. */
 export class ChromiumPage implements OwnedPage {
@@ -54,20 +70,25 @@ export class ChromiumPage implements OwnedPage {
   readonly #baseUrl: string | undefined
   readonly #world: IsolatedWorld
   readonly #navigations: Listeners<string>
+  readonly #touch: boolean
+  // The http and https origins the main frame opened, and those the restored state held, in the order they came.
+  readonly #origins: Set<string>
   #mainFrameId: string
   #url: URL | undefined
+  #pendingNavigation: PendingNavigation | undefined
   #lostReason: string | undefined
   #dialog: string | undefined
   #disposing: Promise<void> | undefined
 
   /**
-   * Reads the page's main frame, then follows it through the events this enables, and has every document it
-   * opens install Retest's input guard before the page's own scripts run.
+   * Applies the page's emulation, reads its main frame, then follows it through the events this enables, and has
+   * every document it opens install Retest's input guard before the page's own scripts run.
    *
-   * @example const page = await ChromiumPage.open({ connection, session, browserContextId, baseUrl, onListenerError }, deadline)
+   * @example const page = await ChromiumPage.open({ connection, session, browserContextId, baseUrl, emulation, restoredOrigins: [], onListenerError }, deadline)
    */
   static async open(options: PageOptions, deadline: Deadline): Promise<ChromiumPage> {
-    const { session } = options
+    const { session, emulation } = options
+    if (emulation !== undefined) await applyEmulation(session, emulation, deadline)
     const { frameTree } = await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))
     const page = new ChromiumPage(options, frameTree.frame)
     await request(session, 'Page.enable', undefined, s.object({}), sendOptions(deadline))
@@ -81,12 +102,16 @@ export class ChromiumPage implements OwnedPage {
     this.#session = options.session
     this.#browserContextId = options.browserContextId
     this.#baseUrl = options.baseUrl
+    this.#touch = options.emulation?.touch === true
+    this.#origins = new Set(options.restoredOrigins)
     this.#mainFrameId = mainFrame.id
     this.#url = URL.parse(mainFrame.url) ?? undefined
     this.#navigations = new Listeners(options.onListenerError)
     this.#world = new IsolatedWorld(this.#session, () => this.#mainFrameId)
     this.#session.on('Page.frameNavigated', (params) => this.#frameNavigated(params))
     this.#session.on('Page.navigatedWithinDocument', (params) => this.#navigatedWithinDocument(params))
+    this.#session.on('Page.frameStartedNavigating', (params) => this.#navigationStarted(params))
+    this.#session.on('Page.frameStoppedLoading', (params) => this.#loadingStopped(params))
     // A crashed page and one a dialog holds answer nothing, so commands waiting on them fail at once.
     this.#session.on('Inspector.targetCrashed', () => {
       this.#lostReason ??= 'the page crashed'
@@ -106,7 +131,7 @@ export class ChromiumPage implements OwnedPage {
     })
   }
 
-  async execute(command: PageCommand, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> {
+  async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> {
     const deadline = new Deadline(timeoutMs, { signal })
     const described = this.#describe(command)
     const dispatch = new Dispatch()
@@ -133,9 +158,33 @@ export class ChromiumPage implements OwnedPage {
         const { data } = await request(this.#session, 'Page.captureScreenshot', params, screenshotSchema, sendOptions(deadline))
         return Buffer.from(data, 'base64')
       } catch (error) {
-        if (!isBetweenDocuments(error) || deadline.expired) throw this.#screenshotError(error)
+        if (!isBetweenDocuments(error) || deadline.expired) throw this.#operationError(screenshotCommand, error)
         await sleep(Math.min(retryPauseMs, deadline.remainingMs))
       }
+    }
+  }
+
+  /**
+   * Reads the context's cookies, and the `localStorage` of each http or https origin the main frame opened or
+   * the page's restored state held. The current document's origin is read in its own world, and every other one
+   * from an empty document Retest serves for it, so no request reaches the site and none of its code runs.
+   * Frames' own origins, sessionStorage, IndexedDB and partitioned cookies are not saved, nor origins whose
+   * storage is empty.
+   */
+  async captureState(timeoutMs: number): Promise<StorageState> {
+    const deadline = new Deadline(timeoutMs)
+    const blocked = this.#blocked(captureCommand, false)
+    if (blocked !== undefined) throw new BrowserError(blocked)
+    try {
+      const cookies = await readCookies(this.#connection, this.#browserContextId, deadline)
+      const current = await this.#currentStorage(deadline)
+      const others = [...this.#origins].filter((origin) => origin !== current?.origin)
+      const context = { connection: this.#connection, browserContextId: this.#browserContextId }
+      const earlier = await readOriginStorage(context, others, deadline)
+      const shown = current === undefined || current.localStorage.length === 0 ? [] : [current]
+      return { cookies, origins: [...shown, ...earlier] }
+    } catch (error) {
+      throw this.#operationError(captureCommand, error)
     }
   }
 
@@ -148,7 +197,7 @@ export class ChromiumPage implements OwnedPage {
     return this.#disposing
   }
 
-  async #run(command: PageCommand, deadline: Deadline, dispatch: Dispatch): Promise<CommandResult> {
+  async #run(command: BrowserCommand, deadline: Deadline, dispatch: Dispatch): Promise<CommandResult> {
     switch (command.kind) {
       case 'goto': {
         const context = {
@@ -161,28 +210,57 @@ export class ChromiumPage implements OwnedPage {
       }
       case 'observe':
         return { ok: true, kind: 'observe', observation: await observe(this.#world, command.locator, deadline) }
+      case 'tap':
+        if (!this.#touch) return { ok: false, failure: noTouchScreen(command) }
+        return this.#press(command, 'tap', deadline, dispatch)
       case 'click':
-        return this.#act(command, { action: 'click', multiline: false }, deadline, (point) =>
-          clickAt(this.#session, point, deadline, dispatch),
-        )
+        return this.#press(command, this.#touch ? 'tap' : 'click', deadline, dispatch)
       case 'fill': {
-        const intent: ActionIntent = { action: 'fill', multiline: /[\n\r]/.test(command.value) }
+        const { secret, allowedOrigins } = command
+        const intent: ActionIntent = {
+          action: 'fill',
+          multiline: /[\n\r]/.test(command.value),
+          ...(secret === undefined ? {} : { secret }),
+          ...(allowedOrigins === undefined ? {} : { allowedOrigins }),
+        }
         return this.#act(command, intent, deadline, () => replaceSelection(this.#session, command.value, deadline, dispatch))
       }
     }
   }
 
+  #press(command: ElementAction, action: 'click' | 'tap', deadline: Deadline, dispatch: Dispatch): Promise<CommandResult> {
+    const input = action === 'tap' ? tapAt : clickAt
+    return this.#act(command, { action, multiline: false }, deadline, (point) => input(this.#session, point, deadline, dispatch))
+  }
+
+  // Input goes to whatever document the frame holds when the browser processes it. A navigation the browser
+  // began after the page's ready answer would take it into the document it opens, so such a target is let go,
+  // and the element is looked for again once that navigation is over.
   async #act(
     command: ElementAction,
     intent: ActionIntent,
     deadline: Deadline,
     input: (point: Point) => Promise<void>,
   ): Promise<CommandResult> {
-    const target = await waitUntilActionable(this.#world, command.locator, intent, deadline)
-    if (!target.ok) return target
-    const verdict = await guardInput(this.#world, target.guard, deadline, () => input(target.point))
-    const failure = guardFailure(verdict, intent, command.locator)
-    return failure === undefined ? { ok: true, kind: command.kind } : { ok: false, failure }
+    const wait = { world: this.#world, locator: command.locator, intent, deadline, pendingNavigation: () => this.#pendingNavigation }
+    for (;;) {
+      const target = await waitUntilActionable(wait)
+      if (!target.ok) return target
+      if (this.#pendingNavigation !== undefined) {
+        await disarmGuard(this.#world, target.guard, deadline)
+        continue
+      }
+      const verdict = await guardInput(this.#world, target.guard, deadline, () => input(target.point))
+      const failure = guardFailure(verdict, intent, command.locator)
+      return failure === undefined ? { ok: true, kind: intent.action } : { ok: false, failure }
+    }
+  }
+
+  // The current document's own storage is read in its world, where the page keeps writing it.
+  async #currentStorage(deadline: Deadline): Promise<StoredOrigin | undefined> {
+    const url = this.#url
+    if (url === undefined || !this.#origins.has(url.origin)) return undefined
+    return (await readLocalStorage(this.#world, deadline)) ?? undefined
   }
 
   // A page that crashed, closed or is held by a dialog stops answering, which says nothing about how fast it is.
@@ -192,10 +270,23 @@ export class ChromiumPage implements OwnedPage {
     return undefined
   }
 
-  #describe(command: PageCommand): string {
-    if (command.kind !== 'goto') return `${command.kind === 'observe' ? 'read' : command.kind} ${describeLocator(command.locator)}`
-    const target = URL.parse(command.url, this.#baseUrl)
-    return `open ${target === null ? JSON.stringify(command.url) : originAndPath(target)}`
+  #describe(command: BrowserCommand): string {
+    switch (command.kind) {
+      case 'goto': {
+        const target = URL.parse(command.url, this.#baseUrl)
+        return `open ${target === null ? JSON.stringify(command.url) : originAndPath(target)}`
+      }
+      case 'observe':
+        return `read ${describeLocator(command.locator)}`
+      case 'click':
+        return `${this.#touch ? 'tap' : 'click'} ${describeLocator(command.locator)}`
+      case 'fill': {
+        const { secret } = command
+        return `fill ${describeLocator(command.locator)}${secret === undefined ? '' : ` with ${secretPlaceholder(secret)}`}`
+      }
+      case 'tap':
+        return `tap ${describeLocator(command.locator)}`
+    }
   }
 
   async #dispose(deadline: Deadline): Promise<void> {
@@ -214,14 +305,16 @@ export class ChromiumPage implements OwnedPage {
     }
   }
 
-  #screenshotError(error: unknown): unknown {
-    const blocked = this.#blocked(screenshotCommand, false)
+  // Turns an error from a browser call outside `execute`, which reads the page and sends no input, into its failure.
+  #operationError(command: string, error: unknown): unknown {
+    if (error instanceof BrowserError) return error
+    const blocked = this.#blocked(command, false)
     if (blocked !== undefined) return new BrowserError(blocked, { cause: error })
     if (error instanceof CdpDisconnectedError || error instanceof CdpClosedError) {
-      return new BrowserError(connectionEnded(screenshotCommand, false, error.reason), { cause: error })
+      return new BrowserError(connectionEnded(command, false, error.reason), { cause: error })
     }
     if (error instanceof CdpTimeoutError) {
-      const message = `Could not take a screenshot within ${error.timeoutMs} ms.`
+      const message = `Could not ${command} within ${error.timeoutMs} ms.`
       return new BrowserError({ class: 'timeout', message }, { cause: error })
     }
     return error
@@ -231,8 +324,24 @@ export class ChromiumPage implements OwnedPage {
     const { frame } = readProtocol(frameNavigatedSchema, params, { method: 'Page.frameNavigated', sessionId: this.#session.id })
     if (frame.parentId !== undefined) return
     this.#mainFrameId = frame.id
+    this.#pendingNavigation = undefined
     this.#world.reset()
     this.#moveTo(frame.url, true)
+  }
+
+  // The browser has begun a navigation of the main frame. Its document replaces the current one when it commits,
+  // unless the browser gives it up first, as it does a 204 or a download, or begins another in its place.
+  #navigationStarted(params: unknown): void {
+    const source = { method: 'Page.frameStartedNavigating', sessionId: this.#session.id }
+    const { frameId, url, navigationType } = readProtocol(navigatingSchema, params, source)
+    if (frameId !== this.#mainFrameId || withinDocument.has(navigationType)) return
+    this.#pendingNavigation = { url }
+  }
+
+  // The main frame stopped loading with nothing committed since the navigation began: the browser gave it up.
+  #loadingStopped(params: unknown): void {
+    const { frameId } = readProtocol(frameSchema, params, { method: 'Page.frameStoppedLoading', sessionId: this.#session.id })
+    if (frameId === this.#mainFrameId) this.#pendingNavigation = undefined
   }
 
   #navigatedWithinDocument(params: unknown): void {
@@ -247,8 +356,16 @@ export class ChromiumPage implements OwnedPage {
     if (url === null) throw new Error('The browser reported a main frame address that is not a URL')
     const previous = this.#url
     this.#url = url
+    if (isWebUrl(url)) this.#origins.add(url.origin)
     const path = originAndPath(url)
     if (newDocument || previous === undefined || originAndPath(previous) !== path) this.#navigations.emit(path)
+  }
+}
+
+function noTouchScreen(command: Extract<BrowserCommand, { kind: 'tap' }>): Failure {
+  return {
+    class: 'unsupported',
+    message: `Could not tap ${describeLocator(command.locator)}: the page does not emulate a touch screen, and tap() needs one.`,
   }
 }
 

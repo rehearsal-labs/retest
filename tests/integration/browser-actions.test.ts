@@ -18,6 +18,7 @@ import {
   sharedBrowser,
   timed,
 } from './browser-harness.ts'
+import { observationOf } from '../support/observation.ts'
 
 const browser = sharedBrowser()
 
@@ -55,7 +56,7 @@ test('fills the title, clicks save once and reads the saved title back', async (
   assertOk(await fill(page, 'task-title', 'Release checklist'))
   assertOk(await click(page, 'save-task'))
   const saved = await observeUntil(page, 'saved-task', (seen) => seen.text === 'Release checklist')
-  assert.deepEqual(saved, { count: 1, visible: true, text: 'Release checklist' })
+  assert.deepEqual(saved, observationOf([{ text: 'Release checklist', visible: true }]))
   assert.equal(app.submissions(), 1)
 })
 
@@ -445,9 +446,10 @@ test('a click is a real press and release that page scripts see as trusted', asy
 
 test('observe counts matches and reads visibility and text only for exactly one', async (t) => {
   const { page } = await taskPage(t, { mode: 'duplicate' })
-  assert.deepEqual(await observe(page, 'save-task'), { count: 2, visible: null, text: null })
-  assert.deepEqual(await observe(page, 'missing'), { count: 0, visible: null, text: null })
-  assert.deepEqual(await observe(page, 'task-title'), { count: 1, visible: true, text: '' })
+  const save = { text: 'Save', visible: true }
+  assert.deepEqual(await observe(page, 'save-task'), observationOf([save, save]))
+  assert.deepEqual(await observe(page, 'missing'), observationOf([]))
+  assert.deepEqual(await observe(page, 'task-title'), observationOf([{ text: '', visible: true }], ''))
 })
 
 test('observe reads elements hidden in each way as not visible', async (t) => {
@@ -462,7 +464,7 @@ test('observe reads elements hidden in each way as not visible', async (t) => {
   for (const testId of ['none', 'hidden', 'inside', 'empty']) {
     assert.equal((await observe(page, testId)).visible, false, testId)
   }
-  assert.deepEqual(await observe(page, 'shown'), { count: 1, visible: true, text: 'd' })
+  assert.deepEqual(await observe(page, 'shown'), observationOf([{ text: 'd', visible: true }]))
 })
 
 test('a test id matches exactly, and its value is never read as code or a selector', async (t) => {
@@ -472,8 +474,8 @@ test('a test id matches exactly, and its value is never read as code or a select
     `<p data-testid="save">exact</p><p data-testid="save-task">longer</p><p data-testid="Save">case</p>
     <p id="tricky">tricky</p><script>document.getElementById('tricky').dataset.testid = ${JSON.stringify(tricky)}</script>`,
   )
-  assert.deepEqual(await observe(page, 'save'), { count: 1, visible: true, text: 'exact' })
-  assert.deepEqual(await observe(page, tricky), { count: 1, visible: true, text: 'tricky' })
+  assert.deepEqual(await observe(page, 'save'), observationOf([{ text: 'exact', visible: true }]))
+  assert.deepEqual(await observe(page, tricky), observationOf([{ text: 'tricky', visible: true }]))
   for (const value of ['sav', '*', '', 'save ', 'SAVE']) assert.equal((await observe(page, value)).count, 0, value)
 })
 

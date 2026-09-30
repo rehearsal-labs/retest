@@ -65,3 +65,8 @@ export class Operation<T> extends Promise<T> {
     return super.then(onFulfilled, onRejected)
   }
 }
+
+/** Whether a value can be awaited, as a promise can. */
+export function isThenable(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && 'then' in value && typeof value.then === 'function'
+}

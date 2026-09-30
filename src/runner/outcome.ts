@@ -30,6 +30,8 @@ export function testStatus(failure: Failure | undefined, cleanupFailures: readon
 export type RunFacts = {
   /** The signal that stopped the run, if one did. */
   stoppedBy: StopSignal | undefined
+  /** What stopped the run before any test could run: a base URL for an app the config lacks, or a selection that matches nothing. */
+  runFailures: readonly Failure[]
   /** Events, the result, a test file's output or a reporter that could not take the run's output, in order. */
   outputFailures: readonly Failure[]
   files: readonly FileResult[]
@@ -43,7 +45,7 @@ export type RunOutcome = { status: RunStatus; exitCode: ExitCode; complete: bool
  * trustworthy came out; 1 when a test failed its checks; 2 when anything else did not finish cleanly,
  * including a file whose process failed outside its tests; otherwise 0.
  *
- * @example runOutcome({ stoppedBy: undefined, outputFailures: [], files }).exitCode
+ * @example runOutcome({ stoppedBy: undefined, runFailures: [], outputFailures: [], files }).exitCode
  */
 export function runOutcome(facts: RunFacts): RunOutcome {
   const counts = countTests(facts.files)
@@ -83,16 +85,16 @@ export function interruptedExitCode(signal: AbortSignal): 130 | 143 {
 
 function decideExitCode(facts: RunFacts, counts: Counts): ExitCode {
   if (facts.stoppedBy !== undefined) return stoppedExitCode(facts.stoppedBy)
-  if (testsRan(counts) === 0 || facts.outputFailures.length > 0) return 2
+  if (testsRan(counts) === 0 || facts.outputFailures.length > 0 || facts.runFailures.length > 0) return 2
   if (counts.failed > 0) return 1
   if (counts.error > 0 || counts.notRun > 0 || counts.inconclusive > 0 || hasUnfinishedWork(facts.files)) return 2
   return 0
 }
 
-// Lost output, a file's process that failed outside its tests, or the reason no test ran. An interrupted
-// run says so in its status instead.
+// What stopped the run before its tests, lost output, a file's process that failed outside its tests, or the
+// reason no test ran. An interrupted run says so in its status instead.
 function runFailure(facts: RunFacts, counts: Counts): Failure | undefined {
-  const [first, ...rest] = [...facts.outputFailures, ...processFailures(facts.files)]
+  const [first, ...rest] = [...facts.runFailures, ...facts.outputFailures, ...processFailures(facts.files)]
   if (first !== undefined) return withAlso(first, rest)
   if (facts.stoppedBy !== undefined || testsRan(counts) > 0) return undefined
   return whyNothingRan(facts.files)
@@ -135,7 +137,7 @@ function runStatus(exitCode: ExitCode): RunStatus {
 // Complete means every selected test reached a verdict of its own, every file ended cleanly and every
 // output was kept.
 function isComplete(facts: RunFacts): boolean {
-  if (facts.stoppedBy !== undefined || facts.outputFailures.length > 0) return false
+  if (facts.stoppedBy !== undefined || facts.outputFailures.length > 0 || facts.runFailures.length > 0) return false
   return facts.files.every(
     (file) => file.failure === undefined && file.tests.every((test) => test.status === 'passed' || test.status === 'failed'),
   )

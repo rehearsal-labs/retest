@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { parse } from '../../src/protocol/schema.ts'
-import { defaultTimeouts, maxTimeout, parseTimeouts, timeoutsSchema } from '../../src/protocol/timeouts.ts'
+import { defaultTimeouts, formatTimeouts, maxTimeout, mergeTimeouts, parseTimeouts, timeoutsSchema } from '../../src/protocol/timeouts.ts'
 
 function failureMessage(text: string): string {
   const result = parseTimeouts(text)
@@ -85,5 +85,37 @@ describe('parseTimeouts', () => {
     for (const [text = '', entry] of cases) {
       assert.equal(failureMessage(text), `Write each timeout as name=milliseconds, received ${JSON.stringify(entry)}.`)
     }
+  })
+})
+
+describe('formatTimeouts', () => {
+  test('writes budgets as the command line reads them, in the defaults order, and leaves out the absent', () => {
+    assert.equal(formatTimeouts({ test: 3000, action: 500 }), 'action=500,test=3000')
+    assert.equal(formatTimeouts({}), '')
+    assert.deepEqual(parseTimeouts(formatTimeouts(defaultTimeouts)), { ok: true, value: defaultTimeouts })
+  })
+})
+
+describe('mergeTimeouts', () => {
+  test('lays each partial set over the last, later ones winning', () => {
+    const merged = mergeTimeouts(defaultTimeouts, { action: 500, test: 3000 }, { test: 4000 })
+    assert.deepEqual(merged, { ...defaultTimeouts, action: 500, test: 4000 })
+    assert.deepEqual(mergeTimeouts(defaultTimeouts), defaultTimeouts)
+  })
+
+  test('returns a new object and leaves every input as it was', () => {
+    const config = { action: 500 }
+    const merged = mergeTimeouts(defaultTimeouts, config)
+    assert.notEqual(merged, defaultTimeouts)
+    assert.equal(Object.isFrozen(merged), false)
+    assert.deepEqual(config, { action: 500 })
+    assert.equal(defaultTimeouts.action, 10_000)
+  })
+
+  test('skips a budget written as undefined, and any key that is not a budget', () => {
+    const fromJavaScript: Record<string, unknown> = { action: undefined, retries: 3, __proto__: null }
+    const merged = mergeTimeouts(defaultTimeouts, Object.fromEntries(Object.entries(fromJavaScript)))
+    assert.deepEqual(merged, defaultTimeouts)
+    assert.deepEqual(Object.keys(merged), Object.keys(defaultTimeouts))
   })
 })

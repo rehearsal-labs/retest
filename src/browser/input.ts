@@ -18,6 +18,12 @@ export async function clickAt(session: CdpSession, point: Point, deadline: Deadl
   await dispatch.send(session, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...press, buttons: 0 }, deadline)
 }
 
+/** Touches the point and lifts the finger there, which a page that emulates a touch screen reads as a tap. */
+export async function tapAt(session: CdpSession, point: Point, deadline: Deadline, dispatch: Dispatch): Promise<void> {
+  await dispatch.send(session, 'Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] }, deadline)
+  await dispatch.send(session, 'Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, deadline)
+}
+
 /** Replaces the selection in the focused field with `value`, as typing or pressing Delete would. */
 export async function replaceSelection(session: CdpSession, value: string, deadline: Deadline, dispatch: Dispatch): Promise<void> {
   if (value !== '') {

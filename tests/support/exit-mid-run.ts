@@ -11,8 +11,7 @@ void runFiles(
   {
     files: [supportFile('endless-loop.retest.ts')],
     rootDir,
-    browserPath: '/fake/chromium',
-    baseUrl: 'http://127.0.0.1:4173',
+    apps: { kind: 'browser', browserPath: '/fake/chromium', baseUrl: 'http://127.0.0.1:4173' },
     timeouts: { ...defaultTimeouts, test: 60_000 },
     outputDir: newRunFolder(),
     headless: true,

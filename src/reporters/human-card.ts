@@ -1,4 +1,5 @@
 import { truncateText, type SourceLocation, type TruncatedText } from '../protocol/failures.ts'
+import { formatLocation } from '../protocol/location.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { readCodeFrame } from './code-frame.ts'
 import { formatInspectCommand } from './commands.ts'
@@ -17,12 +18,11 @@ import {
   failureLabel,
   formatDetail,
   formatDuration,
-  formatLocation,
   quoteRecorded,
   shownValueLength,
   statusLabel,
 } from './format.ts'
-import type { Style } from './style.ts'
+import { visibleLength, type Style } from './style.ts'
 
 export type HumanCardOptions = {
   style: Style
@@ -53,7 +53,8 @@ export function renderCard(card: FailureCard, options: HumanCardOptions): string
 
 function heading(card: FailureCard, style: Style): string {
   const after = card.test === undefined ? describeFileProblem(card.fileProblem) : formatDuration(card.test.durationMs)
-  return `  ${style.red('✗')} ${style.bold(card.title)}  ${style.dim(after)}`
+  const variant = card.variant === undefined ? '' : `  ${style.cyan(card.variant)}`
+  return `  ${style.red('✗')} ${style.bold(card.title)}${variant}  ${style.dim(after)}`
 }
 
 function summary(card: FailureCard, style: Style): string[] {
@@ -124,14 +125,13 @@ function closing(card: FailureCard, options: HumanCardOptions): string[] {
     lines.push(field(options.style.red(failureLabel(failure.class)), failure.message))
   }
   if (card.rerun !== undefined) lines.push(field('Rerun', card.rerun))
-  const inspect = formatInspectCommand({ runFolder: options.runFolder, testId: card.test?.testId })
+  const inspect = formatInspectCommand({ runFolder: options.runFolder, testId: card.test?.testId, targets: card.test?.targets })
   lines.push(field('Inspect', inspect))
   return lines
 }
 
 // Labels may carry colour codes, so the padding counts only the visible characters.
 function field(label: string, value: string): string {
-  const visible = label.replace(/\u001b\[\d+m/g, '').length
-  const gap = ' '.repeat(Math.max(2, labelWidth - visible))
+  const gap = ' '.repeat(Math.max(2, labelWidth - visibleLength(label)))
   return value === '' ? `${indent}${label}` : `${indent}${label}${gap}${value}`
 }

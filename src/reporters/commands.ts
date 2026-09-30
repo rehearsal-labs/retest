@@ -1,8 +1,13 @@
-import { defaultTimeouts, type Timeouts } from '../protocol/timeouts.ts'
 import type { EventOfType } from './run-record.ts'
+import { formatLine } from '../protocol/location.ts'
+import { defaultTimeouts, formatTimeouts, timeoutNames, type Timeouts } from '../protocol/timeouts.ts'
+import { variantPairs, type Variant } from '../protocol/variant.ts'
 
 /** How printed commands start. A project installs Retest as a development dependency. */
 export const retestCommand = 'npx retest'
+
+/** The config a run reads when `--config` does not name another, in the root directory. */
+export const defaultConfigFile = 'retest.config.ts'
 
 const bare = /^[\w@%+=:,./-]+$/
 const needsSingleQuotes = /["$`\\!]/
@@ -18,34 +23,55 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`
 }
 
-/** Runs one file again with the browser, base URL and changed timeouts of the original run. */
-export function formatRerunCommand(run: EventOfType<'run.started'>, file: string): string {
-  const { browserPath, baseUrl, timeouts } = run.options
-  const parts = [retestCommand, 'run', shellQuote(file), '--browser', shellQuote(browserPath)]
+/**
+ * What to run again: a file, the line a test is declared on, the row of a `test.for` there, and the targets
+ * that pick out its variant.
+ */
+export type RerunRequest = { file: string; line?: number | undefined; row?: number | undefined; targets?: Variant | undefined }
+
+/**
+ * Runs a test or a file again the way the original run did: with its browser, or its config, the base URLs
+ * the command line gave, and the budgets it gave. A run that does not say what the command line gave repeats
+ * every budget that differs from the defaults.
+ *
+ * @example formatRerunCommand(run, { file: 'tests/a.retest.ts', line: 7, targets: { web: 'beta' } }) // 'npx retest run tests/a.retest.ts:7 --target web=beta'
+ */
+export function formatRerunCommand(run: EventOfType<'run.started'>, request: RerunRequest): string {
+  const { browserPath, baseUrl, baseUrls, config, timeouts, commandLineTimeouts } = run.options
+  const { file, line, row } = request
+  const where = line === undefined ? file : formatLine({ file, line, row })
+  const parts = [retestCommand, 'run', shellQuote(where)]
+  if (browserPath !== undefined) parts.push('--browser', shellQuote(browserPath))
+  if (config !== undefined && config !== defaultConfigFile) parts.push('--config', shellQuote(config))
   if (baseUrl !== undefined) parts.push('--base-url', shellQuote(baseUrl))
-  const changed = changedTimeouts(timeouts)
-  if (changed !== '') parts.push('--timeouts', changed)
+  for (const [app, url] of Object.entries(baseUrls ?? {})) parts.push('--base-url', shellQuote(`${app}=${url}`))
+  parts.push(...targetOptions(request.targets))
+  const given = commandLineTimeouts === undefined ? changedTimeouts(timeouts) : formatTimeouts(commandLineTimeouts)
+  if (given !== '') parts.push('--timeouts', given)
   return parts.join(' ')
 }
 
 function changedTimeouts(timeouts: Timeouts): string {
-  return Object.keys(defaultTimeouts)
-    .filter(isTimeoutName)
-    .filter((name) => timeouts[name] !== defaultTimeouts[name])
-    .map((name) => `${name}=${timeouts[name]}`)
-    .join(',')
+  const changed: Partial<Timeouts> = {}
+  for (const name of timeoutNames) if (timeouts[name] !== defaultTimeouts[name]) changed[name] = timeouts[name]
+  return formatTimeouts(changed)
 }
 
-function isTimeoutName(name: string): name is keyof Timeouts {
-  return Object.hasOwn(defaultTimeouts, name)
+export type InspectCommandOptions = {
+  runFolder: string
+  testId?: string | undefined
+  targets?: Variant | undefined
+  json?: boolean
 }
-
-export type InspectCommandOptions = { runFolder: string; testId?: string | undefined; json?: boolean }
 
 /** @example formatInspectCommand({ runFolder: 'runs/a', json: true }) // 'npx retest inspect runs/a --json' */
 export function formatInspectCommand(options: InspectCommandOptions): string {
   const parts = [retestCommand, 'inspect', shellQuote(options.runFolder)]
-  if (options.testId !== undefined) parts.push('--test', shellQuote(options.testId))
+  if (options.testId !== undefined) parts.push('--test', shellQuote(options.testId), ...targetOptions(options.targets))
   if (options.json === true) parts.push('--json')
   return parts.join(' ')
+}
+
+function targetOptions(targets: Variant | undefined): string[] {
+  return variantPairs(targets).flatMap((pair) => ['--target', shellQuote(pair)])
 }

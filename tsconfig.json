@@ -22,5 +22,5 @@
     "skipLibCheck": false
   },
   "include": ["src", "tests", "fixtures", "examples", "scripts"],
-  "exclude": ["tests/types/fixtures"]
+  "exclude": ["tests/types/fixtures", "examples/tasks"]
 }

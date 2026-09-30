@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import {
+  appLogFile,
   browserLogFile,
   childLogFile,
   defaultRunFolder,
@@ -8,7 +9,11 @@ import {
   failureScreenshotFile,
   resultFile,
   slug,
+  stateFile,
+  statesFolder,
+  targetBrowserLogFile,
   testId,
+  testTitle,
 } from '../../src/protocol/run-folder.ts'
 
 const safeSlug = /^(?:[a-z0-9]+(?:-[a-z0-9]+)*-)?[a-z0-9]{13}$/
@@ -28,6 +33,18 @@ describe('testId', () => {
   test('keeps the name exactly as declared', () => {
     assert.equal(testId('a.retest.ts', ' spaced > nested ünï '), 'a.retest.ts >  spaced > nested ünï ')
     assert.equal(testId('a.retest.ts', ''), 'a.retest.ts > ')
+  })
+
+  test('takes a full title with the describe blocks in it', () => {
+    assert.equal(testId('tests/archive.retest.ts', testTitle('archives a task', ['archive'])), 'tests/archive.retest.ts > archive > archives a task')
+  })
+})
+
+describe('testTitle', () => {
+  test('is the describe blocks, outermost first, then the name', () => {
+    assert.equal(testTitle('saves a task'), 'saves a task')
+    assert.equal(testTitle('saves a task', []), 'saves a task')
+    assert.equal(testTitle('archives a task', ['tasks', 'archive']), 'tasks > archive > archives a task')
   })
 })
 
@@ -116,6 +133,33 @@ describe('run folder paths', () => {
     assert.notEqual(path, failureScreenshotFile(testId('examples/task.retest.ts', 'saves a task twice'), 'k3v9q0x2mb'))
     const long = failureScreenshotFile(testId('tests/a/very/deep/folder/file.retest.ts', 'x'.repeat(500)), 'k3v9q0x2mb')
     assert.ok(long.length <= 'artifacts/'.length + 40 + '-k3v9q0x2mb-failure.png'.length, long)
+  })
+
+  test('a test with several apps names each screenshot with its app', () => {
+    const id = testId('tests/share.retest.ts', 'shares a task')
+    const owner = failureScreenshotFile(id, 'k3v9q0x2mb', 'owner')
+    const member = failureScreenshotFile(id, 'k3v9q0x2mb', 'member')
+    assert.match(owner, /^artifacts\/tests-share-retest-ts-shar-[a-z0-9]{13}-k3v9q0x2mb-owner-[a-z0-9]{13}-failure\.png$/)
+    assert.notEqual(owner, member)
+    assert.notEqual(failureScreenshotFile(id, 'k3v9q0x2mb', 'Web'), failureScreenshotFile(id, 'k3v9q0x2mb', 'web'))
+    assert.notEqual(owner, failureScreenshotFile(id, 'k3v9q0x2mb'))
+    assert.doesNotMatch(failureScreenshotFile(id, 'k3v9q0x2mb', '../../etc'), /\.\./)
+  })
+
+  test('app servers and further browsers each get a log of their own', () => {
+    assert.match(appLogFile('web'), /^logs\/app-web-[a-z0-9]{13}\.log$/)
+    assert.notEqual(appLogFile('web'), appLogFile('Web'))
+    assert.notEqual(appLogFile('web'), childLogFile('app web'))
+    assert.match(targetBrowserLogFile('web=beta'), /^logs\/browser-web-beta-[a-z0-9]{13}\.log$/)
+    assert.notEqual(targetBrowserLogFile('web=beta'), browserLogFile)
+  })
+
+  test('each state and target pair has its own state file, which no two pairs share', () => {
+    assert.equal(statesFolder, 'states')
+    assert.match(stateFile('signed-in', 'beta'), /^states\/signed-in-beta-[a-z0-9]{13}\.json$/)
+    assert.notEqual(stateFile('signed-in', 'beta'), stateFile('signed', 'in-beta'))
+    assert.notEqual(stateFile('signed-in', 'beta'), stateFile('signed-in', 'edge'))
+    assert.doesNotMatch(stateFile('../x', '../y'), /\.\./)
   })
 
   test('an attempt id that is not already safe in a file name becomes a slug', () => {

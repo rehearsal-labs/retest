@@ -6,8 +6,11 @@ import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
+import { LOCATORS_PAGE, ROW_COUNT } from '../../fixtures/task-app/locators-page.ts'
 import { SAVE_BUTTON } from '../../fixtures/task-app/page.ts'
+import { SERVICE_WORKER, SERVICE_WORKER_PAGE } from '../../fixtures/task-app/service-worker.ts'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
+import { REMEMBER_COOKIE, SESSION_COOKIE, TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 
 const CLI = fileURLToPath(new URL('../../fixtures/task-app/cli.ts', import.meta.url))
 
@@ -198,4 +201,82 @@ test('the command line refuses an unknown mode or delay with status 2', async ()
     assert.equal(code, 2, args.join(' '))
     assert.match(stderr, /Usage: node fixtures\/task-app\/cli\.ts/)
   }
+})
+
+async function html(app: TaskApp, path: string, headers: Record<string, string> = {}): Promise<string> {
+  const response = await fetch(`${app.url}${path}`, { headers })
+  assert.equal(response.status, 200, path)
+  assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8', path)
+  assert.equal(response.headers.get('cache-control'), 'no-store', path)
+  return response.text()
+}
+
+function signIn(app: TaskApp, body: unknown): Promise<Response> {
+  return fetch(`${app.url}/api/sign-in`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+}
+
+test('serves the locator conformance page with its rows and nothing from outside', async (t) => {
+  const app = await start(t)
+  const page = await html(app, '/locators')
+  assert.equal(page, LOCATORS_PAGE)
+  assert.equal(page.split('<li>Row</li>').length - 1, ROW_COUNT)
+  assert.doesNotMatch(page, /https?:\/\//)
+})
+
+test('the device page shows the user agent and client hints the request carried, as text', async (t) => {
+  const app = await start(t)
+  const page = await html(app, '/device', { 'user-agent': 'Agent <b>"one"</b>', 'sec-ch-ua': '"Brand";v="1"' })
+  assert.match(page, /<span data-testid="user-agent-header">Agent &lt;b&gt;&quot;one&quot;&lt;\/b&gt;<\/span>/)
+  assert.match(page, /<span data-testid="client-hints-header">&quot;Brand&quot;;v=&quot;1&quot;<\/span>/)
+  assert.match(page, /<meta name="viewport" content="width=device-width, initial-scale=1">/)
+  assert.match(await html(app, '/device'), /<span data-testid="client-hints-header"><\/span>/)
+})
+
+test('signing in with the password sets a session cookie and a cookie that remembers the user for a day', async (t) => {
+  const app = await start(t)
+  assert.match(await html(app, '/login'), /<input id="password" data-testid="password" type="password"/)
+  const response = await signIn(app, { user: 'alice', password: TASK_APP_PASSWORD })
+  assert.equal(response.status, 200)
+  const [session, remember] = response.headers.getSetCookie()
+  assert.match(session ?? '', new RegExp(`^${SESSION_COOKIE}=[0-9a-f-]{36}; Path=/; HttpOnly; SameSite=Lax$`))
+  assert.equal(remember, `${REMEMBER_COOKIE}=alice; Path=/; Max-Age=86400; SameSite=Strict`)
+  const cookie = (session ?? '').split(';')[0] ?? ''
+  assert.match(await html(app, '/account', { cookie: `other=1; ${cookie}` }), /<p data-testid="account">Signed in as alice<\/p>/)
+})
+
+test('a wrong password, a missing user or a body that is not a sign-in starts no session', async (t) => {
+  const app = await start(t)
+  for (const body of [{ user: 'alice', password: 'wrong' }, { user: '', password: TASK_APP_PASSWORD }, { password: TASK_APP_PASSWORD }, 'alice', null]) {
+    const response = await signIn(app, body)
+    assert.equal(response.status, 401, JSON.stringify(body))
+    assert.deepEqual(response.headers.getSetCookie(), [])
+    await response.body?.cancel()
+  }
+})
+
+test('the account page shows a request without a known session as signed out, and escapes the user name', async (t) => {
+  const app = await start(t)
+  assert.match(await html(app, '/account'), /<p data-testid="account">Signed out<\/p>/)
+  assert.match(await html(app, '/account', { cookie: `${SESSION_COOKIE}=unknown` }), /Signed out/)
+  const response = await signIn(app, { user: '<b>mallory</b>', password: TASK_APP_PASSWORD })
+  const cookie = (response.headers.getSetCookie()[0] ?? '').split(';')[0] ?? ''
+  assert.match(await html(app, '/account', { cookie }), /Signed in as &lt;b&gt;mallory&lt;\/b&gt;/)
+})
+
+test('serves a service worker for the whole origin, and the page that registers it', async (t) => {
+  const app = await start(t)
+  assert.equal(await html(app, '/service-worker'), SERVICE_WORKER_PAGE)
+  const worker = await fetch(`${app.url}/service-worker.js`)
+  assert.equal(worker.headers.get('content-type'), 'text/javascript; charset=utf-8')
+  assert.equal(await worker.text(), SERVICE_WORKER)
+  assert.doesNotThrow(() => new Function(SERVICE_WORKER))
+})
+
+test('the app counts every request it receives', async (t) => {
+  const app = await start(t)
+  assert.equal(app.requests(), 0)
+  await html(app, '/')
+  const missing = await fetch(`${app.url}/nowhere`)
+  await missing.body?.cancel()
+  assert.equal(app.requests(), 2)
 })

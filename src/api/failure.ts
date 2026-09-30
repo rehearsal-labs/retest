@@ -1,4 +1,5 @@
 import { failure, type Failure } from '../protocol/failures.ts'
+import { formatLine } from '../protocol/location.ts'
 import { formatValue } from './format-value.ts'
 import { errorLocation } from './source-location.ts'
 
@@ -24,10 +25,17 @@ export class RetestError extends Error {
  */
 export function failureFrom(thrown: unknown, rootDir: string): Failure {
   if (thrown instanceof RetestError) return thrown.failure
-  if (thrown instanceof Error) {
-    return failure('test_error', `${thrown.name}: ${thrown.message}`, errorLocation(thrown, rootDir))
-  }
+  if (thrown instanceof Error) return failure('test_error', thrownMessage(thrown), errorLocation(thrown, rootDir))
   return failure('test_error', `The test threw ${formatValue(thrown)}.`)
+}
+
+/**
+ * Anything thrown, as a message: an error's name and message, or the value as Retest prints values.
+ *
+ * @example thrownMessage(new TypeError('x is not a function')) // 'TypeError: x is not a function'
+ */
+export function thrownMessage(thrown: unknown): string {
+  return thrown instanceof Error ? `${thrown.name}: ${thrown.message}` : formatValue(thrown)
 }
 
 /**
@@ -38,6 +46,6 @@ export function failureFrom(thrown: unknown, rootDir: string): Failure {
  */
 export function fromEarlierTest(problem: Failure, testName: string): Failure {
   const { location } = problem
-  const where = location === undefined ? '' : `; this was thrown at ${location.file}:${location.line}`
+  const where = location === undefined ? '' : `; this was thrown at ${formatLine(location)}`
   return { ...problem, message: `${problem.message}\nCode from the earlier test ${JSON.stringify(testName)} may be the cause${where}.` }
 }

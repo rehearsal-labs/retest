@@ -1,4 +1,4 @@
-import type { FlagOption, ValueOption } from './arguments.ts'
+import type { OptionSpec } from './arguments.ts'
 import type { Command } from './command.ts'
 
 const column = 28
@@ -58,7 +58,7 @@ function firstArgument(command: Command): string {
   return command.usage.split(' ')[0] ?? ''
 }
 
-function optionFlags(name: string, option: FlagOption | ValueOption): string {
+function optionFlags(name: string, option: OptionSpec): string {
   return option.kind === 'flag' ? `--${name}` : `--${name} ${option.placeholder}`
 }
 

@@ -2,6 +2,7 @@ import type { Failure } from '../protocol/failures.ts'
 import type { RunResult, TestResult } from '../protocol/result.ts'
 import type { Reporter } from './reporter.ts'
 import type { Writer } from './style.ts'
+import { formatLine } from '../protocol/location.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { formatInspectCommand } from './commands.ts'
 import {
@@ -17,8 +18,17 @@ import {
   unshownDetails,
   type FailureCard,
 } from './failure-card.ts'
-import { countParts, formatDetail, formatDuration, formatLine, quoteRecorded, runNotes, totalTests } from './format.ts'
+import {
+  countParts,
+  formatDetail,
+  formatDuration,
+  quoteRecorded,
+  runNotes,
+  titleWithin,
+  totalTests,
+} from './format.ts'
 import { RunRecord } from './run-record.ts'
+import { acrossTargets, runTargets, targetSummaries, variantLabel, type RunTargets } from './targets.ts'
 
 export type AgentReporterOptions = { stdout: Writer; runFolder: string }
 
@@ -42,18 +52,20 @@ export function createAgentReporter(options: AgentReporterOptions): Reporter {
 }
 
 function renderAgentReport(result: RunResult, record: RunRecord, runFolder: string): string {
-  const cards = failureCards(result, { record, runFolder })
-  const lines = [firstLine(result), ...runFailureLines(result)]
+  const targets = runTargets(record, result)
+  const cards = failureCards(result, { record, runFolder, targets })
+  const lines = [firstLine(result, targets), ...runFailureLines(result)]
   for (const card of cards) lines.push(...cardLines(card))
-  for (const test of testsNotRun(result)) lines.push(...notRunLines(test, notRunReason(result, test)))
-  const testId = cards.find((card) => card.test !== undefined)?.test?.testId
-  lines.push(`next: ${formatInspectCommand({ runFolder, testId, json: true })}`)
+  for (const test of testsNotRun(result)) lines.push(...notRunLines(test, notRunReason(result, test), targets))
+  const first = cards.find((card) => card.test !== undefined)?.test
+  lines.push(`next: ${formatInspectCommand({ runFolder, testId: first?.testId, targets: first?.targets, json: true })}`)
   return `${lines.join('\n')}\n`
 }
 
-function firstLine(result: RunResult): string {
+function firstLine(result: RunResult, targets: RunTargets): string {
   const total = totalTests(result.counts)
-  const counted = total === 0 ? 'no tests ran' : `${countParts(result.counts).join(', ')} (${total})`
+  const across = acrossTargets(targetSummaries(result, targets).length)
+  const counted = total === 0 ? 'no tests ran' : `${countParts(result.counts).join(', ')} (${total})${across}`
   const notes = runNotes(result).map((note) => `, ${note}`)
   return `retest: ${counted} in ${formatDuration(result.durationMs)}, exit ${result.exitCode}${notes.join('')}`
 }
@@ -69,9 +81,9 @@ function runFailureLines(result: RunResult): string[] {
 function cardLines(card: FailureCard): string[] {
   const status = card.test?.status === 'failed' ? 'fail' : 'error'
   const where = card.location === undefined ? card.file : formatLine(card.location)
-  const subject = card.test === undefined ? describeFileProblem(card.fileProblem) : card.test.name
+  const subject = card.test === undefined ? describeFileProblem(card.fileProblem) : titleWithin(card.test.name, card.test.describePath)
   return [
-    `${status} ${where} ${subject}`,
+    `${status} ${where} ${subject}${bracketed(card.variant)}`,
     ...failureLines(card),
     ...unshownDetails(card).map(([key, value]) => `  ${key} ${formatDetail(value)}`),
     ...card.screenshots.map((path) => `  screenshot ${path}`),
@@ -94,14 +106,18 @@ function failureLines(card: FailureCard): string[] {
   return lines
 }
 
-function notRunLines(test: TestResult, reason: Failure | undefined): string[] {
-  const heading = `not run ${formatLine(test.location)} ${test.name}`
+function notRunLines(test: TestResult, reason: Failure | undefined, targets: RunTargets): string[] {
+  const heading = `not run ${formatLine(test.location)} ${titleWithin(test.name, test.describePath)}${bracketed(variantLabel(test.variant, targets))}`
   return reason === undefined ? [heading] : [heading, ...indent(failureText(reason))]
 }
 
 // A failure as `class message`, one line per line of its message.
 function failureText(failure: Failure): string[] {
   return `${failure.class} ${failure.message}`.split('\n')
+}
+
+function bracketed(label: string | undefined): string {
+  return label === undefined ? '' : ` [${label}]`
 }
 
 function indent(lines: readonly string[]): string[] {

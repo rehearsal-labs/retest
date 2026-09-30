@@ -1,72 +1,88 @@
-import type { LaunchOptions, OwnedBrowser, OwnedPage } from '../browser/contract.ts'
+import type { NewPageOptions, OwnedBrowser } from '../browser/contract.ts'
+import type { EventBody, EventOrigin } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
-import type { RegisteredTest } from '../protocol/messages.ts'
-import type { BrowserInfo, Evidence, FileResult, RunResult, TestResult } from '../protocol/result.ts'
+import type { Evidence, FileResult, RunResult, TestResult } from '../protocol/result.ts'
+import type { StorageState } from '../protocol/storage-state.ts'
+import type { Variant } from '../protocol/variant.ts'
 import type { Reporter } from '../reporters/reporter.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
 import type { RunStore } from '../store/run-store.ts'
-import type { RunOptions } from './contract.ts'
+import type { FindExecutable, LaunchBrowser, ReadyTarget } from './browser-pool.ts'
+import type { ChildOutput, RunOptions } from './contract.ts'
 import type { RunOutcome } from './outcome.ts'
-import type { BodyReport } from './running-test.ts'
+import type { CollectedTests, Plan, PlannedTest } from './plan.ts'
+import type { RunConfig } from './run-config.ts'
+import type { BodyReport, RunningTestOptions } from './running-test.ts'
+import type { Attempt, Visit } from './schedule.ts'
+import type { AppPage, PagesContext } from './test-pages.ts'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { closeGraceMs, LaunchError } from '../browser/contract.ts'
 import { elapsedMs, monotonicClock } from '../protocol/deadline.ts'
+import { retestEventSchema } from '../protocol/events.ts'
 import { errorMessage, failure, withAlso } from '../protocol/failures.ts'
-import { browserLogFile, childLogFile, failureScreenshotFile, testId } from '../protocol/run-folder.ts'
-import { withoutCredentials } from '../protocol/url.ts'
+import { runResultSchema } from '../protocol/result.ts'
+import { appLogFile, browserLogFile, childLogFile, stateFile, targetBrowserLogFile, testId, testTitle } from '../protocol/run-folder.ts'
+import { originOf, withoutCredentials } from '../protocol/url.ts'
+import { variantKey } from '../protocol/variant.ts'
 import { relativePosixPath } from '../shared/posix-path.ts'
 import { retestVersion } from '../version.ts'
+import { AppServers } from './app-servers.ts'
 import { newAttemptId } from './attempt-id.ts'
-import { bounded, type Bounded } from './bounded.ts'
+import { bounded } from './bounded.ts'
+import { BrowserPool } from './browser-pool.ts'
 import { EventLog } from './event-log.ts'
-import { collectedTests, loadTests, missingFileFailure } from './load-tests.ts'
+import { lastRunOf, writeLastRun } from './last-run.ts'
+import { loadTests, missingFileFailure } from './load-tests.ts'
 import { runOutcome, stopSignalOf, testStatus } from './outcome.ts'
+import { collectedTest, planTests } from './plan.ts'
 import { endedBeforeTest, fileProcessFailure, laterTestsReason, reportedErrors } from './process-failures.ts'
+import { Redactor } from './redactor.ts'
+import { runConfig } from './run-config.ts'
 import { abortGraceMs, RunningTest } from './running-test.ts'
+import { scheduleRun } from './schedule.ts'
+import { SecretFiller, secretValuesProblem, secretVariables } from './secrets.ts'
+import { emptySelectionFailure, selectionProblem } from './selection.ts'
+import { searchSetups } from './setup-search.ts'
 import { TestFileProcess } from './test-file-process.ts'
-
-/** Starts the run's browser. The runner passes its setup budget; tests pass a fake. */
-export type LaunchBrowser = (options: LaunchOptions, timeoutMs: number) => Promise<OwnedBrowser>
+import { captureFailure, disposePages, openPage, saveState } from './test-pages.ts'
 
 export type RunSessionOptions = {
   options: RunOptions
   reporters: readonly Reporter[]
   launch: LaunchBrowser
+  findExecutable: FindExecutable
   store: RunStore
 }
 
-type BrowserState =
-  | { kind: 'not_started' }
-  | { kind: 'ready'; browser: OwnedBrowser }
-  | { kind: 'unavailable'; failure: Failure; browser?: OwnedBrowser }
-
 type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
-type TestScope = { testId: string; attemptId: string }
-type DescribedTest = { scope: TestScope; file: string; test: RegisteredTest }
+/** One attempt as its events and result name it. `variant` is absent in milestone 1's mode. */
+type Described = { testId: string; attemptId: string; test: PlannedTest; targets: Variant; variant?: Variant }
 type TestOutcome = { result: TestResult; laterTests?: Failure }
-/** A file's tests, or why it could not be collected. `exitRecorded` means a test's result says how its process ended. */
-type FileRun = { collected: false; failure: Failure } | { collected: true; tests: TestResult[]; exitRecorded: boolean }
+type Finished = Described & { startedAt: number; failure: Failure | undefined; assertionCount: number; evidence: Evidence[]; cleanupFailures: Failure[] }
+/** What a file's visits added up to: its results in the order they ran, and its process failures. */
+type FileRecord = { tests: TestResult[]; failures: Failure[] }
+type Output = { write: (stream: ChildOutput['stream'], text: string) => void; end: () => void }
+/** A run's plan: the config it follows and what collection found. */
+type Planned = { config: RunConfig; plan: Plan }
+/** A saved state to restore into an app's new page, and the names its event records. */
+type Restored = { storage: StorageState; named: { state: string; app: string; target: string } }
+/** A setup's state for one target: saved, or why it is not. */
+type StateOutcome = { ok: true } | { ok: false; failure: Failure; target: string }
 /** What a run's result says besides its outcome. It is fixed once the run is over. */
 type ResultFacts = Omit<RunResult, keyof RunOutcome>
-type Finished = DescribedTest & {
-  startedAt: number
-  failure: Failure | undefined
-  assertionCount: number
-  evidence: Evidence[]
-  cleanupFailures: Failure[]
-}
 
 /**
- * One run of selected files: the parent's whole lifecycle. Files run one after another, each in its own
- * process; the browser starts once, when the first test needs it, and every test gets a new page.
+ * One run of selected files: the parent's whole lifecycle. Every file is collected first, in a process of its
+ * own, so the run knows every test before any starts. Then each visit runs its attempts in a new process for its
+ * file: setups first, once per target, then the rest in file order. Browsers and app servers start the first
+ * time a test needs them, and every test gets a new page for each of its apps.
  */
 export class RunSession {
   readonly #options: RunOptions
-  readonly #launch: LaunchBrowser
   readonly #store: RunStore
   readonly #events: EventLog
+  readonly #redactor = new Redactor()
   readonly #reporterNames: string
   readonly #rootDir: string
   readonly #files: string[]
@@ -75,17 +91,21 @@ export class RunSession {
   readonly #start = monotonicClock()
   readonly #stopped = Promise.withResolvers<void>()
   readonly #releases: Promise<unknown>[] = []
+  readonly #processes = new Set<TestFileProcess>()
+  readonly #records = new Map<string, FileRecord>()
+  readonly #states = new Map<string, StateOutcome>()
+  readonly #runFailures: Failure[] = []
+  readonly #browsers: BrowserPool
+  readonly #servers: AppServers
+  readonly #secrets: SecretFiller
+  readonly #hiddenVariables: string[]
   #stopReason: Failure | undefined
   #interruption: Failure | undefined
-  #closingBrowser = false
-  #browser: BrowserState = { kind: 'not_started' }
-  #browserInfo: BrowserInfo | null = null
-  #process: TestFileProcess | undefined
-  #test: RunningTest | undefined
+  #test: { running: RunningTest; browsers: readonly OwnedBrowser[] } | undefined
 
-  constructor({ options, reporters, launch, store }: RunSessionOptions) {
+  constructor({ options, reporters, launch, findExecutable, store }: RunSessionOptions) {
+    const { apps, timeouts } = options
     this.#options = options
-    this.#launch = launch
     this.#store = store
     this.#rootDir = resolve(options.rootDir)
     this.#files = options.files.map((file) => relativePosixPath(this.#rootDir, resolve(this.#rootDir, file)))
@@ -98,7 +118,33 @@ export class RunSession {
       onFailure: (problem) => {
         this.#stopReason ??= problem
       },
+      redact: (event) => this.#redactor.redactFields(retestEventSchema, event),
     })
+    const named = apps.kind === 'config'
+    this.#browsers = new BrowserPool({
+      launch,
+      findExecutable: named ? findExecutable : async () => ({ ok: true, path: apps.browserPath }),
+      logFile: (app, target) => store.pathOf(named ? targetBrowserLogFile(variantKey({ [app]: target })) : browserLogFile),
+      headless: options.headless,
+      named,
+      timeouts,
+      stopped: this.#stopped.promise,
+      interruption: () => this.#interruption,
+      onStarted: ({ info, userAgent, pid }) => this.#events.emit({ type: 'browser.started', ...info, userAgent, pid }),
+      onLost: (browser, reason) => {
+        if (this.#test?.browsers.includes(browser) === true) this.#test.running.browserLost(reason)
+      },
+    })
+    this.#servers = new AppServers({
+      logFile: (app) => store.pathOf(appLogFile(app)),
+      redactor: this.#redactor,
+      setupMs: timeouts.setup,
+      signal: options.signal,
+      emit: (body) => void this.#events.emit(body),
+    })
+    const declared = apps.kind === 'config' ? apps.config.secrets : new Map()
+    this.#secrets = new SecretFiller(apps.kind === 'config' ? apps.secrets : new Map(), declared, this.#redactor)
+    this.#hiddenVariables = secretVariables(declared)
   }
 
   async run(): Promise<RunResult> {
@@ -108,20 +154,22 @@ export class RunSession {
     try {
       this.#emitRunStarted()
       if (signal.aborted) this.#interrupt()
-      const files: FileResult[] = []
-      for (const file of this.#files) files.push(await this.#runFile(file))
-      await this.#closeBrowser()
+      const files = await this.#runFiles()
+      await this.#release()
       return await this.#finish(files)
     } finally {
       signal.removeEventListener('abort', interrupt)
-      await this.#process?.kill()
-      await this.#closeBrowser()
+      await Promise.all([...this.#processes].map((process) => process.kill()))
+      await this.#release()
     }
   }
 
-  // The base URL keeps its credentials for the browser; everything recorded or printed goes without them.
   #emitRunStarted(): void {
-    const { baseUrl, browserPath, timeouts } = this.#options
+    const { apps, timeouts, commandLineTimeouts } = this.#options
+    const recorded =
+      apps.kind === 'config'
+        ? { config: relativePosixPath(this.#rootDir, apps.config.file), ...recordedBaseUrls(apps.baseUrls) }
+        : { ...(apps.baseUrl === undefined ? {} : { baseUrl: withoutCredentials(apps.baseUrl) }), browserPath: apps.browserPath }
     this.#events.emit({
       type: 'run.started',
       retestVersion,
@@ -129,86 +177,260 @@ export class RunSession {
       platform: `${process.platform}-${process.arch}`,
       rootDir: this.#rootDir,
       files: this.#files,
-      options: {
-        ...(baseUrl === undefined ? {} : { baseUrl: withoutCredentials(baseUrl) }),
-        browserPath,
-        timeouts,
-        reporter: this.#reporterNames,
-      },
+      options: { ...recorded, timeouts, ...(commandLineTimeouts === undefined ? {} : { commandLineTimeouts }), reporter: this.#reporterNames },
     })
   }
 
-  // The process is closed before the file's result is decided, so an error it reports after its last
-  // test, or an ending no test explains, fails the file. The event keeps that failure for a run that stops
-  // before it finishes.
-  async #runFile(file: string): Promise<FileResult> {
-    if (this.#stopReason !== undefined) {
-      const reason = failure(this.#stopReason.class, `Not loaded: ${this.#stopReason.message}`)
-      return this.#collectionFailed(file, reason)
+  // A run the command line set up wrongly loads nothing, and neither does one that matches no test.
+  async #runFiles(): Promise<FileResult[]> {
+    const { apps } = this.#options
+    const configured = runConfig(apps)
+    const selection = this.#options.selection ?? {}
+    const problem = configured.ok ? selectionProblem(selection, this.#files, configured.config) : configured.failure
+    const secrets = apps.kind === 'config' ? secretValuesProblem(apps.secrets) : undefined
+    for (const found of [problem, secrets]) if (found !== undefined) this.#failRun(found)
+    if (!configured.ok) return this.#files.map((file) => this.#collectionFailed(file, this.#notLoaded()))
+    const planned: Planned = { config: configured.config, plan: await this.#plan(configured.config) }
+    const schedule = scheduleRun(planned.plan, selection, planned.config.variants)
+    const collected = planned.plan.files.some((file) => file.ok && file.tests.length > 0)
+    if (this.#stopReason === undefined && schedule.selected === 0 && collected) this.#failRun(emptySelectionFailure(selection))
+    for (const visit of schedule.visits) await this.#runVisit(visit, planned)
+    return planned.plan.files.map((file) => (file.ok ? this.#fileResult(file.file) : { file: file.file, collection: 'failed', failure: file.failure, tests: [] }))
+  }
+
+  #failRun(problem: Failure): void {
+    this.#runFailures.push(problem)
+    this.#stopReason ??= problem
+  }
+
+  async #plan(config: RunConfig): Promise<Plan> {
+    const collected: CollectedTests[] = []
+    for (const file of this.#files) collected.push(await this.#collect(file))
+    const search = this.#options.apps.kind === 'config' ? await searchSetups({ rootDir: this.#rootDir, collected, collect: (file) => this.#look(file) }) : undefined
+    const plan = planTests(collected, config, search)
+    for (const file of plan.files) {
+      if (file.ok) this.#events.emit({ type: 'collection.completed', file: file.file, tests: file.tests.map((test) => collectedTest(test, config)) })
+      else this.#events.emit({ type: 'collection.failed', file: file.file, failure: file.failure })
     }
-    if (!existsSync(resolve(this.#rootDir, file))) return this.#collectionFailed(file, missingFileFailure(file))
+    return plan
+  }
+
+  // Loading a file to plan the run keeps its output only when the load fails: the load that runs its tests
+  // produces the same output again, and a file whose load failed is not loaded again.
+  async #collect(file: string): Promise<CollectedTests> {
+    if (this.#stopReason !== undefined) return { file, ok: false, failure: this.#notLoaded() }
+    if (!existsSync(resolve(this.#rootDir, file))) return { file, ok: false, failure: missingFileFailure(file) }
     const logFile = childLogFile(file)
-    const child = TestFileProcess.spawn({ onOutput: (stream, text) => this.#output(file, logFile, stream, text) })
-    this.#process = child
+    const held: [ChildOutput['stream'], string][] = []
+    const collected = await this.#load(file, { onOutput: (stream, text) => held.push([stream, text]), logFile })
+    if (collected.ok) return collected
+    const output = this.#outputFor(file, logFile)
+    for (const [stream, text] of held) output.write(stream, text)
+    output.end()
+    return { file, ok: false, failure: this.#interruption ?? collected.failure }
+  }
+
+  // A file looked through for setups is not part of the run, so nothing it prints is kept.
+  async #look(file: string): Promise<CollectedTests> {
+    if (this.#stopReason !== undefined) return { file, ok: false, failure: this.#notLoaded() }
+    return this.#load(file, { onOutput: () => undefined })
+  }
+
+  async #load(file: string, { onOutput, logFile }: { onOutput: Output['write']; logFile?: string }): Promise<CollectedTests> {
+    const child = this.#spawn(onOutput)
     try {
-      const ran = await this.#collectAndRun(child, file, logFile)
-      const closed = await child.close(abortGraceMs)
-      if (!ran.collected) return this.#collectionFailed(file, withAlso(ran.failure, reportedErrors(file, child.errors)))
-      const problem = fileProcessFailure({ file, closed, errors: child.errors, killed: child.killed, exitRecorded: ran.exitRecorded })
-      if (problem === undefined) return { file, collection: 'ok', tests: ran.tests }
-      this.#events.emit({ type: 'file.failed', file, failure: problem })
-      return { file, collection: 'ok', failure: problem, tests: ran.tests }
+      const timeoutMs = this.#options.timeouts.collection
+      const loaded = await loadTests(child, { file, rootDir: this.#rootDir, timeoutMs, ...(logFile === undefined ? {} : { logFile }) })
+      await child.close(abortGraceMs)
+      if (loaded.ok) return { file, ok: true, tests: loaded.tests }
+      return { file, ok: false, failure: withAlso(loaded.failure, reportedErrors(file, child.errors)) }
     } finally {
-      this.#process = undefined
-      await child.kill()
+      await this.#forget(child)
     }
   }
 
-  async #collectAndRun(child: TestFileProcess, file: string, logFile: string): Promise<FileRun> {
-    const timeoutMs = this.#options.timeouts.collection
-    const loaded = await loadTests(child, { file, rootDir: this.#rootDir, timeoutMs, logFile })
-    if (!loaded.ok) return { collected: false, failure: this.#interruption ?? loaded.failure }
-    this.#events.emit({ type: 'collection.completed', file, tests: collectedTests(file, loaded.tests) })
+  // The process is closed before the visit's results are final, so an error it reports after its last test, or
+  // an ending no test explains, fails the file. The event keeps that failure for a run that stops before it finishes.
+  async #runVisit({ file, attempts }: Visit, planned: Planned): Promise<void> {
+    const record = this.#record(file)
+    if (this.#stopReason !== undefined) {
+      const reason = this.#stopReason
+      record.tests.push(...attempts.map((attempt) => this.#notRun(this.#describe(attempt, planned), reason)))
+      return
+    }
+    const logFile = childLogFile(file)
+    const output = this.#outputFor(file, logFile)
+    const child = this.#spawn(output.write)
+    try {
+      const ran = await this.#loadAndRun(child, file, attempts, planned)
+      const closed = await child.close(abortGraceMs)
+      record.tests.push(...ran.tests)
+      if (!ran.loaded) return
+      const problem = fileProcessFailure({ file, closed, errors: child.errors, killed: child.killed, exitRecorded: ran.exitRecorded })
+      if (problem === undefined) return
+      this.#events.emit({ type: 'file.failed', file, failure: problem })
+      record.failures.push(problem)
+    } finally {
+      await this.#forget(child)
+      output.end()
+    }
+  }
+
+  async #loadAndRun(child: TestFileProcess, file: string, attempts: readonly Attempt[], planned: Planned): Promise<{ loaded: boolean; tests: TestResult[]; exitRecorded: boolean }> {
+    const logFile = childLogFile(file)
+    const loaded = await loadTests(child, { file, rootDir: this.#rootDir, timeoutMs: this.#options.timeouts.collection, logFile })
+    if (!loaded.ok) {
+      const reason = this.#interruption ?? withAlso(loaded.failure, reportedErrors(file, child.errors))
+      return { loaded: false, tests: attempts.map((attempt) => this.#notRun(this.#describe(attempt, planned), reason)), exitRecorded: false }
+    }
+    const declared = new Set(loaded.tests.map((test) => testId(file, testTitle(test.name, (test.describes ?? []).map((block) => block.name)))))
     const tests: TestResult[] = []
     let laterTests: Failure | undefined
-    for (const test of loaded.tests) {
-      const outcome = await this.#runTest(child, file, test, laterTests)
+    for (const attempt of attempts) {
+      const described = this.#describe(attempt, planned)
+      const outcome = declared.has(described.testId)
+        ? await this.#runAttempt(child, described, planned, laterTests)
+        : { result: this.#notRun(described, failure('collection_failed', 'Not run: its file no longer declared it when it loaded again to run it.')) }
       tests.push(outcome.result)
       laterTests ??= outcome.laterTests
     }
-    return { collected: true, tests, exitRecorded: laterTests !== undefined }
+    return { loaded: true, tests, exitRecorded: laterTests !== undefined }
   }
 
-  async #runTest(child: TestFileProcess, file: string, test: RegisteredTest, notRunReason: Failure | undefined): Promise<TestOutcome> {
-    const scope = { testId: testId(file, test.name), attemptId: newAttemptId() }
-    const described = { scope, file, test }
-    const skip = this.#stopReason ?? notRunReason
+  async #runAttempt(child: TestFileProcess, described: Described, planned: Planned, notRunReason: Failure | undefined): Promise<TestOutcome> {
+    const skip = this.#stopReason ?? notRunReason ?? this.#missingState(described, planned.plan)
     if (skip !== undefined) return { result: this.#notRun(described, skip) }
     if (child.exit !== undefined) return { result: this.#notRun(described, endedBeforeTest(child.exit)) }
-    const browser = await this.#ensureBrowser()
-    if (!browser.ok) return { result: this.#notRun(described, this.#stopReason ?? browser.failure) }
+    const ready = await this.#prepare(described, planned.config)
+    if (!ready.ok) return { result: this.#notRun(described, this.#stopReason ?? ready.failure) }
     const startedAt = monotonicClock()
-    this.#events.emit({ type: 'test.started', ...scope, name: test.name, file, location: test.location })
-    const finished = { ...described, startedAt, assertionCount: 0, evidence: [], cleanupFailures: [] }
-    const opened = await this.#openPage(browser.value)
+    const { test } = described
+    const shown = { name: test.registered.name, file: test.file, location: test.registered.location, ...describePath(test), ...setupMark(test) }
+    this.#emitFor(described, { type: 'test.started', testId: described.testId, attemptId: described.attemptId, ...shown })
+    const finished: Finished = { ...described, startedAt, failure: undefined, assertionCount: 0, evidence: [], cleanupFailures: [] }
+    const context = this.#pagesContext(described)
+    const opened = await this.#openPages(context, described, ready.value, planned.config)
     if (!opened.ok) return { result: this.#finishTest({ ...finished, failure: opened.failure }) }
     if (this.#interruption !== undefined) return { result: this.#finishTest({ ...finished, failure: this.#interruption }) }
-    const page = opened.value
-    // Code the previous test left behind can end the process while the page opens.
-    if (child.exit !== undefined) return { result: await this.#bodyNotRun(described, page, child.exit) }
-    const report = await this.#runBody(child, page, scope, test)
-    if (report.endedBeforeStart !== undefined) return { result: await this.#bodyNotRun(described, page, report.endedBeforeStart) }
-    const evidence = report.failure === undefined ? [] : await this.#captureFailure(page, scope)
-    const cleanupFailures = await this.#dispose(page)
-    const result = this.#finishTest({ ...finished, failure: report.failure, assertionCount: report.assertionCount, evidence, cleanupFailures })
-    const laterTests = laterTestsReason(test.name, report)
+    const pages = opened.value
+    // Code the previous test left behind can end the process while the pages open.
+    if (child.exit !== undefined) return { result: await this.#bodyNotRun(context, described, pages, child.exit) }
+    const report = await this.#runBody(child, pages, described, planned.config)
+    if (report.endedBeforeStart !== undefined) return { result: await this.#bodyNotRun(context, described, pages, report.endedBeforeStart) }
+    const evidence = report.failure === undefined ? [] : await captureFailure(context, pages)
+    const unsaved = report.failure === undefined ? await this.#saveSetupState(context, described, pages) : undefined
+    const cleanupFailures = await disposePages(context, pages)
+    const problem = report.failure ?? unsaved
+    const result = this.#finishTest({ ...finished, failure: problem, assertionCount: report.assertionCount, evidence, cleanupFailures })
+    const laterTests = laterTestsReason(test.registered.name, report)
     return laterTests === undefined ? { result } : { result, laterTests }
   }
 
-  async #runBody(child: TestFileProcess, page: OwnedPage, scope: TestScope, test: RegisteredTest): Promise<BodyReport> {
-    const timeouts = { ...this.#options.timeouts, ...(test.timeout === undefined ? {} : { test: test.timeout }) }
-    const running = new RunningTest({ process: child, page, ...scope, timeouts, emit: (body) => void this.#events.emit(body) })
-    this.#test = running
+  // Every app's server and browser, before the test starts; any that is not ready keeps the test from running.
+  async #prepare({ test, targets }: Described, config: RunConfig): Promise<Opened<Map<string, ReadyTarget>>> {
+    const ready = new Map<string, ReadyTarget>()
+    for (const name of test.apps) {
+      const app = config.apps.get(name)
+      const targetName = targets[name]
+      const target = targetName === undefined ? undefined : app?.targets.get(targetName)
+      if (app === undefined || target === undefined) return { ok: false, failure: failure('test_error', `The config has no target ${JSON.stringify(targetName)} for ${name}.`) }
+      const unready = await this.#servers.ensure(app)
+      if (unready !== undefined) return { ok: false, failure: this.#interruption ?? unready }
+      const browser = await this.#browsers.ensure(app, target)
+      if (!browser.ok) return browser
+      ready.set(name, browser.value)
+    }
+    return { ok: true, value: ready }
+  }
+
+  async #openPages(context: PagesContext, described: Described, ready: ReadonlyMap<string, ReadyTarget>, config: RunConfig): Promise<Opened<AppPage[]>> {
+    const pages: AppPage[] = []
+    for (const [app, { browser, emulation }] of ready) {
+      const state = this.#restoredState(described, app)
+      if (state !== undefined && !state.ok) {
+        await disposePages(context, pages)
+        return state
+      }
+      const baseUrl = config.apps.get(app)?.baseUrl
+      const options: NewPageOptions = {
+        ...(baseUrl === undefined ? {} : { baseUrl }),
+        ...(emulation === undefined ? {} : { emulation }),
+        ...(state === undefined ? {} : { storageState: state.value.storage }),
+      }
+      const opened = await openPage(context, browser, options)
+      if (!opened.ok) {
+        await disposePages(context, pages)
+        return opened
+      }
+      pages.push({ app, page: opened.value, browser, touch: emulation?.touch === true })
+      if (state !== undefined) this.#emitFor(described, { type: 'state.restored', testId: described.testId, attemptId: described.attemptId, ...state.value.named })
+    }
+    return { ok: true, value: pages }
+  }
+
+  #restoredState({ test, targets }: Described, app: string): Opened<Restored> | undefined {
+    const state = test.states.get(app)
+    const target = targets[app]
+    if (state === undefined || target === undefined) return undefined
+    try {
+      return { ok: true, value: { storage: this.#store.readState(stateFile(state, target)), named: { state, app, target } } }
+    } catch (error) {
+      return { ok: false, failure: failure('setup_failed', `Retest could not read the saved state ${JSON.stringify(state)}: ${errorMessage(error)}`) }
+    }
+  }
+
+  async #saveSetupState(context: PagesContext, { test, targets }: Described, pages: readonly AppPage[]): Promise<Failure | undefined> {
+    const [page] = pages
+    if (test.registered.setup !== true || page === undefined) return undefined
+    const target = targets[page.app]
+    return target === undefined ? undefined : saveState(context, page, test.registered.name, target)
+  }
+
+  // A setup's result decides its state for that target: its dependents do not run without it. A cleanup failure
+  // alone comes after the state was saved.
+  #settled({ test, targets }: Described, result: TestResult): TestResult {
+    const [app] = test.apps
+    const target = app === undefined ? undefined : targets[app]
+    if (test.registered.setup !== true || target === undefined) return result
+    const key = stateKey(test.registered.name, target)
+    if (result.failure === undefined) this.#states.set(key, { ok: true })
+    else this.#states.set(key, { ok: false, failure: result.failure, target })
+    return result
+  }
+
+  #missingState({ test, targets }: Described, plan: Plan): Failure | undefined {
+    for (const [app, state] of test.states) {
+      const target = targets[app]
+      const outcome = target === undefined ? undefined : this.#states.get(stateKey(state, target))
+      if (outcome?.ok === true) continue
+      if (outcome !== undefined) {
+        return { ...outcome.failure, message: `Not run: the setup ${JSON.stringify(state)} did not pass on ${outcome.target}. ${outcome.failure.message}` }
+      }
+      const setup = plan.setups.get(state)
+      const where = setup === undefined ? 'no file in this run' : `${setup.test.file}, which could not be collected`
+      return failure('setup_failed', `Not run: the setup ${JSON.stringify(state)} is in ${where}.`)
+    }
+    return undefined
+  }
+
+  async #runBody(child: TestFileProcess, pages: readonly AppPage[], described: Described, config: RunConfig): Promise<BodyReport> {
+    const { test, testId: id, attemptId, variant } = described
+    const timeouts = { ...this.#options.timeouts, ...(test.registered.timeout === undefined ? {} : { test: test.registered.timeout }) }
+    const appOrigins = test.apps.flatMap((app) => originOf(config.apps.get(app)?.baseUrl) ?? [])
+    const fillSecret: RunningTestOptions['fillSecret'] = (command, pageUrl, timeoutMs) => this.#secrets.resolve(command, { pageUrl, appOrigins, timeoutMs })
+    const running = new RunningTest({
+      process: child,
+      pages: new Map(pages.map(({ app, page }) => [app, page])),
+      testId: id,
+      attemptId,
+      ...(variant === undefined ? {} : { variant }),
+      timeouts,
+      emit: (body, origin) => this.#emitFor(described, body, origin),
+      ...(config.variants ? { fillSecret } : {}),
+      redactor: this.#redactor,
+      touch: new Set(pages.filter((page) => page.touch).map(({ app }) => app)),
+    })
+    this.#test = { running, browsers: pages.map(({ browser }) => browser) }
     const report = await running.run()
     this.#test = undefined
     await running.settle(this.#interruption === undefined ? timeouts.cleanup : 0)
@@ -216,121 +438,79 @@ export class RunSession {
     return report
   }
 
-  async #ensureBrowser(): Promise<Opened<OwnedBrowser>> {
-    const state = this.#browser
-    if (state.kind === 'ready') return { ok: true, value: state.browser }
-    if (state.kind === 'unavailable') return { ok: false, failure: state.failure }
-    const { browserPath, headless, timeouts } = this.#options
-    const launching = this.#launch({ executablePath: browserPath, logFile: this.#store.pathOf(browserLogFile), headless }, timeouts.setup)
-    const launched = await bounded(launching, timeouts.setup + abortGraceMs, this.#stopped.promise)
-    if (launched.status !== 'done') {
-      if (launched.status !== 'failed') this.#release(launching.then((browser) => browser.close(timeouts.cleanup)))
-      const problem = (launched.status === 'stopped' ? this.#interruption : undefined) ?? launchFailure(launched, timeouts.setup)
-      this.#browser = { kind: 'unavailable', failure: problem }
-      return { ok: false, failure: problem }
-    }
-    const browser = launched.value
-    this.#browser = { kind: 'ready', browser }
-    const { product, version, userAgent, pid, executablePath } = browser
-    this.#browserInfo = { product, version, executablePath }
-    this.#events.emit({ type: 'browser.started', product, version, userAgent, pid, executablePath })
-    browser.onDisconnect((reason) => this.#browserLost(reason))
-    return { ok: true, value: browser }
-  }
-
-  async #openPage(browser: OwnedBrowser): Promise<Opened<OwnedPage>> {
-    const { baseUrl, timeouts } = this.#options
-    const opening = browser.newPage(baseUrl === undefined ? {} : { baseUrl }, timeouts.setup)
-    const opened = await bounded(opening, timeouts.setup + abortGraceMs, this.#stopped.promise)
-    if (opened.status === 'done') return { ok: true, value: opened.value }
-    if (opened.status !== 'failed') this.#release(opening.then((page) => page.dispose(timeouts.cleanup)))
-    if (opened.status === 'stopped' && this.#interruption !== undefined) return { ok: false, failure: this.#interruption }
-    if (opened.status === 'timed_out') {
-      return { ok: false, failure: failure('setup_failed', `Opening a new page took longer than the ${timeouts.setup} ms setup budget.`) }
-    }
-    const lost = !browser.connected
-    const detail = opened.status === 'failed' ? errorMessage(opened.error) : 'the run stopped'
-    return { ok: false, failure: failure(lost ? 'session_lost' : 'setup_failed', `Retest could not open a page: ${detail}`) }
-  }
-
-  // Evidence never replaces the failure it illustrates; when it cannot be taken, the reason is recorded.
-  async #captureFailure(page: OwnedPage, scope: TestScope): Promise<Evidence[]> {
-    if (this.#interruption !== undefined) return []
-    const cleanup = this.#options.timeouts.cleanup
-    const unavailable = (message: string): Evidence[] => {
-      this.#events.emit({ type: 'evidence.failed', ...scope, session: 'page', kind: 'screenshot', reason: 'failure', message })
-      return []
-    }
-    if (!this.#browserConnected()) return unavailable('The browser was gone, so Retest took no screenshot.')
-    const shot = await bounded(page.screenshot(cleanup), cleanup + abortGraceMs, this.#stopped.promise)
-    if (shot.status === 'stopped') return []
-    if (shot.status === 'timed_out') return unavailable(`Taking a screenshot took longer than ${cleanup} ms.`)
-    if (shot.status === 'failed') return unavailable(`Retest could not take a screenshot: ${errorMessage(shot.error)}`)
-    const path = failureScreenshotFile(scope.testId, scope.attemptId)
-    try {
-      this.#store.writeArtifact(path, shot.value)
-    } catch (error) {
-      return unavailable(`Retest could not save the screenshot: ${errorMessage(error)}`)
-    }
-    this.#events.emit({ type: 'evidence.captured', ...scope, session: 'page', kind: 'screenshot', path, reason: 'failure' })
-    return [{ kind: 'screenshot', path }]
-  }
-
-  // A browser that is gone or about to be closed takes its contexts with it.
-  async #dispose(page: OwnedPage): Promise<Failure[]> {
-    if (this.#interruption !== undefined || !this.#browserConnected()) return []
-    const cleanup = this.#options.timeouts.cleanup
-    const disposed = await bounded(page.dispose(cleanup), cleanup + abortGraceMs, this.#stopped.promise)
-    if (disposed.status === 'done' || disposed.status === 'stopped') return []
-    if (disposed.status === 'timed_out') {
-      return [failure('cleanup_failed', `Closing the test's browser context took longer than ${cleanup} ms.`)]
-    }
-    return [failure('cleanup_failed', `Closing the test's browser context failed: ${errorMessage(disposed.error)}`)]
+  // A body that never ran leaves only blank pages: they are released, and nothing is captured from them.
+  async #bodyNotRun(context: PagesContext, described: Described, pages: readonly AppPage[], exit: ProcessExit): Promise<TestResult> {
+    const cleanupFailures = await disposePages(context, pages)
+    return this.#notRun(described, endedBeforeTest(exit), cleanupFailures)
   }
 
   #finishTest(finished: Finished): TestResult {
-    const { scope, file, test, failure: problem, cleanupFailures } = finished
+    const { failure: problem, cleanupFailures } = finished
     const status = testStatus(problem, cleanupFailures)
     const durationMs = elapsedMs(finished.startedAt)
     const outcome = {
       ...(problem === undefined ? {} : { failure: problem }),
       ...(cleanupFailures.length === 0 ? {} : { cleanupFailures }),
     }
-    this.#events.emit({ type: 'test.finished', ...scope, status, durationMs, assertionCount: finished.assertionCount, ...outcome })
-    return {
-      ...scope,
-      name: test.name,
-      file,
-      location: test.location,
-      status,
-      durationMs,
-      assertionCount: finished.assertionCount,
-      ...outcome,
-      evidence: finished.evidence,
-    }
+    const { testId: id, attemptId, assertionCount } = finished
+    this.#emitFor(finished, { type: 'test.finished', testId: id, attemptId, status, durationMs, assertionCount, ...outcome })
+    return this.#settled(finished, { ...this.#resultHead(finished), status, durationMs, assertionCount, ...outcome, evidence: finished.evidence })
   }
 
-  // A body that never ran leaves only a blank page: it is released, and nothing is captured from it.
-  async #bodyNotRun(described: DescribedTest, page: OwnedPage, exit: ProcessExit): Promise<TestResult> {
-    const cleanupFailures = await this.#dispose(page)
-    return this.#notRun(described, endedBeforeTest(exit), cleanupFailures)
-  }
-
-  #notRun({ scope, file, test }: DescribedTest, reason: Failure, cleanupFailures: Failure[] = []): TestResult {
+  #notRun(described: Described, reason: Failure, cleanupFailures: Failure[] = []): TestResult {
     const cleanup = cleanupFailures.length === 0 ? {} : { cleanupFailures }
-    this.#events.emit({ type: 'test.finished', ...scope, status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup })
-    return {
-      ...scope,
-      name: test.name,
-      file,
-      location: test.location,
-      status: 'not_run',
-      durationMs: 0,
-      assertionCount: 0,
-      failure: reason,
-      ...cleanup,
-      evidence: [],
+    const { testId: id, attemptId } = described
+    this.#emitFor(described, { type: 'test.finished', testId: id, attemptId, status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup })
+    return this.#settled(described, { ...this.#resultHead(described), status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup, evidence: [] })
+  }
+
+  #resultHead({ test, testId: id, attemptId, variant }: Described): Pick<TestResult, 'testId' | 'name' | 'file' | 'location' | 'describePath' | 'variant' | 'variantKey' | 'setup' | 'attemptId'> {
+    const variantFields = variant === undefined ? {} : { variant, variantKey: variantKey(variant) }
+    const { name, location } = test.registered
+    return { testId: id, name, file: test.file, location, ...describePath(test), ...variantFields, ...setupMark(test), attemptId }
+  }
+
+  #describe({ test, targets }: Attempt, planned: Planned): Described {
+    const described = { testId: test.testId, attemptId: newAttemptId(), test, targets }
+    return planned.config.variants ? { ...described, variant: targets } : described
+  }
+
+  // Every event of an attempt carries its variant, which the child never sends.
+  #emitFor({ variant }: Pick<Described, 'variant'>, body: EventBody, origin?: EventOrigin): void {
+    if (variant === undefined || !('attemptId' in body)) {
+      this.#events.emit(body, origin)
+      return
     }
+    this.#events.emit({ ...body, variant, variantKey: variantKey(variant) }, origin)
+  }
+
+  #pagesContext(described: Described): PagesContext {
+    return {
+      store: this.#store,
+      timeouts: this.#options.timeouts,
+      stopped: this.#stopped.promise,
+      interruption: () => this.#interruption,
+      connected: (browser) => this.#browsers.connected(browser),
+      release: (work) => void this.#releases.push(work.catch(() => undefined)),
+      named: described.variant !== undefined,
+      emit: (body) => this.#emitFor(described, body),
+      testId: described.testId,
+      attemptId: described.attemptId,
+    }
+  }
+
+  #record(file: string): FileRecord {
+    const known = this.#records.get(file)
+    if (known !== undefined) return known
+    const record: FileRecord = { tests: [], failures: [] }
+    this.#records.set(file, record)
+    return record
+  }
+
+  #fileResult(file: string): FileResult {
+    const { tests, failures } = this.#record(file)
+    const [first, ...rest] = failures
+    return first === undefined ? { file, collection: 'ok', tests } : { file, collection: 'ok', failure: withAlso(first, rest), tests }
   }
 
   #collectionFailed(file: string, reason: Failure): FileResult {
@@ -338,12 +518,40 @@ export class RunSession {
     return { file, collection: 'failed', failure: reason, tests: [] }
   }
 
-  #output(file: string, logFile: string, stream: 'stdout' | 'stderr', text: string): void {
-    try {
-      this.#store.appendLog(logFile, text)
-      this.#options.onOutput?.({ file, stream, text })
-    } catch (error) {
-      this.#events.reportFailure(failure('reporting_failed', `Retest could not keep the output of ${file}: ${errorMessage(error)}`))
+  #notLoaded(): Failure {
+    const reason = this.#stopReason ?? failure('interrupted', 'The run was interrupted.')
+    return failure(reason.class, `Not loaded: ${reason.message}`)
+  }
+
+  #spawn(onOutput: Output['write']): TestFileProcess {
+    const child = TestFileProcess.spawn({ onOutput, hiddenVariables: this.#hiddenVariables })
+    this.#processes.add(child)
+    return child
+  }
+
+  async #forget(child: TestFileProcess): Promise<void> {
+    await child.kill()
+    this.#processes.delete(child)
+  }
+
+  // Each stream is redacted as it arrives; a tail that may be part of a secret waits for the next chunk.
+  #outputFor(file: string, logFile: string): Output {
+    const streams = { stdout: this.#redactor.stream(), stderr: this.#redactor.stream() }
+    const keep = (stream: ChildOutput['stream'], text: string): void => {
+      if (text === '') return
+      try {
+        this.#store.appendLog(logFile, text)
+        this.#options.onOutput?.({ file, stream, text })
+      } catch (error) {
+        this.#events.reportFailure(failure('reporting_failed', `Retest could not keep the output of ${file}: ${errorMessage(error)}`))
+      }
+    }
+    return {
+      write: (stream, text) => keep(stream, streams[stream].write(text)),
+      end: () => {
+        keep('stdout', streams.stdout.end())
+        keep('stderr', streams.stderr.end())
+      },
     }
   }
 
@@ -354,42 +562,40 @@ export class RunSession {
     this.#interruption = reason
     this.#stopReason = reason
     this.#stopped.resolve()
-    this.#test?.revoke(reason, 0)
-    void this.#process?.kill()
+    this.#test?.running.revoke(reason, 0)
+    for (const process of this.#processes) void process.kill()
   }
 
-  #browserLost(reason: string): void {
-    const state = this.#browser
-    if (this.#closingBrowser || state.kind !== 'ready') return
-    const problem = failure('session_lost', `Not run: the browser was lost earlier in this run. ${reason}`)
-    this.#browser = { kind: 'unavailable', failure: problem, browser: state.browser }
-    this.#test?.browserLost(reason)
-  }
-
-  #browserConnected(): boolean {
-    return this.#browser.kind === 'ready' && this.#browser.browser.connected
-  }
-
-  #release(work: Promise<unknown>): void {
-    this.#releases.push(work.catch(() => undefined))
-  }
-
-  async #closeBrowser(): Promise<void> {
-    const state = this.#browser
-    const browser = state.kind === 'not_started' ? undefined : state.browser
-    const { cleanup } = this.#options.timeouts
-    if (browser !== undefined) {
-      this.#closingBrowser = true
-      this.#browser = { kind: 'unavailable', failure: failure('setup_failed', 'The browser was closed.') }
-      await bounded(browser.close(cleanup), cleanup + closeGraceMs + abortGraceMs)
+  // Browsers close before the servers their pages talked to stop; saved states go last. A state that stays
+  // behind holds session cookies, so failing to remove it fails the run.
+  async #release(): Promise<void> {
+    await this.#browsers.close()
+    await this.#servers.stop()
+    await bounded(Promise.all(this.#releases), this.#options.timeouts.cleanup)
+    try {
+      this.#store.removeStates()
+    } catch (error) {
+      this.#events.reportFailure(failure('cleanup_failed', `Retest could not remove the saved states: ${errorMessage(error)}`))
     }
-    await bounded(Promise.all(this.#releases), cleanup)
+    this.#redactLogs()
+  }
+
+  // Browsers and servers write their own logs, and every log was redacted with what was known as it was written,
+  // so all of them are read again once the browsers, the servers and the test file processes are gone.
+  #redactLogs(): void {
+    if (!this.#redactor.active) return
+    try {
+      this.#store.redactLogs((text) => this.#redactor.redact(text))
+    } catch (error) {
+      this.#events.reportFailure(failure('reporting_failed', `Retest could not redact the logs: ${errorMessage(error)}`))
+    }
   }
 
   // Everything but the outcome is fixed once. Failures after run.finished, such as a reporter that breaks at
   // the end or a result.json that cannot be written, change only the outcome that result.json stores.
   async #finish(files: FileResult[]): Promise<RunResult> {
     await this.#events.flush()
+    const browsers = this.#browsers.started.map((started) => started.info)
     const facts: ResultFacts = {
       schemaVersion: 1,
       runId: this.#runId,
@@ -397,27 +603,39 @@ export class RunSession {
       startedAt: this.#startedAt.toISOString(),
       finishedAt: new Date().toISOString(),
       durationMs: elapsedMs(this.#start),
-      browser: this.#browserInfo,
+      browser: browsers[0] ?? null,
+      ...(this.#options.apps.kind === 'config' ? { browsers } : {}),
       files,
     }
-    const finished = withOutcome(facts, this.#outcome(files))
+    try {
+      writeLastRun(this.#rootDir, lastRunOf(facts))
+    } catch (error) {
+      this.#events.reportFailure(failure('reporting_failed', `Retest could not write .retest/last-run.json: ${errorMessage(error)}`))
+    }
+    const finished = this.#result(facts)
     const { status, exitCode, complete, counts, durationMs, failure: problem } = finished
     this.#events.emit({ type: 'run.finished', status, exitCode, complete, counts, durationMs, ...(problem === undefined ? {} : { failure: problem }) })
     await this.#events.end(finished)
     try {
-      const result = withOutcome(facts, this.#outcome(files))
+      const result = this.#result(facts)
       this.#store.writeResult(result)
       return result
     } catch (error) {
       this.#events.reportFailure(failure('reporting_failed', `Retest could not write result.json: ${errorMessage(error)}`))
-      return withOutcome(facts, this.#outcome(files))
+      return this.#result(facts)
     }
   }
 
-  #outcome(files: readonly FileResult[]): RunOutcome {
+  #result(facts: ResultFacts): RunResult {
     const stoppedBy = this.#interruption === undefined ? undefined : stopSignalOf(this.#options.signal)
-    return runOutcome({ stoppedBy, outputFailures: this.#events.failures, files })
+    const outcome = runOutcome({ stoppedBy, runFailures: this.#runFailures, outputFailures: this.#events.failures, files: facts.files })
+    return this.#redactor.redactFields(runResultSchema, withOutcome(facts, outcome))
   }
+}
+
+// A state is saved once for each target, so the pair names one outcome.
+function stateKey(state: string, target: string): string {
+  return JSON.stringify([state, target])
 }
 
 function withOutcome(facts: ResultFacts, outcome: RunOutcome): RunResult {
@@ -426,12 +644,18 @@ function withOutcome(facts: ResultFacts, outcome: RunOutcome): RunResult {
   return { ...head, complete, status, exitCode, counts, ...(problem === undefined ? {} : { failure: problem }), files }
 }
 
-function launchFailure(launched: Exclude<Bounded<OwnedBrowser>, { status: 'done' }>, setupMs: number): Failure {
-  if (launched.status === 'failed') {
-    const { error } = launched
-    return error instanceof LaunchError ? error.failure : failure('setup_failed', `The browser did not start: ${errorMessage(error)}`)
-  }
-  return failure('setup_failed', `The browser did not start within the ${setupMs} ms setup budget.`)
+function describePath(test: PlannedTest): { describePath?: string[] } {
+  return test.describePath.length === 0 ? {} : { describePath: test.describePath }
+}
+
+function setupMark(test: PlannedTest): { setup?: true } {
+  return test.registered.setup === true ? { setup: true } : {}
+}
+
+// Base URLs keep their credentials for the browser; everything recorded or printed goes without them.
+function recordedBaseUrls(baseUrls: Readonly<Record<string, string>> | undefined): { baseUrls?: Record<string, string> } {
+  if (baseUrls === undefined || Object.keys(baseUrls).length === 0) return {}
+  return { baseUrls: Object.fromEntries(Object.entries(baseUrls).map(([app, url]) => [app, withoutCredentials(url)])) }
 }
 
 function describeReporters(reporters: readonly Reporter[]): string {

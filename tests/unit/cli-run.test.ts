@@ -54,8 +54,7 @@ describe('run options', () => {
     assert.ok(options !== undefined)
     assert.deepEqual(options.files, [file, 'examples/other.retest.ts'])
     assert.equal(options.rootDir, root)
-    assert.equal(options.browserPath, browserPath)
-    assert.equal(options.baseUrl, 'http://127.0.0.1:4173')
+    assert.deepEqual(options.apps, { kind: 'browser', browserPath, baseUrl: 'http://127.0.0.1:4173' })
     assert.equal(options.outputDir, join(root, 'out/first'))
     assert.deepEqual(options.timeouts, { ...defaultTimeouts, action: 500, test: 3000 })
     assert.equal(options.headless, true)
@@ -65,8 +64,7 @@ describe('run options', () => {
   test('resolves a relative browser path, leaves out an absent base URL and shows the browser when headed', async () => {
     const { runs } = await run([file, '--browser', 'bin/chrome', '--headed'])
     const options = runs[0]?.options
-    assert.equal(options?.browserPath, join(root, 'bin/chrome'))
-    assert.equal(options !== undefined && 'baseUrl' in options, false)
+    assert.deepEqual(options?.apps, { kind: 'browser', browserPath: join(root, 'bin/chrome') })
     assert.equal(options?.headless, false)
     assert.deepEqual(options?.timeouts, defaultTimeouts)
   })
@@ -114,8 +112,11 @@ describe('run usage errors', () => {
     assert.match(await rejected([file, `./${file}`, ...browser]), /\.\/examples\/task\.retest\.ts is named twice\./)
   })
 
-  test('needs a browser', async () => {
-    assert.match(await rejected([file]), /Name the browser to run in: --browser <path>\./)
+  test('needs a config, or a browser without one', async () => {
+    assert.match(
+      await rejected([file]),
+      /No retest\.config\.ts here\. Run npx retest init to write one, or pass --browser <path> to run without a config\./,
+    )
     assert.match(await rejected([file, '--browser']), /--browser needs a value/)
   })
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { inspect } from 'node:util'
-import { parse, s, toJsonSchema, type Issue } from '../../src/protocol/schema.ts'
+import { describeValue, formatPath, isPlainObject, parse, s, toJsonSchema, type Issue } from '../../src/protocol/schema.ts'
 
 type AnySchema = Parameters<typeof parse>[0]
 
@@ -362,5 +362,33 @@ describe('toJsonSchema', () => {
       ],
     })
     assert.deepEqual(JSON.parse(JSON.stringify(schema)), schema)
+  })
+})
+
+describe('shared helpers', () => {
+  test('formatPath writes keys the way issues show them', () => {
+    assert.equal(formatPath([]), '$')
+    assert.equal(formatPath(['apps', 'web', 'targets', 0]), '$.apps.web.targets[0]')
+    assert.equal(formatPath(['apps', 'mobile-web', 'my app']), '$.apps["mobile-web"]["my app"]')
+    assert.equal(formatPath(['$ok', '_x', '9lives']), '$.$ok._x["9lives"]')
+  })
+
+  test('describeValue shows short text and scalars, and only the kind of anything else', () => {
+    assert.equal(describeValue('beta'), '"beta"')
+    assert.equal(describeValue('x'.repeat(41)), 'string')
+    assert.equal(describeValue(3), '3')
+    assert.equal(describeValue(null), 'null')
+    assert.equal(describeValue(undefined), 'undefined')
+    assert.equal(describeValue([]), 'array')
+    assert.equal(describeValue(() => 'secret'), 'function')
+    assert.equal(describeValue({ password: 'hunter2' }), 'object')
+  })
+
+  test('isPlainObject accepts what a schema object accepts', () => {
+    assert.equal(isPlainObject({}), true)
+    assert.equal(isPlainObject(Object.create(null)), true)
+    for (const value of [[], null, new Map(), new Date(0), () => ({}), 'x', Object.create({})]) {
+      assert.equal(isPlainObject(value), false, inspect(value))
+    }
   })
 })

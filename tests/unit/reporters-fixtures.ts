@@ -61,7 +61,12 @@ export function projectFolder(): string {
   return root
 }
 
-/** Adds the envelope the parent writes: run id, sequence, time and elapsed time, ten milliseconds apart. */
+const childTypes: ReadonlySet<string> = new Set(['step.started', 'step.finished', 'assertion.passed', 'assertion.failed'])
+
+/**
+ * Adds the envelope the parent writes: run id, sequence, time and elapsed time, ten milliseconds apart, and
+ * whether the test file's process reported the event.
+ */
 export function stamp(bodies: EventBody[], runId = 'run-1'): RetestEvent[] {
   return bodies.map((body, sequence) => ({
     schemaVersion: 1,
@@ -69,6 +74,7 @@ export function stamp(bodies: EventBody[], runId = 'run-1'): RetestEvent[] {
     sequence,
     time: new Date(Date.UTC(2026, 8, 30, 9, 15, 0, sequence * 10)).toISOString(),
     elapsedMs: sequence * 10,
+    origin: childTypes.has(body.type) ? 'child' : 'parent',
     ...body,
   }))
 }

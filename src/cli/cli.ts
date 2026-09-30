@@ -4,7 +4,9 @@ import { failureSchema } from '../protocol/failures.ts'
 import { parse } from '../protocol/schema.ts'
 import { createStyle } from '../reporters/style.ts'
 import { interruptedExitCode } from '../runner/outcome.ts'
-import { listWords } from './arguments.ts'
+import { listWords } from '../shared/list-words.ts'
+import { doctorCommand } from './commands/doctor.ts'
+import { initCommand } from './commands/init.ts'
 import { inspectCommand } from './commands/inspect.ts'
 import { listCommand } from './commands/list.ts'
 import { runCommand } from './commands/run.ts'
@@ -18,7 +20,7 @@ export type { CliDependencies } from './command.ts'
 /** Runs one command line to the end and returns the exit code. It never exits the process itself. */
 export type Cli = (argv: readonly string[]) => Promise<ExitCode>
 
-export const commands: readonly Command[] = [listCommand, runCommand, inspectCommand]
+export const commands: readonly Command[] = [initCommand, doctorCommand, listCommand, runCommand, inspectCommand]
 
 const commandNames = commands.map((command) => command.name)
 

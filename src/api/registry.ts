@@ -1,26 +1,65 @@
 import type { Failure, SourceLocation } from '../protocol/failures.ts'
 import type { RegisteredTest } from '../protocol/messages.ts'
-import type { TestBody } from './test-body.ts'
+import type { Block } from './blocks.ts'
+import type { RuntimeBody, TestHooks } from './test-body.ts'
 import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { failure } from '../protocol/failures.ts'
-import { testId } from '../protocol/run-folder.ts'
-import { maxTimeout } from '../protocol/timeouts.ts'
+import { testId, testTitle } from '../protocol/run-folder.ts'
+import { describesOf, fileBlock, hooksOf } from './blocks.ts'
 import { failureFrom, RetestError } from './failure.ts'
-import { formatValue } from './format-value.ts'
 
-/** A test as collected, with its body. */
-export type TestEntry = RegisteredTest & { body: TestBody }
+/** A test as collected: what the parent is told, its function, and its hooks in the order they run. */
+export type TestEntry = RegisteredTest & { readonly body: RuntimeBody; readonly hooks: TestHooks }
 
 export type Collected = { ok: true; tests: RegisteredTest[] } | { ok: false; failure: Failure }
 
-type Collection = { file: string; rootDir: string; entries: TestEntry[]; problems: Failure[] }
+type Pending = { readonly test: RegisteredTest; readonly title: string; readonly body: RuntimeBody; readonly block: Block }
 
 const processKey = Symbol.for('@rehearsal-labs/retest')
-const allowedOptions = ['timeout']
 
 claimProcess()
+
+/** The tests, blocks and problems of the file that is loading, and its real root directory. */
+export class Collection {
+  readonly rootDir: string
+  readonly problems: Failure[] = []
+  readonly pending: Pending[] = []
+  #block: Block = fileBlock()
+
+  constructor(rootDir: string) {
+    this.rootDir = rootDir
+  }
+
+  /** The block that declarations join now: the file's, or the innermost `test.describe` running. */
+  get block(): Block {
+    return this.#block
+  }
+
+  /** Runs a `test.describe` function with its block as the one declarations join. */
+  within<T>(block: Block, body: () => T): T {
+    const outer = this.#block
+    this.#block = block
+    try {
+      return body()
+    } finally {
+      this.#block = outer
+    }
+  }
+
+  /** Adds a test to `block`, unless one with the same full title is already there. */
+  add(test: RegisteredTest, body: RuntimeBody, block: Block): void {
+    const title = testTitle(test.name, describesOf(block).map((describe) => describe.name))
+    const duplicate = this.pending.find((existing) => existing.title === title)
+    if (duplicate === undefined) {
+      this.pending.push({ test, title, body, block })
+      return
+    }
+    const lines = `lines ${duplicate.test.location.line} and ${test.location.line}`
+    this.problems.push(failure('collection_failed', `Two tests are named ${JSON.stringify(title)}, on ${lines}. Give each test its own name.`, test.location))
+  }
+}
 
 let collecting: Collection | undefined
 let collected: { file: string; rootDir: string; entries: ReadonlyMap<string, TestEntry> } | undefined
@@ -44,7 +83,7 @@ function claimProcess(): void {
  */
 export async function collectFile(file: string, rootDir: string): Promise<Collected> {
   const realRoot = realpathSync(rootDir)
-  const collection: Collection = { file, rootDir: realRoot, entries: [], problems: [] }
+  const collection = new Collection(realRoot)
   collecting = collection
   try {
     await import(pathToFileURL(resolve(rootDir, file)).href)
@@ -57,11 +96,12 @@ export async function collectFile(file: string, rootDir: string): Promise<Collec
   }
   const [problem] = collection.problems
   if (problem !== undefined) return { ok: false, failure: problem }
-  if (collection.entries.length === 0) {
+  if (collection.pending.length === 0) {
     return { ok: false, failure: failure('collection_failed', `${file} has no tests. Call test() at the top level of the file.`) }
   }
-  collected = { file, rootDir: realRoot, entries: new Map(collection.entries.map((entry) => [testId(file, entry.name), entry])) }
-  return { ok: true, tests: collection.entries.map(registeredTest) }
+  const entries = collection.pending.map(({ test, title, body, block }) => [testId(file, title), { ...test, body, hooks: hooksOf(block) }] as const)
+  collected = { file, rootDir: realRoot, entries: new Map(entries) }
+  return { ok: true, tests: collection.pending.map(({ test }) => test) }
 }
 
 /** The collected test with this id, and the file and real root directory it was collected from. */
@@ -69,6 +109,15 @@ export function findTest(id: string): { test: TestEntry; file: string; rootDir: 
   const test = collected?.entries.get(id)
   if (collected === undefined || test === undefined) return undefined
   return { test, file: collected.file, rootDir: collected.rootDir }
+}
+
+/**
+ * The collection a declaration such as `test()` joins. Declaring anything after the file has loaded is a usage
+ * error, thrown at once.
+ */
+export function joinCollection(call: string, location: SourceLocation | undefined): Collection {
+  if (collecting !== undefined) return collecting
+  throw new RetestError(failure('usage', `${call} registers tests while retest loads a test file. Run the file with retest run.`, location))
 }
 
 /** The real root directory while collecting, for locating a call made during collection. */
@@ -86,65 +135,4 @@ export function reportCollectionProblem(problem: Failure): boolean {
   if (collecting === undefined) return false
   collecting.problems.push(problem)
   return true
-}
-
-/** Registers a test while its file loads. Arguments are checked here because JavaScript callers have no types. */
-export function registerTest(name: unknown, rest: readonly unknown[], location: SourceLocation | undefined): void {
-  const collection = collecting
-  if (collection === undefined) {
-    throw new RetestError(
-      failure('usage', 'test() registers tests while retest loads a test file. Run the file with retest run.', location),
-    )
-  }
-  const entry = readRegistration(name, rest, location)
-  if (!('body' in entry)) {
-    collection.problems.push(entry)
-    return
-  }
-  const duplicate = collection.entries.find((existing) => existing.name === entry.name)
-  if (duplicate !== undefined) {
-    const lines = `lines ${duplicate.location.line} and ${entry.location.line}`
-    collection.problems.push(
-      failure('collection_failed', `Two tests are named ${JSON.stringify(entry.name)}, on ${lines}. Give each test its own name.`, location),
-    )
-    return
-  }
-  collection.entries.push(entry)
-}
-
-function readRegistration(name: unknown, rest: readonly unknown[], location: SourceLocation | undefined): TestEntry | Failure {
-  const usage = (message: string): Failure => failure('usage', message, location)
-  if (typeof name !== 'string' || name.trim() === '') return usage(`A test needs a name, received ${formatValue(name)}.`)
-  if (location === undefined) return usage(`Retest could not find where test ${JSON.stringify(name)} is declared.`)
-  const [first, second, ...extra] = rest
-  const body = rest.length === 1 ? first : second
-  const options = rest.length === 1 ? {} : first
-  if (extra.length > 0 || !isTestBody(body)) {
-    return usage(`test(${JSON.stringify(name)}) takes a name, optional options and a function: test(name, options?, fn).`)
-  }
-  const timeout = readOptions(options, usage)
-  if (typeof timeout === 'object') return timeout
-  return timeout === undefined ? { name, location, body } : { name, location, timeout, body }
-}
-
-function readOptions(options: unknown, usage: (message: string) => Failure): number | undefined | Failure {
-  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
-    return usage(`Test options must be an object, such as { timeout: 5000 }, received ${formatValue(options)}.`)
-  }
-  const unknown = Object.keys(options).find((key) => !allowedOptions.includes(key))
-  if (unknown !== undefined) {
-    return usage(`Unknown test option ${JSON.stringify(unknown)}. This version of Retest accepts only timeout.`)
-  }
-  if (!('timeout' in options) || options.timeout === undefined) return undefined
-  const { timeout } = options
-  if (typeof timeout === 'number' && Number.isInteger(timeout) && timeout >= 1 && timeout <= maxTimeout) return timeout
-  return usage(`The timeout option must be a whole number of milliseconds from 1 to ${maxTimeout}, received ${formatValue(timeout)}.`)
-}
-
-function registeredTest({ name, location, timeout }: TestEntry): RegisteredTest {
-  return timeout === undefined ? { name, location } : { name, location, timeout }
-}
-
-function isTestBody(value: unknown): value is TestBody {
-  return typeof value === 'function'
 }

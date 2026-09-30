@@ -7,13 +7,29 @@ import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { describeLocator } from '../protocol/locator.ts'
+import { secretPlaceholder } from '../protocol/secret.ts'
 import { CdpTimeoutError } from './cdp/errors.ts'
 import { prepare } from './element-queries.ts'
+import { originRefusal } from './origin-refusal.ts'
+import { originAndPath } from './page-url.ts'
 
 /** Where to press an element that passed every check, and the guard it armed for the input. */
 export type ActionTarget = { ok: true; point: Point; guard: Guard } | { ok: false; failure: Failure }
 
-type Unready = Extract<Readiness, { status: 'missing' | 'blocked' }>
+/** A navigation the browser has begun in the main frame. Its document replaces the current one when it commits. */
+export type PendingNavigation = { url: string }
+
+export type ActionabilityOptions = {
+  world: IsolatedWorld
+  locator: LocatorRecipe
+  intent: ActionIntent
+  deadline: Deadline
+  /** The navigation the browser is on, if any. While there is one, the page is not looked at. */
+  pendingNavigation: () => PendingNavigation | undefined
+}
+
+type Unready = Extract<Readiness, { status: 'missing' | 'blocked' }> | { status: 'navigating'; url: string }
+type Look = { kind: 'settled'; target: ActionTarget } | { kind: 'unready'; unready: Unready }
 
 const firstPauseMs = 20
 const maxPauseMs = 200
@@ -27,42 +43,53 @@ const becauseOf: Record<Check, string> = {
   editable: 'it is read-only',
   stable: 'it kept moving',
   'in-view': 'it stays outside the viewport after scrolling',
-  'hit-target': 'no element takes a click at its centre',
+  'hit-target': 'no element is at its centre',
   focused: 'it did not keep the keyboard focus',
 }
 
 /**
  * Resolves the locator again and again until one element passes every check, then returns where to press.
- * More than one match, or a field `fill` cannot use, fails at once; anything else waits for the deadline.
+ * More than one match, a field `fill` cannot use, or an origin it may not type into fails at once; anything else
+ * waits for the deadline. While the browser is opening another document in the frame, the page is not looked
+ * at: the element is looked for in the document that arrives.
+ *
+ * @example const target = await waitUntilActionable({ world, locator, intent, deadline, pendingNavigation })
  */
-export async function waitUntilActionable(
-  world: IsolatedWorld,
-  locator: LocatorRecipe,
-  intent: ActionIntent,
-  deadline: Deadline,
-): Promise<ActionTarget> {
+export async function waitUntilActionable(options: ActionabilityOptions): Promise<ActionTarget> {
+  const { deadline } = options
   let last: Unready | undefined
   for (let attempt = 0; ; attempt += 1) {
-    let look: InDocument<Readiness>
-    try {
-      look = await prepare(world, locator, intent, deadline)
-    } catch (error) {
-      // The deadline ran out during a look, so the previous look is the latest answer there is.
-      if (last !== undefined && error instanceof CdpTimeoutError) return failed(unready(last, locator, intent, deadline))
-      throw error
-    }
-    const { value: readiness, context } = look
-    switch (readiness.status) {
-      case 'ready':
-        return { ok: true, point: { x: readiness.x, y: readiness.y }, guard: { context, token: readiness.token } }
-      case 'ambiguous':
-        return failed(ambiguous(readiness.count, locator, intent))
-      case 'unsupported':
-        return failed(unsupported(readiness, locator))
-    }
-    last = readiness
-    if (deadline.expired) return failed(unready(last, locator, intent, deadline))
+    const looked = await look(options, last)
+    if (looked.kind === 'settled') return looked.target
+    last = looked.unready
+    if (deadline.expired) return failed(unready(last, options.locator, options.intent, deadline))
     await sleep(Math.min(firstPauseMs * 2 ** attempt, maxPauseMs, deadline.remainingMs), undefined, { signal: deadline.signal })
+  }
+}
+
+async function look({ world, locator, intent, deadline, pendingNavigation }: ActionabilityOptions, last: Unready | undefined): Promise<Look> {
+  const pending = pendingNavigation()
+  if (pending !== undefined) return { kind: 'unready', unready: { status: 'navigating', url: pending.url } }
+  let seen: InDocument<Readiness>
+  try {
+    seen = await prepare(world, locator, intent, deadline)
+  } catch (error) {
+    // The deadline ran out during a look, so the previous look is the latest answer there is.
+    if (last !== undefined && error instanceof CdpTimeoutError) return { kind: 'settled', target: failed(unready(last, locator, intent, deadline)) }
+    throw error
+  }
+  const { value: readiness, context } = seen
+  switch (readiness.status) {
+    case 'ready':
+      return { kind: 'settled', target: { ok: true, point: { x: readiness.x, y: readiness.y }, guard: { context, token: readiness.token } } }
+    case 'ambiguous':
+      return { kind: 'settled', target: failed(ambiguous(readiness.count, locator, intent)) }
+    case 'unsupported':
+      return { kind: 'settled', target: failed(unsupported(readiness, locator, intent)) }
+    case 'refused':
+      return { kind: 'settled', target: failed(originRefusal(readiness, intent, locator)) }
+    default:
+      return { kind: 'unready', unready: readiness }
   }
 }
 
@@ -78,12 +105,13 @@ function ambiguous(count: number, locator: LocatorRecipe, { action }: ActionInte
   }
 }
 
-function unsupported(readiness: Extract<Readiness, { status: 'unsupported' }>, locator: LocatorRecipe): Failure {
+function unsupported(readiness: Extract<Readiness, { status: 'unsupported' }>, locator: LocatorRecipe, { secret }: ActionIntent): Failure {
   const { field } = readiness
   if (readiness.reason === 'multiline') {
+    const value = secret === undefined ? 'a line break' : `${secretPlaceholder(secret)}, which has a line break`
     return {
       class: 'unsupported',
-      message: `Could not fill ${describeLocator(locator)} with a line break: it is ${field}, which holds one line. Use a textarea for text with \\n or \\r.`,
+      message: `Could not fill ${describeLocator(locator)} with ${value}: it is ${field}, which holds one line. Use a textarea for text with \\n or \\r.`,
       details: { field },
     }
   }
@@ -104,6 +132,14 @@ function unready(last: Unready, locator: LocatorRecipe, { action }: ActionIntent
       details: { waitedMs },
     }
   }
+  if (last.status === 'navigating') {
+    const opening = describeAddress(last.url)
+    return {
+      class: 'not_actionable',
+      message: `Could not ${action} ${target} within ${waitedMs} ms: the page was still opening ${opening}, and Retest does not ${action} in a document about to be replaced.`,
+      details: { check: 'navigation', url: opening, waitedMs },
+    }
+  }
   const covering = last.check === 'hit-target' ? last.detail : null
   const reason = covering === null ? becauseOf[last.check] : `another element, ${covering}, covers its centre`
   return {
@@ -111,4 +147,10 @@ function unready(last: Unready, locator: LocatorRecipe, { action }: ActionIntent
     message: `Could not ${action} ${target} within ${waitedMs} ms: ${reason}.`,
     details: { check: last.check, covering, waitedMs },
   }
+}
+
+// An address is recorded as its origin and path, since a query can carry what a page was given.
+function describeAddress(url: string): string {
+  const parsed = URL.parse(url)
+  return parsed === null ? url : originAndPath(parsed)
 }

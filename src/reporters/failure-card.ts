@@ -1,11 +1,14 @@
 import type { TestStatus } from '../protocol/events.ts'
 import type { Failure, FailureDetail, SourceLocation, TruncatedText } from '../protocol/failures.ts'
 import type { FileResult, RunResult, TestResult } from '../protocol/result.ts'
+import type { Variant } from '../protocol/variant.ts'
 import type { EventOfType, RunRecord, TestEvent } from './run-record.ts'
+import type { RunTargets } from './targets.ts'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { formatRerunCommand } from './commands.ts'
 import { plural, testTitle } from './format.ts'
+import { namingTargets, variantLabel } from './targets.ts'
 
 /** The action or assertion event that shows how a test failed. */
 export type FailingCall = EventOfType<'action.failed'> | EventOfType<'assertion.failed'>
@@ -13,14 +16,24 @@ export type FailingCall = EventOfType<'action.failed'> | EventOfType<'assertion.
 /** What went wrong with a file itself: it could not be collected, or its process failed outside its tests. */
 export type FileProblem = 'collection' | 'process'
 
-type CardSubject =
-  | { test: { testId: string; name: string; status: TestStatus; durationMs: number }; fileProblem?: never }
-  | { test?: never; fileProblem: FileProblem }
+/** A test a card is about. `targets` are the ones a command must name to pick out its variant. */
+export type CardTest = {
+  testId: string
+  name: string
+  describePath?: string[]
+  status: TestStatus
+  durationMs: number
+  targets?: Variant
+}
+
+type CardSubject = { test: CardTest; fileProblem?: never } | { test?: never; fileProblem: FileProblem }
 
 /** Everything a report says about one test, or about one file that failed on its own. */
 export type FailureCard = CardSubject & {
   title: string
   file: string
+  /** The test's variant as reports name it, such as `web=pixel (emulated)`. */
+  variant?: string
   /** The test's failure, or its first cleanup failure when that is all it has. */
   failure?: Failure
   call?: FailingCall
@@ -34,7 +47,7 @@ export type FailureCard = CardSubject & {
   rerun?: string
 }
 
-export type CardOptions = { record: RunRecord; runFolder: string }
+export type CardOptions = { record: RunRecord; runFolder: string; targets: RunTargets }
 
 const fileProblems: Record<FileProblem, string> = {
   collection: 'could not be collected',
@@ -120,7 +133,8 @@ function shownByCall(call: FailingCall | undefined): ReadonlyMap<string, Failure
  * @example testCard(test, { record, runFolder })
  */
 export function testCard(test: TestResult, options: CardOptions): FailureCard {
-  const events = options.record.tests.get(test.testId)?.events ?? []
+  const record = options.record.test(test.testId, test.variantKey)
+  const events = record?.events ?? []
   const call = findFailingCall(events, test.failure)
   const run = options.record.started
   // A test whose only failures came in cleanup leads with the first of them.
@@ -128,17 +142,28 @@ export function testCard(test: TestResult, options: CardOptions): FailureCard {
     ...(test.failure === undefined ? [] : [test.failure]),
     ...(test.cleanupFailures ?? []),
   ]
+  const targets = namingTargets(test.variant, options.targets)
+  const variant = variantLabel(test.variant, options.targets)
+  const { testId, name, describePath, status, durationMs } = test
   return {
-    title: testTitle(test.file, test.name),
+    title: testTitle(test.file, name, describePath),
     file: test.file,
-    test: { testId: test.testId, name: test.name, status: test.status, durationMs: test.durationMs },
+    test: {
+      testId,
+      name,
+      ...(describePath === undefined ? {} : { describePath }),
+      status,
+      durationMs,
+      ...(targets === undefined ? {} : { targets }),
+    },
+    ...(variant === undefined ? {} : { variant }),
     ...(failure === undefined ? {} : { failure }),
     ...(call === undefined ? {} : { call }),
     location: call?.location ?? failure?.location ?? test.location,
     screenshots: evidencePaths(events, test).map((path) => join(options.runFolder, path)),
     evidenceProblems: events.flatMap((event) => (event.type === 'evidence.failed' ? [event.message] : [])),
     cleanupFailures,
-    ...(run === undefined ? {} : { rerun: formatRerunCommand(run, test.file) }),
+    ...(run === undefined ? {} : { rerun: formatRerunCommand(run, { file: test.file, line: test.location.line, row: record?.row, targets }) }),
   }
 }
 
@@ -154,7 +179,7 @@ function fileCard(file: FileResult, problem: FileProblem, options: CardOptions):
     screenshots: [],
     evidenceProblems: [],
     cleanupFailures: [],
-    ...(run === undefined ? {} : { rerun: formatRerunCommand(run, file.file) }),
+    ...(run === undefined ? {} : { rerun: formatRerunCommand(run, { file: file.file }) }),
   }
 }
 

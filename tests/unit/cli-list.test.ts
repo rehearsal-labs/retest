@@ -4,8 +4,9 @@ import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
+import { app, chromium } from '../../src/config/define.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
-import { collecting, fakeCli, type FakeOptions } from './cli-fixtures.ts'
+import { collecting, fakeCli, loadedConfig, type FakeOptions } from './cli-fixtures.ts'
 import { file, projectFolder, savesTask, showsCount } from './reporters-fixtures.ts'
 
 const root = projectFolder()
@@ -136,5 +137,124 @@ describe('list', () => {
       return twoTests
     }
     assert.equal((await list([file], { collectFiles, signal: controller.signal })).code, 143)
+  })
+})
+
+describe('list with a config', () => {
+  const project = projectFolder()
+  writeFileSync(join(project, 'retest.config.ts'), '')
+  const config = loadedConfig(project, {
+    apps: { web: app({ targets: { chromium: chromium(), pixel: chromium({ emulate: 'Pixel 9' }) } }), admin: chromium() },
+    defaultApp: 'web',
+    tags: ['smoke', 'slow'],
+  })
+  const location = (line: number) => ({ file, line, column: 1 })
+  const withTargets: CollectResult = {
+    files: [
+      {
+        file,
+        collection: 'ok',
+        tests: [
+          { testId: `${file} > signs in`, name: 'signs in', location: location(3), setup: true, apps: ['web'], variants: [{ web: 'chromium' }, { web: 'pixel' }] },
+          {
+            testId: `${file} > tasks > saves a task`,
+            name: 'saves a task',
+            location: location(8),
+            describePath: ['tasks'],
+            tags: ['smoke', 'slow'],
+            apps: ['web', 'admin'],
+            variants: [
+              { web: 'chromium', admin: 'chromium' },
+              { web: 'pixel', admin: 'chromium' },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  async function listed(args: string[], collected: CollectResult = withTargets) {
+    const fake = fakeCli({ cwd: project, config, collectFiles: collecting(collected) })
+    const code = await fake.cli(['list', ...args])
+    return { code, stdout: fake.stdout.text, stderr: fake.stderr.text, collects: fake.collects }
+  }
+
+  test('shows each test with its tags, apps and targets, and counts the runs', async () => {
+    const { code, stdout, stderr } = await listed([])
+    assert.equal(code, 0, stderr)
+    assert.equal(
+      stdout,
+      [
+        'examples/task.retest.ts',
+        '  signs in (setup)      examples/task.retest.ts:3:1',
+        '    apps    web',
+        '    targets web=chromium · web=pixel',
+        '  tasks › saves a task  examples/task.retest.ts:8:1',
+        '    tags    smoke, slow',
+        '    apps    web, admin',
+        '    targets admin=chromium,web=chromium · admin=chromium,web=pixel',
+        '',
+        '2 tests in 1 file, 4 runs with their targets',
+        '',
+      ].join('\n'),
+    )
+  })
+
+  test('shows each test.for row with its #row, which run takes after the line', async () => {
+    const rows: CollectResult = {
+      files: [
+        {
+          file,
+          collection: 'ok',
+          tests: [1, 2].map((row) => ({ testId: `${file} > opens ${row}`, name: `opens ${row}`, location: location(12), row })),
+        },
+      ],
+    }
+    const { stdout } = await listed([], rows)
+    assert.match(stdout, /\n {2}opens 1 {2}examples\/task\.retest\.ts:12:1#1\n {2}opens 2 {2}examples\/task\.retest\.ts:12:1#2\n/)
+  })
+
+  test('names the files a setup taken from another file serves', async () => {
+    const signIn = 'tests/sign-in.retest.ts'
+    const borrowed: CollectResult = {
+      files: [
+        ...withTargets.files,
+        {
+          file: signIn,
+          collection: 'ok',
+          tests: [{ testId: `${signIn} > admin`, name: 'admin', location: { file: signIn, line: 2, column: 1 }, setup: true, setupFor: [file, 'tests/b.retest.ts'] }],
+        },
+      ],
+    }
+    const { stdout } = await listed([], borrowed)
+    assert.match(stdout, /\n {2}admin \(setup for examples\/task\.retest\.ts and tests\/b\.retest\.ts\) {2}tests\/sign-in\.retest\.ts:2:1\n/)
+  })
+
+  test('collects every test file with the config and the selection', async () => {
+    const { collects } = await listed(['--tag', 'smoke', '--target', 'web=pixel', `${file}:8`])
+    assert.deepEqual(collects, [
+      {
+        files: [file],
+        rootDir: project,
+        timeouts: { collection: defaultTimeouts.collection },
+        config,
+        selection: { tags: { kind: 'tag', tag: 'smoke' }, locations: [{ file, line: 8 }], targets: { web: 'pixel' } },
+      },
+    ])
+    assert.deepEqual((await listed([])).collects[0]?.files, [file])
+  })
+
+  test('a selection that keeps nothing says which flags were given', async () => {
+    const empty: CollectResult = { files: [{ file, collection: 'ok', tests: [] }] }
+    const { code, stderr } = await listed(['--grep', 'nothing', '--tag', 'slow', `${file}:99`], empty)
+    assert.equal(code, 2)
+    assert.equal(stderr, 'error: No tests match --grep "nothing", --tag "slow" and examples/task.retest.ts:99.\n')
+  })
+
+  test('checks the selection flags before collecting anything', async () => {
+    const { code, stderr, collects } = await listed(['--tag', 'smok'])
+    assert.equal(code, 2)
+    assert.match(stderr, /--tag: Unknown tag "smok" at character 1\. Did you mean smoke\?/)
+    assert.equal(collects.length, 0)
   })
 })

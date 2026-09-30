@@ -1,5 +1,7 @@
 import type { TestContext } from 'node:test'
-import type { OwnedBrowser, OwnedPage } from '../../src/browser/contract.ts'
+import type { OutgoingMessage, Transport } from '../../src/browser/cdp/transport.ts'
+import type { NewPageOptions, OwnedBrowser, OwnedPage } from '../../src/browser/contract.ts'
+import type { AriaRole } from '../../src/protocol/aria-role.ts'
 import type { CommandResult, Observation } from '../../src/protocol/commands.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
@@ -16,8 +18,11 @@ import { after, before } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
+import { describeLocator } from '../../src/protocol/locator.ts'
 
 const DEFAULT_BROWSER = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
@@ -40,15 +45,77 @@ export async function scratchFolder(t: TestContext): Promise<string> {
 }
 
 /** Launches a headless browser that is closed, and its process group checked, after the test. */
-export async function launch(t: TestContext): Promise<OwnedBrowser> {
+export function launch(t: TestContext): Promise<OwnedBrowser> {
+  return launchThrough(t, (pipe) => new PipeTransport(pipe))
+}
+
+/**
+ * What a test may do to the messages between Retest and the browser: hold a command back, and watch everything
+ * the browser sends. It lets a test put a message exactly where a race would.
+ */
+export type Gate = {
+  /** A promise to hold the command back for, by method, or undefined to let it go at once. */
+  hold?: (method: string) => Promise<void> | undefined
+  /** Sees every message from the browser before Retest does. */
+  watch?: (message: Record<string, unknown>) => void
+}
+
+/** Launches a headless browser whose messages pass through `gate`, closed and checked after the test. */
+export function launchGated(t: TestContext, gate: Gate): Promise<OwnedBrowser> {
+  return launchThrough(t, (pipe) => gatedTransport(new PipeTransport(pipe), gate))
+}
+
+async function launchThrough(t: TestContext, transport: Parameters<typeof launchBrowser>[2]): Promise<OwnedBrowser> {
   const folder = await scratchFolder(t)
-  const browser = await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true })
+  const browser = await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true }, undefined, transport)
   t.diagnostic(`browser ${browser.product} ${browser.version}, pid and process group ${browser.pid}`)
   t.after(async () => {
     await browser.close(closeMs)
     assert.equal(groupExists(browser.pid), false, `process group ${browser.pid} should be gone`)
   })
   return browser
+}
+
+function gatedTransport(inner: Transport, gate: Gate): Transport {
+  return {
+    listen(handlers) {
+      inner.listen({
+        ...handlers,
+        message(text) {
+          const message: unknown = JSON.parse(text)
+          if (!isRecord(message)) return handlers.message(text)
+          gate.watch?.(message)
+          handlers.message(text)
+        },
+      })
+    },
+    send(text) {
+      const message: unknown = JSON.parse(text)
+      const method = isRecord(message) ? message['method'] : undefined
+      const held = typeof method === 'string' ? gate.hold?.(method) : undefined
+      if (held === undefined) return inner.send(text)
+      return heldMessage(held, () => inner.send(text))
+    },
+    close: () => inner.close(),
+  }
+}
+
+// A message that goes out once the hold ends, unless it was withdrawn by then.
+function heldMessage(held: Promise<void>, send: () => OutgoingMessage): OutgoingMessage {
+  let sent: OutgoingMessage | undefined
+  let withdrawn = false
+  void held.then(() => {
+    if (!withdrawn) sent = send()
+  })
+  return {
+    get written() {
+      return sent?.written ?? false
+    },
+    withdraw() {
+      withdrawn = true
+      sent?.withdraw()
+    },
+  }
 }
 
 /** One browser for every test in a file, as a run has, closed and checked after the last test. */
@@ -72,8 +139,8 @@ export function sharedBrowser(): () => OwnedBrowser {
   }
 }
 
-export async function openPage(t: TestContext, browser: OwnedBrowser, baseUrl?: string): Promise<OwnedPage> {
-  const page = await browser.newPage(baseUrl === undefined ? {} : { baseUrl }, setupMs)
+export async function openPage(t: TestContext, browser: OwnedBrowser, baseUrl?: string, options: Omit<NewPageOptions, 'baseUrl'> = {}): Promise<OwnedPage> {
+  const page = await browser.newPage(baseUrl === undefined ? options : { ...options, baseUrl }, setupMs)
   t.after(() => page.dispose(2000))
   return page
 }
@@ -86,16 +153,20 @@ export async function openApp(t: TestContext, options?: TaskAppOptions): Promise
 
 export type Pages = { url: string; posts(path: string): number }
 
+/** `hold` gives a promise each page request waits for before it is answered, as a slow or silent server would. */
+export type ServeOptions = { hold?: () => Promise<void> }
+
 /** Serves fixed HTML at each path, counts POST requests by path, and never finishes a response to `/hang`. */
-export async function servePages(t: TestContext, pages: Record<string, string>): Promise<Pages> {
+export async function servePages(t: TestContext, pages: Record<string, string>, options: ServeOptions = {}): Promise<Pages> {
   const posts = new Map<string, number>()
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const path = request.url ?? '/'
     if (request.method === 'POST') {
       posts.set(path, (posts.get(path) ?? 0) + 1)
       response.end()
       return
     }
+    await options.hold?.()
     if (path === '/hang') {
       response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
       return
@@ -115,24 +186,47 @@ export async function servePages(t: TestContext, pages: Record<string, string>):
   return { url: `http://127.0.0.1:${address.port}`, posts: (path) => posts.get(path) ?? 0 }
 }
 
+/** A locator, or the test id of one, which is how most of these tests name elements. */
+export type Target = string | LocatorRecipe
+
 export function byTestId(value: string): LocatorRecipe {
   return { by: 'testId', value }
+}
+
+export function byRole(role: AriaRole, name?: string, exact?: boolean): LocatorRecipe {
+  return { by: 'role', role, ...(name === undefined ? {} : { name }), ...(exact === undefined ? {} : { exact }) }
+}
+
+export function byLabel(text: string, exact?: boolean): LocatorRecipe {
+  return { by: 'label', text, ...(exact === undefined ? {} : { exact }) }
+}
+
+export function byText(text: string, exact?: boolean): LocatorRecipe {
+  return { by: 'text', text, ...(exact === undefined ? {} : { exact }) }
+}
+
+function locatorOf(target: Target): LocatorRecipe {
+  return typeof target === 'string' ? byTestId(target) : target
 }
 
 export function goto(page: OwnedPage, url: string, timeoutMs = 5000): Promise<CommandResult> {
   return page.execute({ kind: 'goto', url }, timeoutMs)
 }
 
-export function click(page: OwnedPage, testId: string, timeoutMs = 2000): Promise<CommandResult> {
-  return page.execute({ kind: 'click', locator: byTestId(testId) }, timeoutMs)
+export function click(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+  return page.execute({ kind: 'click', locator: locatorOf(target) }, timeoutMs)
 }
 
-export function fill(page: OwnedPage, testId: string, value: string, timeoutMs = 2000): Promise<CommandResult> {
-  return page.execute({ kind: 'fill', locator: byTestId(testId), value }, timeoutMs)
+export function tap(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+  return page.execute({ kind: 'tap', locator: locatorOf(target) }, timeoutMs)
 }
 
-export async function observe(page: OwnedPage, testId: string): Promise<Observation> {
-  const result = await page.execute({ kind: 'observe', locator: byTestId(testId) }, 2000)
+export function fill(page: OwnedPage, target: Target, value: string, timeoutMs = 2000): Promise<CommandResult> {
+  return page.execute({ kind: 'fill', locator: locatorOf(target), value }, timeoutMs)
+}
+
+export async function observe(page: OwnedPage, target: Target): Promise<Observation> {
+  const result = await page.execute({ kind: 'observe', locator: locatorOf(target) }, 2000)
   assert.ok(result.ok && result.kind === 'observe', JSON.stringify(result))
   return result.observation
 }
@@ -140,15 +234,15 @@ export async function observe(page: OwnedPage, testId: string): Promise<Observat
 /** Looks again, as an assertion would, until the observation satisfies `expected` or the time runs out. */
 export async function observeUntil(
   page: OwnedPage,
-  testId: string,
+  target: Target,
   expected: (observation: Observation) => boolean,
   timeoutMs = 5000,
 ): Promise<Observation> {
   const end = performance.now() + timeoutMs
   for (;;) {
-    const observation = await observe(page, testId)
+    const observation = await observe(page, target)
     if (expected(observation)) return observation
-    if (performance.now() > end) assert.fail(`getByTestId('${testId}') still reads ${JSON.stringify(observation)}`)
+    if (performance.now() > end) assert.fail(`${describeLocator(locatorOf(target))} still reads ${JSON.stringify(observation)}`)
     await delay(25)
   }
 }

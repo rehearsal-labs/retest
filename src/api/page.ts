@@ -1,91 +1,73 @@
-import type { SourceLocation } from '../protocol/failures.ts'
-import type { LocatorRecipe } from '../protocol/locator.ts'
-import type { TestRun } from './test-run.ts'
-import { failure } from '../protocol/failures.ts'
-import { formatValue } from './format-value.ts'
+import type { RetestTypeError, TestIdValue } from '../config/register.ts'
+import type { AriaRole } from '../protocol/aria-role.ts'
+import type { Secret } from './secret.ts'
 
-/** The test and recipe behind a locator, for assertions. */
-export type LocatorTarget = { readonly run: TestRun; readonly recipe: LocatorRecipe }
+/** How `getByRole` reads the accessible name: whole and case-sensitive, or with `exact: false` a case-insensitive part. */
+export type RoleOptions = { readonly name?: string | undefined; readonly exact?: boolean | undefined }
 
-let readTarget: ((locator: Locator) => LocatorTarget) | undefined
+/** `exact: false` matches a case-insensitive part of the text instead of the whole text. */
+export type TextOptions = { readonly exact?: boolean | undefined }
 
 /**
- * The browser page a test drives. Every method sends one command to the page; await each one, because
- * a page takes one command at a time.
+ * An app's page in a test. Every method sends one command to it; await each one, because an app takes one
+ * command at a time. `Touch` says whether every target of the app has a touch screen, which gives its
+ * locators `tap()`.
  */
-export class Page {
-  readonly #run: TestRun
-
-  constructor(run: TestRun) {
-    this.#run = run
-  }
-
+export interface Page<Touch extends boolean = boolean> {
   /**
-   * Opens a URL and waits for the page to load. A relative URL resolves against the run's base URL.
+   * Opens a URL and waits for the page to load. A relative URL resolves against the app's base URL.
    *
    * @example await page.goto('/')
    */
-  goto(url: string): Promise<void> {
-    const location = this.#run.location()
-    if (typeof url !== 'string') throw this.#misuse(`page.goto() takes a URL string, received ${formatValue(url)}.`, location)
-    return this.#run.action({ kind: 'goto', url }, location)
-  }
-
+  goto(url: string): Promise<void>
   /**
-   * Finds the element whose `data-testid` equals `id` exactly. The element is found again for every
-   * action and every look an assertion takes, so it always refers to the page as it is now.
+   * Finds the element whose `data-testid` equals `id` exactly.
    *
    * @example await page.getByTestId('save-task').click()
    */
-  getByTestId(id: string): Locator {
-    if (typeof id !== 'string') throw this.#misuse(`getByTestId() takes a string, received ${formatValue(id)}.`, this.#run.location())
-    return new Locator(this.#run, { by: 'testId', value: id })
-  }
-
-  #misuse(message: string, location: SourceLocation | undefined): Error {
-    return this.#run.fail(failure('usage', message, location))
-  }
+  getByTestId(id: TestIdValue): Locator<Touch>
+  /**
+   * Finds the element with this ARIA role and, when given, this accessible name.
+   *
+   * @example await page.getByRole('button', { name: 'Save' }).click()
+   */
+  getByRole(role: AriaRole, options?: RoleOptions): Locator<Touch>
+  /**
+   * Finds the form field whose accessible name is this label.
+   *
+   * @example await page.getByLabel('Email').fill('qa@tasks.example')
+   */
+  getByLabel(text: string, options?: TextOptions): Locator<Touch>
+  /**
+   * Finds the innermost element whose whole text is this text.
+   *
+   * @example await expect(page.getByText('Saved')).toBeVisible()
+   */
+  getByText(text: string, options?: TextOptions): Locator<Touch>
 }
 
 /**
- * A way to find one element on the page. It holds a recipe, not an element. An action needs exactly one
- * match: none waits until the action's time runs out, and more than one fails at once.
+ * A way to find elements on an app's page. It holds a recipe, not an element: it is found again for every
+ * action and every look. An action needs exactly one match; none waits until the action's time runs out,
+ * and more than one fails at once.
  */
-export class Locator {
-  readonly #target: LocatorTarget
-
-  static {
-    readTarget = (locator) => locator.#target
-  }
-
-  constructor(run: TestRun, recipe: LocatorRecipe) {
-    this.#target = { run, recipe }
-  }
-
+export interface Locator<Touch extends boolean = boolean> {
   /**
-   * Replaces the field's value by typing, as a person would. Works on text-like inputs and textareas.
+   * Replaces the field's value by typing, as a person would. A secret is typed by the process that runs Retest.
    *
-   * @example await page.getByTestId('task-title').fill('Release checklist')
+   * @example await page.getByLabel('Password').fill(secret('password'))
    */
-  fill(value: string): Promise<void> {
-    const { run, recipe } = this.#target
-    const location = run.location()
-    if (typeof value !== 'string') throw run.fail(failure('usage', `fill() takes a string, received ${formatValue(value)}.`, location))
-    return run.action({ kind: 'fill', locator: recipe, value }, location)
-  }
-
+  fill(value: string | Secret): Promise<void>
   /**
-   * Clicks the element's centre with the mouse, once it is visible, stable, enabled and not covered.
+   * Clicks the element's centre once it is visible, stable, enabled and not covered. On a touch screen it taps.
    *
    * @example await page.getByTestId('save-task').click()
    */
-  click(): Promise<void> {
-    const { run, recipe } = this.#target
-    return run.action({ kind: 'click', locator: recipe }, run.location())
-  }
-}
-
-/** The test and recipe behind a value, when it is a locator. */
-export function locatorTarget(value: unknown): LocatorTarget | undefined {
-  return value instanceof Locator ? readTarget?.(value) : undefined
+  click(): Promise<void>
+  /**
+   * Taps the element's centre, on an app whose every target has a touch screen.
+   *
+   * @example await phone.getByRole('button', { name: 'Save' }).tap()
+   */
+  readonly tap: Touch extends true ? () => Promise<void> : RetestTypeError<"One of this app's targets has no touch screen. Use click().">
 }

@@ -8,3 +8,4 @@ import { inspect } from 'node:util'
 export function formatValue(value: unknown): string {
   return inspect(value, { depth: 4, breakLength: Number.POSITIVE_INFINITY })
 }
+

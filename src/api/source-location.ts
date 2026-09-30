@@ -2,6 +2,7 @@ import type { SourceLocation } from '../protocol/failures.ts'
 import { isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getCallSites } from 'node:util'
+import { formatLine } from '../protocol/location.ts'
 import { relativePosixPath } from '../shared/posix-path.ts'
 
 // The folder holding this copy of Retest: `src` when run from source, `dist` when built.
@@ -39,7 +40,7 @@ export function errorLocation(error: Error, rootDir: string): SourceLocation | u
  */
 export function describeLine(location: SourceLocation | undefined, testFile: string): string {
   if (location === undefined) return 'an unknown line'
-  return location.file === testFile ? `line ${location.line}` : `${location.file}:${location.line}`
+  return location.file === testFile ? `line ${location.line}` : formatLine(location)
 }
 
 function toLocation(script: string, line: number, column: number, rootDir: string): SourceLocation | undefined {

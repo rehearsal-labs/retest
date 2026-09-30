@@ -1,14 +1,19 @@
 import type { RetestEvent } from '../../protocol/events.ts'
 import type { TestResult } from '../../protocol/result.ts'
+import type { Variant } from '../../protocol/variant.ts'
 import type { CliDependencies, Command } from '../command.ts'
 import type { RunFolder } from '../inspect/read-run-folder.ts'
 import { resolve } from 'node:path'
+import { matchesTargets, variantKey } from '../../protocol/variant.ts'
 import { testCard } from '../../reporters/failure-card.ts'
 import { renderCard } from '../../reporters/human-card.ts'
 import { createHumanReporter } from '../../reporters/human.ts'
 import { recordEvents } from '../../reporters/run-record.ts'
 import { createStyle } from '../../reporters/style.ts'
-import { flag, parseArguments, value } from '../arguments.ts'
+import { runTargets } from '../../reporters/targets.ts'
+import { listWords } from '../../shared/list-words.ts'
+import { readTargetPairs } from '../app-pairs.ts'
+import { flag, list, parseArguments, value } from '../arguments.ts'
 import { CliError, UsageError } from '../errors.ts'
 import { readRunFolder } from '../inspect/read-run-folder.ts'
 import { renderTimeline } from '../inspect/test-timeline.ts'
@@ -30,6 +35,10 @@ const listedTests = 10
 const options = {
   json: flag('Print one JSON document: the run result, or the test with --test'),
   test: value({ placeholder: '<id>', description: 'Show one test, such as "examples/task.retest.ts > saves a task"' }),
+  target: list({
+    placeholder: '<app=name>',
+    description: 'With --test, the target it ran on, when it ran on several.\nRepeat for other apps',
+  }),
 }
 
 export const inspectCommand: Command = {
@@ -51,20 +60,22 @@ export const inspectCommand: Command = {
     for (const warning of folder.warnings) dependencies.stderr.write(`warning: ${warning}\n`)
     const testId = parsed.value('test')
     const json = parsed.flag('json')
-    if (testId !== undefined) writeTest({ folder, shown, testId, json }, dependencies)
+    const targets = readTargets(parsed.list('target'))
+    if (testId === undefined && targets !== undefined) throw new UsageError('--target picks a test\'s target, so it needs --test.')
+    if (testId !== undefined) writeTest({ folder, shown, testId, targets, json }, dependencies)
     else if (json) dependencies.stdout.write(`${JSON.stringify(folder.result, null, 2)}\n`)
     else writeRun(folder, shown, dependencies)
     return 0
   },
 }
 
-type TestRequest = { folder: RunFolder; shown: string; testId: string; json: boolean }
+type TestRequest = { folder: RunFolder; shown: string; testId: string; targets: Variant | undefined; json: boolean }
 
 function writeTest(request: TestRequest, dependencies: CliDependencies): void {
   const { folder, shown, testId } = request
-  const test = findTest(folder, testId)
+  const test = findTest(folder, testId, request.targets)
   const record = recordEvents(folder.events)
-  const events = record.tests.get(testId)?.events ?? []
+  const events = record.test(testId, test.variantKey)?.events ?? []
   const { stdout } = dependencies
   if (request.json) {
     const { runId, complete } = folder.result
@@ -73,9 +84,10 @@ function writeTest(request: TestRequest, dependencies: CliDependencies): void {
     return
   }
   const style = createStyle(shouldUseColor(stdout, dependencies.env))
-  stdout.write(`\n${renderTimeline(test, events, { style, runFolder: shown })}`)
+  const targets = runTargets(record, folder.result)
+  stdout.write(`\n${renderTimeline(test, events, { style, runFolder: shown, targets })}`)
   if (test.status === 'passed') return
-  const card = testCard(test, { record, runFolder: shown })
+  const card = testCard(test, { record, runFolder: shown, targets })
   stdout.write(`\n${renderCard(card, { style, runFolder: shown, rootDir: record.started?.rootDir })}`)
 }
 
@@ -91,15 +103,30 @@ function writeRun(folder: RunFolder, shown: string, dependencies: CliDependencie
   reporter.onRunEnd(folder.result)
 }
 
-function findTest(folder: RunFolder, testId: string): TestResult {
+function readTargets(texts: readonly string[]): Variant | undefined {
+  return texts.length === 0 ? undefined : readTargetPairs(texts)
+}
+
+function findTest(folder: RunFolder, testId: string, targets: Variant | undefined): TestResult {
   const tests = folder.result.files.flatMap((file) => file.tests)
-  const test = tests.find((candidate) => candidate.testId === testId)
-  if (test !== undefined) return test
-  const ids = tests.map((candidate) => candidate.testId)
+  const matching = tests.filter((candidate) => candidate.testId === testId)
+  if (matching.length === 0) throw unknownTest(testId, tests)
+  const kept = matching.filter((candidate) => matchesTargets(candidate.variant, targets ?? {}))
+  const [only] = kept
+  if (kept.length === 1 && only !== undefined) return only
+  const ran = listWords(matching.map((candidate) => (candidate.variant === undefined ? 'no target' : variantKey(candidate.variant))), 'and')
+  if (kept.length === 0) {
+    throw new CliError(`"${testId}" did not run on ${variantKey(targets ?? {})} in this run. It ran on ${ran}.`)
+  }
+  throw new UsageError(`"${testId}" ran on ${ran}. Name one with --target, such as --target ${kept[0]?.variantKey ?? ''}.`)
+}
+
+function unknownTest(testId: string, tests: readonly TestResult[]): CliError {
+  const ids = [...new Set(tests.map((candidate) => candidate.testId))]
   const guess = suggest(testId, ids)
   const hint = guess === undefined ? '' : ` Did you mean "${guess}"?`
   const listed = ids.slice(0, listedTests).map((id) => `\n  ${id}`)
   const more = ids.length > listedTests ? [`\n  and ${ids.length - listedTests} more`] : []
   const known = ids.length === 0 ? '\nThe run has no tests.' : `\nTests in this run:${[...listed, ...more].join('')}`
-  throw new CliError(`No test "${testId}" in this run.${hint}${known}`)
+  return new CliError(`No test "${testId}" in this run.${hint}${known}`)
 }

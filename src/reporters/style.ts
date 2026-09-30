@@ -29,3 +29,8 @@ export function createStyle(enabled: boolean): Style {
     cyan: paint(36, 39),
   }
 }
+
+/** The length of text as a terminal shows it, without colour codes. */
+export function visibleLength(text: string): number {
+  return text.replace(/\u001b\[\d+m/g, '').length
+}

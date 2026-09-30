@@ -1,16 +1,29 @@
 import type { RetestEvent } from '../protocol/events.ts'
 import type { SourceLocation } from '../protocol/failures.ts'
+import { variantKey, type Variant } from '../protocol/variant.ts'
 
 export type EventOfType<T extends RetestEvent['type']> = Extract<RetestEvent, { type: T }>
 
 /** An event that belongs to one test. */
 export type TestEvent = Extract<RetestEvent, { testId: string }>
 
-export type TestRecord = {
+/** A test as collection or its start described it, one per variant when it runs on several targets. */
+export type TestDescription = {
   testId: string
   name: string
   file: string
   location: SourceLocation
+  /** A `test.for` row's number in its list, from 1. */
+  row?: number | undefined
+  describePath?: string[] | undefined
+  variant?: Variant | undefined
+  variantKey?: string | undefined
+  setup?: true | undefined
+  /** For a setup taken from a file the run was not given, the files whose tests start from its state. */
+  setupFor?: string[] | undefined
+}
+
+export type TestRecord = TestDescription & {
   /** Every event of the test, in sequence order. */
   events: TestEvent[]
   started?: EventOfType<'test.started'>
@@ -25,13 +38,26 @@ export type FileRecord = {
   tests: TestRecord[]
 }
 
+/**
+ * What identifies one result: the test, and its variant when it has one.
+ *
+ * @example resultKey('a.retest.ts > saves', 'web=beta') // 'a.retest.ts > saves [web=beta]'
+ */
+function resultKey(testId: string, variant?: string): string {
+  return variant === undefined ? testId : `${testId} [${variant}]`
+}
+
 /** What a run's events say so far. Reporters and `inspect` read it; it never decides an outcome. */
 export class RunRecord {
   started: EventOfType<'run.started'> | undefined
+  /** The first browser the run started. */
   browser: EventOfType<'browser.started'> | undefined
+  /** Every browser the run started, in order. */
+  readonly browsers: EventOfType<'browser.started'>[] = []
   finished: EventOfType<'run.finished'> | undefined
   last: RetestEvent | undefined
   readonly files: Map<string, FileRecord> = new Map()
+  /** Keyed by `resultKey`. */
   readonly tests: Map<string, TestRecord> = new Map()
   /** Events naming a test that no collection or start described. */
   readonly strays: TestEvent[] = []
@@ -44,15 +70,24 @@ export class RunRecord {
         for (const file of event.files) this.#file(file)
         return
       case 'browser.started':
-        this.browser = event
+        this.browser ??= event
+        this.browsers.push(event)
         return
       case 'run.finished':
         this.finished = event
         return
+      case 'app.started':
+      case 'app.reused':
+      case 'app.failed':
+        return
       case 'collection.completed': {
         const file = this.#file(event.file)
         file.collection = event
-        for (const test of event.tests) this.#test({ ...test, file: event.file })
+        for (const test of event.tests) {
+          const variants = test.variants ?? []
+          if (variants.length === 0) this.#test({ ...test, file: event.file })
+          for (const variant of variants) this.#test({ ...test, file: event.file, variant, variantKey: variantKey(variant) })
+        }
         return
       }
       case 'collection.failed':
@@ -68,7 +103,7 @@ export class RunRecord {
         return
       }
       default: {
-        const test = this.tests.get(event.testId)
+        const test = this.test(event.testId, event.variantKey)
         if (test === undefined) {
           this.strays.push(event)
           return
@@ -79,6 +114,11 @@ export class RunRecord {
     }
   }
 
+  /** The record of one test, or of one of its variants. */
+  test(testId: string, variant?: string): TestRecord | undefined {
+    return this.tests.get(resultKey(testId, variant))
+  }
+
   #file(name: string): FileRecord {
     const existing = this.files.get(name)
     if (existing !== undefined) return existing
@@ -87,13 +127,25 @@ export class RunRecord {
     return file
   }
 
-  #test(described: { testId: string; name: string; file: string; location: SourceLocation }): TestRecord {
-    const existing = this.tests.get(described.testId)
+  #test(described: TestDescription): TestRecord {
+    const key = resultKey(described.testId, described.variantKey)
+    const existing = this.tests.get(key)
     if (existing !== undefined) return existing
-    const { testId, name, file, location } = described
-    const test: TestRecord = { testId, name, file, location, events: [] }
-    this.tests.set(testId, test)
-    this.#file(file).tests.push(test)
+    const test: TestRecord = {
+      testId: described.testId,
+      name: described.name,
+      file: described.file,
+      location: described.location,
+      row: described.row,
+      describePath: described.describePath,
+      variant: described.variant,
+      variantKey: described.variantKey,
+      setup: described.setup,
+      setupFor: described.setupFor,
+      events: [],
+    }
+    this.tests.set(key, test)
+    this.#file(described.file).tests.push(test)
     return test
   }
 }
@@ -101,7 +153,7 @@ export class RunRecord {
 /**
  * A record of every event given.
  *
- * @example recordEvents(events).tests.get('examples/task.retest.ts > saves a task')
+ * @example recordEvents(events).test('examples/task.retest.ts > saves a task')
  */
 export function recordEvents(events: Iterable<RetestEvent>): RunRecord {
   const record = new RunRecord()

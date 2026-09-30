@@ -56,6 +56,15 @@ describe('a passing run', async () => {
     assert.ok(!record.lines.some((line) => line.includes('Release checklist') && line.includes('"action.')), 'no action event holds the typed value')
   })
 
+  test("milestone 1's mode has no variants: no event or result carries one, and the browser names no app", () => {
+    assert.ok(record.events.every((event) => !('variant' in event) && !('variantKey' in event)))
+    assert.ok(record.result.files.flatMap((file) => file.tests).every((result) => result.variant === undefined && result.variantKey === undefined))
+    assert.equal(record.result.browsers, undefined)
+    const started = eventsOfType(record.events, 'browser.started')[0]
+    assert.deepEqual([started?.app, started?.target], [undefined, undefined])
+    assert.equal(eventsOfType(record.events, 'run.started')[0]?.options.browserPath, '/fake/chromium')
+  })
+
   test('navigation keeps origin and path only', () => {
     const urls = eventsOfType(record.events, 'navigation').map((event) => event.url)
     assert.deepEqual(urls, ['http://127.0.0.1:4173/', 'http://127.0.0.1:4173/tasks'])

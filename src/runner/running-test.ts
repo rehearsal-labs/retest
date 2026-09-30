@@ -1,10 +1,13 @@
 import type { OwnedPage } from '../browser/contract.ts'
-import type { CommandResult, PageCommand } from '../protocol/commands.ts'
-import type { ChildEvent, EventBody } from '../protocol/events.ts'
+import type { ActionKind, CommandResult, FillValue, PageCommand } from '../protocol/commands.ts'
+import type { ChildEvent, EventBody, EventOrigin } from '../protocol/events.ts'
 import type { Failure, FailureClass } from '../protocol/failures.ts'
 import type { ChildMessage } from '../protocol/messages.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
+import type { Variant } from '../protocol/variant.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
+import type { Redactor } from './redactor.ts'
+import type { FillResolution, SecretFill } from './secrets.ts'
 import type { ProcessEvent, TestFileMessage, TestFileProcess } from './test-file-process.ts'
 import { describeCommand } from '../protocol/commands.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
@@ -17,12 +20,21 @@ export const abortGraceMs = 1000
 
 export type RunningTestOptions = {
   process: TestFileProcess
-  page: OwnedPage
+  /** Each app's page, in the order the test declared its apps. Commands name the app whose page takes them. */
+  pages: ReadonlyMap<string, OwnedPage>
   testId: string
   attemptId: string
+  /** The target of each app, which the child is told in a run from a config. */
+  variant?: Variant
   /** `test` is this test's own budget. */
   timeouts: Timeouts
-  emit: (body: EventBody) => void
+  emit: (body: EventBody, origin?: EventOrigin) => void
+  /** Turns a secret fill into the text to type, or says why it may not be typed. Without it, a secret fill fails. */
+  fillSecret?: (command: SecretFill, pageUrl: string | undefined, timeoutMs: number) => Promise<FillResolution>
+  /** Hides secret values in everything sent to the child. */
+  redactor?: Redactor
+  /** The apps whose page emulates a touch screen, where a click is sent, and recorded, as a tap. */
+  touch?: ReadonlySet<string>
 }
 
 /** What the parent knows once the test body is over. */
@@ -41,6 +53,8 @@ type CommandMessage = Extract<ChildMessage, { type: 'command' }>
 type TestScope = { testId: string; attemptId: string }
 type InFlight = {
   message: CommandMessage
+  /** The page of the app the command names. */
+  page: OwnedPage
   startedAt: number
   /** Settles once the page has answered. It exists before the page is called, which may lose its browser at once. */
   done: PromiseWithResolvers<void>
@@ -67,7 +81,7 @@ export class RunningTest {
   #deadline: Deadline | undefined
   #testTimer: NodeJS.Timeout | undefined
   #killTimer: NodeJS.Timeout | undefined
-  #pageUrl: string | undefined
+  readonly #pageUrls = new Map<string, string>()
   #stepId: string | undefined
   #revocation: Failure | undefined
   /** The page's latest answer saying that it or the browser was gone. */
@@ -76,7 +90,7 @@ export class RunningTest {
   #assertionsSeen = 0
   #graceExpired = false
   #timedOut = false
-  #stopNavigation: (() => void) | undefined
+  #stopNavigation: (() => void)[] = []
 
   constructor(options: RunningTestOptions) {
     this.#options = options
@@ -84,14 +98,14 @@ export class RunningTest {
 
   /** Starts the body in the child and resolves when it is over, however it ends. A process that has ended gets no body. */
   run(): Promise<BodyReport> {
-    const { process, page, testId, attemptId, timeouts } = this.#options
+    const { process, pages, testId, attemptId, variant, timeouts } = this.#options
     if (process.exit !== undefined) {
       this.#finish({ assertionCount: 0, endedBeforeStart: process.exit })
       return this.#finished.promise
     }
-    this.#stopNavigation = page.onNavigation((url) => this.#navigated(url))
+    this.#stopNavigation = [...pages].map(([app, page]) => page.onNavigation((url) => this.#navigated(app, url)))
     process.listen((event) => this.#receive(event))
-    process.send({ type: 'run', testId, attemptId, timeouts })
+    process.send({ type: 'run', testId, attemptId, timeouts, apps: [...pages.keys()], ...(variant === undefined ? {} : { variant }) })
     this.#deadline = new Deadline(timeouts.test)
     this.#testTimer = setTimeout(() => this.#runOutOfTime(), timeouts.test)
     return this.#finished.promise
@@ -106,8 +120,8 @@ export class RunningTest {
       this.#answer(entry, { ok: false, failure: withLocation(reason, entry.message.location) })
       entry.stop.abort(reason)
     }
-    const { process } = this.#options
-    process.send({ type: 'abort', reason: reason.message })
+    const { process, redactor } = this.#options
+    process.send({ type: 'abort', reason: redactor?.redact(reason.message) ?? reason.message })
     if (graceMs === 0) {
       void process.kill()
       return
@@ -148,7 +162,7 @@ export class RunningTest {
   /** Stops listening to the page and the process. A process being ended after a timeout is still killed on time. */
   close(): void {
     clearTimeout(this.#testTimer)
-    this.#stopNavigation?.()
+    for (const stop of this.#stopNavigation) stop()
     this.#options.process.listen(undefined)
   }
 
@@ -171,15 +185,15 @@ export class RunningTest {
   #command(message: CommandMessage): void {
     if (this.#deadline?.expired === true) this.#runOutOfTime()
     const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest sent nothing to the page.')
-    if (refusal !== undefined) {
-      this.#options.process.send({ type: 'command-result', id: message.id, result: { ok: false, failure: withLocation(refusal, message.location) } })
-      return
-    }
+    if (refusal !== undefined) return this.#send(message.id, { ok: false, failure: withLocation(refusal, message.location) })
+    const page = this.#options.pages.get(message.app)
+    if (page === undefined) return this.#violation(`sent a command for the app ${JSON.stringify(message.app)}, which this test does not use`)
     const deadline = this.#deadline
     const timeoutMs = deadline === undefined ? message.timeoutMs : smallestBudget(message.timeoutMs, deadline.remainingMs)
     this.#stepId = message.stepId
     const entry: InFlight = {
       message,
+      page,
       startedAt: monotonicClock(),
       done: Promise.withResolvers(),
       stop: new AbortController(),
@@ -191,38 +205,51 @@ export class RunningTest {
   }
 
   async #execute(entry: InFlight, timeoutMs: number): Promise<void> {
-    const { command, location } = entry.message
-    const pageUrl = this.#pageUrl
+    const { command, location, app } = entry.message
+    const pageUrl = this.#pageUrls.get(app)
     let result: CommandResult
     try {
-      result = await this.#options.page.execute(command, timeoutMs, entry.stop.signal)
+      result = await this.#run(entry, timeoutMs)
     } catch (error) {
       result = thrownResult(command, error)
     }
     this.#inFlight.delete(entry.message.id)
-    if (result.ok && result.kind === 'goto') this.#pageUrl = result.url
+    if (result.ok && result.kind === 'goto') this.#pageUrls.set(app, result.url)
     const reported: CommandResult = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
     if (!reported.ok && lossClasses.has(reported.failure.class)) this.#lossAnswer = reported.failure
     this.#reportAction(entry, reported, result.ok && result.kind === 'goto' ? result.url : pageUrl)
     this.#answer(entry, reported)
   }
 
+  // A secret is read, within the command's own time, only once its page's origin may take it.
+  async #run({ message, page, stop }: InFlight, timeoutMs: number): Promise<CommandResult> {
+    const { command, app } = message
+    if (command.kind !== 'fill') return page.execute(command, timeoutMs, stop.signal)
+    const { locator, value } = command
+    if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal)
+    const deadline = new Deadline(timeoutMs)
+    const { fillSecret } = this.#options
+    const resolved = fillSecret === undefined ? noSecrets(value.secret) : await fillSecret({ kind: 'fill', locator, value }, this.#pageUrls.get(app), timeoutMs)
+    if (!resolved.ok) return { ok: false, failure: resolved.failure }
+    return page.execute(resolved.command, deadline.commandTimeoutMs, stop.signal)
+  }
+
   // An action is reported once: by the page's answer, or as unknown when the page gave none in time.
-  #reportAction(entry: InFlight, result: CommandResult, pageUrl = this.#pageUrl): void {
-    const { command, location, stepId } = entry.message
+  #reportAction(entry: InFlight, result: CommandResult, pageUrl = this.#pageUrls.get(entry.message.app)): void {
+    const { command, location, stepId, app } = entry.message
     if (command.kind === 'observe' || entry.reported) return
     entry.reported = true
     const fields = {
       testId: this.#options.testId,
       attemptId: this.#options.attemptId,
       ...(stepId === undefined ? {} : { stepId }),
-      session: 'page',
-      command: command.kind,
+      session: app,
+      command: recordedKind(command.kind, result, this.#options.touch?.has(app) === true),
       ...(command.kind === 'goto' ? {} : { locator: command.locator }),
       ...(pageUrl === undefined ? {} : { pageUrl }),
       durationMs: elapsedMs(entry.startedAt),
       ...(location === undefined ? {} : { location }),
-      ...(command.kind === 'fill' ? { valueLength: command.value.length } : {}),
+      ...(command.kind === 'fill' ? typedValue(command.value) : {}),
     }
     this.#options.emit(result.ok ? { type: 'action.completed', ...fields } : { type: 'action.failed', ...fields, failure: result.failure })
   }
@@ -230,7 +257,13 @@ export class RunningTest {
   #answer(entry: InFlight, result: CommandResult): void {
     if (entry.answered || this.#report !== undefined) return
     entry.answered = true
-    this.#options.process.send({ type: 'command-result', id: entry.message.id, result })
+    this.#send(entry.message.id, result)
+  }
+
+  // Page text, a URL or a failure may quote a secret value the page showed, so the child gets it redacted.
+  #send(id: number, result: CommandResult): void {
+    const redacted = this.#options.redactor?.redactCommandResult(result) ?? result
+    this.#options.process.send({ type: 'command-result', id, result: redacted })
   }
 
   // The page's own answer when it gave one. An action it never answered may have taken effect.
@@ -248,11 +281,14 @@ export class RunningTest {
 
   #childEvent(event: ChildEvent): void {
     if (!this.#isOwn(event)) return this.#violation(`sent ${event.type} for ${describeScope(event)} while ${describeScope(this.#options)} was running`)
-    if (event.type !== 'assertion.passed' && event.type !== 'assertion.failed') return this.#options.emit(event)
+    if (event.type !== 'assertion.passed' && event.type !== 'assertion.failed') return this.#options.emit(event, 'child')
     this.#assertionsSeen++
-    const pageUrl = this.#pageUrl
-    if (event.locator === undefined || event.pageUrl !== undefined || pageUrl === undefined) return this.#options.emit(event)
-    this.#options.emit({ ...event, pageUrl })
+    // An assertion that names no app looks at the test's first one, as milestone 1's single page.
+    const [firstApp] = this.#options.pages.keys()
+    const app = event.session ?? firstApp
+    const pageUrl = app === undefined ? undefined : this.#pageUrls.get(app)
+    if (event.locator === undefined || event.pageUrl !== undefined || pageUrl === undefined) return this.#options.emit(event, 'child')
+    this.#options.emit({ ...event, pageUrl }, 'child')
   }
 
   #childFinished(message: Extract<TestFileMessage, { type: 'test-finished' }>): void {
@@ -299,11 +335,11 @@ export class RunningTest {
     this.revoke(failure('test_error', `The process for this file ${problem}.`), 0)
   }
 
-  #navigated(url: string): void {
-    this.#pageUrl = url
+  #navigated(app: string, url: string): void {
+    this.#pageUrls.set(app, url)
     const { testId, attemptId } = this.#options
     const stepId = this.#stepId
-    this.#options.emit({ type: 'navigation', testId, attemptId, ...(stepId === undefined ? {} : { stepId }), session: 'page', url })
+    this.#options.emit({ type: 'navigation', testId, attemptId, ...(stepId === undefined ? {} : { stepId }), session: app, url })
   }
 
   // A timed-out test's process is asked to close; the kill timer from `revoke` ends it if it does not.
@@ -315,6 +351,21 @@ export class RunningTest {
     else clearTimeout(this.#killTimer)
     this.#finished.resolve(this.#report)
   }
+}
+
+// The page's answer says what it did; a failed click on a touch screen was a tap too.
+function recordedKind(sent: ActionKind, result: CommandResult, touch: boolean): ActionKind {
+  if (result.ok && result.kind !== 'observe') return result.kind
+  return sent === 'click' && touch ? 'tap' : sent
+}
+
+function noSecrets(name: string): FillResolution {
+  return { ok: false, failure: failure('usage', `secret(${JSON.stringify(name)}) needs a config that declares it. This run has no secrets.`) }
+}
+
+// A fill records how much it typed, or which secret, and never the text itself.
+function typedValue(value: FillValue): { valueLength: number } | { secret: string } {
+  return typeof value === 'string' ? { valueLength: value.length } : { secret: value.secret }
 }
 
 function thrownResult(command: PageCommand, error: unknown): CommandResult {

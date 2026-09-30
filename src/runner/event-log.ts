@@ -1,4 +1,4 @@
-import type { EventBody, RetestEvent } from '../protocol/events.ts'
+import type { EventBody, EventOrigin, RetestEvent } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { RunResult } from '../protocol/result.ts'
 import type { Reporter } from '../reporters/reporter.ts'
@@ -13,6 +13,8 @@ export type EventLogOptions = {
   elapsedMs: () => number
   /** Called on each new reporter or write failure. */
   onFailure: (failure: Failure) => void
+  /** Rewrites each event before anything sees it, as the run's redactor does. */
+  redact?: (event: RetestEvent) => RetestEvent
 }
 
 type Delivery = { reporter: Reporter; broken: boolean }
@@ -40,15 +42,18 @@ export class EventLog {
     return this.#failures
   }
 
-  emit(body: EventBody): RetestEvent {
-    const event: RetestEvent = {
+  /** Stamps and writes an event. `origin` is `child` for one the test file's process reported. */
+  emit(body: EventBody, origin: EventOrigin = 'parent'): RetestEvent {
+    const stamped: RetestEvent = {
       schemaVersion: 1,
       runId: this.#options.runId,
       sequence: this.#sequence++,
       time: new Date().toISOString(),
       elapsedMs: this.#options.elapsedMs(),
+      origin,
       ...body,
     }
+    const event = this.#options.redact?.(stamped) ?? stamped
     this.#write(event)
     this.#queue = this.#queue.then(() => this.#deliver(event))
     return event

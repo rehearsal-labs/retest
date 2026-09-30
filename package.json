@@ -2,7 +2,7 @@
   "name": "@rehearsal-labs/retest",
   "version": "0.0.0",
   "private": true,
-  "description": "Independent application testing for agents and developers",
+  "description": "One test across web, mobile and desktop. Built for software engineers and coding agents.",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
@@ -17,6 +17,16 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./runner": {
+      "retest-source": "./src/runner/index.ts",
+      "types": "./dist/runner/index.d.ts",
+      "default": "./dist/runner/index.js"
+    },
+    "./protocol": {
+      "retest-source": "./src/protocol/index.ts",
+      "types": "./dist/protocol/index.d.ts",
+      "default": "./dist/protocol/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -24,7 +34,7 @@
   ],
   "scripts": {
     "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node scripts/write-schemas.ts",
-    "typecheck": "tsc -p tsconfig.json && node_modules/typescript-7/bin/tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && node_modules/typescript-7/bin/tsc -p tsconfig.json && tsc -p examples/tasks/tsconfig.json",
     "test:unit": "node --conditions=retest-source --test \"tests/unit/**/*.test.ts\"",
     "test:types": "node tests/types/run.ts",
     "test:integration": "node --conditions=retest-source --test --test-concurrency=1 \"tests/integration/**/*.test.ts\"",

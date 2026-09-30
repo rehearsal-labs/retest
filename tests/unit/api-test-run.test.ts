@@ -3,15 +3,15 @@ import { describe, test as check } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { RetestError } from '../../src/api/failure.ts'
 import { expect, test } from '../../src/index.ts'
-import { inProcessRun, pageWithText } from '../support/in-process-run.ts'
+import { inProcessRun, pageWithText } from '../support/api/in-process-run.ts'
 
 const file = 'tests/unit/api-test-run.test.ts'
 const visible = pageWithText('Release checklist')
 
 describe('TestRun', () => {
   check('passes an awaited action and assertion, sending one command at a time', async () => {
-    const { run, commands } = inProcessRun(file, visible)
-    const verdict = await run.execute(async ({ page }) => {
+    const { commands, runPage } = inProcessRun(file, visible)
+    const verdict = await runPage(async ({ page }) => {
       await page.goto('/')
       await page.getByTestId('save-task').click()
       await expect(page.getByTestId('saved-task')).toHaveText('Release checklist')
@@ -25,9 +25,9 @@ describe('TestRun', () => {
   })
 
   check('an action sent while another runs fails at once and names both lines', async () => {
-    const { run, commands } = inProcessRun(file, visible)
+    const { commands, runPage } = inProcessRun(file, visible)
     let reachedEnd = false
-    const verdict = await run.execute(async ({ page }) => {
+    const verdict = await runPage(async ({ page }) => {
       const saving = page.getByTestId('save-task').click()
       await page.getByTestId('task-title').fill('Two')
       await saving
@@ -40,7 +40,7 @@ describe('TestRun', () => {
     assert.equal(verdict.failure?.location?.file, file)
     assert.equal(
       verdict.failure?.message,
-      `Line ${line - 1} (getByTestId('save-task').click()) was still running when line ${line} (getByTestId('task-title').fill()) sent the next command to page. Retest sends one command at a time to each page. Add await on line ${line - 1}.`,
+      `Line ${line - 1} (getByTestId('save-task').click()) was still running when line ${line} (getByTestId('task-title').fill()) sent the next command to page. Retest sends one command at a time to each app. Add await on line ${line - 1}.`,
     )
     assert.deepEqual(verdict.failure?.details, {
       running: `${file}:${line - 1}`,
@@ -50,8 +50,8 @@ describe('TestRun', () => {
   })
 
   check('an assertion cannot start while an action runs, but assertions may overlap', async () => {
-    const { run } = inProcessRun(file, visible)
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, visible)
+    const verdict = await runPage(async ({ page }) => {
       await Promise.all([expect(page.getByTestId('a')).toBeVisible(), expect(page.getByTestId('b')).toBeVisible()])
       const saving = page.getByTestId('save-task').click()
       await expect(page.getByTestId('saved-task')).toBeVisible()
@@ -63,8 +63,8 @@ describe('TestRun', () => {
   })
 
   check('an action cannot start while an assertion is still looking', async () => {
-    const { run } = inProcessRun(file, pageWithText('Saving…'))
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, pageWithText('Saving…'))
+    const verdict = await runPage(async ({ page }) => {
       const looking = expect(page.getByTestId('saved-task')).toHaveText('Saved')
       void looking.then(undefined, () => undefined)
       await sleep(20)
@@ -74,8 +74,8 @@ describe('TestRun', () => {
   })
 
   check('an assertion never awaited never looks at the page, and fails the test', async () => {
-    const { run, commands } = inProcessRun(file, visible)
-    const verdict = await run.execute(async ({ page }) => {
+    const { commands, runPage } = inProcessRun(file, visible)
+    const verdict = await runPage(async ({ page }) => {
       void expect(page.getByTestId('saved-task')).toBeVisible()
       expect(1).toBe(1)
     })
@@ -86,8 +86,8 @@ describe('TestRun', () => {
   })
 
   check('work still running when the body returns fails the test', async () => {
-    const { run } = inProcessRun(file, () => undefined)
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, () => undefined)
+    const verdict = await runPage(async ({ page }) => {
       page.getByTestId('save-task').click().catch(() => undefined)
       expect(1).toBe(1)
     })
@@ -96,8 +96,8 @@ describe('TestRun', () => {
   })
 
   check('a failure the test catches still fails it', async () => {
-    const { run } = inProcessRun(file, pageWithText('Draft'), { assertion: 60 })
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, pageWithText('Draft'), { timeouts: { assertion: 60 } })
+    const verdict = await runPage(async ({ page }) => {
       await expect(page.getByTestId('saved-task')).toHaveText('Release checklist').catch(() => undefined)
       try {
         expect('a').toBe('b')
@@ -112,8 +112,8 @@ describe('TestRun', () => {
   })
 
   check('a test with no assertion fails with no_assertions at its own location', async () => {
-    const { run } = inProcessRun(file, visible)
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, visible)
+    const verdict = await runPage(async ({ page }) => {
       await page.getByTestId('save-task').click()
     })
     assert.equal(verdict.failure?.class, 'no_assertions')
@@ -122,19 +122,19 @@ describe('TestRun', () => {
 
   check('errors thrown by test code become test_error with their location, and a recorded one is not repeated', async () => {
     const thrown = inProcessRun(file, visible)
-    const plain = await thrown.run.execute(() => {
+    const plain = await thrown.runPage(() => {
       throw new TypeError('bad fixture')
     })
     assert.equal(plain.failure?.class, 'test_error')
     assert.equal(plain.failure?.message, 'TypeError: bad fixture')
     assert.equal(plain.failure?.location?.file, file)
 
-    const value = await inProcessRun(file, visible).run.execute(() => {
+    const value = await inProcessRun(file, visible).runPage(() => {
       throw 'a string'
     })
     assert.equal(value.failure?.message, "The test threw 'a string'.")
 
-    const recorded = await inProcessRun(file, visible).run.execute(() => {
+    const recorded = await inProcessRun(file, visible).runPage(() => {
       expect(2).toBe(3)
     })
     assert.equal(recorded.failure?.class, 'check_failed')
@@ -142,9 +142,9 @@ describe('TestRun', () => {
   })
 
   check('test.step nests, reports each step, and returns what its callback returns', async () => {
-    const { run, events } = inProcessRun(file, visible)
+    const { events, runPage } = inProcessRun(file, visible)
     let value = 0
-    const verdict = await run.execute(async ({ page }) => {
+    const verdict = await runPage(async ({ page }) => {
       value = await test.step('outer', () =>
         test.step('inner', async () => {
           await expect(page.getByTestId('saved-task')).toBeVisible()
@@ -170,8 +170,8 @@ describe('TestRun', () => {
   })
 
   check('each command names the step the test code was in when it sent it', async () => {
-    const { run, messages } = inProcessRun(file, visible)
-    const verdict = await run.execute(async ({ page }) => {
+    const { messages, runPage } = inProcessRun(file, visible)
+    const verdict = await runPage(async ({ page }) => {
       await page.goto('/')
       await test.step('outer', async () => {
         await page.getByTestId('task-title').fill('Release checklist')
@@ -192,8 +192,8 @@ describe('TestRun', () => {
   })
 
   check('a failing step reports its failure and rejects with the original error', async () => {
-    const { run, events } = inProcessRun(file, visible)
-    const verdict = await run.execute(async () => {
+    const { events, runPage } = inProcessRun(file, visible)
+    const verdict = await runPage(async () => {
       await test.step('breaks', () => {
         throw new Error('inside the step')
       })
@@ -204,29 +204,33 @@ describe('TestRun', () => {
   })
 
   check('after an abort the body is left behind and later commands are refused', async () => {
-    const { run, commands } = inProcessRun(file, visible)
-    let later: unknown
-    const verdict = run.execute(async ({ page }) => {
-      await sleep(50)
-      await page.goto('/').catch((error: unknown) => {
-        later = error
-      })
+    const { run, commands, runPage } = inProcessRun(file, visible)
+    const resume = Promise.withResolvers<void>()
+    const answered = Promise.withResolvers<unknown>()
+    const verdict = runPage(async ({ page }) => {
+      await resume.promise
+      await page.goto('/').then(
+        () => answered.resolve('the command was sent'),
+        (error: unknown) => answered.resolve(error),
+      )
       await new Promise(() => {})
     })
     run.abort()
     const result = await verdict
     assert.equal(result.status, 'failed')
     assert.equal(result.failure, undefined, 'the parent supplies the reason it stopped the test')
-    await sleep(80)
-    assert.ok(later instanceof RetestError)
+    // The body carries on only after the verdict, as code the parent no longer waits for.
+    resume.resolve()
+    const later = await answered.promise
+    assert.ok(later instanceof RetestError, String(later))
     assert.equal(later.failure.class, 'interrupted')
     assert.deepEqual(commands, [])
   })
 
   check('an answer to a command this run never sent is ignored', async () => {
-    const { run, commands } = inProcessRun(file, visible)
+    const { run, commands, runPage } = inProcessRun(file, visible)
     run.resolveCommand(999, { ok: false, failure: { class: 'timeout', message: 'Not for this run.' } })
-    const verdict = await run.execute(async ({ page }) => {
+    const verdict = await runPage(async ({ page }) => {
       await expect(page.getByTestId('saved-task')).toBeVisible()
     })
     assert.equal(verdict.status, 'passed')
@@ -234,8 +238,8 @@ describe('TestRun', () => {
   })
 
   check('misuse from JavaScript fails with a usage error that names the fix', async () => {
-    const { run } = inProcessRun(file, visible)
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, visible)
+    const verdict = await runPage(async ({ page }) => {
       const locator: unknown = page.getByTestId('saved-task')
       expect(locator).toBe(undefined)
     })

@@ -1,6 +1,6 @@
 import type { RetestEvent } from '../../protocol/events.ts'
 import type { Failure } from '../../protocol/failures.ts'
-import type { FileResult, RunResult, TestResult } from '../../protocol/result.ts'
+import type { BrowserInfo, FileResult, RunResult, TestResult } from '../../protocol/result.ts'
 import type { EventOfType } from '../../reporters/run-record.ts'
 import { failure, withAlso } from '../../protocol/failures.ts'
 import { eventsFile, resultFile } from '../../protocol/run-folder.ts'
@@ -19,11 +19,13 @@ import { CliError } from '../errors.ts'
  */
 export function rebuildResult(events: readonly RetestEvent[]): RunResult {
   const record = recordEvents(events)
-  const { started, browser, finished, last } = record
+  const { started, finished, last } = record
   if (started === undefined || last === undefined) {
     throw new CliError(`${eventsFile} has no run.started event, so the run cannot be rebuilt.`)
   }
   const files = [...record.files.values()].map((file) => fileResult(file, last.elapsedMs))
+  const browsers = record.browsers.map(browserInfo)
+  const [browser = null] = browsers
   return {
     schemaVersion: 1,
     runId: started.runId,
@@ -34,8 +36,8 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
     status: 'error',
     exitCode: 2,
     durationMs: Math.max(0, last.elapsedMs - started.elapsedMs),
-    browser:
-      browser === undefined ? null : { product: browser.product, version: browser.version, executablePath: browser.executablePath },
+    browser,
+    ...(browsers.some((info) => info.app !== undefined) ? { browsers } : {}),
     counts: countTests(files),
     failure: missingResult(finished),
     files,
@@ -65,11 +67,29 @@ function fileResult(file: FileRecord, endMs: number): FileResult {
   return { file: file.file, collection: 'ok', ...failed, tests: file.tests.map((test) => testResult(test, endMs)) }
 }
 
+function browserInfo(event: EventOfType<'browser.started'>): BrowserInfo {
+  const { product, version, executablePath, app, target } = event
+  return { product, version, executablePath, ...(app === undefined ? {} : { app }), ...(target === undefined ? {} : { target }) }
+}
+
 function testResult(test: TestRecord, endMs: number): TestResult {
-  const described = { testId: test.testId, name: test.name, file: test.file, location: test.location }
-  const evidence = test.events.flatMap((event) =>
-    event.type === 'evidence.captured' ? [{ kind: event.kind, path: event.path }] : [],
-  )
+  const { testId, name, file, location, describePath, variant, variantKey, setup } = test
+  const described = {
+    testId,
+    name,
+    file,
+    location,
+    ...(describePath === undefined ? {} : { describePath }),
+    ...(variant === undefined ? {} : { variant }),
+    ...(variantKey === undefined ? {} : { variantKey }),
+    ...(setup === undefined ? {} : { setup }),
+  }
+  // A test with a variant ran with a config, where each screenshot's session names its app.
+  const evidence = test.events.flatMap((event) => {
+    if (event.type !== 'evidence.captured') return []
+    const app = variant === undefined ? undefined : event.session
+    return [{ kind: event.kind, path: event.path, ...(app === undefined ? {} : { app }) }]
+  })
   const { started, finished } = test
   if (finished !== undefined) {
     return {

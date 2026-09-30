@@ -4,15 +4,20 @@ import type { Failure, SourceLocation } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { ChildMessage } from '../protocol/messages.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
-import type { TestBody } from './test-body.ts'
+import type { Work } from './command-lanes.ts'
+import type { RunTime } from './run-time.ts'
+import type { Hook, RunnableTest, RuntimeContext } from './test-body.ts'
 import { describeCommand } from '../protocol/commands.ts'
-import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
+import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
 import { failure, withAlso, withLocation } from '../protocol/failures.ts'
-import { currentScope, runInScope } from './context.ts'
+import { formatLine } from '../protocol/location.ts'
+import { CommandLanes } from './command-lanes.ts'
+import { callInScope, currentScope, type Scope } from './context.ts'
 import { failureFrom, fromEarlierTest, RetestError } from './failure.ts'
 import { Operation } from './operation.ts'
-import { Page } from './page.ts'
+import { hostTime } from './run-time.ts'
 import { callerLocation, describeLine } from './source-location.ts'
+import { testContext } from './test-context.ts'
 
 export type TestRunOptions = {
   testId: string
@@ -24,40 +29,46 @@ export type TestRunOptions = {
   rootDir: string
   location: SourceLocation
   timeouts: Timeouts
+  /** The apps the parent opened for the test, from the `run` message: its declared apps, or its default app. */
+  apps: readonly string[]
   send: (message: ChildMessage) => void
   /** Command ids are unique in the process, so an answer meant for an earlier test never reaches a later one. */
   nextCommandId: () => number
+  /** The clock the test's budgets and durations count on, and the waits assertions poll with. The host's by default. */
+  time?: RunTime
 }
 
 /** How a test ended, as the child reports it. */
 export type Verdict = { status: 'passed' | 'failed'; failure?: Failure; assertionCount: number; durationMs: number }
 
 type ActionCommand = Exclude<PageCommand, { kind: 'observe' }>
-type Work = { label: string; location: SourceLocation | undefined }
 type Progress = { readonly observed: boolean; readonly settled: boolean }
 type Tracked = Work & { kind: 'action' | 'assertion' | 'step'; operation: Progress }
 type Ending = { kind: 'returned' } | { kind: 'threw'; error: unknown } | { kind: 'aborted' }
+type HookKind = 'beforeEach' | 'afterEach'
 
 const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
 /**
- * One test running in the child. It sends page commands one at a time, tracks every action, assertion
- * and step the test creates, records each failure as it happens, and decides the verdict.
+ * One test running in the child. It runs the test's hooks and function, sends each app's commands one at a
+ * time, tracks every action, assertion and step the test creates, records each failure as it happens, and
+ * decides the verdict.
  */
 export class TestRun {
   readonly testId: string
   readonly attemptId: string
   readonly name: string
   readonly timeouts: Timeouts
+  readonly time: RunTime
   readonly #options: TestRunOptions
-  readonly #startedAt = monotonicClock()
+  readonly #startedAt: number
   readonly #deadline: Deadline
   readonly #failures: Failure[] = []
-  readonly #tracked: Tracked[] = []
   readonly #answers = new Map<number, (result: CommandResult) => void>()
-  readonly #assertionsRunning = new Set<Work>()
+  readonly #lanes = new CommandLanes()
   readonly #aborted = Promise.withResolvers<void>()
-  #action: Work | undefined
+  // Work created since the last function the test ran returned; each function answers for its own.
+  #tracked: Tracked[] = []
   #assertionCount = 0
   #stepCount = 0
   #state: 'running' | 'aborted' | 'finished' = 'running'
@@ -68,7 +79,9 @@ export class TestRun {
     this.attemptId = options.attemptId
     this.name = options.name
     this.timeouts = options.timeouts
-    this.#deadline = new Deadline(options.timeouts.test, { startedAt: this.#startedAt })
+    this.time = options.time ?? hostTime
+    this.#startedAt = this.time.now()
+    this.#deadline = new Deadline(options.timeouts.test, { startedAt: this.#startedAt, clock: this.time.now })
   }
 
   /** Where the test code that called into Retest sits. */
@@ -98,24 +111,25 @@ export class TestRun {
     this.record(origin === undefined || origin === this ? problem : fromEarlierTest(problem, origin.name))
   }
 
-  /** Runs the test body and decides the verdict, or stops waiting for it when the parent aborts. */
-  async execute(body: TestBody): Promise<Verdict> {
-    const page = new Page(this)
-    const ending = await Promise.race<Ending>([
-      runInScope({ run: this }, () => invoke(() => body({ page }))).then(
-        (): Ending => ({ kind: 'returned' }),
-        (error: unknown): Ending => ({ kind: 'threw', error }),
-      ),
-      this.#aborted.promise.then((): Ending => ({ kind: 'aborted' })),
-    ])
-    // Rejections nobody handled are reported after the current microtasks; let them arrive first.
-    if (ending.kind !== 'aborted') await yieldToEventLoop()
-    const verdict = this.#verdict(ending)
-    this.#state = 'finished'
-    return verdict
+  /**
+   * Runs the test: its `beforeEach` hooks until one throws, its function if none did, then every `afterEach`
+   * hook, and decides the verdict. It stops waiting at once when the parent aborts.
+   */
+  async execute(test: RunnableTest): Promise<Verdict> {
+    const built = testContext(this, test.apps, this.#options.apps)
+    if ('failure' in built) {
+      this.record(built.failure)
+      return this.#finish(false)
+    }
+    const { context } = built
+    let ending = await this.#hooks('beforeEach', test.hooks.beforeEach, context)
+    if (ending.kind === 'returned') ending = await this.#phase('the test', () => test.body(context))
+    if (ending.kind === 'aborted') return this.#finish(true)
+    const after = await this.#hooks('afterEach', test.hooks.afterEach, context)
+    return this.#finish(after.kind === 'aborted')
   }
 
-  /** The parent stopped the test: refuse new commands and stop waiting for the body. */
+  /** The parent stopped the test: refuse new commands and stop waiting for its code. */
   abort(): void {
     if (this.#state !== 'running') return
     this.#state = 'aborted'
@@ -137,42 +151,45 @@ export class TestRun {
     if (this.#state === 'running') this.#assertionCount++
   }
 
-  /** How long an assertion may keep looking: its own budget, cut to what the test has left. */
-  assertionBudget(): number {
-    return smallestBudget(this.timeouts.assertion, this.#deadline.commandTimeoutMs)
+  /** How long an assertion may keep looking: its own budget, or `ownMs`, cut to what the test has left. */
+  assertionBudget(ownMs: number = this.timeouts.assertion): number {
+    return smallestBudget(ownMs, this.#deadline.commandTimeoutMs)
   }
 
-  /** Starts an action at once. It fails straight away if anything else is running on the page. */
-  action(command: ActionCommand, location: SourceLocation | undefined): Operation<void> {
+  /** Starts an action on an app at once. It fails straight away if anything else is running on that app. */
+  action(app: string, command: ActionCommand, location: SourceLocation | undefined): Operation<void> {
     const work = { label: describeCommand(command), location }
     const operation = this.#track<void>('action', work)
-    const refusal = this.#refusal() ?? this.#clash(work, 'action')
+    const refusal = this.#refusal() ?? this.#whileReading(work) ?? this.#clash(app, work, 'action')
     if (refusal !== undefined) {
       operation.reject(refusal)
       return operation
     }
-    this.#action = work
+    this.#lanes.startAction(app, work)
     const budget = command.kind === 'goto' ? this.timeouts.navigation : this.timeouts.action
-    void this.#send(command, budget, location).then((result) => {
-      if (this.#action === work) this.#action = undefined
+    void this.#send(app, command, budget, location).then((result) => {
+      this.#lanes.endAction(app, work)
       if (result.ok) operation.resolve()
       else operation.reject(this.fail(withLocation(result.failure, location)))
     })
     return operation
   }
 
-  /** An assertion that starts only when test code awaits it. */
-  assertion(label: string, location: SourceLocation | undefined, check: () => Promise<void>): Operation<void> {
+  /**
+   * An assertion that starts only when test code awaits it. One that looks at an app's page waits for no
+   * action there; one that reads a value (`app` undefined) touches no page.
+   */
+  assertion(label: string, location: SourceLocation | undefined, check: () => Promise<void>, app?: string): Operation<void> {
     const work = { label, location }
-    const operation: Operation<void> = this.#track('assertion', work, () => this.#startAssertion(operation, work, check))
+    const operation: Operation<void> = this.#track('assertion', work, () => this.#startAssertion(operation, work, check, app))
     return operation
   }
 
-  /** Reads the page once for an assertion. */
-  observe(locator: LocatorRecipe, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
+  /** Reads an app's page once for an assertion. */
+  observe(app: string, locator: LocatorRecipe, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
     const refusal = this.#refusal()
     if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
-    return this.#send({ kind: 'observe', locator }, timeoutMs, location)
+    return this.#send(app, { kind: 'observe', locator }, timeoutMs, location)
   }
 
   /** Runs a named step inside the test and resolves with its value. */
@@ -183,25 +200,17 @@ export class TestRun {
       operation.reject(refusal)
       return operation
     }
-    this.#stepCount++
-    const stepId = `step-${this.#stepCount}`
-    const scope = { testId: this.testId, attemptId: this.attemptId, stepId }
-    const startedAt = monotonicClock()
-    this.emit({
-      type: 'step.started',
-      ...scope,
-      name,
-      ...(parentStepId === undefined ? {} : { parentStepId }),
-      ...(location === undefined ? {} : { location }),
-    })
-    runInScope({ run: this, stepId }, () => invoke(body)).then(
+    const stepId = this.#startStep(name, location, { parentStepId })
+    const startedAt = this.time.now()
+    // A step inside the function `expect.poll` calls may only read, like the function around it.
+    const scope: Scope = currentScope()?.reading === true ? { run: this, stepId, reading: true } : { run: this, stepId }
+    callInScope(scope, body).then(
       (value) => {
-        this.emit({ type: 'step.finished', ...scope, status: 'passed', durationMs: elapsedMs(startedAt) })
+        this.#finishStep(stepId, startedAt, undefined)
         operation.resolve(value)
       },
       (error: unknown) => {
-        const problem = failureFrom(error, this.#options.rootDir)
-        this.emit({ type: 'step.finished', ...scope, status: 'failed', durationMs: elapsedMs(startedAt), failure: problem })
+        this.#finishStep(stepId, startedAt, failureFrom(error, this.#options.rootDir))
         operation.reject(error)
       },
     )
@@ -213,23 +222,82 @@ export class TestRun {
     return describeLine(location, this.#options.file)
   }
 
-  #startAssertion(operation: Operation<void>, work: Work, check: () => Promise<void>): void {
-    const refusal = this.#refusal() ?? this.#clash(work, 'assertion')
+  // Each hook runs as a step marked with its kind. `beforeEach` hooks stop at the first that throws; every
+  // `afterEach` hook runs, so its failures sit beside the test's own.
+  async #hooks(kind: HookKind, hooks: readonly Hook[], context: RuntimeContext): Promise<Ending> {
+    for (const hook of hooks) {
+      const ending = await this.#hook(kind, hook, context)
+      if (ending.kind === 'aborted' || (ending.kind === 'threw' && kind === 'beforeEach')) return ending
+    }
+    return { kind: 'returned' }
+  }
+
+  async #hook(kind: HookKind, hook: Hook, context: RuntimeContext): Promise<Ending> {
+    const stepId = this.#startStep(kind, hook.location, { hook: kind })
+    const startedAt = this.time.now()
+    const recordedBefore = this.#failures.length
+    const ending = await this.#phase(`its ${kind} hook`, () => hook.body(context), stepId)
+    if (ending.kind !== 'aborted') this.#finishStep(stepId, startedAt, this.#failures[recordedBefore])
+    return ending
+  }
+
+  // Runs one function of the test. When it ends, what it threw and any work it left behind are recorded.
+  async #phase(what: string, body: () => unknown, stepId?: string): Promise<Ending> {
+    const scope: Scope = stepId === undefined ? { run: this } : { run: this, stepId }
+    const ending = await Promise.race<Ending>([
+      callInScope(scope, body).then(
+        (): Ending => ({ kind: 'returned' }),
+        (error: unknown): Ending => ({ kind: 'threw', error }),
+      ),
+      this.#aborted.promise.then((): Ending => ({ kind: 'aborted' })),
+    ])
+    if (ending.kind === 'aborted') return ending
+    // Rejections nobody handled are reported after the current microtasks; let them arrive first.
+    await yieldToEventLoop()
+    if (ending.kind === 'threw') this.recordThrown(ending.error)
+    for (const problem of this.#unfinishedWork(what)) this.record(problem)
+    return ending
+  }
+
+  #startStep(name: string, location: SourceLocation | undefined, marks: { parentStepId?: string | undefined; hook?: HookKind }): string {
+    this.#stepCount++
+    const stepId = `step-${this.#stepCount}`
+    this.emit({
+      type: 'step.started',
+      testId: this.testId,
+      attemptId: this.attemptId,
+      stepId,
+      name,
+      ...(marks.parentStepId === undefined ? {} : { parentStepId: marks.parentStepId }),
+      ...(location === undefined ? {} : { location }),
+      ...(marks.hook === undefined ? {} : { hook: marks.hook }),
+    })
+    return stepId
+  }
+
+  #finishStep(stepId: string, startedAt: number, problem: Failure | undefined): void {
+    const scope = { testId: this.testId, attemptId: this.attemptId, stepId, durationMs: elapsedMs(startedAt, this.time.now) }
+    if (problem === undefined) this.emit({ type: 'step.finished', ...scope, status: 'passed' })
+    else this.emit({ type: 'step.finished', ...scope, status: 'failed', failure: problem })
+  }
+
+  #startAssertion(operation: Operation<void>, work: Work, check: () => Promise<void>, app: string | undefined): void {
+    const refusal = this.#refusal() ?? (app === undefined ? undefined : this.#clash(app, work, 'look'))
     if (refusal !== undefined) return operation.reject(refusal)
-    this.#assertionsRunning.add(work)
+    if (app !== undefined) this.#lanes.startLook(app, work)
     check().then(
       () => {
-        this.#assertionsRunning.delete(work)
+        if (app !== undefined) this.#lanes.endLook(app, work)
         operation.resolve()
       },
       (error: unknown) => {
-        this.#assertionsRunning.delete(work)
+        if (app !== undefined) this.#lanes.endLook(app, work)
         operation.reject(error)
       },
     )
   }
 
-  #send(command: PageCommand, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
+  #send(app: string, command: PageCommand, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
     const id = this.#options.nextCommandId()
     const stepId = currentScope()?.stepId
     const { promise, resolve } = Promise.withResolvers<CommandResult>()
@@ -237,6 +305,7 @@ export class TestRun {
     this.#options.send({
       type: 'command',
       id,
+      app,
       command,
       timeoutMs,
       ...(location === undefined ? {} : { location }),
@@ -256,41 +325,47 @@ export class TestRun {
     return new RetestError(failure('interrupted', 'This test has already ended, so Retest sent nothing to the page.'))
   }
 
-  // An action needs the page to itself; an assertion only needs no action running.
-  #clash(next: Work, kind: 'action' | 'assertion'): RetestError | undefined {
-    const running = this.#action ?? (kind === 'action' ? this.#assertionsRunning.values().next().value : undefined)
+  #whileReading(work: Work): RetestError | undefined {
+    if (currentScope()?.reading !== true) return undefined
+    const message = `expect.poll() calls its function again on every look, so the function may only read. ${work.label} on ${this.describeLine(work.location)} would run again each time.`
+    return this.fail(failure('usage', message, work.location))
+  }
+
+  // An action needs the app to itself; an assertion's look only needs no action running there.
+  #clash(app: string, next: Work, kind: 'action' | 'look'): RetestError | undefined {
+    const running = this.#lanes.blocking(app, kind)
     if (running === undefined) return undefined
     const runningLine = this.describeLine(running.location)
     const message = [
-      `${capitalize(runningLine)} (${running.label}) was still running when ${this.describeLine(next.location)} (${next.label}) sent the next command to page.`,
-      `Retest sends one command at a time to each page. Add await on ${runningLine}.`,
+      `${capitalize(runningLine)} (${running.label}) was still running when ${this.describeLine(next.location)} (${next.label}) sent the next command to ${app}.`,
+      `Retest sends one command at a time to each app. Add await on ${runningLine}.`,
     ].join(' ')
-    const details = { running: formatLocation(running.location), next: formatLocation(next.location) }
+    const details = { running: lineOrNull(running.location), next: lineOrNull(next.location) }
     return this.fail({ ...failure('concurrent_commands', message, next.location), details })
   }
 
-  #verdict(ending: Ending): Verdict {
-    const durationMs = elapsedMs(this.#startedAt)
+  #finish(aborted: boolean): Verdict {
+    const durationMs = elapsedMs(this.#startedAt, this.time.now)
     const assertionCount = this.#assertionCount
     const problems = [...this.#failures]
-    if (ending.kind === 'threw' && !this.#isRecorded(ending.error)) {
-      problems.push(failureFrom(ending.error, this.#options.rootDir))
-    }
-    if (ending.kind !== 'aborted') problems.push(...this.#unfinishedWork())
-    if (ending.kind !== 'aborted' && problems.length === 0 && assertionCount === 0) {
+    if (!aborted && problems.length === 0 && assertionCount === 0) {
       problems.push(failure('no_assertions', 'The test made no assertions. Check the outcome with expect().', this.#options.location))
     }
+    this.#state = 'finished'
     const [first, ...rest] = problems
     if (first !== undefined) return { status: 'failed', failure: withAlso(first, rest), assertionCount, durationMs }
-    return { status: ending.kind === 'aborted' ? 'failed' : 'passed', assertionCount, durationMs }
+    return { status: aborted ? 'failed' : 'passed', assertionCount, durationMs }
   }
 
   #isRecorded(error: unknown): boolean {
     return error instanceof RetestError && this.#failures.includes(error.failure)
   }
 
-  #unfinishedWork(): Failure[] {
-    return this.#tracked.flatMap((work) => {
+  // Judges the work created since the last function returned, then forgets it.
+  #unfinishedWork(what: string): Failure[] {
+    const tracked = this.#tracked
+    this.#tracked = []
+    return tracked.flatMap((work) => {
       const where = this.describeLine(work.location)
       if (work.kind !== 'step' && !work.operation.observed) {
         const message =
@@ -300,19 +375,15 @@ export class TestRun {
         return [failure('not_awaited', message, work.location)]
       }
       if (work.operation.settled) return []
-      return [failure('not_awaited', `${work.label} on ${where} was still running when the test returned. Add await before it.`, work.location)]
+      return [failure('not_awaited', `${work.label} on ${where} was still running when ${what} returned. Add await before it.`, work.location)]
     })
   }
-}
-
-function invoke<T>(body: () => T | Promise<T>): Promise<T> {
-  return (async () => body())()
 }
 
 function capitalize(text: string): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}`
 }
 
-function formatLocation(location: SourceLocation | undefined): string | null {
-  return location === undefined ? null : `${location.file}:${location.line}`
+function lineOrNull(location: SourceLocation | undefined): string | null {
+  return location === undefined ? null : formatLine(location)
 }

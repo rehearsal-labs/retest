@@ -97,7 +97,7 @@ describe('human reporter', () => {
         '      8 │ })',
         '',
         `    Screenshot       ${runFolder}/artifacts/saves-a-task-failure.png`,
-        '    Rerun            npx retest run examples/task.retest.ts --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --base-url http://127.0.0.1:4173',
+        '    Rerun            npx retest run examples/task.retest.ts:3 --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --base-url http://127.0.0.1:4173',
         `    Inspect          npx retest inspect ${runFolder} --test "examples/task.retest.ts > saves a task"`,
         '',
         '',

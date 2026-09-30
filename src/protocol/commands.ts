@@ -1,6 +1,10 @@
 import { failureSchema, type Failure } from './failures.ts'
 import { describeLocator, locatorRecipeSchema, type LocatorRecipe } from './locator.ts'
 import { s, type Schema } from './schema.ts'
+import { secretRefSchema, type SecretRef } from './secret.ts'
+
+/** What `fill` types: the text itself, or a secret the parent resolves. */
+export type FillValue = string | SecretRef
 
 /**
  * A page command from the child. `goto.url` is what the test passed; the parent resolves it against the
@@ -8,46 +12,70 @@ import { s, type Schema } from './schema.ts'
  */
 export type PageCommand =
   | { kind: 'goto'; url: string }
-  | { kind: 'fill'; locator: LocatorRecipe; value: string }
+  | { kind: 'fill'; locator: LocatorRecipe; value: FillValue }
   | { kind: 'click'; locator: LocatorRecipe }
+  | { kind: 'tap'; locator: LocatorRecipe }
   | { kind: 'observe'; locator: LocatorRecipe }
 
 export type ActionKind = Exclude<PageCommand['kind'], 'observe'>
 
-/** What `observe` saw. `visible` and `text` are null unless exactly one element matched. */
-export type Observation = { count: number; visible: boolean | null; text: string | null }
+/** How many matches an observation lists at most. */
+export const observedItemLimit = 100
+
+/** One match as an observation lists it. */
+export type ObservedItem = { text: string; visible: boolean }
+
+/**
+ * What `observe` saw. `visible`, `text` and `value` are null unless exactly one element matched, and `value`
+ * is also null when that element is not a field. `items` lists the first `observedItemLimit` matches in
+ * document order, and `itemsTruncated` says when more matched than it lists.
+ */
+export type Observation = {
+  count: number
+  visible: boolean | null
+  text: string | null
+  value: string | null
+  items: ObservedItem[]
+  itemsTruncated: boolean
+}
 
 /** The answer to a page command. After `goto`, `url` is the final page's origin and path. */
 export type CommandResult =
   | { ok: true; kind: 'goto'; url: string }
-  | { ok: true; kind: 'fill' | 'click' }
+  | { ok: true; kind: 'fill' | 'click' | 'tap' }
   | { ok: true; kind: 'observe'; observation: Observation }
   | { ok: false; failure: Failure }
 
+const fillValueSchema: Schema<FillValue> = s.union([s.string(), secretRefSchema])
+
 export const pageCommandSchema: Schema<PageCommand> = s.discriminatedUnion('kind', [
   s.object({ kind: s.literal('goto'), url: s.string() }),
-  s.object({ kind: s.literal('fill'), locator: locatorRecipeSchema, value: s.string() }),
+  s.object({ kind: s.literal('fill'), locator: locatorRecipeSchema, value: fillValueSchema }),
   s.object({ kind: s.literal('click'), locator: locatorRecipeSchema }),
+  s.object({ kind: s.literal('tap'), locator: locatorRecipeSchema }),
   s.object({ kind: s.literal('observe'), locator: locatorRecipeSchema }),
 ])
 
-export const actionKindSchema: Schema<ActionKind> = s.enum(['goto', 'fill', 'click'])
+export const actionKindSchema: Schema<ActionKind> = s.enum(['goto', 'fill', 'click', 'tap'])
 
 export const observationSchema: Schema<Observation> = s.object({
   count: s.number({ integer: true, min: 0 }),
   visible: s.nullable(s.boolean()),
   text: s.nullable(s.string()),
+  value: s.nullable(s.string()),
+  items: s.array(s.object({ text: s.string(), visible: s.boolean() })),
+  itemsTruncated: s.boolean(),
 })
 
 export const commandResultSchema: Schema<CommandResult> = s.union([
   s.object({ ok: s.literal(true), kind: s.literal('goto'), url: s.string() }),
-  s.object({ ok: s.literal(true), kind: s.enum(['fill', 'click']) }),
+  s.object({ ok: s.literal(true), kind: s.enum(['fill', 'click', 'tap']) }),
   s.object({ ok: s.literal(true), kind: s.literal('observe'), observation: observationSchema }),
   s.object({ ok: s.literal(false), failure: failureSchema }),
 ])
 
 /**
- * Names a page command the way a test writes it. A `fill` value is never shown.
+ * Names a page command the way a test writes it. A `fill` value is never shown; a secret shows its name.
  *
  * @example describeCommand({ kind: 'click', locator: { by: 'testId', value: 'save-task' } }) // "getByTestId('save-task').click()"
  */
@@ -56,10 +84,15 @@ export function describeCommand(command: PageCommand): string {
     case 'goto':
       return `page.goto(${JSON.stringify(command.url)})`
     case 'fill':
-      return `${describeLocator(command.locator)}.fill()`
+      return `${describeLocator(command.locator)}.fill(${describeFillValue(command.value)})`
     case 'click':
-      return `${describeLocator(command.locator)}.click()`
+    case 'tap':
+      return `${describeLocator(command.locator)}.${command.kind}()`
     case 'observe':
       return `a look at ${describeLocator(command.locator)}`
   }
+}
+
+function describeFillValue(value: FillValue): string {
+  return typeof value === 'string' ? '' : `secret(${JSON.stringify(value.secret)})`
 }

@@ -1,7 +1,10 @@
 import type { CollectedFile } from '../../src/runner/contract.ts'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
+import { configFileName, loadConfig } from '../../src/config/load.ts'
 import { collectFiles } from '../../src/runner/run.ts'
+import { tempProject } from '../support/project.ts'
 import { eventsOfType, rootDir, runSupportFiles, supportFile } from '../support/run-harness.ts'
 
 async function collectOne(name: string, collection = 5000): Promise<CollectedFile> {
@@ -56,7 +59,7 @@ describe('collectFiles', () => {
   test('an unknown test option is a usage failure', async () => {
     const file = await collectOne('unknown-option.retest.js')
     assert.equal(file.failure?.class, 'usage')
-    assert.equal(file.failure?.message, 'Unknown test option "retries". This version of Retest accepts only timeout.')
+    assert.equal(file.failure?.message, 'Unknown test option "retries". Test options are apps, tags, state and timeout.')
     assert.equal(file.failure?.location?.line, 3)
   })
 
@@ -155,5 +158,60 @@ describe('collection in a run', () => {
     assert.match(looping?.failure?.message ?? '', /took longer than 700 ms, so Retest stopped its process\. Its output is in logs\/.+\.log\.$/)
     assert.equal(passing?.collection, 'ok')
     assert.equal(record.result.exitCode, 2)
+  })
+})
+
+describe('collectFiles with a config', async () => {
+  const config = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+export default defineConfig({
+  apps: { web: app({ baseUrl: 'http://127.0.0.1:4173', targets: { stable: chromium({ executablePath: '/fake/stable' }), beta: chromium({ executablePath: '/fake/beta' }) } }) },
+  tags: ['smoke'],
+})
+`
+  const root = tempProject({
+    'retest.config.ts': config,
+    'tests/archive.retest.ts': `import { test } from '@rehearsal-labs/retest'
+test('archives', { state: 'signed-in', tags: ['smoke'] }, async () => {})
+test('lists', async () => {})
+`,
+    'tests/sign-in.retest.ts': `import { test } from '@rehearsal-labs/retest'
+test.setup('signed-in', async () => {})
+`,
+    'tests/broken.retest.ts': `import { test } from '@rehearsal-labs/retest'
+test('tagged', { tags: ['smok'] }, async () => {})
+`,
+  })
+  const loaded = await loadConfig(join(root, configFileName))
+  assert.ok(loaded.ok)
+  const files = ['tests/archive.retest.ts', 'tests/sign-in.retest.ts', 'tests/broken.retest.ts']
+
+  test('lists each test with its apps and variants, and fails a file as a run would', async () => {
+    const collected = await collectFiles({ files, rootDir: root, timeouts: { collection: 5000 }, config: loaded.config })
+    const [archive, signIn, broken] = collected.files
+    assert.deepEqual(archive?.tests.map((entry) => [entry.name, entry.apps, entry.variants?.length]), [['archives', ['web'], 2], ['lists', ['web'], 2]])
+    assert.equal(signIn?.tests[0]?.setup, true)
+    assert.deepEqual(broken?.failure, {
+      class: 'collection_failed',
+      message: '"tagged": The tag "smok" is not in the config\'s tags: smoke.',
+      location: { file: 'tests/broken.retest.ts', line: 2, column: 1 },
+    })
+  })
+
+  test('takes a setup the files given lack from the project, listing only that setup and whom it serves', async () => {
+    const collected = await collectFiles({ files: ['tests/archive.retest.ts'], rootDir: root, timeouts: { collection: 5000 }, config: loaded.config })
+    assert.deepEqual(collected.files.map((file) => [file.file, file.collection, file.tests.map((entry) => [entry.name, entry.setupFor])]), [
+      ['tests/archive.retest.ts', 'ok', [['archives', undefined], ['lists', undefined]]],
+      ['tests/sign-in.retest.ts', 'ok', [['signed-in', ['tests/archive.retest.ts']]]],
+    ])
+  })
+
+  test('with a selection, lists only the tests and variants a run would start, setups they need included', async () => {
+    const selection = { tags: { kind: 'tag' as const, tag: 'smoke' }, targets: { web: 'beta' } }
+    const collected = await collectFiles({ files, rootDir: root, timeouts: { collection: 5000 }, config: loaded.config, selection })
+    assert.deepEqual(collected.files.map((file) => file.tests.map((entry) => [entry.name, entry.variants])), [
+      [['archives', [{ web: 'beta' }]]],
+      [['signed-in', [{ web: 'beta' }]]],
+      [],
+    ])
   })
 })

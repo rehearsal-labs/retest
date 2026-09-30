@@ -2,7 +2,8 @@ declare const output: unique symbol
 declare const exact: unique symbol
 
 type Literal = string | number | boolean | null
-type Path = readonly (string | number)[]
+/** Object keys and array indexes, outermost first. */
+export type Path = readonly (string | number)[]
 // `variant` marks a literal that did not match: a sign the value belongs to another option.
 type Found = { path: Path; message: string; variant: boolean }
 
@@ -330,7 +331,8 @@ function isArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value)
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** True for an object literal, or one made with a null prototype: what a schema object accepts. */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false
   const prototype: unknown = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
@@ -370,12 +372,22 @@ function describe(node: SchemaNode): string {
   }
 }
 
-function describeChoices(values: readonly unknown[]): string {
-  if (values.length === 1) return JSON.stringify(values[0])
-  return `one of ${values.map((value) => JSON.stringify(value)).join(', ')}`
+/**
+ * Quotes each choice, as an issue lists what it expected.
+ *
+ * @example describeChoices(['stable', 'beta']) // 'one of "stable", "beta"'
+ */
+export function describeChoices(values: Iterable<unknown>): string {
+  const quoted = [...values].map((value) => JSON.stringify(value))
+  return quoted.length === 1 ? `${quoted[0]}` : `one of ${quoted.join(', ')}`
 }
 
-function describeValue(value: unknown): string {
+/**
+ * How an issue shows the value it received: short strings and scalars as written, anything else by its kind.
+ *
+ * @example describeValue('beta') // '"beta"'
+ */
+export function describeValue(value: unknown): string {
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value)
   if (typeof value === 'string') return value.length <= 40 ? JSON.stringify(value) : 'string'
   if (Array.isArray(value)) return 'array'
@@ -384,7 +396,12 @@ function describeValue(value: unknown): string {
 
 const identifier = /^[A-Za-z_$][\w$]*$/
 
-function formatPath(path: Path): string {
+/**
+ * Writes a path as an issue shows it.
+ *
+ * @example formatPath(['apps', 'mobile-web', 'targets']) // '$.apps["mobile-web"].targets'
+ */
+export function formatPath(path: Path): string {
   let text = '$'
   for (const segment of path) {
     if (typeof segment === 'number') text += `[${segment}]`

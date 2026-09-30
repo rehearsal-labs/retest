@@ -71,8 +71,7 @@ export async function runSupportFiles(names: readonly string[], options: Harness
     {
       files: names.map(supportFile),
       rootDir,
-      browserPath: '/fake/chromium',
-      baseUrl: options.baseUrl ?? 'http://127.0.0.1:4173',
+      apps: { kind: 'browser', browserPath: '/fake/chromium', baseUrl: options.baseUrl ?? 'http://127.0.0.1:4173' },
       timeouts: { ...quickTimeouts, ...options.timeouts },
       outputDir: folder,
       headless: true,
@@ -107,7 +106,8 @@ export function readEvents(folder: string): { events: RetestEvent[]; lines: stri
   return { events, lines }
 }
 
-function readResult(folder: string): RunResult | undefined {
+/** `result.json`, checked against its schema, or undefined when the run did not write it. */
+export function readResult(folder: string): RunResult | undefined {
   const path = join(folder, resultFile)
   if (!existsSync(path)) return undefined
   const parsed = parse(runResultSchema, JSON.parse(readFileSync(path, 'utf8')))

@@ -87,12 +87,27 @@ describe('commands', () => {
     assert.equal(started?.type, 'run.started')
     if (started?.type !== 'run.started') return
     assert.equal(
-      formatRerunCommand(started, file),
-      'npx retest run examples/task.retest.ts --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --base-url http://127.0.0.1:4173 --timeouts assertion=1000',
+      formatRerunCommand(started, { file, line: 3 }),
+      'npx retest run examples/task.retest.ts:3 --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --base-url http://127.0.0.1:4173 --timeouts assertion=1000',
     )
     const { baseUrl: _, ...withoutBaseUrl } = started.options
     const plainRun = { ...started, options: { ...withoutBaseUrl, timeouts: defaultTimeouts } }
-    assert.doesNotMatch(formatRerunCommand(plainRun, file), /--base-url|--timeouts/)
+    assert.equal(
+      formatRerunCommand(plainRun, { file }),
+      'npx retest run examples/task.retest.ts --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"',
+    )
+    assert.match(formatRerunCommand(plainRun, { file, line: 12, row: 2 }), /^npx retest run "examples\/task\.retest\.ts:12#2" --browser /)
+  })
+
+  // A config's own budgets are in the recorded timeouts too; only what the command line gave is repeated.
+  test('rerun repeats the budgets the command line gave, and none of them when it gave none', () => {
+    const [started] = stamp([runStarted('/work', { timeouts: { ...defaultTimeouts, action: 20_000, assertion: 1000 } })])
+    assert.equal(started?.type, 'run.started')
+    if (started?.type !== 'run.started') return
+    const fromConfig = { ...started, options: { ...started.options, commandLineTimeouts: {} } }
+    assert.doesNotMatch(formatRerunCommand(fromConfig, { file, line: 3 }), /--timeouts/)
+    const given = { ...started, options: { ...started.options, commandLineTimeouts: { assertion: 1000 } } }
+    assert.match(formatRerunCommand(given, { file, line: 3 }), / --timeouts assertion=1000$/)
   })
 
   test('inspect names the run folder, the ASCII test id and JSON output', () => {

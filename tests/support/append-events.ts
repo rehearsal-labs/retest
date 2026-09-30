@@ -15,6 +15,7 @@ for (;;) {
     sequence,
     time: new Date().toISOString(),
     elapsedMs: sequence,
+    origin: 'parent',
     type: 'collection.failed',
     file: 'a.retest.ts',
     failure: { class: 'collection_failed', message },

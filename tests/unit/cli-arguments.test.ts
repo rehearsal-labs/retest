@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { flag, listWords, parseArguments, value } from '../../src/cli/arguments.ts'
+import { flag, list, parseArguments, value } from '../../src/cli/arguments.ts'
+import { listWords } from '../../src/shared/list-words.ts'
 import { UsageError } from '../../src/cli/errors.ts'
 import { suggest } from '../../src/cli/suggest.ts'
 
@@ -10,6 +11,7 @@ const options = {
   reporter: value({ placeholder: '<name>', description: 'Reporter', choices: ['human', 'jsonl', 'agent'] }),
   json: flag('JSON'),
   headed: flag('Headed'),
+  target: list({ placeholder: '<app=name>', description: 'Target' }),
 }
 
 function usageMessage(args: string[]): string {
@@ -83,6 +85,15 @@ describe('parseArguments', () => {
     assert.equal(usageMessage(['--browser', '-x']), '--browser needs a value: --browser <path>.')
   })
 
+  test('a list option may be given again, and keeps every value in order', () => {
+    const parsed = parseArguments(options, ['--target', 'web=beta', 'a.retest.ts', '--target=admin=chromium'])
+    assert.deepEqual(parsed.list('target'), ['web=beta', 'admin=chromium'])
+    assert.deepEqual(parsed.positionals, ['a.retest.ts'])
+    assert.deepEqual(parseArguments(options, []).list('target'), [])
+    assert.equal(usageMessage(['--target']), '--target needs a value: --target <app=name>.')
+    assert.equal(usageMessage(['--target', 'web=beta', '--target', '--json']), '--target needs a value: --target <app=name>.')
+  })
+
   test('accepts a value that starts with a dash when written with =', () => {
     assert.equal(parseArguments(options, ['--browser=-odd']).value('browser'), '-odd')
   })
@@ -122,5 +133,6 @@ describe('listWords', () => {
     assert.equal(listWords(['run']), 'run')
     assert.equal(listWords(['list', 'run']), 'list or run')
     assert.equal(listWords(['list', 'run', 'inspect']), 'list, run or inspect')
+    assert.equal(listWords(['smoke', 'slow'], 'and'), 'smoke and slow')
   })
 })

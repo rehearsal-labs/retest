@@ -25,7 +25,7 @@ function file(tests: TestResult[], collection: FileResult['collection'] = 'ok', 
   return collection === 'ok' ? { file: name, collection, tests } : { file: name, collection, failure: failed('collection_failed', `${name} cannot load`), tests }
 }
 
-const facts = { stoppedBy: undefined, outputFailures: [] }
+const facts = { stoppedBy: undefined, runFailures: [], outputFailures: [] }
 const lostEvents = failed('reporting_failed', 'Retest could not write events.jsonl: the disk is full')
 
 describe('testStatus', () => {
@@ -60,11 +60,11 @@ describe('runOutcome', () => {
 
   test('130 or 143 first, whatever else happened', () => {
     const files = [file([result('failed'), result('not_run')])]
-    const outcome = runOutcome({ stoppedBy: 'SIGINT', outputFailures: [lostEvents], files })
+    const outcome = runOutcome({ stoppedBy: 'SIGINT', runFailures: [], outputFailures: [lostEvents], files })
     assert.equal(outcome.exitCode, 130)
     assert.equal(outcome.status, 'interrupted')
     assert.equal(outcome.complete, false)
-    const terminated = runOutcome({ stoppedBy: 'SIGTERM', outputFailures: [], files: [file([result('passed')])] })
+    const terminated = runOutcome({ stoppedBy: 'SIGTERM', runFailures: [], outputFailures: [], files: [file([result('passed')])] })
     assert.deepEqual([terminated.exitCode, terminated.status, terminated.complete], [143, 'interrupted', false])
   })
 
@@ -91,8 +91,8 @@ describe('runOutcome', () => {
   })
 
   test('2 when results could not be written, even with a failed test', () => {
-    assert.equal(runOutcome({ stoppedBy: undefined, outputFailures: [lostEvents], files: [file([result('failed')])] }).exitCode, 2)
-    assert.equal(runOutcome({ stoppedBy: undefined, outputFailures: [lostEvents], files: [file([result('passed')])] }).complete, false)
+    assert.equal(runOutcome({ stoppedBy: undefined, runFailures: [], outputFailures: [lostEvents], files: [file([result('failed')])] }).exitCode, 2)
+    assert.equal(runOutcome({ stoppedBy: undefined, runFailures: [], outputFailures: [lostEvents], files: [file([result('passed')])] }).complete, false)
   })
 
   test('1 once a test failed its checks, even beside errors, tests that did not run and failed collection', () => {
@@ -153,8 +153,8 @@ describe('runOutcome', () => {
   })
 
   test('an interrupted run explains itself by its status, unless output was lost', () => {
-    assert.equal(runOutcome({ stoppedBy: 'SIGINT', outputFailures: [], files: [file([], 'failed')] }).failure, undefined)
-    assert.deepEqual(runOutcome({ stoppedBy: 'SIGINT', outputFailures: [lostEvents], files: [] }).failure, lostEvents)
+    assert.equal(runOutcome({ stoppedBy: 'SIGINT', runFailures: [], outputFailures: [], files: [file([], 'failed')] }).failure, undefined)
+    assert.deepEqual(runOutcome({ stoppedBy: 'SIGINT', runFailures: [], outputFailures: [lostEvents], files: [] }).failure, lostEvents)
   })
 
   test('a file whose process failed outside its tests leaves the run incomplete, and is the run failure', () => {

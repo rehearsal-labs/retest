@@ -1,0 +1,194 @@
+import type { LoadedStart } from '../../src/config/loaded.ts'
+import type { AppServerHandle } from '../../src/runner/app-server.ts'
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
+import { createServer as createTcpServer } from 'node:net'
+import { join } from 'node:path'
+import { after, describe, test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import { AppServerError, probeReady, startAppServer } from '../../src/runner/app-server.ts'
+import { Redactor } from '../../src/runner/redactor.ts'
+import { isGoneWithin, isRunning } from '../support/run-harness.ts'
+import { tempFolder } from '../support/temp-folder.ts'
+
+const serverScript = fileURLToPath(new URL('../support/http-server.ts', import.meta.url))
+const node = JSON.stringify(process.execPath)
+const started: AppServerHandle[] = []
+
+after(async () => {
+  for (const server of started) await server.stop(1000)
+})
+
+async function freePort(): Promise<number> {
+  const server = createTcpServer()
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  assert.ok(address !== null && typeof address === 'object')
+  return address.port
+}
+
+async function listening(server: Server): Promise<number> {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address !== null && typeof address === 'object')
+  return address.port
+}
+
+function startOf(command: string, port: number, cwd = tempFolder('app-')): LoadedStart {
+  return { command, ready: `http://127.0.0.1:${port}/health`, cwd }
+}
+
+function serverCommand(port: number, delayMs = 0, printed?: string): string {
+  return [node, JSON.stringify(serverScript), port, delayMs, ...(printed === undefined ? [] : [printed])].join(' ')
+}
+
+function logIn(name: string): string {
+  return join(tempFolder('logs-'), 'logs', `app-${name}.log`)
+}
+
+// The server script prints its own process id, which is not the shell's.
+function printedPid(log: string): number {
+  const pid = /pid (\d+)/.exec(readFileSync(log, 'utf8'))?.[1]
+  assert.ok(pid !== undefined, 'the server printed its process id')
+  return Number(pid)
+}
+
+describe('probeReady', () => {
+  test('any HTTP answer counts, whatever its status', async (t) => {
+    const server = createServer((_request, response) => {
+      response.statusCode = 500
+      response.end()
+    })
+    t.after(() => server.close())
+    assert.equal(await probeReady(`http://127.0.0.1:${await listening(server)}/`, 1000), true)
+  })
+
+  test('a refused connection, a server that never answers, or an address that is not http do not', async (t) => {
+    assert.equal(await probeReady(`http://127.0.0.1:${await freePort()}/`, 1000), false)
+    const silent = createTcpServer((socket) => socket.on('error', () => undefined))
+    t.after(() => silent.close())
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', resolve))
+    const address = silent.address()
+    assert.ok(address !== null && typeof address === 'object')
+    const before = performance.now()
+    assert.equal(await probeReady(`http://127.0.0.1:${address.port}/`, 200), false)
+    assert.ok(performance.now() - before < 1000, 'it gave up at its timeout')
+    assert.equal(await probeReady('ftp://127.0.0.1/', 200), false)
+    assert.equal(await probeReady('not a url', 200), false)
+  })
+})
+
+describe('startAppServer', () => {
+  test('starts the command in its own process group, waits for ready, logs its output, and stops the whole group', async () => {
+    const port = await freePort()
+    const logFile = logIn('web')
+    const server = await startAppServer({ name: 'web', start: startOf(serverCommand(port, 150), port), logFile }, 5000)
+    started.push(server)
+    assert.ok(server.status === 'started' && isRunning(server.pid), 'the shell leads a live group')
+    const pid = printedPid(logFile)
+    assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 1000), true)
+    await server.stop(1000)
+    assert.equal(await isGoneWithin(pid, 1000), true, 'the server process is gone')
+    assert.equal(await isGoneWithin(server.pid, 1000), true, 'its shell is gone')
+    assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 500), false)
+    assert.match(readFileSync(logFile, 'utf8'), new RegExp(`listening on ${port}\\n`))
+  })
+
+  test('reuses a server that already answers, and never stops it', async (t) => {
+    const running = createServer((_request, response) => response.end('up'))
+    t.after(() => running.close())
+    const port = await listening(running)
+    const logFile = logIn('reused')
+    const server = await startAppServer({ name: 'web', start: startOf('exit 9', port), logFile }, 5000)
+    assert.equal(server.status, 'reused')
+    await server.stop(1000)
+    assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 1000), true, 'the server still answers')
+    assert.equal(existsSync(logFile), false, 'no command ran, so there is no log')
+  })
+
+  test('a server that never becomes ready fails as setup, and its group is ended', async () => {
+    const port = await freePort()
+    const logFile = logIn('slow')
+    const start = startOf(serverCommand(port, 60_000), port)
+    const error = await startAppServer({ name: 'web', start, logFile }, 700).then(
+      () => assert.fail('the server was never ready'),
+      (thrown: unknown) => thrown,
+    )
+    assert.ok(error instanceof AppServerError)
+    assert.deepEqual(error.failure, {
+      class: 'setup_failed',
+      message: `The server for web did not answer at http://127.0.0.1:${port}/health within 700 ms. Its output is in ${logFile}.`,
+    })
+    assert.equal(await isGoneWithin(printedPid(logFile), 1000), true)
+  })
+
+  test('a server that exits before it is ready says how it ended', async () => {
+    const port = await freePort()
+    const error = await startAppServer({ name: 'web', start: startOf('exit 3', port), logFile: logIn('exits') }, 5000).catch((thrown: unknown) => thrown)
+    assert.ok(error instanceof AppServerError)
+    assert.match(error.failure.message, /^The server for web exited with exit code 3 before http:\/\/127\.0\.0\.1:\d+\/health answered\./)
+  })
+
+  test('a server that ignores SIGTERM is killed after the grace it was given', async () => {
+    const port = await freePort()
+    const logFile = logIn('stubborn')
+    const script = `process.on('SIGTERM', () => {}); require('node:http').createServer((q, r) => r.end()).listen(${port}, '127.0.0.1'); console.log('pid', process.pid)`
+    const server = await startAppServer({ name: 'web', start: startOf(`${node} -e ${JSON.stringify(script)}`, port), logFile }, 5000)
+    started.push(server)
+    const pid = printedPid(logFile)
+    const before = performance.now()
+    await server.stop(200)
+    assert.equal(isRunning(pid), false)
+    assert.ok(performance.now() - before < 2000, 'SIGKILL followed the grace')
+  })
+
+  test('hides secret values in the log', async () => {
+    const port = await freePort()
+    const logFile = logIn('secret')
+    const redactor = new Redactor()
+    redactor.learn('password', 'hunter2')
+    const server = await startAppServer({ name: 'web', start: startOf(serverCommand(port, 0, 'hunter2'), port), logFile, redactor }, 5000)
+    started.push(server)
+    await server.stop(1000)
+    const log = readFileSync(logFile, 'utf8')
+    assert.match(log, /password is \{\{password\}\}\n/)
+    assert.ok(!log.includes('hunter2'))
+  })
+
+  test('stops waiting, and ends the group, when the run is interrupted', async () => {
+    const port = await freePort()
+    const logFile = logIn('interrupted')
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 300)
+    const error = await startAppServer({ name: 'web', start: startOf(serverCommand(port, 60_000), port), logFile, signal: controller.signal }, 10_000).catch(
+      (thrown: unknown) => thrown,
+    )
+    assert.ok(error instanceof AppServerError)
+    assert.deepEqual(error.failure, { class: 'interrupted', message: 'Starting the server for web was interrupted.' })
+    assert.equal(await isGoneWithin(printedPid(logFile), 1000), true)
+  })
+
+  test('a server still running when the process exits is ended by the exit hook', async () => {
+    const port = await freePort()
+    const script = fileURLToPath(new URL('../support/exit-with-server.ts', import.meta.url))
+    const child = spawn(process.execPath, ['--conditions=retest-source', script, tempFolder('exit-'), String(port)], { stdio: ['ignore', 'pipe', 'inherit'] })
+    let printed = ''
+    child.stdout.setEncoding('utf8').on('data', (text: string) => (printed += text))
+    const code = await new Promise<number | null>((resolve) => child.once('close', resolve))
+    assert.equal(code, 0)
+    const pid = Number(/server (\d+)/.exec(printed)?.[1])
+    assert.ok(pid > 0, 'the server was started')
+    assert.equal(await isGoneWithin(pid, 2000), true, 'the server did not outlive the process that started it')
+  })
+
+  test('a folder that does not exist fails before anything starts', async () => {
+    const port = await freePort()
+    const cwd = join(tempFolder('app-'), 'missing')
+    const error = await startAppServer({ name: 'web', start: startOf('true', port, cwd), logFile: logIn('nowhere') }, 1000).catch((thrown: unknown) => thrown)
+    assert.ok(error instanceof AppServerError)
+    assert.equal(error.failure.message, `The folder the server for web starts in, ${cwd}, does not exist.`)
+  })
+})

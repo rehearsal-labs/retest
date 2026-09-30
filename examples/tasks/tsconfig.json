@@ -1,0 +1,20 @@
+{
+  // Its own project: the Register block in retest.config.ts applies to every file of the program it is in.
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024"],
+    "module": "nodenext",
+    "types": ["node"],
+    // In this repository the package resolves to its own source. A project that installs it leaves this out.
+    "customConditions": ["retest-source"],
+    "strict": true,
+    "noEmit": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": false
+  },
+  "include": ["retest.config.ts", "tests"]
+}

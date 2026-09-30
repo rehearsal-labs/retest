@@ -1,30 +1,34 @@
+import type { TestRun } from '../api/test-run.ts'
 import type { Observation } from '../protocol/commands.ts'
-import type { ChildEvent } from '../protocol/events.ts'
 import type { Failure, SourceLocation, TruncatedText } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
-import type { TestRun } from '../api/test-run.ts'
-import { setTimeout as sleep } from 'node:timers/promises'
-import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
+import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
 import { failure, truncateText, withLocation } from '../protocol/failures.ts'
 import { describeLocator } from '../protocol/locator.ts'
+import { reportAssertion } from './report.ts'
 
 /** What a locator assertion looks for in each observation. */
 export type LocatorCheck = {
-  readonly matcher: 'toBeVisible' | 'toHaveText'
+  readonly matcher: 'toBeVisible' | 'toBeHidden' | 'toHaveText' | 'toHaveCount' | 'toHaveValue'
   readonly expected: string
   readonly comparison?: string
+  /** A check about the one element that matches: none is `not_found`, and several `ambiguous`. */
+  readonly single: boolean
   passes(observation: Observation): boolean
   actual(observation: Observation): string | null
-  /** Why a single matching element did not pass, as a sentence. */
+  /** Why the elements that matched did not pass, as a sentence. */
   mismatch(observation: Observation, locator: string): string
 }
 
 export type PollOptions = {
   run: TestRun
   stepId: string | undefined
+  app: string
   recipe: LocatorRecipe
   check: LocatorCheck
   location: SourceLocation | undefined
+  /** From `expect.soft`: a check that does not pass is recorded, and the test goes on. */
+  soft: boolean
 }
 
 // Looks come quickly at first, then settle at twice a second.
@@ -36,21 +40,22 @@ export function pollDelay(attempt: number): number {
 }
 
 /**
- * Looks at the page until the check passes or the assertion's time runs out. It only ever reads the
+ * Looks at an app's page until the check passes or the assertion's time runs out. It only ever reads the
  * page: it never repeats the action that came before it. The last look happens at the deadline.
  */
 export async function pollLocator(options: PollOptions): Promise<void> {
-  const { run, recipe, check, location } = options
+  const { run, app, recipe, check, location } = options
   const timeoutMs = run.assertionBudget()
-  const startedAt = monotonicClock()
-  const deadline = new Deadline(timeoutMs, { startedAt })
+  const { now, sleep } = run.time
+  const startedAt = now()
+  const deadline = new Deadline(timeoutMs, { startedAt, clock: now })
   let attempts = 0
   let last: Observation | undefined
   let stopped: Failure | undefined
   for (;;) {
     const delay = smallestBudget(pollDelay(attempts), deadline.remainingMs)
     if (delay > 0) await sleep(delay)
-    const result = await run.observe(recipe, deadline.commandTimeoutMs, location)
+    const result = await run.observe(app, recipe, deadline.commandTimeoutMs, location)
     attempts++
     if (result.ok && result.kind === 'observe') {
       last = result.observation
@@ -67,7 +72,7 @@ export async function pollLocator(options: PollOptions): Promise<void> {
     testId: run.testId,
     attemptId: run.attemptId,
     ...(options.stepId === undefined ? {} : { stepId: options.stepId }),
-    session: 'page',
+    session: app,
     matcher: check.matcher,
     locator: recipe,
     expected: truncateText(check.expected),
@@ -75,18 +80,13 @@ export async function pollLocator(options: PollOptions): Promise<void> {
     ...(check.comparison === undefined ? {} : { comparison: check.comparison }),
     attempts,
     timeoutMs,
-    durationMs: elapsedMs(startedAt),
+    durationMs: elapsedMs(startedAt, now),
     ...(location === undefined ? {} : { location }),
   }
-  run.countAssertion()
-  if (passed) {
-    run.emit({ type: 'assertion.passed', ...fields })
-    return
-  }
-  const problem = stopped ?? lookedTooLong({ check, recipe, last, attempts, timeoutMs, location })
-  const event: ChildEvent = { type: 'assertion.failed', ...fields, failure: problem }
-  run.emit(event)
-  throw run.fail(problem)
+  if (passed) return reportAssertion(run, fields, undefined, false)
+  // Only the check's own verdict is softened; a page that could not be read stops the test as usual.
+  if (stopped !== undefined) return reportAssertion(run, fields, stopped, false)
+  reportAssertion(run, fields, lookedTooLong({ check, recipe, last, attempts, timeoutMs, location }), options.soft)
 }
 
 type Unmet = {
@@ -108,10 +108,10 @@ function lookedTooLong({ check, recipe, last, attempts, timeoutMs, location }: U
     timeoutMs,
     ...(check.comparison === undefined ? {} : { comparison: check.comparison }),
   }
-  if (last === undefined || last.count === 0) {
+  if (last === undefined || (check.single && last.count === 0)) {
     return { ...failure('not_found', `${locator} matched no element. ${looked}`, location), details }
   }
-  if (last.count > 1) {
+  if (check.single && last.count > 1) {
     const message = `${locator} matched ${last.count} elements, and ${check.matcher} needs exactly one. ${looked}`
     return { ...failure('ambiguous', message, location), details }
   }
@@ -121,4 +121,3 @@ function lookedTooLong({ check, recipe, last, attempts, timeoutMs, location }: U
 function nullableText(text: string | null): TruncatedText | null {
   return text === null ? null : truncateText(text)
 }
-

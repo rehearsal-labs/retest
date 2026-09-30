@@ -14,5 +14,5 @@
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": false
   },
-  "include": ["fixtures"]
+  "include": ["fixtures/*.ts"]
 }

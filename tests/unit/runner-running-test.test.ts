@@ -15,7 +15,7 @@ describe('RunningTest', () => {
     const emitted: EventBody[] = []
     const running = new RunningTest({
       process: child,
-      page,
+      pages: new Map([['page', page]]),
       testId: 'a.retest.ts > runs',
       attemptId: 'attempt-1',
       timeouts: quickTimeouts,

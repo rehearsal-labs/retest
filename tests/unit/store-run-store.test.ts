@@ -22,6 +22,7 @@ const event: RetestEvent = {
   sequence: 0,
   time: '2026-09-30T09:15:00.000Z',
   elapsedMs: 0,
+  origin: 'parent',
   type: 'browser.started',
   product: 'Chrome',
   version: '140',
@@ -108,6 +109,25 @@ describe('RunStore', () => {
     store.close()
     assert.equal(readFileSync(join(folder, 'logs/a.log'), 'utf8'), 'one\ntwo\n')
     assert.deepEqual([...readFileSync(join(folder, 'artifacts/shot.png'))], [1, 2])
+  })
+
+  // Found by the milestone 2 verification: a server's log kept a one-time code printed before a fill read it.
+  test('reads every log again with what was learned late, and leaves the rest of the folder alone', () => {
+    const folder = scratch()
+    const store = RunStore.create(folder)
+    store.appendLog('logs/tests-a.log', 'the code is 7f3a91\n')
+    writeFileSync(join(folder, 'logs', 'app-web.log'), 'RETEST_CODE=7f3a91\nlistening\n')
+    writeFileSync(join(folder, 'logs', 'browser.log'), 'nothing here\n')
+    store.writeArtifact('artifacts/shot.png', new Uint8Array([0x37, 0x66]))
+    store.appendEvent(event)
+    store.redactLogs((text) => text.replaceAll('7f3a91', '{{code}}'))
+    store.appendLog('logs/tests-a.log', 'more\n')
+    store.close()
+    assert.equal(readFileSync(join(folder, 'logs', 'tests-a.log'), 'utf8'), 'the code is {{code}}\nmore\n')
+    assert.equal(readFileSync(join(folder, 'logs', 'app-web.log'), 'utf8'), 'RETEST_CODE={{code}}\nlistening\n')
+    assert.equal(readFileSync(join(folder, 'logs', 'browser.log'), 'utf8'), 'nothing here\n')
+    assert.deepEqual([...readFileSync(join(folder, 'artifacts/shot.png'))], [0x37, 0x66])
+    assert.equal(readFileSync(join(folder, 'events.jsonl'), 'utf8'), `${JSON.stringify(event)}\n`)
   })
 
   test('writes result.json once, whole, through a temporary file', () => {

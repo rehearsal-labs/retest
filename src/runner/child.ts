@@ -51,7 +51,7 @@ async function collect(file: string, rootDir: string): Promise<void> {
   send(collected.ok ? { type: 'collected', tests: collected.tests } : { type: 'collection-failed', failure: collected.failure })
 }
 
-async function run({ testId, attemptId, timeouts }: RunMessage): Promise<void> {
+async function run({ testId, attemptId, timeouts, apps }: RunMessage): Promise<void> {
   const found = findTest(testId)
   if (found === undefined) {
     const unknown = failure('test_error', `This file has no test with the id ${JSON.stringify(testId)}.`)
@@ -65,11 +65,12 @@ async function run({ testId, attemptId, timeouts }: RunMessage): Promise<void> {
     rootDir: found.rootDir,
     location: found.test.location,
     timeouts,
+    apps,
     send,
     nextCommandId: () => ++lastCommandId,
   })
   current = testRun
-  const verdict = await testRun.execute(found.test.body)
+  const verdict = await testRun.execute(found.test)
   if (current === testRun) current = undefined
   send({ type: 'test-finished', testId, attemptId, ...verdict })
 }

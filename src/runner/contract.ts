@@ -1,18 +1,83 @@
+import type { LoadedConfig } from '../config/loaded.ts'
 import type { CollectedTest } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
+import type { LastRunTest } from '../protocol/last-run.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
+import type { Variant } from '../protocol/variant.ts'
 
 /** What stops a run from outside. The run stops the same way for each; its exit code says which it was. */
 export type StopSignal = 'SIGINT' | 'SIGTERM'
 
+/** Milestone 1's mode, from `--browser`: one app, named `page`, on one browser, with no config. */
+export type SingleApp = { kind: 'browser'; browserPath: string; baseUrl?: string }
+
+/**
+ * A secret ready for the run: the value of an `env` source, read once when the run started, or a function
+ * source's `read`, which the parent calls each time a `fill` uses the secret.
+ */
+export type ResolvedSecret = { readonly value: string } | { readonly read: () => Promise<string> }
+
+/**
+ * A run from a config. `baseUrls` are the command line's base URLs by app name, each replacing that app's own.
+ * `secrets` holds every secret the config declares, resolved in this process before any test runs; no value
+ * ever reaches a test file's process.
+ */
+export type ConfiguredApps = {
+  kind: 'config'
+  config: LoadedConfig
+  baseUrls?: Readonly<Record<string, string>>
+  secrets: ReadonlyMap<string, ResolvedSecret>
+}
+
+export type RunApps = SingleApp | ConfiguredApps
+
+/** A `--tag` expression, parsed: tags joined by `and`, `or` and `not`, with parentheses. */
+export type TagExpression =
+  | { kind: 'tag'; tag: string }
+  | { kind: 'not'; operand: TagExpression }
+  | { kind: 'and' | 'or'; left: TagExpression; right: TagExpression }
+
+/**
+ * A `file:line` from the command line, or `file:line#row` for one row of a `test.for`, counted from 1. `file` is
+ * POSIX and relative to the root directory.
+ */
+export type FileLine = { file: string; line: number; row?: number }
+
+/**
+ * Which of the collected tests run. A test runs when it passes every filter given:
+ *
+ * - `grep`: a substring of its full title (`testTitle`), or a pattern that matches it.
+ * - `tags`: its tags satisfy the expression.
+ * - `locations`: a file named with lines keeps only the tests, `test.for` rows and `test.describe` blocks
+ *   declared on those lines, and a line with a row keeps only that row; a file named without a line keeps all
+ *   of its tests.
+ * - `lastFailed`: the tests `.retest/last-run.json` recorded, each for the variant it recorded.
+ * - `targets`: a variant runs when it uses the named target for every app named, as `--target web=beta` asks.
+ *
+ * A selection that keeps no test is a usage failure that says why.
+ */
+export type Selection = {
+  grep?: string | RegExp
+  tags?: TagExpression
+  locations?: FileLine[]
+  lastFailed?: LastRunTest[]
+  targets?: Variant
+}
+
 export type RunOptions = {
   files: string[]
   rootDir: string
-  browserPath: string
-  baseUrl?: string
+  /** The apps and browsers tests run in. */
+  apps: RunApps
+  /** The budgets after the config's and the command line's are laid over the defaults. */
   timeouts: Timeouts
+  /** The budgets the command line gave, which a printed rerun command repeats; absent when there was no command line. */
+  commandLineTimeouts?: Partial<Timeouts>
   outputDir: string
+  /** False shows every browser, as `--headed` asks; true leaves each target's own setting, headless by default. */
   headless: boolean
+  /** Absent runs every test in `files`. */
+  selection?: Selection
   /** Aborted to stop the run, with the `StopSignal` that asked as its reason; any other reason counts as SIGINT. */
   signal: AbortSignal
   /** Receives each test file's stdout and stderr as it arrives. The run folder keeps a copy either way. */
@@ -21,7 +86,17 @@ export type RunOptions = {
 
 export type ChildOutput = { file: string; stream: 'stdout' | 'stderr'; text: string }
 
-export type CollectOptions = { files: string[]; rootDir: string; timeouts: Pick<Timeouts, 'collection'> }
+/**
+ * `config` gives each test its apps and variants, and checks them, as a run from it would; without it, collection
+ * is milestone 1's.
+ */
+export type CollectOptions = {
+  files: string[]
+  rootDir: string
+  timeouts: Pick<Timeouts, 'collection'>
+  config?: LoadedConfig
+  selection?: Selection
+}
 
 /**
  * What collection found in one file. A file that failed collection has a failure and no tests; one whose

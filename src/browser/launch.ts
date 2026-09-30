@@ -1,5 +1,6 @@
 import type { ProcessExit } from '../shared/process-exit.ts'
 import type { CdpDiagnostic } from './cdp/connection.ts'
+import type { PipeStreams, Transport } from './cdp/transport.ts'
 import type { LaunchOptions, OwnedBrowser } from './contract.ts'
 import type { BrowserVersion } from './browser.ts'
 import { appendFileSync } from 'node:fs'
@@ -27,11 +28,16 @@ const versionSchema = s.object({ product: s.string(), userAgent: s.string() })
 /**
  * Starts a Chromium browser this run owns, in a process group of its own, with a temporary profile and a
  * private debugging pipe. The profile is named after this process, and profiles that processes no longer
- * running left behind are removed first. Every failure is a `LaunchError` that names the problem.
+ * running left behind are removed first. Every failure is a `LaunchError` that names the problem. `transport`
+ * makes the connection's transport from the pipe; a test passes one that watches or holds messages.
  *
  * @example const browser = await launchBrowser({ executablePath, logFile: 'logs/browser.log', headless: true })
  */
-export async function launchBrowser(options: LaunchOptions, timeoutMs: number = launchTimeoutMs): Promise<OwnedBrowser> {
+export async function launchBrowser(
+  options: LaunchOptions,
+  timeoutMs: number = launchTimeoutMs,
+  transport: (pipe: PipeStreams) => Transport = (pipe) => new PipeTransport(pipe),
+): Promise<OwnedBrowser> {
   const deadline = new Deadline(timeoutMs)
   const executable = await checkExecutable(options.executablePath)
   const staleProfileProblems = await removeStaleProfiles(tmpdir())
@@ -43,7 +49,7 @@ export async function launchBrowser(options: LaunchOptions, timeoutMs: number = 
   const log = logWriter(options.logFile)
   for (const problem of staleProfileProblems) log(problem)
   // Every command Retest sends names its own timeout; the launch budget bounds any that would not.
-  const connection = new CdpConnection(new PipeTransport(chromium.pipe), {
+  const connection = new CdpConnection(transport(chromium.pipe), {
     timeoutMs,
     onDiagnostic: (diagnostic) => log(describeDiagnostic(diagnostic)),
   })

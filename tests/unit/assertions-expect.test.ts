@@ -1,10 +1,11 @@
 import type { PageCommand } from '../../src/protocol/commands.ts'
-import type { Responder } from '../support/in-process-run.ts'
+import type { Responder } from '../support/api/in-process-run.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { expect } from '../../src/index.ts'
 import { truncateText } from '../../src/protocol/failures.ts'
-import { inProcessRun } from '../support/in-process-run.ts'
+import { inProcessRun } from '../support/api/in-process-run.ts'
+import { observationOf } from '../support/observation.ts'
 
 const file = 'tests/unit/assertions-expect.test.ts'
 
@@ -15,7 +16,7 @@ function savedAfter(ready: number): { respond: Responder; looks: () => number } 
     if (command.kind !== 'observe') return { ok: true, kind: 'click' }
     looks++
     const text = looks > ready ? 'Release checklist' : 'Saving…'
-    return { ok: true, kind: 'observe', observation: { count: 1, visible: true, text } }
+    return { ok: true, kind: 'observe', observation: observationOf([{ text, visible: true }]) }
   }
   return { respond, looks: () => looks }
 }
@@ -23,8 +24,8 @@ function savedAfter(ready: number): { respond: Responder; looks: () => number } 
 describe('locator assertions', () => {
   test('look again until the text appears, and never repeat the action before them', async () => {
     const page = savedAfter(3)
-    const { run, commands, events } = inProcessRun(file, page.respond, { assertion: 2000 })
-    const verdict = await run.execute(async ({ page: handle }) => {
+    const { commands, events, runPage } = inProcessRun(file, page.respond, { timeouts: { assertion: 2000 } })
+    const verdict = await runPage(async ({ page: handle }) => {
       await handle.getByTestId('save-task').click()
       await expect(handle.getByTestId('saved-task')).toHaveText('Release checklist')
     })
@@ -44,8 +45,8 @@ describe('locator assertions', () => {
 
   test('report expected and actual text, attempts and the rule when time runs out', async () => {
     const page = savedAfter(Number.POSITIVE_INFINITY)
-    const { run, events } = inProcessRun(file, page.respond, { assertion: 200 })
-    const verdict = await run.execute(async ({ page: handle }) => {
+    const { events, runPage } = inProcessRun(file, page.respond, { timeouts: { assertion: 200 } })
+    const verdict = await runPage(async ({ page: handle }) => {
       await expect(handle.getByTestId('saved-task')).toHaveText('Release checklist')
     })
     assert.equal(verdict.failure?.class, 'check_failed')
@@ -63,8 +64,8 @@ describe('locator assertions', () => {
 
   test('the assertion budget is cut to the time the test has left', async () => {
     const page = savedAfter(Number.POSITIVE_INFINITY)
-    const { run, events } = inProcessRun(file, page.respond, { assertion: 5000, test: 150 })
-    await run.execute(async ({ page: handle }) => {
+    const { events, runPage } = inProcessRun(file, page.respond, { timeouts: { assertion: 5000, test: 150 } })
+    await runPage(async ({ page: handle }) => {
       await expect(handle.getByTestId('saved-task')).toBeVisible().catch(() => undefined)
       await expect(handle.getByTestId('saved-task')).toHaveText('x').catch(() => undefined)
     })
@@ -75,8 +76,8 @@ describe('locator assertions', () => {
 
   test('a failed look ends the assertion with that failure', async () => {
     const lost: Responder = () => ({ ok: false, failure: { class: 'session_lost', message: 'The browser is gone.' } })
-    const { run } = inProcessRun(file, lost)
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, lost)
+    const verdict = await runPage(async ({ page }) => {
       await expect(page.getByTestId('saved-task')).toBeVisible()
     })
     assert.equal(verdict.failure?.class, 'session_lost')
@@ -87,11 +88,11 @@ describe('locator assertions', () => {
     let looks = 0
     const slow: Responder = () => {
       looks++
-      if (looks === 1) return { ok: true, kind: 'observe', observation: { count: 0, visible: null, text: null } }
+      if (looks === 1) return { ok: true, kind: 'observe', observation: observationOf([]) }
       return new Promise((resolve) => setTimeout(() => resolve({ ok: false, failure: { class: 'timeout', message: 'slow' } }), 150))
     }
-    const { run } = inProcessRun(file, slow, { assertion: 100 })
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, slow, { timeouts: { assertion: 100 } })
+    const verdict = await runPage(async ({ page }) => {
       await expect(page.getByTestId('saved-task')).toBeVisible()
     })
     assert.equal(verdict.failure?.class, 'not_found')
@@ -99,8 +100,8 @@ describe('locator assertions', () => {
 
   test('an answer that is not an observation never makes it look forever', async () => {
     const wrong: Responder = () => ({ ok: true, kind: 'click' })
-    const { run } = inProcessRun(file, wrong, { assertion: 120 })
-    const verdict = await run.execute(async ({ page }) => {
+    const { runPage } = inProcessRun(file, wrong, { timeouts: { assertion: 120 } })
+    const verdict = await runPage(async ({ page }) => {
       await expect(page.getByTestId('saved-task')).toBeVisible()
     })
     assert.equal(verdict.failure?.class, 'not_found')
@@ -109,8 +110,8 @@ describe('locator assertions', () => {
 
 describe('value assertions', () => {
   test('toBe checks at once with Object.is and reports both values', async () => {
-    const { run, events, commands } = inProcessRun(file, () => undefined)
-    const verdict = await run.execute(() => {
+    const { events, commands, runPage } = inProcessRun(file, () => undefined)
+    const verdict = await runPage(() => {
       expect(Number.NaN).toBe(Number.NaN)
       expect(0).toBe(-0)
     })
@@ -126,9 +127,9 @@ describe('value assertions', () => {
   })
 
   test('a very long value is truncated in the event and shortened in the message', async () => {
-    const { run, events } = inProcessRun(file, () => undefined)
+    const { events, runPage } = inProcessRun(file, () => undefined)
     const long = 'x'.repeat(5000)
-    const verdict = await run.execute(() => {
+    const verdict = await runPage(() => {
       expect(long).toBe('y')
     })
     const failed = events().find((event) => event.type === 'assertion.failed')

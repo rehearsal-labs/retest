@@ -11,7 +11,8 @@ test('duplicate targets: two matching test ids fail as ambiguous, and neither is
   const failed = onlyTest(run)
   assert.deepEqual([failed.status, failed.failure?.class], ['failed', 'ambiguous'])
   const click = onlyEvent(run.events, 'action.failed')
-  assert.deepEqual([click.command, click.locator?.value, click.failure.details?.['count']], ['click', 'save-task', 2])
+  const clicked = click.locator?.by === 'testId' ? click.locator.value : undefined
+  assert.deepEqual([click.command, clicked, click.failure.details?.['count']], ['click', 'save-task', 2])
   assert.equal(app.submissions(), 0)
 })
 

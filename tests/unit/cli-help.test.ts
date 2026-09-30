@@ -25,7 +25,7 @@ describe('help', () => {
       assert.equal(code, 0)
       assert.equal(stderr, '')
       assert.match(stdout, /^retest 0\.0\.0\n/)
-      for (const name of ['list <files...>', 'run <files...>', 'inspect <run-folder>', 'help [command]']) {
+      for (const name of ['init [options]', 'doctor [options]', 'list [files...]', 'run [files...]', 'inspect <run-folder>', 'help [command]']) {
         assert.ok(stdout.includes(`  ${name}`), `${name} is missing from:\n${stdout}`)
       }
       assert.deepEqual(listedOptions(stdout), ['help', 'version'])
@@ -49,11 +49,16 @@ describe('help', () => {
     }
   })
 
-  test('the run help documents the flags of the brief and nothing unbuilt', async () => {
+  test('the run help documents the flags that exist and nothing unbuilt', async () => {
     const { stdout } = await call(['help', 'run'])
     for (const option of [
+      '--config <path>',
       '--browser <path>',
       '--base-url <url>',
+      '--grep <text>',
+      '--tag <expression>',
+      '--target <app=name>',
+      '--last-failed',
       '--reporter <name>',
       '--output <dir>',
       '--timeouts <list>',
@@ -63,14 +68,25 @@ describe('help', () => {
     ]) {
       assert.ok(stdout.includes(option), option)
     }
-    for (const unbuilt of ['--grep', '--watch', '--workers', '--retries', '--tag', '--dry-run', '--last-failed']) {
+    for (const unbuilt of ['--watch', '--workers', '--retries', '--dry-run', '--repeat-each', 'github', 'junit', '--project']) {
       assert.ok(!stdout.includes(unbuilt), unbuilt)
     }
+    assert.match(stdout, /Add :line to a file/)
     assert.match(
       stdout,
       /Defaults: collection=10000,setup=60000,action=10000,navigation=30000,assertion=5000,test=60000,cleanup=10000/,
     )
     assert.match(stdout, /Exit codes: 0 .*, 1 .*, 2 .*, 130 interrupted, 143 stopped by SIGTERM\./)
+  })
+
+  test('the init and doctor help list every question flag and the config', async () => {
+    const init = (await call(['help', 'init'])).stdout
+    for (const option of ['--app <name=url>', '--start <command>', '--browser <name>', '--ci <name>', '--yes']) {
+      assert.ok(init.includes(option), option)
+    }
+    assert.match(init, /It installs nothing, and prints the install command\./)
+    assert.deepEqual(listedOptions((await call(['help', 'doctor'])).stdout), ['config', 'help'])
+    assert.match((await call(['help', 'inspect'])).stdout, /--target <app=name> {7}With --test, the target it ran on/)
   })
 
   test('help for an unknown command fails and suggests one', async () => {
@@ -113,7 +129,7 @@ describe('commands', () => {
     const far = await call(['deploy'])
     assert.equal(
       far.stderr,
-      'error: Unknown command deploy. The commands are list, run or inspect.\nSee retest --help.\n',
+      'error: Unknown command deploy. The commands are init, doctor, list, run or inspect.\nSee retest --help.\n',
     )
   })
 
@@ -122,7 +138,7 @@ describe('commands', () => {
     assert.equal(typo.code, 2)
     assert.match(typo.stderr, /Unknown option --hepl\. Did you mean --help\?/)
     const other = await call(['--browser', '/bin/chrome'])
-    assert.match(other.stderr, /Unknown option --browser\. Name a command first: list, run or inspect\./)
+    assert.match(other.stderr, /Unknown option --browser\. Name a command first: init, doctor, list, run or inspect\./)
     assert.equal(other.stdout, '')
   })
 

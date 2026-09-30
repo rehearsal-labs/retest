@@ -26,6 +26,8 @@ export type ClosedProcess = { exit: ProcessExit; forced: boolean }
 export type SpawnOptions = {
   /** Receives the process's stdout and stderr. Without it, both are discarded. */
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void
+  /** Environment variables the process must not see, such as the ones secrets are read from. */
+  hiddenVariables?: readonly string[]
 }
 
 // The entry beside this module: child.ts when running from source, child.js once built.
@@ -66,8 +68,10 @@ export class TestFileProcess {
   /** Starts a process for one test file, with the same export conditions as this one. */
   static spawn(options: SpawnOptions = {}): TestFileProcess {
     const output = options.onOutput
+    const hidden = new Set(options.hiddenVariables)
     const child = fork(childEntry, [], {
       execArgv: conditionArguments(process.execArgv),
+      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !hidden.has(name))),
       serialization: 'json',
       stdio: output === undefined ? ['ignore', 'ignore', 'ignore', 'ipc'] : ['ignore', 'pipe', 'pipe', 'ipc'],
     })

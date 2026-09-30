@@ -1,6 +1,6 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { ChromiumProcess } from './chromium-process.ts'
-import type { OwnedBrowser, OwnedPage } from './contract.ts'
+import type { NewPageOptions, OwnedBrowser, OwnedPage } from './contract.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -11,6 +11,7 @@ import { CdpClosedError, CdpDisconnectedError } from './cdp/errors.ts'
 import { request, sendOptions } from './cdp-results.ts'
 import { Listeners } from './listeners.ts'
 import { ChromiumPage } from './page.ts'
+import { restoreState } from './storage-state.ts'
 
 /** What `Browser.getVersion` said, split into a product name and its version. */
 export type BrowserVersion = { product: string; version: string; userAgent: string }
@@ -64,11 +65,16 @@ export class ChromiumBrowser implements OwnedBrowser {
     return this.#disconnectReason === undefined
   }
 
-  async newPage(options: { baseUrl?: string }, timeoutMs: number): Promise<OwnedPage> {
+  async newPage(options: NewPageOptions, timeoutMs: number): Promise<OwnedPage> {
     if (this.#disconnectReason !== undefined) throw this.#lost(this.#disconnectReason)
     const deadline = new Deadline(timeoutMs)
     const { browserContextId } = await this.#request('Target.createBrowserContext', {}, contextSchema, deadline)
     try {
+      // A download would otherwise land in the person's own Downloads folder, whatever the profile.
+      await this.#request('Browser.setDownloadBehavior', { behavior: 'deny', browserContextId }, s.object({}), deadline)
+      const { storageState } = options
+      const context = { connection: this.#connection, browserContextId }
+      const restoredOrigins = storageState === undefined ? [] : await restoreState(context, storageState, deadline)
       const target = await this.#request('Target.createTarget', { url: 'about:blank', browserContextId }, targetSchema, deadline)
       const session = await this.#connection.attach(target.targetId, sendOptions(deadline))
       const pageOptions = {
@@ -76,6 +82,8 @@ export class ChromiumBrowser implements OwnedBrowser {
         session,
         browserContextId,
         baseUrl: options.baseUrl,
+        emulation: options.emulation,
+        restoredOrigins,
         onListenerError: this.#onListenerError,
       }
       return await ChromiumPage.open(pageOptions, deadline)
