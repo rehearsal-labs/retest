@@ -123,6 +123,7 @@ describe('Redactor', () => {
       actual: { text: 'hunter2!', truncated: false, length: 8 },
       attempts: 1,
       durationMs: 1,
+      judgedBy: 'parent',
     }
     const redacted = redactor.redactFields(retestEventSchema, event)
     assert.equal(redacted.type === 'assertion.passed' ? redacted.testId : undefined, 'tests/a.retest.ts > shows hunter2')
@@ -237,6 +238,53 @@ describe('Redactor', () => {
     assert.deepEqual(redactor.redactFields(retestEventSchema, look), look, "a locator's text is an identifier")
   })
 
+  // A host holds the run's secrets and writes every field of a check, so a token in a path or a name is as likely
+  // as one in the text.
+  test("redacts a check's name and path too, wherever a check is recorded", () => {
+    const redactor = taught({ token: 'c0rr3ct-h0rse' })
+    const stamp = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent' } as const
+    const scope = { testId: 'tests/a.retest.ts > resets', attemptId: 'a', session: 'web' }
+    const checks = [
+      { kind: 'address', name: 'reset link c0rr3ct-h0rse', origin: 'http://127.0.0.1:4173', path: '/reset/c0rr3ct-h0rse' },
+      { kind: 'address', origin: 'http://127.0.0.1:4173', path: { pattern: '^/reset/c0rr3ct-h0rse$', flags: 'i' } },
+      { kind: 'text', name: 'c0rr3ct-h0rse', text: 'Password for c0rr3ct-h0rse' },
+    ] as const
+    const hidden = [
+      { kind: 'address', name: 'reset link {{token}}', origin: 'http://127.0.0.1:4173', path: '/reset/{{token}}' },
+      { kind: 'address', origin: 'http://127.0.0.1:4173', path: { pattern: '^/reset/{{token}}$', flags: 'i' } },
+      { kind: 'text', name: '{{token}}', text: 'Password for {{token}}' },
+    ]
+    const events: RetestEvent[] = checks.map((check) => ({
+      ...stamp,
+      ...scope,
+      type: 'host_check.passed',
+      check,
+      actual: { url: 'http://127.0.0.1:4173/reset/c0rr3ct-h0rse', ...(check.kind === 'text' ? { found: true } : {}) },
+      attempts: 1,
+      timeoutMs: 300,
+      durationMs: 1,
+    }))
+    const redacted = events.map((event) => redactor.redactFields(retestEventSchema, event))
+    assert.deepEqual(
+      redacted.map((event) => (event.type === 'host_check.passed' ? [event.check, event.actual.url] : [])),
+      hidden.map((check) => [check, 'http://127.0.0.1:4173/reset/{{token}}']),
+    )
+    const run: RetestEvent = {
+      ...stamp,
+      type: 'run.started',
+      retestVersion: '0.0.0',
+      node: 'v24',
+      platform: 'darwin-arm64',
+      rootDir: '/work',
+      files: ['tests/a.retest.ts'],
+      options: { timeouts: { collection: 1, setup: 1, action: 1, navigation: 1, assertion: 1, test: 1, cleanup: 1 }, reporter: 'human', hostChecks: { 'tests/a.retest.ts': [...checks] } },
+    }
+    const recorded = redactor.redactFields(retestEventSchema, run)
+    assert.deepEqual(recorded.type === 'run.started' ? recorded.options.hostChecks : undefined, { 'tests/a.retest.ts': hidden })
+    const named: RetestEvent = { ...stamp, type: 'test.started', ...scope, name: 'resets c0rr3ct-h0rse', file: 'tests/a.retest.ts', location: { file: 'tests/a.retest.ts', line: 1, column: 1 } }
+    assert.deepEqual(redactor.redactFields(retestEventSchema, named), named, "a test's name is an identifier")
+  })
+
   test('redacts the page text an answer carries to the test process, and nothing else in it', () => {
     const redactor = taught({ password: 'hunter2' })
     const observed: CommandResult = {
@@ -335,6 +383,7 @@ describe('Redactor', () => {
       attempts: 1,
       durationMs: 1,
       pageUrl: 'http://127.0.0.1:4173/echo/correct+horse',
+      judgedBy: 'parent',
     }
     const started: RetestEvent = { ...stamp, type: 'app.started', app: 'web', ready: 'http://127.0.0.1:3000/?token=correct%20horse', pid: 1, durationMs: 1 }
     const redacted = [moved, acted, checked, started].map((event) => redactor.redactFields(retestEventSchema, event))

@@ -22,7 +22,7 @@ function look(id: string, session: string, locator: LocatorRecipe = saved): Even
 
 function passed(session: string, observationId?: string, locator: LocatorRecipe = saved): EventBody {
   const named = observationId === undefined ? {} : { observationId }
-  return { type: 'assertion.passed', ...scope, session, matcher: 'toBeVisible', locator, expected: null, actual: null, attempts: 2, durationMs: 40, ...named }
+  return { type: 'assertion.passed', ...scope, session, matcher: 'toBeVisible', locator, expected: null, actual: null, attempts: 2, durationMs: 40, ...named, judgedBy: 'parent' }
 }
 
 function events(bodies: EventBody[]): TestEvent[] {

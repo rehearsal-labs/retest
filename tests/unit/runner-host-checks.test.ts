@@ -212,6 +212,26 @@ describe('looking again', () => {
     assert.equal(eventsOfType(record.events, 'host_check.passed')[0]?.attempts, 3)
   })
 
+  test("a page that moves while a check looks has that navigation written, with no step, before the test finishes", async () => {
+    const record = await runSupportFiles(['host-checks.retest.ts'], {
+      hostChecks: { [saves]: [{ kind: 'address', origin, path: '/later', timeoutMs: 2000 }] },
+      selection: onlySaves,
+      fake: {
+        titles: { '/later': 'Later' },
+        onRead: (page, earlier) => {
+          page.navigating = earlier === 0
+          if (earlier === 1) page.navigate('/later')
+        },
+      },
+    })
+    assert.equal(record.result.exitCode, 0)
+    const last = eventsOfType(record.events, 'navigation').at(-1)
+    assert.deepEqual([last?.url, last?.title, last?.cause, last?.stepId], [`${origin}/later`, 'Later', 'page', undefined])
+    const types = record.events.map((event) => event.type)
+    assert.ok(types.lastIndexOf('navigation') < types.indexOf('test.finished'))
+    assert.deepEqual(eventsOfType(record.events, 'host_check.passed')[0]?.actual, { url: `${origin}/later`, title: 'Later' })
+  })
+
   test('a check whose page is still opening another document when its time runs out says so', async () => {
     const record = await runSupportFiles(['host-checks.retest.ts'], {
       hostChecks: { [saves]: [{ kind: 'address', origin, path: '/done', timeoutMs: 80 }] },

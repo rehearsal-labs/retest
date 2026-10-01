@@ -80,7 +80,7 @@ test('select chooses by label, by value and from a list, as script; check and un
   assert.deepEqual([ambiguous.status, ambiguous.failure?.class, ambiguous.failure?.details], ['failed', 'ambiguous', { choice: "'Paris'", count: 2 }])
   const [refused] = eventsOf(run.events, 'action.failed').filter((event) => event.testId === ambiguous.testId)
   assert.ok((refused?.durationMs ?? Infinity) < 1000, `refused at once, in ${refused?.durationMs} ms`)
-  assert.equal(refused?.input, 'script')
+  assert.ok(refused !== undefined && !('input' in refused), 'a select that was refused set nothing, by script or otherwise')
   const radio = testNamed(run, 'refuses to uncheck a radio button')
   assert.deepEqual([radio.status, radio.failure?.class], ['error', 'unsupported'])
   assert.equal(

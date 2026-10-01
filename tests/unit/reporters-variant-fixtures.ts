@@ -98,7 +98,7 @@ function saveTask(variant: Variant, attempt: string, failed: boolean): EventBody
   if (!failed) {
     return [
       ...started,
-      { type: 'assertion.passed', ...ids, ...checked, expected: truncateText('Release checklist'), actual: truncateText('Release checklist'), durationMs: 4 },
+      { type: 'assertion.passed', ...ids, ...checked, expected: truncateText('Release checklist'), actual: truncateText('Release checklist'), durationMs: 4, judgedBy: 'parent' },
       { type: 'test.finished', ...ids, status: 'passed', durationMs: 800, assertionCount: 1 },
     ]
   }

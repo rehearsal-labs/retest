@@ -346,10 +346,15 @@ const parentEvents: EventBody[] = [
   },
 ]
 
+// A child event as the parent writes it: a passed assertion gains the parent's mark.
+function written(body: ChildEvent): EventBody {
+  return body.type === 'assertion.passed' ? { ...body, judgedBy: 'parent' } : body
+}
+
 const events: RetestEvent[] = [
   ...parentEvents.map((body): RetestEvent => ({ ...stamp, ...body })),
-  ...childEvents.map((body): RetestEvent => ({ ...stamp, origin: 'child', ...body })),
-  ...childEvents.map((body): RetestEvent => ({ ...stamp, origin: 'child', ...variant, ...body })),
+  ...childEvents.map((body): RetestEvent => ({ ...stamp, origin: 'child', ...written(body) })),
+  ...childEvents.map((body): RetestEvent => ({ ...stamp, origin: 'child', ...variant, ...written(body) })),
 ].map((event, sequence) => ({ ...event, sequence }))
 
 function roundTrips(schema: AnySchema, value: unknown): void {
@@ -505,7 +510,7 @@ describe('events', () => {
   test('child events carry no stamp, and stamping one makes a full event', () => {
     for (const event of childEvents) {
       roundTrips(childEventSchema, event)
-      assert.equal(parse(retestEventSchema, { ...stamp, ...event }).ok, true)
+      assert.equal(parse(retestEventSchema, { ...stamp, ...written(event) }).ok, true)
     }
     assert.deepEqual(
       issues(childEventSchema, { ...stamp, ...childEvents[0] }).map((issue) => issue.path),
@@ -534,7 +539,7 @@ describe('events', () => {
     }
     roundTrips(childEventSchema, sent)
     roundTrips(childEventSchema, { ...sent, type: 'assertion.failed', failure, check: { matcher: 'toHaveCount', count: 3 } })
-    assert.deepEqual(issues(retestEventSchema, { ...stamp, ...sent }), [{ path: '$.check', message: 'unknown key' }])
+    assert.deepEqual(issues(retestEventSchema, { ...stamp, ...sent, judgedBy: 'parent' }), [{ path: '$.check', message: 'unknown key' }])
     assert.deepEqual(issues(childEventSchema, { ...sent, check: { matcher: 'toBe' } }).map((issue) => issue.path), ['$.check.matcher'])
   })
 
@@ -543,6 +548,7 @@ describe('events', () => {
     roundTrips(childEventSchema, passed)
     assert.deepEqual(issues(childEventSchema, { ...passed, judgedBy: 'child' }), [{ path: '$.judgedBy', message: 'unknown key' }])
     roundTrips(retestEventSchema, { ...stamp, origin: 'child', ...passed, judgedBy: 'child' })
+    assert.deepEqual(issues(retestEventSchema, { ...stamp, origin: 'child', ...passed }), [{ path: '$.judgedBy', message: 'missing required key' }], 'an assertion.passed without judgedBy is not a version 1 event')
     assert.deepEqual(issues(retestEventSchema, { ...sample('assertion.failed'), judgedBy: 'parent' }), [{ path: '$.judgedBy', message: 'unknown key' }])
     assert.deepEqual(issues(retestEventSchema, { ...sample('assertion.passed'), judgedBy: 'browser' }), [
       { path: '$.judgedBy', message: 'expected one of "parent", "child", received "browser"' },

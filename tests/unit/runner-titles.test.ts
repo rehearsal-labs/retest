@@ -189,6 +189,21 @@ describe('the page each event names', () => {
     assert.deepEqual([assertion?.pageUrl, assertion?.pageTitle], [`${origin}/tasks`, 'Tasks'])
   })
 
+  test('an action that fails after the page moved names the page it was looked for on, after that page\'s navigation', async () => {
+    const run = await scriptedTest({ fake: { titles, titleDelayMs: 800 } })
+    await run.command(1, { kind: 'goto', url: '/tasks' })
+    const clicked = run.command(2, { kind: 'click', locator: { by: 'testId', value: 'missing' } })
+    await new Promise((resolve) => setImmediate(resolve))
+    run.page.navigate('/login')
+    const answer = await clicked
+    await run.finish()
+    assert.equal(answer.ok ? undefined : answer.failure.class, 'not_found')
+    const [click] = bodies(run, 'action.failed')
+    assert.deepEqual([click?.pageUrl, click?.pageTitle], [`${origin}/login`, 'Sign in'], 'the page the element was looked for on, with the title that came late')
+    const order = run.events.map(({ body }) => (body.type === 'navigation' ? `navigation ${body.url.slice(origin.length)}` : body.type))
+    assert.deepEqual(order, ['navigation /tasks', 'action.completed', 'navigation /login', 'action.failed'])
+  })
+
   test('a title holding a secret reaches the test process redacted, in each answer that names the page', async () => {
     const redactor = new Redactor()
     redactor.learn('password', 'hunter2')

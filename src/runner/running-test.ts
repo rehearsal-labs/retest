@@ -196,6 +196,14 @@ export class RunningTest {
   }
 
   /**
+   * Waits up to `timeoutMs` for the titles of the navigations told since the body ended, as during the host checks,
+   * and writes them. Nothing else is waited for: the body's commands were settled already.
+   */
+  settleNavigations(timeoutMs: number): Promise<void> {
+    return this.#navigations.flush(timeoutMs)
+  }
+
+  /**
    * Stops listening to the page and the process, and writes any navigation still waiting for its title. A process
    * being ended after a timeout is still killed on time.
    */
@@ -247,8 +255,9 @@ export class RunningTest {
     void this.#execute(entry, timeoutMs).finally(() => entry.done.resolve())
   }
 
-  // The page's answer is written after every navigation that came before the command, and a goto's after the
-  // navigations it made, which have their titles by then since it answers after `load`.
+  // A passed command's answer is written after every navigation that came before the command. A goto's, and a
+  // failed command's, are written after the navigations noted before the answer: a goto names the page it opened,
+  // and a failure names the page it was looked for on, which the frame may have opened while the command waited.
   async #execute(entry: InFlight, timeoutMs: number): Promise<void> {
     const { command, location, app } = entry.message
     let result: CommandResult
@@ -258,7 +267,7 @@ export class RunningTest {
       result = thrownResult(command, error)
     }
     entry.pageAnswer = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
-    const earlier = result.ok && result.kind === 'goto' ? this.#navigations.waiting(app) : entry.navigations
+    const earlier = result.ok && result.kind !== 'goto' ? entry.navigations : this.#navigations.waiting(app)
     if (earlier !== undefined) await earlier
     this.#complete(entry)
   }
@@ -270,7 +279,7 @@ export class RunningTest {
     if (answer === undefined || !this.#inFlight.delete(id)) return
     if (answer.ok && answer.kind === 'goto') this.#documents.set(app, gotoDocument(answer))
     if (!answer.ok && lossClasses.has(answer.failure.class)) this.#lossAnswer = answer.failure
-    this.#reportAction(entry, answer, commandPage(entry, answer))
+    this.#reportAction(entry, answer, commandPage(entry, answer, this.#documents.get(app)))
     this.#answer(entry, answer)
   }
 
@@ -343,7 +352,7 @@ export class RunningTest {
     if (!result.ok || result.kind !== 'observe' || command.kind !== 'observe') return result
     const { locator } = command
     const { observation } = result
-    const page = commandPage(entry, result)
+    const page = commandPage(entry, result, this.#documents.get(app))
     const observationId = this.#observations.serve({ app, locator, observation, ...page })
     const { testId, attemptId } = this.#options
     const step = stepId === undefined ? {} : { stepId }
@@ -438,10 +447,12 @@ export class RunningTest {
     return documentFields(this.#documents.get(app))
   }
 
-  // A timed-out test's process is asked to close; the kill timer from `revoke` ends it if it does not.
+  // A timed-out test's process is asked to close; the kill timer from `revoke` ends it if it does not. The body is
+  // over, so a navigation told from now on, as during the host checks, belongs to no step.
   #finish(report: Omit<BodyReport, 'timedOut'>): void {
     if (this.#report !== undefined) return
     this.#report = { ...report, timedOut: this.#timedOut }
+    this.#stepId = undefined
     clearTimeout(this.#testTimer)
     if (this.#timedOut) this.#options.process.send({ type: 'close' })
     else clearTimeout(this.#killTimer)
@@ -450,11 +461,12 @@ export class RunningTest {
 }
 
 // What a command's events record of its page: the page it went to as the page read it, or, when the page said
-// nothing, a goto's address or the document the command arrived on.
-function commandPage(entry: InFlight, result: CommandResult): PageFields {
+// nothing, a goto's address or the document the command arrived on. A failed command names the document the
+// parent last saw commit when the answer came, since the frame may have opened it while the command waited.
+function commandPage(entry: InFlight, result: CommandResult, latest: PageDocument | undefined): PageFields {
   if (result.ok && result.page !== undefined) return pageFields(result.page.url, result.page.title)
-  if (result.ok && result.kind === 'goto') return { pageUrl: result.url }
-  return documentFields(entry.document)
+  if (result.ok) return result.kind === 'goto' ? { pageUrl: result.url } : documentFields(entry.document)
+  return documentFields(latest)
 }
 
 function documentFields(document: PageDocument | undefined): PageFields {
@@ -494,9 +506,9 @@ const tapped = { touch: true } as const
 /**
  * What an action's event says besides its kind, locator and page, each only when it says something: how much a
  * fill typed or which secret, the key a press sent, the options a select chose, and whether the test passed them
- * as a list, the wheel's delta, and how the input reached the page. A select sets the choice from Retest's world,
- * and a check or uncheck on a touch screen taps. Whether the element changed, and a label clicked in the control's
- * place, come from the page's answer.
+ * as a list, the wheel's delta, and how the input reached the page. A select that completed set the choice from
+ * Retest's world; one that failed set nothing. A check or uncheck on a touch screen taps. Whether the element
+ * changed, and a label clicked in the control's place, come from the page's answer.
  */
 function actionDetails(command: PageCommand, result: CommandResult, touch: boolean): ActionDetails {
   switch (command.kind) {
@@ -505,7 +517,7 @@ function actionDetails(command: PageCommand, result: CommandResult, touch: boole
     case 'press':
       return { key: command.key }
     case 'select':
-      return { choices: command.choices, ...(command.multiple === true ? listed : {}), ...changedOf(result), ...scripted }
+      return { choices: command.choices, ...(command.multiple === true ? listed : {}), ...changedOf(result), ...(result.ok ? scripted : {}) }
     case 'check':
     case 'uncheck':
       return { ...changedOf(result), ...(result.ok && 'via' in result && result.via !== undefined ? { via: result.via } : {}), ...(touch ? tapped : {}) }

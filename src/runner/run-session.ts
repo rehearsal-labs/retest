@@ -14,6 +14,7 @@ import type { HostChecks, TestHostCheck } from './host-checks.ts'
 import type { RunOutcome } from './outcome.ts'
 import type { CollectedTests, Plan, PlannedTest } from './plan.ts'
 import type { RunConfig } from './run-config.ts'
+import type { CheckedPages } from './run-host-checks.ts'
 import type { BodyReport, RunningTestOptions } from './running-test.ts'
 import type { Attempt, Visit } from './schedule.ts'
 import type { AppPage, PagesContext } from './test-pages.ts'
@@ -349,10 +350,17 @@ export class RunSession {
     const pages = opened.value
     // Code the previous test left behind can end the process while the pages open.
     if (child.exit !== undefined) return { result: await this.#bodyNotRun(context, described, pages, child.exit) }
-    const report = await this.#runBody(child, pages, described, planned.config)
-    if (report.endedBeforeStart !== undefined) return { result: await this.#bodyNotRun(context, described, pages, report.endedBeforeStart) }
-    // Host checks read the pages as the body left them, so they come before the screenshot and the saved state.
-    const checked = report.failure === undefined ? await runHostChecks(context, pages, described.hostChecks) : undefined
+    const { report, running } = await this.#runBody(child, pages, described, planned.config)
+    let checked: CheckedPages | undefined
+    try {
+      if (report.endedBeforeStart !== undefined) return { result: await this.#bodyNotRun(context, described, pages, report.endedBeforeStart) }
+      // Host checks read the pages as the body left them, so they come before the screenshot and the saved state.
+      // The pages' navigations are still written while they run, since a check may wait for a document to arrive.
+      checked = report.failure === undefined ? await runHostChecks(context, pages, described.hostChecks) : undefined
+      if (checked !== undefined) await running.settleNavigations(this.#settleBudget())
+    } finally {
+      running.close()
+    }
     const verdict = report.failure ?? checked?.failure
     const evidence = verdict === undefined ? [] : await captureFailure(context, pages)
     const unsaved = verdict === undefined ? await this.#saveSetupState(context, described, pages) : undefined
@@ -452,7 +460,9 @@ export class RunSession {
     return undefined
   }
 
-  async #runBody(child: TestFileProcess, pages: readonly AppPage[], described: Described, config: RunConfig): Promise<BodyReport> {
+  // The body, settled: every command answered or reported as unknown. The test keeps hearing its pages' navigations
+  // until the caller closes it, after the host checks.
+  async #runBody(child: TestFileProcess, pages: readonly AppPage[], described: Described, config: RunConfig): Promise<{ report: BodyReport; running: RunningTest }> {
     const { test, testId: id, attemptId, variant } = described
     const timeouts = { ...this.#options.timeouts, ...(test.registered.timeout === undefined ? {} : { test: test.registered.timeout }) }
     const appOrigins = test.apps.flatMap((app) => originOf(config.apps.get(app)?.baseUrl) ?? [])
@@ -472,9 +482,13 @@ export class RunSession {
     this.#test = { running, browsers: pages.map(({ browser }) => browser) }
     const report = await running.run()
     this.#test = undefined
-    await running.settle(this.#interruption === undefined ? timeouts.cleanup : 0)
-    running.close()
-    return report
+    await running.settle(this.#settleBudget())
+    return { report, running }
+  }
+
+  // An interrupted run waits for nothing more.
+  #settleBudget(): number {
+    return this.#interruption === undefined ? this.#options.timeouts.cleanup : 0
   }
 
   // A body that never ran leaves only blank pages: they are released, and nothing is captured from them.

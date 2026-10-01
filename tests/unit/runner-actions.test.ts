@@ -98,14 +98,14 @@ describe('the events of a select', () => {
     )
   })
 
-  test('a select that fails keeps its options and its script, and says nothing of a change', async () => {
+  test('a select that fails keeps its options, says nothing of a change, and does not say a script set anything', async () => {
     const run = await scriptedTest()
     const answer = await run.command(1, { kind: 'select', locator: country, choices: [{ label: 'Atlantis' }] })
     await run.finish()
     assert.equal(answer.ok ? undefined : answer.failure.class, 'not_found')
     const [failed] = actions(run.events)
-    assert.deepEqual([failed?.type, failed?.choices, failed?.input], ['action.failed', [{ label: 'Atlantis' }], 'script'])
-    assert.ok(failed !== undefined && !('changed' in failed))
+    assert.deepEqual([failed?.type, failed?.choices], ['action.failed', [{ label: 'Atlantis' }]])
+    assert.ok(failed !== undefined && !('changed' in failed) && !('input' in failed), 'nothing was set, by script or otherwise')
   })
 
   test('the parent refuses no option at all, and several that were not a list, before the page sees either', async () => {

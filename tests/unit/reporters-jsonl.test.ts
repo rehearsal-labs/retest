@@ -35,6 +35,7 @@ describe('jsonl reporter', () => {
         actual: truncateText(text),
         attempts: 1,
         durationMs: 1,
+        judgedBy: 'child',
       },
     ])
     assert.ok(event !== undefined)

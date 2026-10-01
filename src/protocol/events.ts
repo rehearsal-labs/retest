@@ -160,7 +160,7 @@ type StepEvent =
  * observation the assertion names, `child` for a value only the test process holds.
  */
 type AssertionEvent =
-  | (AssertionFields & { type: 'assertion.passed'; judgedBy?: EventOrigin })
+  | (AssertionFields & { type: 'assertion.passed'; judgedBy: EventOrigin })
   | (AssertionFields & { type: 'assertion.failed'; failure: Failure })
 
 /**
@@ -478,7 +478,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
   }),
   s.object({ ...envelope, type: s.literal('host_check.passed'), ...hostCheckFields }),
   s.object({ ...envelope, type: s.literal('host_check.failed'), ...hostCheckFields, failure: failureSchema }),
-  s.object({ ...envelope, ...variantScope, type: s.literal('assertion.passed'), ...assertionFields, judgedBy: s.optional(origin) }),
+  s.object({ ...envelope, ...variantScope, type: s.literal('assertion.passed'), ...assertionFields, judgedBy: origin }),
   s.object({ ...envelope, ...variantScope, type: s.literal('assertion.failed'), ...assertionFields, failure: failureSchema }),
   s.object({
     ...envelope,

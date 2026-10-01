@@ -164,6 +164,7 @@ function passingCount(): EventBody[] {
       durationMs: 4,
       location: at(12),
       pageUrl,
+      judgedBy: 'parent',
     },
     { type: 'test.finished', ...countScope, status: 'passed', durationMs: 904, assertionCount: 1 },
   ]
@@ -224,6 +225,7 @@ function passingTests(rootDir: string): EventBody[] {
       durationMs: 210,
       location: at(7),
       pageUrl,
+      judgedBy: 'parent',
     },
     { type: 'test.finished', ...savesScope, status: 'passed', durationMs: 812, assertionCount: 1 },
     ...passingCount(),

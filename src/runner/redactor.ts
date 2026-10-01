@@ -11,10 +11,14 @@ type Scan = { text: string; held: string }
 type Known = { value: string; placeholder: string }
 
 // The text a page or a person can write a secret into: failure messages and details, what an assertion expected
-// and saw, what a look observed, every address, since a page puts what it was given into its path or query, and a
-// text host check's text, which a host writes. Page titles are free text too, under `titleKeys`. Identifiers
-// Retest makes itself (ids, names, locators, variants, file paths) are never rewritten.
+// and saw, what a look observed, every address, since a page puts what it was given into its path or query, and
+// what a host writes into a check, under `hostCheckWriting`. Page titles are free text too, under `titleKeys`.
+// Identifiers Retest makes itself (ids, names, locators, variants, file paths) are never rewritten.
 const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls'])
+
+// A host writes a check's text, name and path itself, and holds the run's secrets, so each is free text wherever
+// a check is recorded. The page is still asked for the text, and the path still matched, as written.
+const hostCheckWriting: ReadonlySet<string> = new Set(['text', 'name', 'path'])
 
 // A page's title reaches the parent long, and is cut to the length Retest records only once it is redacted.
 const titleKeys: ReadonlySet<string> = new Set(['title', 'pageTitle'])
@@ -52,9 +56,9 @@ export class Redactor {
 
   /**
    * A copy of an event or a result with its free text redacted, checked again against its schema: every
-   * `message`, `details`, `expected`, `actual`, `observed`, address, page title and text host check's text, at any
-   * depth. Page titles are then cut to the length Retest records, even while no value is known. Identifiers and
-   * structure stay as they are, and a value with nothing to change is returned as it is.
+   * `message`, `details`, `expected`, `actual`, `observed`, address, page title, and a host check's text, name and
+   * path, at any depth. Page titles are then cut to the length Retest records, even while no value is known.
+   * Identifiers and structure stay as they are, and a value with nothing to change is returned as it is.
    *
    * @example redactor.redactFields(runResultSchema, result)
    */
@@ -146,7 +150,7 @@ export class Redactor {
     if (!isPlainObject(value)) return value
     const entries = Object.entries(value).map(([key, item]): [string, unknown] => {
       if (titleKeys.has(key) && typeof item === 'string') return [key, this.redactTitle(item)]
-      return [key, this.#redactFields(item, inText || freeText.has(key) || isHostCheckText(value, key))]
+      return [key, this.#redactFields(item, inText || freeText.has(key) || isHostCheckWriting(value, key))]
     })
     return entries.every(([key, item]) => item === value[key]) ? value : Object.fromEntries(entries)
   }
@@ -171,10 +175,11 @@ export class Redactor {
   }
 }
 
-// A host check is recorded in its events, in `run.started` and in the result, and its text may hold a secret by
-// mistake. A locator's `text` is an identifier and stays as it is.
-function isHostCheckText(record: Record<string, unknown>, key: string): boolean {
-  return key === 'text' && record['kind'] === 'text' && parse(hostCheckRecordSchema, record).ok
+// A host check is recorded in its events, in `run.started` and in the result, and what the host wrote into it may
+// hold a secret by mistake. A locator's `text`, and any other `name` or `path` Retest records, is an identifier
+// and stays as it is.
+function isHostCheckWriting(record: Record<string, unknown>, key: string): boolean {
+  return hostCheckWriting.has(key) && parse(hostCheckRecordSchema, record).ok
 }
 
 // The characters each part of a URL percent-encodes, from the URL standard: every one is encoded in a path,
