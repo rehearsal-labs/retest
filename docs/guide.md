@@ -616,7 +616,7 @@ Every event says who reported it: `origin: 'parent'` for what Retest's own proce
 A `navigation` event names the page's title in `title`, and what opened it in `cause`. Actions, looks and assertions name the title of the page they went to in `pageTitle`, beside `pageUrl`, and a host check's `actual` has `title`. Reports show the title before the address, as in `"Account" at http://127.0.0.1:4173/account`.
 
 - A title is the page's `document.title`, trimmed, with its control characters removed, and cut to 300 code units. A page with no title has none. Titles are page text: a secret in one reads `{{name}}`, and Retest hides a secret before it cuts the title, so none is left half-written.
-- An action or a look reads the title in the same call that checks or reads the element. `goto` reads it after `load`.
+- An action or a look reads the title in the same call that checks or reads the element. `goto` reads it after `load`. An action that failed names the page as Retest last saw it commit when the failure came, since the page may have opened another document while the action waited for it, and its event comes after that document's `navigation`.
 - A new document's `navigation` is written once its title is known: when its content has loaded, when the test's next command to that page begins, or one second after it opened, whichever comes first. It is always written before the events of any command that began after it. A page that sends the browser on at once can leave its navigation with no title.
 - A new path within the document, through the history API, is written at once, with the title as it stands. A title the page sets later is not a navigation. The next action or look reads it.
 
@@ -701,7 +701,7 @@ How the checks run:
 - After the body and its `afterEach` hooks, and before the failure screenshot, before a setup's state is saved and before the pages close.
 - Only when the body passed. When the body failed, or the test did not run, every check is listed as `not_run`.
 - In the order given, and all of them: a failed check does not stop the next.
-- Each looks at once, then again after waiting 50, 100, 250 and 500 ms in turn, then every 500 ms, until it passes or its time runs out. It only reads the page, so nothing repeats. While the browser is opening another document, a check waits for it.
+- Each looks at once, then again after waiting 50, 100, 250 and 500 ms in turn, then every 500 ms, until it passes or its time runs out. It only reads the page, so nothing repeats. While the browser is opening another document, a check waits for it. A document that commits while the checks run is written as a `navigation` like any other, with no step, since the body is over.
 
 The verdict:
 
@@ -714,7 +714,7 @@ An `absent` check passes at once on a blank page. Pair it with an `address` chec
 
 A check sees the final page, not the steps to it. It cannot tell whether the test reached that page by the flow you meant. It can require that no `goto` opened that page: the app's last `navigation` before the checks must not say `cause: 'goto'`. That says nothing about the steps before that navigation.
 
-The parent writes `host_check.passed` or `host_check.failed` for each check, with the check, the app, what the page showed on the last look, how many times it looked and for how long. `run.started` records every check the run was asked for, so a reader can tell a check that was never asked for from one that is missing. Each test's result lists its checks in `hostChecks`, in order, with `passed`, `failed` or `not_run`. The text of a text check is redacted as page text is. A check's `name` and address `path` are recorded as written, so keep secrets out of them.
+The parent writes `host_check.passed` or `host_check.failed` for each check, with the check, the app, what the page showed on the last look, how many times it looked and for how long. `run.started` records every check the run was asked for, so a reader can tell a check that was never asked for from one that is missing. Each test's result lists its checks in `hostChecks`, in order, with `passed`, `failed` or `not_run`. A check's `text`, `name` and `path` are redacted as page text is, since a host holds the run's secrets and writes every field of a check; the page is still asked for the text, and the path still matched, as written.
 
 Reports show a failed check as a card of its own:
 

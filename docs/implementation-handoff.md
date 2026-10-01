@@ -639,7 +639,7 @@ Most important first.
 1. On Linux, only the milestone 3 group ran, and not through `docker/linux/run.sh` as written (section 6). Unit, types, the browser group and milestones 1 and 2 were not rerun on Linux in this phase. Chrome for Testing 153 did not run on Linux.
 2. Apart from `m3-host-run` on Chrome for Testing 153, the `m3-*` checks ran on Google Chrome 154 only on macOS. F1 and F5 were shown on both browsers by their probes.
 3. Only an http proxy ran. SOCKS and https proxies, `ERR_PROXY_AUTH_UNSUPPORTED`, `ERR_PROXY_CERTIFICATE_INVALID` and `ERR_NO_SUPPORTED_PROXIES`, a proxy that closes the connection mid-page, and one proxy on two apps of the same test were not run.
-4. A host check's `name` and an address check's `path` are written as given; only a text check's text is redacted. The guide tells hosts to keep secrets out of them.
+4. *Changed by the wave 1 review (`docs/plans/milestone-3/review.md`, m2): `name` and `path` are redacted as `text` is.* A host check's `name` and an address check's `path` are written as given; only a text check's text is redacted. The guide tells hosts to keep secrets out of them.
 5. These are checked only with fakes: a host check on a page still redirecting when the body ends, a run interrupted during host checks, a lost browser during a check, the `observation` event being written before the answer, and a look answered after its test was revoked.
 6. `press` on an emulated touch screen, with a window, or with the macOS editing commands a headed browser needs, did not run.
 7. That the failure screenshot shows the page the checks read is shown only by order: `evidence.captured` comes after the last `host_check.failed`. Nobody looked at the image.
@@ -649,7 +649,7 @@ Most important first.
 
 1. *Fixed before the short list was committed: the card counts `expected` and `received` as shown, and the replayed card in `m3-host-checks` has no repeated lines.* **A leading host check's card repeats its values.** `unshownDetails` in `src/reporters/failure-card.ts` counts `attempts`, `timeoutMs` and `also` as shown for a host check, but not `expected` and `received`, which the runner puts in `details` (`checkFailure` in `src/runner/run-host-checks.ts`). A real address check's card therefore ends with `expected "http://127.0.0.1:…/"` and `received "http://127.0.0.1:…/account"` under the `Expected` and `Page` lines, and a text check's with `expected "…"`; the agent report prints the same lines. The unit fixtures in `tests/unit/reporters-host-check-fixtures.ts` give their failures no such details, so the reporter tests do not see it. Seen in the replayed report of `m3-host-checks`.
 2. *Fixed before the short list was committed: `src/index.ts` exports `ProxySettings`.* **`ProxySettings` is not exported** from the root entry, beside `TargetConfig`, `ChromiumOptions` and the other config types in `src/index.ts`. A host that types its proxy settings apart from a target cannot name the type.
-3. **`judgedBy` is optional in the event schema**, while M3-3 says every `assertion.passed` carries it. It keeps milestone 2 event files valid, and the parent always writes it; the harness now checks it on every run.
+3. *Changed by the wave 1 review (m4): `judgedBy` is required.* **`judgedBy` is optional in the event schema**, while M3-3 says every `assertion.passed` carries it. It keeps milestone 2 event files valid, and the parent always writes it; the harness now checks it on every run.
 
 ## 12. Changes outside the usual
 
@@ -803,8 +803,8 @@ Most important first.
 
 ## 22. Defects found in phase 2's work, not fixed
 
-1. **A failed select says "set by script" when nothing was set.** Its `action.failed` event carries `input: 'script'` whatever the failure, so the card of a select that failed `not_found` or `ambiguous` reads `Not found  getByLabel('Country').select('Atlantis'), set by script`. Seen in `m3-actions`.
-2. **The action window starts a call early.** The window that makes a navigation `action` opens around the guard's verdict call, sent just before the input, rather than at the first input call as M3-4 says. A navigation the page starts on its own in that moment is counted as the action's. Read from the code (`guardInput` inside `NavigationCauses.delivering`); not seen in a run.
+1. *Fixed by the wave 1 review (m1): `input: 'script'` only on `action.completed`.* **A failed select says "set by script" when nothing was set.** Its `action.failed` event carries `input: 'script'` whatever the failure, so the card of a select that failed `not_found` or `ambiguous` reads `Not found  getByLabel('Country').select('Atlantis'), set by script`. Seen in `m3-actions`.
+2. *Settled by the wave 1 review (m5): the two calls go in one synchronous turn, so nothing can arrive between them; the plan now says what the code does.* **The action window starts a call early.** The window that makes a navigation `action` opens around the guard's verdict call, sent just before the input, rather than at the first input call as M3-4 says. A navigation the page starts on its own in that moment is counted as the action's. Read from the code (`guardInput` inside `NavigationCauses.delivering`); not seen in a run.
 
 ## 23. Changes outside the usual
 
