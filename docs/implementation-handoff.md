@@ -500,7 +500,9 @@ This phase also noted, without a test, what section 10 lists as items 10 to 13.
 - `README.md` was restored to its staged milestone 1 version on the orchestrator's instruction, and this phase left it alone after that. The milestone 2 usage documentation is in `docs/guide.md`. It replaces the milestone 1 usage guide committed in `e087be2`, and keeps what that guide said that still holds.
 - `package.json`'s `description` now reads "One test across web, mobile and desktop. Built for software engineers and coding agents." This phase did not write it. Mobile and desktop apps are not supported or verified, which `AGENTS.md` says must not be advertised.
 
-# Part 3: Milestone 3, wave 1, short list
+# Part 3: Milestone 3, wave 1
+
+Wave 1 came in two parts, each with its own three phases. Sections 1 to 12 are the short list's verification, as it wrote them; where the rest of wave 1 has changed what they say, a note in italics says so. Sections 13 to 23 are the rest's verification.
 
 1 October 2026. The short list's verification phase wrote this part from checks it ran itself, against the contract in `docs/plans/milestone-3/build-plan.md`. Phases 1 and 2 had finished. This phase changed two things in `src/`, which the orchestrator decided (section 8), and nothing else there. How to use what is described here is in [the guide](guide.md), under "Pressing keys", "Proxy" and "Use Retest from code".
 
@@ -641,15 +643,172 @@ Most important first.
 5. These are checked only with fakes: a host check on a page still redirecting when the body ends, a run interrupted during host checks, a lost browser during a check, the `observation` event being written before the answer, and a look answered after its test was revoked.
 6. `press` on an emulated touch screen, with a window, or with the macOS editing commands a headed browser needs, did not run.
 7. That the failure screenshot shows the page the checks read is shown only by order: `evidence.captured` comes after the last `host_check.failed`. Nobody looked at the image.
-8. Two runs at once in one process, `lastRunFile`, the stop reason and the resolve hook belong to the rest of wave 1 and were not tried.
+8. Two runs at once in one process, `lastRunFile`, the stop reason and the resolve hook belong to the rest of wave 1 and were not tried. *Tried by the rest's verification: section 19, checks 6 and 7.*
 
 ## 11. Defects found in phase 2's work, not fixed
 
-1. **A leading host check's card repeats its values.** `unshownDetails` in `src/reporters/failure-card.ts` counts `attempts`, `timeoutMs` and `also` as shown for a host check, but not `expected` and `received`, which the runner puts in `details` (`checkFailure` in `src/runner/run-host-checks.ts`). A real address check's card therefore ends with `expected "http://127.0.0.1:…/"` and `received "http://127.0.0.1:…/account"` under the `Expected` and `Page` lines, and a text check's with `expected "…"`; the agent report prints the same lines. The unit fixtures in `tests/unit/reporters-host-check-fixtures.ts` give their failures no such details, so the reporter tests do not see it. Seen in the replayed report of `m3-host-checks`.
-2. **`ProxySettings` is not exported** from the root entry, beside `TargetConfig`, `ChromiumOptions` and the other config types in `src/index.ts`. A host that types its proxy settings apart from a target cannot name the type.
+1. *Fixed before the short list was committed: the card counts `expected` and `received` as shown, and the replayed card in `m3-host-checks` has no repeated lines.* **A leading host check's card repeats its values.** `unshownDetails` in `src/reporters/failure-card.ts` counts `attempts`, `timeoutMs` and `also` as shown for a host check, but not `expected` and `received`, which the runner puts in `details` (`checkFailure` in `src/runner/run-host-checks.ts`). A real address check's card therefore ends with `expected "http://127.0.0.1:…/"` and `received "http://127.0.0.1:…/account"` under the `Expected` and `Page` lines, and a text check's with `expected "…"`; the agent report prints the same lines. The unit fixtures in `tests/unit/reporters-host-check-fixtures.ts` give their failures no such details, so the reporter tests do not see it. Seen in the replayed report of `m3-host-checks`.
+2. *Fixed before the short list was committed: `src/index.ts` exports `ProxySettings`.* **`ProxySettings` is not exported** from the root entry, beside `TargetConfig`, `ChromiumOptions` and the other config types in `src/index.ts`. A host that types its proxy settings apart from a target cannot name the type.
 3. **`judgedBy` is optional in the event schema**, while M3-3 says every `assertion.passed` carries it. It keeps milestone 2 event files valid, and the parent always writes it; the harness now checks it on every run.
 
 ## 12. Changes outside the usual
 
 - The harness's `scratchFolder` now makes its folders with `tempFolder` from `tests/support/temp-folder.ts`, as the rules for tests ask, and `readFinishedRun` checks `judgedBy` on every run. Both apply to every milestone 1 and 2 check that goes through `cli-harness.ts`, and all of them passed.
 - To remove the first throwaway image this phase built, it ran `docker image prune -f --filter dangling=true`. That removes every untagged image no container uses, on the whole machine, not only this phase's.
+
+## 13. The rest of wave 1: what works
+
+1 October 2026. The rest's verification phase wrote sections 13 to 23 from checks it ran itself, against the same contract. Phases 1 and 2 of the rest had finished. This phase made three changes in `src/`, which the orchestrator decided (section 17), and nothing else there. How to use what is described here is in [the guide](guide.md), under "Choosing, ticking and scrolling", "Titles and what opened each page" and "Use Retest from code".
+
+Verified through the real command line and the real `/runner` subpath, as subprocesses, against real Chrome and the task-app fixture on ephemeral loopback ports:
+
+- `select` by label, by `{ value }`, and a list for a `<select multiple>`, a list of one included, all as script: the page hears `input` then `change`, both untrusted. An option that arrives late is waited for; one that never does fails `not_found` when the action budget runs out; two options with one label fail `ambiguous` at once.
+- `check` and `uncheck` on a native checkbox, an element whose role is checkbox and a hidden checkbox through its styled label. One already checked sends nothing. A setting that cancels its click fails `not_actionable` after one click, which the server counted once. `uncheck` on a radio button is `unsupported`. A covered checkbox is not clicked, and a checkbox a cover takes as the pointer arrives has its press stopped before the page hears it.
+- `page.scroll` makes the feed load more items once, and `locator.scroll` on the terms enables Accept. A covered list is not scrolled and the page hears no wheel.
+- Titles on `navigation`, action, look and assertion events, and on host checks' `actual`. A redirect chain gives each document its own title. A secret the page makes its title reads `{{password}}` everywhere, and no report carries a control character from a title.
+- Each navigation's cause: `goto` for a goto, `action` for a link, Enter in a form and `pushState` in a click listener, and `page` for a redirect the page makes on its own after it loads.
+- The host-style run of acceptance check 6, extended: its test file in a new folder with no `node_modules`, no last-run file, the run folder read back with `readRunFolder`, the page the checks read opened by an action, and a stop with a `Failure` recorded as the reason, exit 130.
+- Two `runFiles` calls at once in one process, both passing, each folder holding only its own run.
+- The tarball exports every name wave 1 added, a registered consumer that chooses, ticks and scrolls type-checks on TypeScript 6 and 7, and the calls the types refuse fail on both.
+- Every milestone 1 and 2 integration test, the browser-level tests and the short list's milestone 3 checks still pass.
+
+## 14. Environment
+
+The same as section 2: macOS 27.0 arm64, Node.js 24.12.0, Google Chrome 154.0.8037.92 and Chrome for Testing 153.0.8010.12 on macOS, TypeScript 6.0.3 and 7.0.2. Linux: Docker 29.8.1 on linux/arm64 in Docker Desktop, Debian 13.7, Node.js 24.21.0, Google Chrome 154.0.8037.92 and Debian's Chromium 154.0.8037.57, as the user `node`, with Chrome's sandbox on. Every browser ran headless.
+
+## 15. Files
+
+This phase added:
+
+| Path | Purpose |
+| --- | --- |
+| `tests/integration/m3-actions.test.ts` | Acceptance check 1, the rest's part |
+| `tests/integration/m3-titles.test.ts` | Acceptance check 4 |
+| `tests/integration/m3-concurrent-runs.test.ts` | Acceptance check 7 |
+| `fixtures/tests/choices.retest.ts`, `scroll.retest.ts` | The scenario files `m3-actions` runs |
+
+This phase changed:
+
+| Path | Change |
+| --- | --- |
+| `src/protocol/page-facts.ts` | `readPageTitle` cuts at `readTitleLimit`, 4096 code units; `recordedTitle` cuts to 300. `pageTitle` is gone (section 17) |
+| `src/browser/document-facts.ts`, `page.ts`, `contract.ts` | The browser reads titles with `readPageTitle` |
+| `src/runner/redactor.ts` | Titles are redacted, then cut, even while no secret is known; the heuristic is gone; a value with nothing to change comes back as it is |
+| `src/reporters/actions.ts` | A select's `multiple` reaches `describeCommand` |
+| `src/reporters/failure-card.ts` | `runFailureToShow` always shows a stopped run's failure |
+| `tests/unit/protocol-page-facts.test.ts`, `browser-document-facts.test.ts`, `runner-redactor.test.ts`, `runner-titles.test.ts`, `reporters-actions.test.ts`, `runner-stop-reason.test.ts` | The tests of those changes |
+| `tests/support/fake-browser.ts` | Reads titles as the browser now does |
+| `tests/integration/browser-navigation.test.ts` | The title test expects a long title whole up to 4096 code units, as fix 1 changes it |
+| `tests/integration/m3-host-run.test.ts` | Check 6 extended, and a third test: the stop with a `Failure` |
+| `tests/integration/m3-host-checks.test.ts` | Host check `actual` carries `title`, and the replayed card and timeline show it |
+| `tests/integration/m3-package.test.ts` | Check 8, the rest's part: the new names, a consumer that chooses, ticks and scrolls, and `select(1)` and `scroll()` refused |
+| `tests/integration/cli-harness.ts` | `startHost` and `finishHost`, so a check can signal a host program mid-run |
+| `examples/host/host.ts`, `checkout.retest.ts` | The host writes its test into a new folder under the system temporary folder and runs there, with `lastRunFile: false`; reads its run folder back; stops with a `Failure` on SIGTERM. The test follows the account page's link to its tasks instead of a `goto` |
+| `fixtures/task-app/sign-in.ts` | The account page links to the tasks, as "Your tasks" |
+| `fixtures/task-app/titles-page.ts`, `server.ts` | `/titles/greeting`, a form that sends a name to `/titles/echo`, which makes it the title |
+| `docs/guide.md` | The four actions and their notes, titles and causes, the stop reason, `lastRunFile`, secret functions' signal, test files anywhere, `readRunFolder`, two runs at once, and the limits |
+| `docs/plans/milestone-3/build-plan.md` | Two decisions in M3-4: where the `action` window ends (fact F12), and redacting a title before it is cut |
+
+## 16. Facts established in real Chrome
+
+The Browser agent of phase 2 established these on Google Chrome 154.0.8037.92 and Chrome for Testing 153.0.8010.12, headless, with Retest's own CDP client, each probe in its own profile. The probes and their output are in `/tmp/retest-m3r-browser/probes/` on the machine that ran them, outside the repository: `probe-f3.ts`, `probe-f3-typeahead.ts`, `probe-f4.ts`, `probe-f6.ts`, `probe-f6-scale.ts`, `probe-f7.ts`, `probe-f7-order.ts`, `probe-f12.ts`, `probe-f12-fence.ts`, `support.ts`, and one `*-output.txt` for each. This phase read the output and relied on it; it did not rerun the probes.
+
+- **F3 holds.** A `Runtime.callFunctionOn` that sets a select's selection and dispatches `input` then `change` reaches the page's listeners in every phase, window capture, target, the `onchange` property and document bubble, as the browser's own events do, with `isTrusted: false`, `bubbles: true`, and `composed` true for `input` and false for `change`. A select multiple keeps exactly the chosen options. For the record, type-ahead on a focused, closed select changes it with trusted events on both platforms without opening its list: `c` chose the first option starting with c, `c` and `o` at once chose the one starting with "co", and `c` again after a pause cycled. ArrowDown changed nothing on macOS and chose the next option on Linux. Output: `f3-output.txt`, `f3-typeahead-macos-output.txt`, and `f3-typeahead-linux-output.txt` from the Linux harness.
+- **F4 holds.** A trusted click on a `<label>` makes the browser click its control, with `isTrusted: true`, after the label's own `click` has finished dispatching: for a `display: none` checkbox by `for`, a zero-size checkbox inside the label, and a `visibility: hidden` radio. The control's `input` and `change` follow, trusted. A control whose click is cancelled gets the click and no `input` or `change`. Output: `f4-output.txt`.
+- **F6 holds.** A `wheel` listener with `passive: false` added on the window only while a scroll is armed, and removed after, leaves the page's own scrolling as it was: the box scrolled 300 pixels armed and disarmed alike. `Input.dispatchMouseEvent` `mouseWheel` scrolls the scroll container under the point. Armed, the listener had seen the wheel by the time the call answered in 20 of 20 rounds, so the guard knows where the wheel went when the input's call returns; a passive page listener alone had in 19 of 20. Stopped by the guard, nothing scrolls and the page hears nothing. On an emulated touch screen the wheel still scrolls. Distances: with a device pixel ratio of 2 on a desktop viewport, 300 sent scrolled 300 CSS pixels and the page's `deltaY` read 150; on an emulated phone page with no viewport meta, zoomed to 0.42, 300 sent scrolled 714, so Retest multiplies the delta by the visual viewport's scale; with `width=device-width` it scrolled 300 and `deltaY` read 114, the delta over the ratio of 2.625. Output: `f6-output.txt`, `f6-scale-output.txt`.
+- **F7 holds.** `Page.lifecycleEvent` `DOMContentLoaded` for a committed loader comes after a `<title>` in the head has set `document.title`, for a server page and for each document of a redirect chain; a page with no title, and one whose script sets it after load, read as empty then. A document that sends the browser on at once can have moved on by its `DOMContentLoaded`, so its title is read from the next document or not at all; Retest settles it with none. A call into a document the frame is leaving gets no answer until the next commit. A read sent after `DOMContentLoaded` into a page that refreshed itself as it loaded failed with "Cannot find context with specified id" in 3 of 5 rounds, and answered with the next document's title in the other 2. So Retest drops a read that answers after a newer commit, and settles the title with none; `browser-navigation` checks that in real Chrome. Output: `f7-output.txt`, `f7-order-output.txt`.
+- **F12, and the decision it made.** A navigation the page requests while it handles an action's input can reach Retest after the call that delivered the input has answered: a link's `Page.frameRequestedNavigation` came after the `mouseReleased` answer in 5 of 20 fence rounds (4 of 10 on Chrome 154, 1 of 10 on Chrome for Testing 153), and in 3 of 6 rounds of the first probe; a `location` change in a click listener did so once in 6. A `history.pushState` or `replaceState` in a click listener reported `Page.navigatedWithinDocument` after the input's answer in every round. Every one of them reached Retest before the answer to the next call into the page: 100 of 100 fence rounds, a link, a `location` change, `pushState`, `replaceState` and Enter in a form, 10 of each on each browser. A `change` listener run by the select call requested its navigation before that call answered, 6 of 6. A navigation a `setTimeout(0)` in a click listener starts came after the next call's answer, 20 of 20. So the orchestrator decided that the `action` window ends at the answer of the guard's disarm call after the input, and for `select` at the answer of the call that applies the selection, rather than at the last input call's answer; M3-4 now says so. `Page.navigate` raises no request and answers with its loader. Output: `f12-output.txt`, `f12-fence-output.txt`. The brief for this phase gave the fence count as 120 of 120; the output holds 120 fence rounds, of which the 100 above are input-driven and the other 20 are the timer's.
+
+This phase found one more fact while writing `m3-titles`: Chrome itself turns C0 control characters in a `<title>` into white space and collapses them, so an escape and a bell between two words read as one space. It keeps C1 characters such as U+009B, and Retest removes those. `m3-titles` fails when Retest's removal is taken out: the title then holds `\x9B` twice.
+
+## 17. The three source changes
+
+The orchestrator decided all three after phase 2. Each has tests that fail before it, run from a copy of the tree with phase 2's files for the change put back, `/tmp/retest-m3r-verify/before-tree/`, since this repository keeps its work uncommitted and nothing may be stashed.
+
+**1. A title is redacted before it is cut.** The browser used to cut a title to 300 code units, and the runner redacted it afterwards, dropping a tail of a title of 284 units or more that could be the start of a secret. Now `readPageTitle` in the browser removes control characters, trims, and cuts only at 4096 code units, never inside a surrogate pair. The parent redacts every title it records or sends to the test process, events, results and command answers alike, and only then cuts it to 300 with `recordedTitle`. It cuts even while it knows no secret, so `redactFields` now walks every value; a value with nothing to change comes back as the same object and is not parsed again. The heuristic is gone.
+
+- Tests: `runner-redactor` "redacts a title before it cuts it, so a value that runs across the cut is hidden whole", "a value that starts after the cut is gone with the rest, and a title is never longer than the limit, even once a placeholder is longer than its value", and "cuts a long title even while it knows no secret, and leaves a value with nothing to change as it was"; `runner-titles` "long titles in a run", which runs a test file through the fake browser with a title whose secret runs across the 300th unit and one whose secret starts after it; `browser-document-facts` "a title longer than Retest records reaches the parent whole, up to 4096 code units"; `protocol-page-facts`, rewritten for the two functions; and the real-Chrome title test in `browser-navigation`, which now expects a title of 305 code units whole and one of 4101 cut at 4095, before a surrogate pair.
+- Before and after: in the before tree, 5 of the 38 tests in `runner-titles`, `runner-redactor` and `browser-document-facts` fail (`/tmp/retest-m3r-verify/fix1-before.txt`): the runner recorded `aaa…a` where the secret had been, and `redactTitle` returned titles longer than 300. After, those files and `protocol-page-facts` pass, 47 of 47 (`fix1-after.txt`).
+- What a reader sees: a secret that starts before the cut leaves the start of its placeholder, as in `…{{pas`, and never the start of the value. A secret longer than 3796 code units that starts before the cut would run past 4096 and is not handled.
+- How it differs in practice: this phase could not build a title on which the old heuristic leaked. The only case it found needs a secret with 17 or more spaces in a row, of a kind JavaScript trims but `document.title` does not collapse, such as U+00A0. The change makes the rule simple, and keeps a title with a placeholder longer than its value within 300 units, which the old order did not.
+
+**2. Reports write a list as the test wrote it.** `writtenCommand` in `src/reporters/actions.ts` passes the event's `multiple` to `describeCommand`, so `select(['Garlic'])` prints with its brackets, in the human card, the agent line and `inspect --test`.
+
+- Test: `reporters-actions` "a select the test gave a list is written with its brackets, even a list of one". Integration: `m3-actions` finds `getByLabel('Toppings').select(['Garlic']), set by script` in `inspect --test`.
+- Before and after: 1 of 11 fails before (`fix2-before.txt`: the card read `select('Canada')`), 11 of 11 pass after (`fix2-after.txt`).
+
+**3. A stopped run says why.** `run.finished` and `result.json` already carried the `Failure` a host stopped the run with, and the human and agent reports already printed it under "Run failed" when the run stopped in or between tests. They left it out in one case: a run stopped while a file was being collected gives that file the same failure, and `runFailureToShow` hid the run's failure behind the file's card, so the reports said only that files "could not be collected". `runFailureToShow` now always returns a stopped run's failure.
+
+- Tests: `runner-stop-reason` "the file it stopped carries the reason, and the reports still say that the run was stopped and why", which stops a run while `top-level-loop.retest.ts` is being collected, and "the human and agent reports say why the run stopped, on the test it stopped and for the run", which pins the case that already worked. Integration: `m3-host-run` finds the reason in the report `inspect` replays.
+- Before and after: 1 of 6 fails before (`fix3-before.txt`: no "Run failed" in the human report), 6 of 6 pass after (`fix3-after.txt`). The second test passes before and after.
+- In the collection case, the reason now shows twice: on the file's card and under "Run failed".
+
+## 18. Commands and results
+
+From the repository root, one after another, on 1 October 2026 from 03:00 to 03:07 local time (UTC+4), each captured to a file under `/tmp/retest-m3r-verify/final/` and read after it ended. Only this handoff and the guide changed after this run. An earlier full pass at 02:46 to 02:55 gave the same counts (`/tmp/retest-m3r-verify/*.txt`).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `npm run build` | 0 | `dist/` rewritten. `dist/schemas/event-v1.schema.json` holds `cause`, `pageTitle`, `choices`, `multiple`, `changed`, `via`, `touch`, `scroll`, `input` and the four new action kinds |
+| `npm run typecheck` | 0 | TypeScript 6.0.3 and 7.0.2 on the root project, which includes `examples/host`, then 6.0.3 on `examples/tasks`. No errors, no `FATAL` |
+| `npm run test:unit` | 0 | 1533 tests in 278 suites: 1533 passed, 19.1 s. This phase added 9 of them |
+| `npm run test:types` | 0 | "141 expected errors matched 141 markers in 4 projects" on TypeScript 6.0.3 and on 7.0.2 |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/browser-*.test.ts" tests/integration/cdp.test.ts` | 0 | 184 tests: 184 passed, 65.8 s |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/matrix-*.test.ts" tests/integration/run-interrupt.test.ts tests/integration/cli-commands.test.ts tests/integration/package-smoke.test.ts` | 0 | 51 tests: 51 passed, 65.1 s |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/m2-*.test.ts"` | 0 | 54 tests: 54 passed, 112.1 s |
+| `node --conditions=retest-source --test --test-concurrency=1 "tests/integration/m3-*.test.ts"` | 0 | 19 tests in 8 files: 19 passed, 60.1 s |
+
+No group took five minutes, so none was split.
+
+On Linux, the milestone 3 group ran through the harness as written, at 03:06, and passed:
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `RETEST_LINUX_IMAGE=retest-linux:m3r-verify sh docker/linux/run.sh node --conditions=retest-source --test --test-concurrency=1 "tests/integration/m3-*.test.ts"` | 0 | 19 tests: 19 passed, 50.7 s |
+
+`RETEST_LINUX_IMAGE` gave the image a tag of this phase's own, so `retest-linux:dev`, built two hours earlier by someone else, was not retagged. The image built from the cache with no network: `package.json` and `package-lock.json` match that image's, and its `npm ci` layer was reused. `run.sh` passes `--init`, `--cap-drop ALL` and the seccomp profile, and no `--network none`; the checks install the tarball with `--offline` and reach only loopback. The second browser there is Debian's Chromium 154, so `m3-host-run` ran on it rather than Chrome for Testing. This phase removed the two images it built, `retest-linux:m3r-verify` and its earlier build, by name and id; it pruned nothing.
+
+## 19. Acceptance checks
+
+After every run the harness validates `events.jsonl` and `result.json` against the schemas `npm run build` writes, checks that JSONL stdout is exactly those events (for a host program, its reporter's lines; for two runs at once, each run's events in its own order and nothing else), checks `judgedBy` on every `assertion.passed` and that a locator pass rests on an earlier look, and checks cleanup as section 20 describes. The last column names the unit tests that check the same logic with fakes.
+
+| # | Check | Real proof, in `tests/integration/` | Fails if | Mocked only, in `tests/unit/` |
+| --- | --- | --- | --- | --- |
+| 1 | Actions, the rest | `m3-actions`, 2 tests, through the command line. Choices: six selects record their choices, `input: 'script'`, `changed` (false for the option already chosen) and `multiple` for both lists; Peru, added 300 ms after a click, is waited for; the page heard `input` and `change` untrusted for each change, five times. Six checks and unchecks record their locators and `changed`, and the hidden newsletter box `via: 'label'`; the page counted `agree=2 remember=2 newsletter-label=1 newsletter=1` clicks. Atlantis fails `not_found` after the 2000 ms budget with `{ choice, waitedMs }`; Paris fails `ambiguous` in under a second with `{ choice: "'Paris'", count: 2 }`; `uncheck` on Small fails `unsupported` with its message; the covered box fails `not_actionable` with `covering`, and the box a cover takes on hover with `interceptedBy` and `event: 'pointerdown'`; after each of these four, the `afterEach` hooks read no change and no pointer event heard. The locked setting fails `not_actionable` with `{ check: 'state', inputSent: true }` and the server counted one click. `inspect --test` writes each select, list brackets included, and the label and already-checked notes. Scroll: the page scroll records `{ x: 0, y: 5000 }` and the feed asked once; the terms scroll records its locator and Accept is then clicked; the covered list fails `not_actionable` with `covering`, and the page heard no wheel | a select sent as input or as a trusted event, a missing option that does not wait, an ambiguity that waits, a second click on a control that ignored the first, a covered control or list that receives input, a wheel that loads twice, or a list printed without its brackets | `browser-select`, `browser-check`, `browser-scroll`, `browser-page-scripts`, `protocol-option-choices`, `protocol-scroll-delta`, `api-actions`, `runner-actions`, `reporters-actions` |
+| 4 | Titles and causes | `m3-titles`, 1 test, a project with an `env` secret, run three times: JSONL, human, agent. The eight navigations of one test are, in order, `/titles` goto "Titles", `/titles/next` action "Next" (a link), `/titles` goto, `/titles/next` action (Enter in a form), `/titles` goto, `/titles/pushed` action "Pushed" (`pushState` in a click listener), `/titles/redirect` goto "Redirecting" (the server's 302 from `/titles/chain`), and `/titles/next` page "Next" (the page's own redirect 100 ms after load). Each action names the page it acted on, every look names the page it read, and each look that found the arrival read "Next". A name typed as `secret('password')` into a form that makes it the next page's title reads `{{password}}` in the navigation and the check, and the value is in no file of the run folder and no output. A title of ESC, `[2J`, U+009B, `31mAlarm`, BEL, U+009B and `0m` is recorded as `[2J31mAlarm 0m`, and the live human report, the agent report, the replayed report and three `inspect --test` timelines hold no control character; the human reports print `Page "[2J31mAlarm 0m" at …/titles/echo`, and the timelines print each navigation with its title and cause | a navigation with no title or the wrong cause, a document given another's title, a secret in a title, or a control character in any report | `protocol-page-facts`, `browser-titles`, `browser-navigation-cause`, `browser-document-facts`, `runner-titles`, `runner-redactor`, `inspect-titles`; real Chrome at the browser level in `browser-navigation` |
+| 6 | Host-style run, extended | `m3-host-run`, 3 tests, the tarball installed offline outside the repository, on Chrome for Testing 153 through the fixture proxy. On top of section 7's checks: the test file is in a folder under the host's temporary folder that holds that file and nothing else, no `node_modules` and no `.retest`, and it is the run's `rootDir`; the project has no `.retest` either; the checks are keyed by `checkout.retest.ts`; the host read its folder back from `result.json` with the same result and the same events, deeply equal to what it held in memory; the four navigations are `/code/sign-in` goto, `/code/verify` action, `/account` action and `/` action, each with its title, and the last before the first host check is `/` by an action; the checks' `actual` names "Tasks". Against `wrong-page`, the last navigation is `/drafts` by an action and the address check fails. Stopped by SIGTERM once the Save click completed, against an app that holds the save for 60 s, the run exits 130 with status `interrupted`, `run.finished.failure` and the result's `failure` are the host's `Failure`, the test is `error` with it, its three checks are `not_run`, and the replayed report prints its message | a test file that cannot load without `node_modules` beside it (shown by taking out the resolve hook: collection fails with "Cannot find package '@rehearsal-labs/retest'"), a last-run file written, a folder that differs from memory, a last page opened by `goto`, or a stop reason lost | `runner-resolve-hook`, `runner-last-run-file`, `runner-stop-reason`, `store-read-run-folder`, `runner-secrets` |
+| 7 | Two runs at once | `m3-concurrent-runs`, 1 test. A host program calls `runFiles` twice without waiting, with roots `alpha` and `bravo`, two task apps, a function secret each and two run folders. Both pass; each folder's events carry its own run id and root, and navigate only to its own app, and name the other app nowhere; each app saved once; each look read `{{note}}`, and neither value is in either folder or the output; each root has its own `last-run.json` naming its own run; the runs overlapped in time, in two browsers; stdout holds each run's events in order and nothing else; nothing either run started is left | a run that writes into the other's folder, uses the other's secret or browser, or leaves anything behind | none |
+| 8 | Package, the rest | `m3-package`, 2 tests. A consumer of the tarball uses `OptionChoice`, `ScrollDelta`, `SecretContext`, `OptionChoiceRecord`, `NavigationCause`, `PageFacts`, `eventsFile`, `resultFile`, `logsFolder`, `PageNavigation`, `StopReason`, `RunFolder`, `readRunFolder` and `RunFolderReadError` beside the short list's names, and type-checks on TypeScript 6.0.3 and 7.0.2 with `skipLibCheck: false`; running it prints the three file names and "No run folder at <project>/no-run-here." from a `RunFolderReadError`. `select(1)` fails with TS2345 and `scroll()` with TS2554 on both compilers, beside the two refused keys. Its installed `retest` runs presses, two selects, four checks and unchecks, one through a label, and two scrolls against the fixture | a name missing from the tarball, a consumer error, a refused call that compiles, or an action that fails from the installed build | `protocol-entry`, `runner-entry`, `type-diagnostics`; `npm run test:types` for the repository's own fixtures |
+| 9 | Milestones 1 and 2 hold | Every existing integration test passes: 184 browser-level, 51 of milestone 1 and 54 of milestone 2, and the short list's milestone 3 checks, with `m3-host-checks` now expecting titles | any of them failing | |
+
+## 20. Cleanup
+
+Unchanged from part 2, section 9, and checked after every command, host programs included; `m3-concurrent-runs` checks both runs' browser groups and both run folders. A host's temporary folder is inside the harness's scratch folder for that test, so the `checkout-*` folder the example leaves is removed with it.
+
+After the gates, the system temporary folder held no `retest-*` folder, and `ps` showed no fixture server, `retest` process, test file process or Chrome with a Retest profile. The only Chrome processes left were the person's own and days-old Playwright ones this phase did not start. One fixture server this phase started by hand, to read the scenario files' output before writing the checks, outlived its run; this phase found it with `ps` and stopped it.
+
+## 21. Not verified
+
+Most important first.
+
+1. On Linux, only the milestone 3 group ran. Unit, types, the browser group and milestones 1 and 2 were not rerun there by this phase, and Chrome for Testing 153 did not run on Linux.
+2. The `m3-*` checks ran on Google Chrome 154 only, apart from `m3-host-run` on Chrome for Testing 153 on macOS and Debian's Chromium 154 on Linux.
+3. Through the command line, no action ran on an emulated touch screen: a check that taps, and a scroll on a phone, ran only at the browser level (`browser-actions`) and with fakes.
+4. `check` and `uncheck` on the roles `switch`, `menuitemcheckbox` and `menuitemradio`, and on `aria-checked="mixed"`, ran only with fakes. A disabled option ran at the browser level only.
+5. `lastRunFile` as a path, a secret function's signal, and a file beside another copy of Retest were checked only with fakes and unit tests. Through the tarball, only `lastRunFile: false`, a folder with no `node_modules`, and a stop with a `Failure` ran.
+6. That the guard lets the `input` event a radio button or a select fires after a click reach the page ran only for a checkbox.
+7. The title rule's one-second timer, and a title settled by the next command, ran with fakes; in real Chrome every document here had its title by `DOMContentLoaded`.
+8. Two runs at once shared no root. Two runs that share a root, and so a last-run file, were not tried.
+9. The F12 fence probe ran 10 rounds per case on each browser. A link whose navigation reaches Retest after the disarm answer was never seen, which is not proof that it cannot happen.
+
+## 22. Defects found in phase 2's work, not fixed
+
+1. **A failed select says "set by script" when nothing was set.** Its `action.failed` event carries `input: 'script'` whatever the failure, so the card of a select that failed `not_found` or `ambiguous` reads `Not found  getByLabel('Country').select('Atlantis'), set by script`. Seen in `m3-actions`.
+2. **The action window starts a call early.** The window that makes a navigation `action` opens around the guard's verdict call, sent just before the input, rather than at the first input call as M3-4 says. A navigation the page starts on its own in that moment is counted as the action's. Read from the code (`guardInput` inside `NavigationCauses.delivering`); not seen in a run.
+
+## 23. Changes outside the usual
+
+- `tests/support/fake-browser.ts` is not in this phase's list; fix 1 needed it, since it stands in for the browser's reading of titles.
+- The account page of the task app has a new link, "Your tasks". Every existing check that reads that page still passes.
+- To show that the three fixes' tests fail before them, this phase ran them in a copy of the tree under `/tmp/retest-m3r-verify/before-tree/`, with phase 2's versions of the changed files, and linked this checkout's `node_modules`. Nothing in the repository was stashed or reset.
+- To show that checks fail without what they check, this phase changed two files for one run each and put them back byte for byte: `src/protocol/page-facts.ts` without the removal of control characters (`m3-titles` failed), and `src/runner/child.ts` without the resolve hook (`m3-host-run` failed). `dist/` was rebuilt afterwards, and the final gates ran after both.

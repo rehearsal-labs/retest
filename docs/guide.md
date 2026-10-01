@@ -316,13 +316,16 @@ All four search only the top-level document. They do not look into shadow roots 
 - `locator.tap()` taps the element's centre. It exists only on an app whose every target emulates a touch screen.
 - `locator.press(key)` focuses the element and presses one key on it. The element must be attached, visible and enabled, and keep the keyboard focus once Retest focuses it. There is no check at a point, since a key does not go through one.
 - `page.keyboard.press(key)` presses one key on whatever holds the keyboard focus, with no checks.
+- `locator.select(choice)` chooses options of a `<select>`: by label, by `{ value }`, or a list of them.
+- `locator.check()` and `locator.uncheck()` tick and untick a checkbox, a radio button or an element with a checkable role.
+- `locator.scroll({ x, y })` turns the mouse wheel at the element's centre. `page.scroll({ x, y })` turns it at the centre of the viewport.
 
 Retest checks the element just before it acts, and a guard in the page watches the input itself. If the press, the release or the click lands on another element, Retest stops that event before any listener of the page hears it. The action then fails `not_actionable` and names the element that took it. While the browser is opening another document in the frame, no action starts: Retest waits for that document and looks for the element there, and an action whose time runs out meanwhile fails `not_actionable`, naming the address the page was opening. Typing that arrives in a document that replaced the one Retest checked is stopped by that document's own guard, and the fill fails `not_actionable`, naming the document. Two cases end as `outcome_unknown` instead, because Retest cannot see where the input went:
 
 - the press never reaches the element's document, as when a same-origin frame covers the element;
 - the page moves to a new document before the guard reports, and that document received no typing.
 
-The guard covers press, release, click, touch and typing events. Hover events, such as `pointerover` when the mouse arrives, still reach the page. Downloads are refused: Retest asks the browser to deny them in every context it opens.
+The guard covers press, release, click, touch and typing events, and the wheel while a scroll is on its way. Hover events, such as `pointerover` when the mouse arrives, still reach the page, and so do the `input` and `change` events a checkbox fires after a click. Downloads are refused: Retest asks the browser to deny them in every context it opens.
 
 ### Pressing keys
 
@@ -345,6 +348,40 @@ What a press does:
 - A browser lost after the key went down leaves the outcome unknown: `outcome_unknown`, and the key is never sent again.
 
 Action events record the key in `key`, as the test wrote it. Reports write a press as the test wrote it: `getByLabel('Search').press('Enter')` or `page.keyboard.press('Enter')`.
+
+### Choosing, ticking and scrolling
+
+`select(choice)` takes one option or a list:
+
+- A string names an option by its label, as a person reads it: the whole label, case and all, with each run of spaces read as one. `{ value }` names it by its `value` attribute, exactly.
+- A list chooses exactly those options of a `<select multiple>` and clears the others. A list for a select that takes one option, and an empty list, fail `usage`.
+- Each choice must match exactly one option. An option that is not there yet is waited for until the action budget runs out, and then the select fails `not_found`, naming it. Two options that match fail at once as `ambiguous`. A disabled option, or one in a disabled group, is waited for, and then fails `not_actionable`.
+- The `<select>` must pass the checks a click does: visible, stable, enabled and not covered.
+- An element that is not a `<select>` fails at once as `unsupported`. Choose from a list the page draws itself with `click()`.
+- When the selection already is the one asked for, nothing is sent, and the event says `changed: false`.
+
+`select` is the one action that is not real input. Chrome draws a select's list outside the page, where Retest's input cannot reach it. So Retest sets the selection from its own script, then dispatches `input` and `change`, as the browser does after a person picks. Those two events have `isTrusted` set to false, so a page that ignores untrusted events ignores this select too. The event says `input: 'script'`, and reports say "set by script".
+
+`check()` and `uncheck()`:
+
+- The element is a native checkbox or radio button, or has the role `checkbox`, `radio`, `switch`, `menuitemcheckbox` or `menuitemradio`. Anything else fails `unsupported`. A native control reads its `checked` state, and any other its `aria-checked`. `aria-checked="mixed"` counts as not checked.
+- A control already as asked gets nothing, and the event says `changed: false`.
+- Otherwise Retest clicks it once, with every check a click makes. On a touch screen it taps, and the event says `touch: true`.
+- A native control that is not visible, with exactly one visible label of its own, is clicked through that label. This is how a person ticks a styled checkbox. The event says `via: 'label'`, and reports say "clicked its label".
+- After the click, Retest reads the control until it is as asked or the action budget runs out. It never clicks again. A control that took the click and stayed as it was fails `not_actionable`, with `details: { check: 'state', inputSent: true }`.
+- `uncheck()` on a radio button fails `unsupported`. A person unchecks one by choosing another.
+
+`scroll({ x, y })`:
+
+- `x` and `y` are CSS pixels, positive right and down. Both missing or 0, or either not a finite number, fails `usage`.
+- `locator.scroll` needs the checks a click does, and its `wheel` event must reach the element or something inside it. A `wheel` another element takes is stopped before the page hears it, and the scroll fails `not_actionable`, naming that element. `page.scroll` has no checks.
+- One wheel event carries the whole distance. The scroll passes once that event reached its element. It says nothing about how far the page moved, since smooth scrolling may still be going. The next action waits for its element to stand still.
+- The distance is the CSS pixels the page scrolls, also on an emulated phone whose page is zoomed out to fit. On a page with an emulated device pixel ratio, the page's own `WheelEvent.deltaY` reads the distance divided by that ratio.
+- On a touch screen, `scroll` still turns the wheel. It does not swipe.
+- Retest listens for `wheel` only while a scroll is on its way, so the page scrolls as it always does.
+- Every action already brings its element into view. Scroll only for what the page does on scroll, such as loading more items, or enabling a button once a text has been read to its end.
+
+Reports write each of these as the test wrote it, with what the call leaves out: `getByLabel('Toppings').select(['Basil', { value: 'olives' }]), set by script`, `getByLabel('Newsletter').check(), clicked its label`, `getByTestId('agree').check(), already checked, sent nothing`, or `page.scroll({ y: 600 })`.
 
 ### Matchers
 
@@ -383,6 +420,7 @@ await page.getByLabel('Password').fill(secret('password'))
 - The test file's process never holds the value. It sends the secret's name, and Retest's own process types the value. The environment variable an `env` source reads is removed from the test process's environment.
 - An `env(name)` source is read once, when the run starts. A variable that is missing, empty or shorter than four characters stops the run with exit 2 before any test starts, naming it.
 - A function source is called each time a `fill` uses the secret, since values such as one-time codes change. If it throws, rejects or gives no text, that fill fails `setup_failed`, naming the secret.
+- The function is called with `{ signal }`. Retest aborts that `AbortSignal` once it stops waiting for the value: when the fill runs out of time, or when the test or the run is stopped. Pass it on, as to `fetch`, so the work stops too. `SecretContext` is its type.
 - The function is called as the fill begins, before Retest looks for the field. A test that types a one-time code waits for the page that asks for it first, as with `await expect(page.getByLabel('Code')).toBeVisible()`, so the code has been sent by then.
 - A secret is bound to origins: those of the base URLs of the test's apps, and any `secretOrigins` lists for it. On any other page, the fill fails `not_actionable`, naming the page's origin, and nothing is typed.
 - Retest checks the origin twice: before it reads the value, and again in the page, just before it types. While it types, it stops the page from leaving for another document. While the browser is already opening another document, the fill waits for it and checks that document instead. A document that still arrives while the text is on its way stops the text itself, since nothing was armed there: the fill fails `not_actionable`, naming the document, and the text reaches no document Retest did not check.
@@ -539,14 +577,16 @@ retest inspect .retest/runs/<time> --test "tests/devices.retest.ts > saves a tas
 For one test, `inspect --test` shows every step in time order. Under a locator check it shows the looks the check took and the one its verdict rested on, and it says when a pass is only the test file's own word:
 
 ```text
+     20 ms  navigated to "Tasks" at http://127.0.0.1:4173/, by goto
+    209 ms  click getByRole('button', { name: 'Save' })  45 ms
     263 ms  ✓ toHaveText getByTestId('saved-task')  54 ms
               looked 2 times, passed on o2: 1 match, text "Release checklist"
     272 ms  ✓ toMatch  1 ms, 1 look, reported by the test file
     575 ms  web  ✗ host check address: http://127.0.0.1:4173/  303 ms, 4 looks  host_check_failed
-                   page http://127.0.0.1:4173/account
+                   page "Account" at http://127.0.0.1:4173/account
 ```
 
-Looks that no check claimed, such as those of a check the run stopped, collapse into one line. Host checks come after the body, each with what the page showed when it failed.
+Each navigation shows the page's title and what opened it. Looks that no check claimed, such as those of a check the run stopped, collapse into one line. Host checks come after the body, each with what the page showed when it failed.
 
 ## The run folder
 
@@ -563,11 +603,28 @@ Without `--output`, a run goes to `.retest/runs/<time>`.
 .retest/last-run.json              the tests the last run did not pass, for --last-failed
 ```
 
+A program that calls `runFiles` can move `.retest/last-run.json` with `lastRunFile: '<path>'`, or write none with `lastRunFile: false`.
+
 Every event says who reported it: `origin: 'parent'` for what Retest's own process saw, and `origin: 'child'` for what the test file's process claimed. Every event of a test's run carries its `variant` and `variantKey`, and every event about an app names it in `session`. Milestone 1's mode has one app, named `page`, and no variants.
 
 `browser.started` comes once for each app target, with the app and the target, and whether it is emulated. `app.started`, `app.reused` and `app.failed` tell what became of each server. `state.saved` and `state.restored` name a state, never its contents. `result.json` lists every app target's browser in `browsers`, and each screenshot names its app.
 
 `observation` is a look the parent served the test file's process, and `host_check.passed` and `host_check.failed` are host checks. [Use Retest from code](#use-retest-from-code) explains both, and `judgedBy` on `assertion.passed`.
+
+### Titles and what opened each page
+
+A `navigation` event names the page's title in `title`, and what opened it in `cause`. Actions, looks and assertions name the title of the page they went to in `pageTitle`, beside `pageUrl`, and a host check's `actual` has `title`. Reports show the title before the address, as in `"Account" at http://127.0.0.1:4173/account`.
+
+- A title is the page's `document.title`, trimmed, with its control characters removed, and cut to 300 code units. A page with no title has none. Titles are page text: a secret in one reads `{{name}}`, and Retest hides a secret before it cuts the title, so none is left half-written.
+- An action or a look reads the title in the same call that checks or reads the element. `goto` reads it after `load`.
+- A new document's `navigation` is written once its title is known: when its content has loaded, when the test's next command to that page begins, or one second after it opened, whichever comes first. It is always written before the events of any command that began after it. A page that sends the browser on at once can leave its navigation with no title.
+- A new path within the document, through the history API, is written at once, with the title as it stands. A title the page sets later is not a navigation. The next action or look reads it.
+
+`cause` is one of three:
+
+- `goto`: the navigation a `goto` started.
+- `action`: a navigation the page asked for while an action's input was on its way. For a click, a key or a scroll, that runs from the input until Retest's next call into the page has answered, since Chrome can report a link's navigation after the click itself has answered. For `select`, it runs until the call that sets the selection has answered.
+- `page`: anything else, such as a redirect the page makes on its own after it loads, a timer, or the browser. A navigation a `setTimeout` in a click listener starts is the page's.
 
 A problem no single test explains, such as a browser that did not start, is the run's own `failure` in `run.finished` and `result.json`. A file whose process failed outside its tests has a `failure` of its own, and a `file.failed` event.
 
@@ -577,8 +634,10 @@ Paths inside the folder are relative, so the folder can be moved. The JSON Schem
 
 A program can run tests itself, with no command line. This guide calls such a program a host. A host runs Retest on its own machines, often for apps it did not write. The root export stays the authoring API, and a host uses two subpaths:
 
-- `@rehearsal-labs/retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError` and `LaunchError`, and the types a caller needs: `RunOptions`, `HostCheck`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements.
-- `@rehearsal-labs/retest/protocol` exports the event, result, command and failure types, their schemas, `parse`, `testId` and `testTitle`, `defaultTimeouts` and `mergeTimeouts`, and `eventSchemaUrl` and `resultSchemaUrl`, the file URLs of the JSON Schema files.
+- `@rehearsal-labs/retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `readRunFolder`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError`, `RunFolderReadError` and `LaunchError`, and the types a caller needs: `RunOptions`, `StopReason`, `HostCheck`, `RunFolder`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements, `PageNavigation` included.
+- `@rehearsal-labs/retest/protocol` exports the event, result, command and failure types, their schemas, `parse`, `testId` and `testTitle`, `defaultTimeouts` and `mergeTimeouts`, `eventSchemaUrl` and `resultSchemaUrl`, the file URLs of the JSON Schema files, and `eventsFile`, `resultFile` and `logsFolder`, the names of a run folder's files. `PageFacts`, `NavigationCause` and `OptionChoiceRecord` are among its types.
+
+The root export adds `OptionChoice`, `ScrollDelta` and `SecretContext` for code that passes options, distances or a secret's context on.
 
 ### The config in memory
 
@@ -617,7 +676,7 @@ const result = await runFiles(
 )
 ```
 
-This is the heart of [examples/host/host.ts](../examples/host/host.ts). A test file the host writes is loaded from where it lies, so write it where the package resolves, such as a new folder inside the project that installs Retest.
+This is the heart of [examples/host/host.ts](../examples/host/host.ts). A test file can live anywhere, in a folder with no `node_modules` too. Its process loads `@rehearsal-labs/retest` and its subpaths from the copy of Retest that runs it, whatever copy sits beside the file.
 
 ### Host checks
 
@@ -653,7 +712,7 @@ The verdict:
 
 An `absent` check passes at once on a blank page. Pair it with an `address` check.
 
-A check sees the final page, not the steps to it. It cannot tell whether the test reached that page by the flow you meant.
+A check sees the final page, not the steps to it. It cannot tell whether the test reached that page by the flow you meant. It can require that no `goto` opened that page: the app's last `navigation` before the checks must not say `cause: 'goto'`. That says nothing about the steps before that navigation.
 
 The parent writes `host_check.passed` or `host_check.failed` for each check, with the check, the app, what the page showed on the last look, how many times it looked and for how long. `run.started` records every check the run was asked for, so a reader can tell a check that was never asked for from one that is missing. Each test's result lists its checks in `hostChecks`, in order, with `passed`, `failed` or `not_run`. The text of a text check is redacted as page text is. A check's `name` and address `path` are recorded as written, so keep secrets out of them.
 
@@ -662,11 +721,11 @@ Reports show a failed check as a card of its own:
 ```text
     Host check failed  address on web
     Expected         http://127.0.0.1:4173/
-    Page             http://127.0.0.1:4173/account
+    Page             "Account" at http://127.0.0.1:4173/account
     Waited           303 ms, looked 4 times, limit 300 ms
 ```
 
-A check that did not run is a `Not run` line on the test's card. The summary gains a row such as `Host checks  4 failed · 10 passed · 1 not run`. Passing checks add nothing else. The agent report writes a line such as `host_check_failed address on web expected http://127.0.0.1:4173/thanks, page http://127.0.0.1:4173/cart`.
+A check that did not run is a `Not run` line on the test's card. The summary gains a row such as `Host checks  4 failed · 10 passed · 1 not run`. Passing checks add nothing else. The agent report writes a line such as `host_check_failed address on web expected http://127.0.0.1:4173/thanks, page "Your cart" at http://127.0.0.1:4173/cart`.
 
 The command line cannot give host checks, so a report of a run that had them prints no command to run a test again. Each card points to `retest inspect` instead. The same goes for a run whose config has no file behind it.
 
@@ -683,21 +742,38 @@ A locator assertion names the look its verdict rested on, its last, in `observat
 
 A test file that sends a pass the look does not support, such as `toBeVisible` on a look that matched nothing, has broken the protocol. The test ends `test_error`, its process is killed, and no `assertion.passed` is written for the claim. A failed assertion carries no mark: a test may always fail itself.
 
+### Stop a run, and say why
+
+`RunOptions.signal` stops a run when it is aborted. Its `reason` may be `'SIGINT'`, `'SIGTERM'` or a `Failure`, such as `{ class: 'interrupted', message: 'The host is shutting down, so it stopped the run.' }`. Any other reason counts as `'SIGINT'`.
+
+A `Failure` is recorded as the run's `failure`, in `run.finished` and `result.json`, and as the failure of each test the run stopped or kept from running. The run's status is `interrupted`, and its exit code is 130. The human and agent reports print it at the end, under "Run failed", also when the run stopped while it was loading a file.
+
 ### The test process's environment
 
 `RunOptions.testEnvironment` is the whole environment of each test file's process. Without it, the process gets the parent's environment. Either way, the variables `env` secrets read are removed. A host passes its own credentials in its own environment and gives the tests only what they need. The command line does not set it. On macOS the system adds `__CF_USER_TEXT_ENCODING` to every process.
+
+### Read a run folder
+
+`readRunFolder(folder)` reads a run folder back and checks it against the schemas. It returns `{ source, result, events, warnings }`. A run that stopped before it wrote `result.json` is rebuilt from `events.jsonl` and marked incomplete, and `warnings` says so. A folder that is missing, unreadable or not a run folder throws `RunFolderReadError`. This is how `retest inspect` reads one.
+
+### Two runs at once
+
+One process may call `runFiles` again before the first call ends, with another root and another run folder. Each run starts its own browsers, keeps its own secrets and writes only its own folder and its own `lastRunFile`.
 
 ### What a host can trust
 
 - The parent writes every event and stamps its `origin`. Only `step.*` and `assertion.*` events come from the test file's process, and the parent checks their shape and judges every passed locator assertion.
 - Actions, navigations, observations, host checks and every outcome are the parent's own facts.
 - The `RunResult` that `runFiles` returns, and the events a reporter receives, come from the parent's memory. `result.json` and `events.jsonl` are copies, in a folder the test file's process can write. A host that must trust a run takes the result from `runFiles` and the events from its own reporter, and reads the run folder only for screenshots and logs.
+- Each navigation's `cause` is the parent's fact. A host can require that no `goto` opened the page its checks read.
 - The test file's process is not a sandbox. It runs as the same user, can read and write what that user can, and can reach the network. A host that runs code it did not write runs all of Retest inside isolation it controls, such as one container per run.
 - Screenshots are not redacted.
 
 ### A host-style run
 
-[examples/host](../examples/host) is a host. `host.ts` builds its config in memory, gives the password and a one-time code as functions, writes [checkout.retest.ts](../examples/host/checkout.retest.ts) into a new folder of the project, sends Chrome for Testing through a proxy, adds three host checks keyed by the file, and gives the test process only `CANARY`. Its reporter prints each event as a JSON line as it arrives. The test signs in with a code, saves a task, and prints which of `CANARY`, `HOST_TOKEN` and `HOST_PASSWORD` it can see.
+[examples/host](../examples/host) is a host. `host.ts` builds its config in memory and gives the password and a one-time code as functions. It writes [checkout.retest.ts](../examples/host/checkout.retest.ts) into a new folder of its own under the system's temporary folder, with no `node_modules`, and makes that folder the run's root. It sends Chrome for Testing through a proxy, adds three host checks keyed by the file, gives the test process only `CANARY`, and writes no `last-run.json`. Its reporter prints each event as a JSON line as it arrives. At the end it reads its run folder back with `readRunFolder`, and says whether the folder holds the same result and events it got from memory. SIGTERM makes it stop the run with a `Failure` that says the host is shutting down.
+
+The test signs in with a code, follows the account page's link to its tasks, saves a task, and prints which of `CANARY`, `HOST_TOKEN` and `HOST_PASSWORD` it can see. The page the host checks was opened by that link, so its last navigation says `cause: 'action'`.
 
 To run it against the fixtures, from a project that installed the packed tarball, with `host.ts` and `checkout.retest.ts` copied into it:
 
@@ -708,14 +784,14 @@ export RETEST_CHROMIUM=/path/to/chrome-for-testing HOST_PASSWORD='correct horse 
 node host.ts "$APP" "$PROXY" /tmp/outbox.txt /tmp/host-run
 ```
 
-The first two commands run from this repository. The app refuses every request without the header the proxy adds, so a page that loads came through the proxy. Against `--mode wrong-page`, where a save leaves the page on `/drafts`, the same run fails with `host_check_failed` and exit 1.
+The first two commands run from this repository. The app refuses every request without the header the proxy adds, so a page that loads came through the proxy. `host.ts` prints the folder it wrote the test into, as `root <folder>`, and leaves it there, since `inspect` shows the test's code from it. Against `--mode wrong-page`, where a save leaves the page on `/drafts`, the same run fails with `host_check_failed` and exit 1.
 
 ## Exit codes
 
 - 0: every selected test passed and cleaned up.
 - 1: tests ran and at least one failed its checks, a host check included, even if others hit problems.
 - 2: nothing trustworthy came out, or a test could not be checked. This covers usage errors, an invalid config, a missing secret, missing files, collection and setup failures, a lost browser, tests that did not run, cleanup failures, results that could not be written, and a selection that kept nothing.
-- 130: interrupted with Ctrl+C.
+- 130: interrupted with Ctrl+C, or stopped by a program with a `Failure` as the reason.
 - 143: stopped by SIGTERM, as a CI runner does on cancel.
 
 SIGINT and SIGTERM take the same path: the running test stops, the run records `interrupted`, writes `result.json`, closes the browsers, stops the servers it started and deletes saved state. A second signal of either kind quits at once, and its exit hooks still end the browsers and servers and delete saved state.
@@ -725,10 +801,10 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 ## What Retest does not do yet
 
 - Browsers: Chromium, Chrome and Edge only. No Firefox, WebKit or Safari, and no real phones, tablets, native or desktop apps. Emulation is a desktop browser pretending.
-- Checked on macOS arm64 with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3's first part ran on Linux only in its own integration checks, with Google Chrome 154 and Debian's Chromium 154. Linux on x86-64, Linux outside a container, Edge, Chrome beta, dev and canary, and CI runners were never run. Windows cannot work.
+- Checked on macOS arm64 with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3 ran on Linux only in its own integration checks, with Google Chrome 154 and Debian's Chromium 154. Linux on x86-64, Linux outside a container, Edge, Chrome beta, dev and canary, and CI runners were never run. Windows cannot work.
 - The keyboard only presses one key at a time: no Control, Alt or Meta, no key held down across actions, and no text typed key by key. `fill` types text.
-- No `select`, `check`, `uncheck` or scroll yet.
-- Host checks are given only by a program, through `runFiles`. They read the final page, not the steps to it, and not frames or shadow roots.
+- `select` sets the selection by script, so the page's `input` and `change` events for it are not trusted. `scroll` is one wheel event, also on a touch screen: no swipe.
+- Host checks are given only by a program, through `runFiles`. They read the final page, not the steps to it, and not frames or shadow roots. A navigation's `cause` says what opened that page, and nothing about the steps before.
 - Retest does not sign in to a proxy. Only an `http` proxy was run.
 - `--headed`, and `headless: false` in a config, were never run.
 - Locators search the top-level document only: no shadow DOM, no frames. No `first()`, `nth()`, `filter()` or chained locators.
@@ -749,6 +825,6 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - [README](../README.md)
 - [Architecture and implementation sequence](architecture.md)
 - [First implementation brief](implementation-brief.md)
-- [Milestone 1 plan](plans/milestone-1/build-plan.md) and [milestone 2 plan](plans/milestone-2/build-plan.md)
+- [Milestone 1 plan](plans/milestone-1/build-plan.md), [milestone 2 plan](plans/milestone-2/build-plan.md) and [milestone 3 plan](plans/milestone-3/build-plan.md)
 - [Implementation handoff](implementation-handoff.md)
 - [Contribution rules](../AGENTS.md)
