@@ -1,9 +1,11 @@
 import type { RetestEvent } from '@rehearsal-labs/retest/protocol'
 import type { HostCheck, Reporter } from '@rehearsal-labs/retest/runner'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { chromium, defineConfig } from '@rehearsal-labs/retest'
-import { defaultTimeouts, resolveSecrets, runFiles, validateConfig } from '@rehearsal-labs/retest/runner'
+import { defaultTimeouts, readRunFolder, resolveSecrets, runFiles, validateConfig } from '@rehearsal-labs/retest/runner'
 
 // A host: a program that runs Retest on its own machines, for an app someone else wrote. It builds the config in
 // memory, gives every secret as a function, writes the test file itself, sends the browser through its own proxy,
@@ -15,7 +17,13 @@ import { defaultTimeouts, resolveSecrets, runFiles, validateConfig } from '@rehe
 // host's own credentials. The test process sees neither: it gets only the variables in testEnvironment.
 
 const [appUrl = '', proxyUrl = '', outbox = '', outputDir = ''] = process.argv.slice(2)
-const root = process.cwd()
+
+// The host writes the test into a new folder of its own, with no node_modules: the test process loads the copy of
+// Retest that runs it. The folder is the run's root, which relative paths start from.
+const root = mkdtempSync(join(tmpdir(), 'checkout-'))
+const file = 'checkout.retest.ts'
+writeFileSync(join(root, file), readFileSync(new URL('checkout.retest.ts', import.meta.url)))
+process.stderr.write(`root ${root}\n`)
 
 function fromVault(name: string): string {
   const value = process.env[name]
@@ -39,11 +47,6 @@ if (!loaded.ok) throw new Error(loaded.failure.message)
 const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
 
-// The host writes the test into a new folder inside the project, where the package resolves.
-const folder = mkdtempSync(join(root, 'checkout-'))
-writeFileSync(join(folder, 'checkout.retest.ts'), readFileSync(new URL('checkout.retest.ts', import.meta.url)))
-const file = relative(root, join(folder, 'checkout.retest.ts')).split(sep).join('/')
-
 // The parent runs these after the test's body, on the page the test left. The test passes only if they pass.
 const hostChecks: Record<string, HostCheck[]> = {
   [file]: [
@@ -64,8 +67,10 @@ const reporter: Reporter = {
   onRunEnd: () => undefined,
 }
 
+// SIGINT stops the run as Ctrl+C does. SIGTERM means the host's own machine is shutting down, and the run says so.
 const stop = new AbortController()
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => stop.abort(signal))
+process.once('SIGINT', () => stop.abort('SIGINT'))
+process.once('SIGTERM', () => stop.abort({ class: 'interrupted', message: 'The host is shutting down, so it stopped the run.' }))
 
 const result = await runFiles(
   {
@@ -74,6 +79,8 @@ const result = await runFiles(
     apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets },
     timeouts: defaultTimeouts,
     outputDir,
+    // --last-failed is the command line's; a host keeps its own record of runs.
+    lastRunFile: false,
     headless: true,
     signal: stop.signal,
     hostChecks,
@@ -82,8 +89,13 @@ const result = await runFiles(
   [reporter],
 )
 
-// The result is the parent's too. The run folder holds copies, in a folder the test process can write.
+// The result is the parent's too. The run folder holds copies, in a folder the test process can write, and
+// readRunFolder reads them back for a host that looks at a run later.
+const folder = readRunFolder(outputDir)
+const sameResult = isDeepStrictEqual(folder.result, result) ? 'the same result' : 'a different result'
+const sameEvents = isDeepStrictEqual(folder.events, events) ? 'the same' : 'different'
 const checked = events.filter((event) => event.type === 'host_check.passed').length
 process.stderr.write(`${result.status}, exit ${result.exitCode}, ${checked} host checks passed\n`)
+process.stderr.write(`run folder read from ${folder.source}: ${sameResult}, ${sameEvents} ${events.length} events\n`)
 process.stderr.write(`result ${JSON.stringify(result)}\n`)
 process.exitCode = result.exitCode

@@ -176,3 +176,13 @@ test("a navigation its proxy failed is a setup failure naming the proxy, and any
     )
   }
 })
+
+test('the loader Page.navigate names is heard as soon as it answers, before its document loads', async () => {
+  const browser = browserThatNavigates({ frameId: mainFrame, loaderId: 'L1' }, [committed('L1', '/tasks'), loaded('L1')])
+  const opened: string[] = []
+  const context = { ...browser.context, opened: (loaderId: string) => void opened.push(loaderId) }
+  const going = navigate(context, '/tasks', new Deadline(1000), new Dispatch())
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(opened, ['L1'])
+  assert.deepEqual(await going, { ok: true, kind: 'goto', url: `${origin}/tasks` })
+})

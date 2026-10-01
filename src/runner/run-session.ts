@@ -9,7 +9,7 @@ import type { Reporter } from '../reporters/reporter.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
 import type { RunStore } from '../store/run-store.ts'
 import type { FindExecutable, LaunchBrowser, ReadyTarget } from './browser-pool.ts'
-import type { ChildOutput, RunOptions } from './contract.ts'
+import type { ChildOutput, RunOptions, StopReason } from './contract.ts'
 import type { HostChecks, TestHostCheck } from './host-checks.ts'
 import type { RunOutcome } from './outcome.ts'
 import type { CollectedTests, Plan, PlannedTest } from './plan.ts'
@@ -35,9 +35,9 @@ import { bounded } from './bounded.ts'
 import { BrowserPool } from './browser-pool.ts'
 import { EventLog } from './event-log.ts'
 import { hostChecksScopeProblem, hostChecksShapeProblem, notRunHostChecks, recordedHostChecks, testHostChecks } from './host-checks.ts'
-import { lastRunOf, writeLastRun } from './last-run.ts'
+import { lastRunOf, lastRunPath, writeLastRun } from './last-run.ts'
 import { loadTests, missingFileFailure } from './load-tests.ts'
-import { runOutcome, stopSignalOf, testStatus } from './outcome.ts'
+import { interruptionOf, runOutcome, stopReasonOf, testStatus } from './outcome.ts'
 import { collectedTest, planTests } from './plan.ts'
 import { endedBeforeTest, fileProcessFailure, laterTestsReason, reportedErrors } from './process-failures.ts'
 import { Redactor } from './redactor.ts'
@@ -118,6 +118,8 @@ export class RunSession {
   readonly #hostChecks: HostChecks | undefined
   readonly #hostChecksProblem: Failure | undefined
   #stopReason: Failure | undefined
+  /** Why the run was stopped from outside, once it was. */
+  #stoppedBy: StopReason | undefined
   #interruption: Failure | undefined
   #test: { running: RunningTest; browsers: readonly OwnedBrowser[] } | undefined
 
@@ -454,7 +456,7 @@ export class RunSession {
     const { test, testId: id, attemptId, variant } = described
     const timeouts = { ...this.#options.timeouts, ...(test.registered.timeout === undefined ? {} : { test: test.registered.timeout }) }
     const appOrigins = test.apps.flatMap((app) => originOf(config.apps.get(app)?.baseUrl) ?? [])
-    const fillSecret: RunningTestOptions['fillSecret'] = (command, pageUrl, timeoutMs) => this.#secrets.resolve(command, { pageUrl, appOrigins, timeoutMs })
+    const fillSecret: RunningTestOptions['fillSecret'] = (command, context) => this.#secrets.resolve(command, { ...context, appOrigins })
     const running = new RunningTest({
       process: child,
       pages: new Map(pages.map(({ app, page }) => [app, page])),
@@ -598,8 +600,9 @@ export class RunSession {
 
   #interrupt(): void {
     if (this.#interruption !== undefined) return
-    const stopped = stopSignalOf(this.#options.signal) === 'SIGTERM' ? 'The run was stopped by SIGTERM.' : 'The run was interrupted.'
-    const reason = failure('interrupted', stopped)
+    const stoppedBy = stopReasonOf(this.#options.signal)
+    const reason = interruptionOf(stoppedBy)
+    this.#stoppedBy = stoppedBy
     this.#interruption = reason
     this.#stopReason = reason
     this.#stopped.resolve()
@@ -648,11 +651,7 @@ export class RunSession {
       ...(this.#options.apps.kind === 'config' ? { browsers } : {}),
       files,
     }
-    try {
-      writeLastRun(this.#rootDir, lastRunOf(facts))
-    } catch (error) {
-      this.#events.reportFailure(failure('reporting_failed', `Retest could not write .retest/last-run.json: ${errorMessage(error)}`))
-    }
+    this.#writeLastRun(facts)
     const finished = this.#result(facts)
     const { status, exitCode, complete, counts, durationMs, failure: problem } = finished
     this.#events.emit({ type: 'run.finished', status, exitCode, complete, counts, durationMs, ...(problem === undefined ? {} : { failure: problem }) })
@@ -667,9 +666,20 @@ export class RunSession {
     }
   }
 
+  // `lastRunFile: false` records nothing, and a path records there instead of under the root directory.
+  #writeLastRun(facts: ResultFacts): void {
+    const path = lastRunPath(this.#rootDir, this.#options.lastRunFile)
+    if (path === undefined) return
+    try {
+      writeLastRun(path, lastRunOf(facts))
+    } catch (error) {
+      const shown = this.#options.lastRunFile === undefined ? relativePosixPath(this.#rootDir, path) : path
+      this.#events.reportFailure(failure('reporting_failed', `Retest could not write ${shown}: ${errorMessage(error)}`))
+    }
+  }
+
   #result(facts: ResultFacts): RunResult {
-    const stoppedBy = this.#interruption === undefined ? undefined : stopSignalOf(this.#options.signal)
-    const outcome = runOutcome({ stoppedBy, runFailures: this.#runFailures, outputFailures: this.#events.failures, files: facts.files })
+    const outcome = runOutcome({ stoppedBy: this.#stoppedBy, runFailures: this.#runFailures, outputFailures: this.#events.failures, files: facts.files })
     return this.#redactor.redactFields(runResultSchema, withOutcome(facts, outcome))
   }
 }

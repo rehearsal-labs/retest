@@ -2,7 +2,7 @@ import type { Emulation } from '../protocol/emulation.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { DeviceName } from './devices.ts'
-import type { Channel } from './types.ts'
+import type { Channel, SecretContext } from './types.ts'
 
 // A config as the runner reads it: validated, with defaults filled in and paths absolute. Maps keep the
 // config's order and cannot confuse a name such as "constructor" with an inherited property.
@@ -31,9 +31,10 @@ export type LoadedApp = {
 
 /**
  * Where a secret comes from: an environment variable the run reads once, at its start, or a function the parent
- * calls on each use. `read` resolves to a non-empty string, or rejects with an error that never holds the value.
+ * calls on each use, passing the context on to the config's function. `read` resolves to a non-empty string, or
+ * rejects with an error that never holds the value.
  */
-export type LoadedSecretSource = { readonly env: string } | { readonly read: () => Promise<string> }
+export type LoadedSecretSource = { readonly env: string } | { readonly read: (context: SecretContext) => Promise<string> }
 
 /** A secret's source, and the origins beyond its test's apps' base URLs where it may be typed. */
 export type LoadedSecret = { readonly source: LoadedSecretSource; readonly origins: readonly string[] }

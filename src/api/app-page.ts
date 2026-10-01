@@ -4,6 +4,7 @@ import type { Keyboard, Locator, Page } from './page.ts'
 import type { TestRun } from './test-run.ts'
 import { withLocation } from '../protocol/failures.ts'
 import { parseKey } from '../protocol/keys.ts'
+import { readScrollArgument, readSelectArgument } from './action-arguments.ts'
 import { formatValue } from './format-value.ts'
 import { roleRecipe, testIdRecipe, textRecipe } from './locator-recipes.ts'
 import { misuse } from './misuse.ts'
@@ -12,8 +13,11 @@ import { Secret } from './secret.ts'
 /** The test, app and recipe behind a locator, for assertions. */
 export type LocatorTarget = { readonly run: TestRun; readonly app: string; readonly recipe: LocatorRecipe }
 
-/** Where a key goes: a locator's element, or, without a recipe, whatever holds the focus in the app's page. */
-type KeyTarget = Omit<LocatorTarget, 'recipe'> & { readonly recipe?: LocatorRecipe }
+/**
+ * Where a key or the wheel goes: a locator's element, or, without a recipe, the app's page: whatever holds the focus
+ * for a key, and the viewport's centre for the wheel.
+ */
+type InputTarget = Omit<LocatorTarget, 'recipe'> & { readonly recipe?: LocatorRecipe }
 
 let readTarget: ((locator: AppLocator) => LocatorTarget) | undefined
 
@@ -53,6 +57,10 @@ export class AppPage implements Page<true> {
     return this.#locator(textRecipe('text', text, options))
   }
 
+  scroll(delta: unknown): Promise<void> {
+    return scroll({ run: this.#run, app: this.#app }, delta)
+  }
+
   #locator(built: BuiltRecipe): AppLocator {
     if ('problem' in built) throw misuse(built.problem, this.#run)
     return new AppLocator({ run: this.#run, app: this.#app, recipe: built.recipe })
@@ -88,6 +96,28 @@ export class AppLocator implements Locator<true> {
     return press(this.#target, key)
   }
 
+  select(choice: unknown): Promise<void> {
+    const { run, app, recipe } = this.#target
+    const location = run.location()
+    const read = readSelectArgument(choice)
+    if (!read.ok) throw run.fail(withLocation(read.failure, location))
+    return run.action(app, { kind: 'select', locator: recipe, ...read.value }, location)
+  }
+
+  check(): Promise<void> {
+    const { run, app, recipe } = this.#target
+    return run.action(app, { kind: 'check', locator: recipe }, run.location())
+  }
+
+  uncheck(): Promise<void> {
+    const { run, app, recipe } = this.#target
+    return run.action(app, { kind: 'uncheck', locator: recipe }, run.location())
+  }
+
+  scroll(delta: unknown): Promise<void> {
+    return scroll(this.#target, delta)
+  }
+
   tap(): Promise<void> {
     const { run, app, recipe } = this.#target
     return run.action(app, { kind: 'tap', locator: recipe }, run.location())
@@ -96,9 +126,9 @@ export class AppLocator implements Locator<true> {
 
 /** An app's keyboard, which presses keys on whatever holds the focus in its page. */
 export class AppKeyboard implements Keyboard {
-  readonly #target: KeyTarget
+  readonly #target: InputTarget
 
-  constructor(target: KeyTarget) {
+  constructor(target: InputTarget) {
     this.#target = target
   }
 
@@ -113,10 +143,17 @@ export function locatorTarget(value: unknown): LocatorTarget | undefined {
 }
 
 // A key `parseKey` refuses is never sent. The parent reads the key again, since it trusts nothing the test process checked.
-function press({ run, app, recipe }: KeyTarget, key: unknown): Promise<void> {
+function press({ run, app, recipe }: InputTarget, key: unknown): Promise<void> {
   const location = run.location()
   if (typeof key !== 'string') throw misuse(`press() takes a key as text, such as 'Enter', received ${formatValue(key)}.`, run)
   const parsed = parseKey(key)
   if (!parsed.ok) throw run.fail(withLocation(parsed.failure, location))
   return run.action(app, { kind: 'press', ...(recipe === undefined ? {} : { locator: recipe }), key }, location)
+}
+
+function scroll({ run, app, recipe }: InputTarget, delta: unknown): Promise<void> {
+  const location = run.location()
+  const read = readScrollArgument(delta)
+  if (!read.ok) throw run.fail(withLocation(read.failure, location))
+  return run.action(app, { kind: 'scroll', ...(recipe === undefined ? {} : { locator: recipe }), ...read.value }, location)
 }

@@ -17,6 +17,8 @@ import {
 import { locatorCheckRecordSchema, type LocatorCheckRecord } from './locator-checks.ts'
 import { locatorRecipeSchema, type LocatorRecipe } from './locator.ts'
 import { observedRecordSchema, type ObservedRecord } from './observation-record.ts'
+import { optionChoiceRecordSchema, type OptionChoiceRecord } from './option-choices.ts'
+import { navigationCauseSchema, type NavigationCause } from './page-facts.ts'
 import { s, type Schema } from './schema.ts'
 import { partialTimeoutsSchema, timeoutsSchema, type Timeouts } from './timeouts.ts'
 import { variantSchema, type Variant } from './variant.ts'
@@ -78,10 +80,15 @@ type TestScope = { testId: string; attemptId: string }
 type VariantScope = { variant?: Variant; variantKey?: string }
 type AttemptScope = TestScope & VariantScope
 type StepScope = AttemptScope & { stepId?: string }
+/**
+ * An action as the parent recorded it. `pageUrl` and `pageTitle` name the page it went to. Each field after
+ * `location` is present only when it says something.
+ */
 type ActionFields = StepScope & {
   command: ActionKind
   locator?: LocatorRecipe
   pageUrl?: string
+  pageTitle?: string
   durationMs: number
   location?: SourceLocation
   /** The length of the text a `fill` typed. A secret fill names its secret instead. */
@@ -89,6 +96,20 @@ type ActionFields = StepScope & {
   secret?: string
   /** The key a `press` sent, as the test wrote it. */
   key?: string
+  /** The options a `select` chose, as the test named them. */
+  choices?: OptionChoiceRecord[]
+  /** A `select` the test gave a list, even a list of one, as a `<select multiple>` takes. */
+  multiple?: true
+  /** False when a `select`, `check` or `uncheck` found the element already as asked, and sent nothing. */
+  changed?: boolean
+  /** The wheel's delta a `scroll` sent, in CSS pixels. */
+  scroll?: { x: number; y: number }
+  /** How the input reached the page when it was not real input: a `select` sets the choice from Retest's world. */
+  input?: 'script'
+  /** A `check` or `uncheck` that clicked the control's own label, because the control is hidden. */
+  via?: 'label'
+  /** A `check` or `uncheck` that tapped, on a page that emulates a touch screen. */
+  touch?: true
 }
 /** A check the parent ran after the test's body. `session` is the app whose page it read. */
 type HostCheckFields = AttemptScope & {
@@ -111,6 +132,7 @@ type AssertionFields = TestScope & {
   durationMs: number
   location?: SourceLocation
   pageUrl?: string
+  pageTitle?: string
   /** The look a locator assertion's verdict rested on: its last. */
   observationId?: string
   /** From `expect.soft`: the test went on after it failed. */
@@ -153,7 +175,9 @@ export type ChildEvent = Common &
   )
 
 /**
- * An event before the parent stamps it. Page URLs are origin and path, with no query or fragment. The
+ * An event before the parent stamps it. Page URLs are origin and path, with no query or fragment, and page titles
+ * are the page's own text, present only when the page has one. A `navigation` of a new document is written once
+ * its title is known, and says what started it in `cause`; a run from before milestone 3 has no `cause`. The
  * browser's `pid` is also its process group, and so is an app server's. `browser.started` comes once for
  * each app target, the first time it is used; app targets that launch the same browser share its `pid`.
  * `file.failed` is a collected file whose process failed outside its tests. The failure on `run.finished`
@@ -216,12 +240,13 @@ export type EventBody =
         | (AttemptScope & { type: 'state.restored'; state: string; app: string; target: string })
         | (ActionFields & { type: 'action.completed' })
         | (ActionFields & { type: 'action.failed'; failure: Failure })
-        | (StepScope & { type: 'navigation'; url: string })
+        | (StepScope & { type: 'navigation'; url: string; title?: string; cause?: NavigationCause })
         | (StepScope & {
             type: 'observation'
             observationId: string
             locator: LocatorRecipe
             pageUrl?: string
+            pageTitle?: string
             observed: ObservedRecord
             durationMs: number
           })
@@ -306,11 +331,19 @@ const actionFields = {
   command: actionKindSchema,
   locator: s.optional(locatorRecipeSchema),
   pageUrl: s.optional(s.string()),
+  pageTitle: s.optional(s.string()),
   durationMs: duration,
   location: s.optional(sourceLocationSchema),
   valueLength: s.optional(count),
   secret: s.optional(s.string()),
   key: s.optional(s.string()),
+  choices: s.optional(s.array(optionChoiceRecordSchema)),
+  multiple: s.optional(s.literal(true)),
+  changed: s.optional(s.boolean()),
+  scroll: s.optional(s.object({ x: s.number(), y: s.number() })),
+  input: s.optional(s.literal('script')),
+  via: s.optional(s.literal('label')),
+  touch: s.optional(s.literal(true)),
 }
 const assertionFields = {
   ...testScope,
@@ -325,6 +358,7 @@ const assertionFields = {
   durationMs: duration,
   location: s.optional(sourceLocationSchema),
   pageUrl: s.optional(s.string()),
+  pageTitle: s.optional(s.string()),
   observationId: s.optional(s.string()),
   soft: s.optional(s.literal(true)),
 }
@@ -423,7 +457,14 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
   s.object({ ...envelope, ...variantScope, ...stepFinished }),
   s.object({ ...envelope, type: s.literal('action.completed'), ...actionFields }),
   s.object({ ...envelope, type: s.literal('action.failed'), ...actionFields, failure: failureSchema }),
-  s.object({ ...envelope, type: s.literal('navigation'), ...stepScope, url: s.string() }),
+  s.object({
+    ...envelope,
+    type: s.literal('navigation'),
+    ...stepScope,
+    url: s.string(),
+    title: s.optional(s.string()),
+    cause: s.optional(navigationCauseSchema),
+  }),
   s.object({
     ...envelope,
     type: s.literal('observation'),
@@ -431,6 +472,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     observationId: s.string(),
     locator: locatorRecipeSchema,
     pageUrl: s.optional(s.string()),
+    pageTitle: s.optional(s.string()),
     observed: observedRecordSchema,
     durationMs: duration,
   }),

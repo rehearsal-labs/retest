@@ -6,11 +6,14 @@ import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
+import { CHOICES_PAGE, TOGGLE_PATH } from '../../fixtures/task-app/choices-page.ts'
 import { LOCATORS_PAGE, ROW_COUNT } from '../../fixtures/task-app/locators-page.ts'
 import { SAVE_BUTTON } from '../../fixtures/task-app/page.ts'
+import { MORE_PATH, SCROLL_PAGE } from '../../fixtures/task-app/scroll-page.ts'
 import { SERVICE_WORKER, SERVICE_WORKER_PAGE } from '../../fixtures/task-app/service-worker.ts'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
 import { REMEMBER_COOKIE, SESSION_COOKIE, TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
+import { NEXT_TITLE_PAGE, REDIRECTING_PAGE, TITLES_PAGE } from '../../fixtures/task-app/titles-page.ts'
 
 const CLI = fileURLToPath(new URL('../../fixtures/task-app/cli.ts', import.meta.url))
 
@@ -279,4 +282,26 @@ test('the app counts every request it receives', async (t) => {
   const missing = await fetch(`${app.url}/nowhere`)
   await missing.body?.cancel()
   assert.equal(app.requests(), 2)
+})
+
+test('serves the choices and scroll pages, and counts clicks on the locked setting and asks for more items', async (t) => {
+  const app = await start(t)
+  assert.equal(await html(app, '/actions/choices'), CHOICES_PAGE)
+  assert.equal(await html(app, '/actions/scroll'), SCROLL_PAGE)
+  for (const page of [CHOICES_PAGE, SCROLL_PAGE]) assert.doesNotMatch(page, /https?:\/\//)
+  assert.equal((await fetch(`${app.url}${TOGGLE_PATH}`, { method: 'POST' })).status, 204)
+  assert.equal((await fetch(`${app.url}${MORE_PATH}`, { method: 'POST' })).status, 204)
+  assert.equal((await fetch(`${app.url}${MORE_PATH}`, { method: 'POST' })).status, 204)
+  assert.deepEqual([app.toggles(), app.loads()], [1, 2])
+})
+
+test('the titles pages lead on as they say, and the echo page writes the title it was given as text', async (t) => {
+  const app = await start(t)
+  assert.equal(await html(app, '/titles'), TITLES_PAGE)
+  assert.equal(await html(app, '/titles/next'), NEXT_TITLE_PAGE)
+  assert.equal(await html(app, '/titles/redirect'), REDIRECTING_PAGE)
+  const chain = await fetch(`${app.url}/titles/chain`, { redirect: 'manual' })
+  assert.deepEqual([chain.status, chain.headers.get('location')], [302, '/titles/redirect'])
+  const echoed = await html(app, `/titles/echo?title=${encodeURIComponent('<b>"Bell"</b>\u0007')}`)
+  assert.match(echoed, /<title>&lt;b&gt;&quot;Bell&quot;&lt;\/b&gt;\u0007<\/title>/)
 })

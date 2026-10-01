@@ -86,10 +86,10 @@ describe('the last run', () => {
     })
   })
 
-  test('is written whole under the root, and replaced by the next run', () => {
-    const root = tempFolder('last-run-')
-    writeLastRun(root, lastRunOf(result))
-    writeLastRun(root, { ...lastRunOf(result), runId: 'run-2', tests: [] })
-    assert.deepEqual(JSON.parse(readFileSync(join(root, lastRunFile), 'utf8')), { schemaVersion: 1, runId: 'run-2', finishedAt: '2026-09-30T12:00:00.000Z', tests: [] })
+  test('is written whole, its folder made, and replaced by the next run', () => {
+    const target = join(tempFolder('last-run-'), lastRunFile)
+    writeLastRun(target, lastRunOf(result))
+    writeLastRun(target, { ...lastRunOf(result), runId: 'run-2', tests: [] })
+    assert.deepEqual(JSON.parse(readFileSync(target, 'utf8')), { schemaVersion: 1, runId: 'run-2', finishedAt: '2026-09-30T12:00:00.000Z', tests: [] })
   })
 })

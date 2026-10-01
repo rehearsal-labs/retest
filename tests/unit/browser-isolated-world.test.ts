@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CdpAbortedError, CdpProtocolError, CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
-import { IsolatedWorld, isGoneContext } from '../../src/browser/isolated-world.ts'
+import { Dispatch } from '../../src/browser/dispatch.ts'
+import { IsolatedWorld, isGoneContext, neverRan } from '../../src/browser/isolated-world.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { s } from '../../src/protocol/schema.ts'
 import { count, never, protocolError, scriptedSession } from './browser-fixtures.ts'
@@ -276,4 +277,20 @@ test('a release that fails does not fail the call', async () => {
   })
   const world = new IsolatedWorld(session, () => 'F1')
   assert.equal(await world.call(readValue, async () => [], s.string(), new Deadline(2000)), 'seen')
+})
+
+test('a call bound to a document can go through a dispatch, as a call that is an action input does', async () => {
+  const { session } = scriptedSession((method) => (method === createWorld ? created(7) : answered('seen')))
+  const world = new IsolatedWorld(session, () => 'F1')
+  const dispatch = new Dispatch()
+  assert.equal(await world.callIn(7, readValue, [], s.string(), new Deadline(1000), dispatch), 'seen')
+  assert.equal(dispatch.sent, true)
+  assert.equal(await world.callIn(7, readValue, [], s.string(), new Deadline(1000)), 'seen')
+})
+
+test('only the answer for a context that was already gone says the call never ran', () => {
+  assert.equal(neverRan(protocolError(callFunction, goneContext)), true)
+  for (const message of ['Execution context was destroyed.', 'Inspected target navigated or closed', 'odd']) {
+    assert.equal(neverRan(protocolError(callFunction, message)), false, message)
+  }
 })

@@ -1,7 +1,18 @@
-import type { BrowserCommand, LaunchOptions, NewPageOptions, OwnedBrowser, OwnedPage, PageReading, TextQuery } from '../../src/browser/contract.ts'
+import type {
+  BrowserCommand,
+  LaunchOptions,
+  NewPageOptions,
+  OwnedBrowser,
+  OwnedPage,
+  PageNavigation,
+  PageReading,
+  TextQuery,
+} from '../../src/browser/contract.ts'
 import type { CommandResult, Observation } from '../../src/protocol/commands.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
+import type { OptionChoiceRecord } from '../../src/protocol/option-choices.ts'
+import type { NavigationCause, PageFacts } from '../../src/protocol/page-facts.ts'
 import type { StorageState, StoredCookie } from '../../src/protocol/storage-state.ts'
 import type { LaunchBrowser } from '../../src/runner/run.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -11,6 +22,8 @@ import { describeCommand } from '../../src/protocol/commands.ts'
 import { failureSchema } from '../../src/protocol/failures.ts'
 import { pageTextHolds } from '../../src/protocol/host-check.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
+import { describeOptionChoice } from '../../src/protocol/option-choices.ts'
+import { readPageTitle } from '../../src/protocol/page-facts.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { observationOf } from './observation.ts'
 
@@ -54,10 +67,39 @@ export type FakeOptions = {
    * what the page shows, lose the browser, or throw as a read that fails.
    */
   onRead?: (page: FakePage, earlierReads: number) => void | Promise<void>
+  /** The title each path shows, such as `{ '/tasks': 'Tasks' }`. A path not listed has none. */
+  titles?: Readonly<Record<string, string>>
+  /**
+   * How long after its commit a new document's title settles, as a page whose `DOMContentLoaded` comes late,
+   * unless the next command to the page or the next commit settles it first. A `goto` settles its own before it
+   * answers, as it answers after `load`. Absent, every title settles at once.
+   */
+  titleDelayMs?: number
 }
 
 type Element = { text: string; visible: boolean }
 type Press = Extract<BrowserCommand, { kind: 'press' }>
+type Select = Extract<BrowserCommand, { kind: 'select' }>
+type Check = Extract<BrowserCommand, { kind: 'check' | 'uncheck' }>
+type Scroll = Extract<BrowserCommand, { kind: 'scroll' }>
+
+/** An option of a fake `<select>`. */
+export type FakeOption = { label: string; value: string }
+
+/** A fake `<select>`: its options, whether it takes several, and the values chosen. */
+export type FakeSelect = { options: FakeOption[]; multiple: boolean; selected: string[] }
+
+/**
+ * A fake checkbox or radio button. A hidden one is ticked through its label; a stuck one takes the click and
+ * stays as it was.
+ */
+export type FakeCheckbox = { role: 'checkbox' | 'radio'; checked: boolean; hidden?: true; stuck?: true }
+
+/** The input a `check` or `uncheck` sent: a click or a tap, on the control or on its label. */
+export type Ticked = { testId: string; input: 'click' | 'tap'; via?: 'label' }
+
+/** A wheel a `scroll` turned, at an element or at the viewport's centre. */
+export type Scrolled = { testId?: string; x: number; y: number }
 
 /** What a `fill` typed, and the secret it came from, if it did. */
 export type Typed = { value: string; secret?: string; url: string | undefined }
@@ -72,13 +114,21 @@ const sessionCookie = 'session'
  * cookie and `session` shows whether one is there; `typed-value` shows the last text typed, as a page that echoes
  * its input would. A page that emulates a touch screen taps where it is asked to click, and says so. Enter in
  * the title field saves the task, as a form would. Its visible text is the save button's and the saved task's.
+ * `tasks-link` opens `/tasks` when clicked. `country` is a select of one and `toppings` a select of several;
+ * `remember-me` is a checkbox, `styled-terms` a hidden one with a label, `sticky-box` one that ignores its click
+ * and `plan-monthly` a radio button; `terms` is a box that scrolls. Each command that passes names the page it
+ * went to, read before its input, and every title a navigation told settles before a command begins.
  */
 export class FakePage implements OwnedPage {
   readonly #browser: FakeBrowser
   /** The options the runner opened the page with. */
   readonly options: NewPageOptions
-  readonly #navigation = new Set<(url: string) => void>()
+  readonly #navigation = new Set<(navigation: PageNavigation) => void>()
+  /** Settles the title of each navigation told whose title has not settled yet. */
+  #unsettledTitles: (() => void)[] = []
   title = ''
+  /** The document's title, as `document.title` reads it, which a test may change as an app does. */
+  documentTitle = ''
   saved: Element = { text: '', visible: false }
   clicks = 0
   disposed = false
@@ -95,6 +145,22 @@ export class FakePage implements OwnedPage {
   readonly reads: TextQuery[][] = []
   /** Whether a read finds the frame opening another document. */
   navigating = false
+  /** The page's selects, by test id. */
+  readonly selects: Map<string, FakeSelect> = new Map([
+    ['country', { options: [option('Canada', 'ca'), option('France', 'fr'), option('Mexico', 'mx')], multiple: false, selected: ['ca'] }],
+    ['toppings', { options: [option('Cheese', 'cheese'), option('Olives', 'olives'), option('Basil', 'basil')], multiple: true, selected: [] }],
+  ])
+  /** The page's checkboxes and radio buttons, by test id. */
+  readonly checkboxes: Map<string, FakeCheckbox> = new Map<string, FakeCheckbox>([
+    ['remember-me', { role: 'checkbox', checked: false }],
+    ['styled-terms', { role: 'checkbox', checked: false, hidden: true }],
+    ['sticky-box', { role: 'checkbox', checked: false, stuck: true }],
+    ['plan-monthly', { role: 'radio', checked: false }],
+  ])
+  /** Every click or tap a `check` or `uncheck` sent, in order. */
+  readonly ticked: Ticked[] = []
+  /** Every wheel a `scroll` turned, in order. */
+  readonly scrolled: Scrolled[] = []
 
   constructor(browser: FakeBrowser, options: NewPageOptions) {
     this.#browser = browser
@@ -117,8 +183,10 @@ export class FakePage implements OwnedPage {
     return ['Save', ...(this.saved.visible ? [this.saved.text] : [])].join('\n')
   }
 
+  // A browser about to be lost settles no title first.
   async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> {
     const options = this.#browser.options
+    if (options.disconnect?.on !== command.kind) this.#settleTitles()
     this.#browser.commands.push(command)
     options.onCommand?.(command)
     const result = await this.#run(command, timeoutMs, signal)
@@ -134,20 +202,42 @@ export class FakePage implements OwnedPage {
       return { ok: false, failure: { class: 'timeout', message: `${command.kind} took longer than ${timeoutMs} ms.` } }
     }
     if (options.disconnect?.on === command.kind) return this.#lose(command, options.disconnect.stage, timeoutMs)
-    if (command.kind === 'goto') return this.#goto(command.url)
-    if (command.kind === 'press') return this.#press(command, timeoutMs, signal)
+    switch (command.kind) {
+      case 'goto':
+        return this.#goto(command.url)
+      case 'press':
+        return this.#press(command, timeoutMs, signal)
+      case 'select':
+        return this.#select(command, timeoutMs, signal)
+      case 'check':
+      case 'uncheck':
+        return this.#check(command, timeoutMs, signal)
+      case 'scroll':
+        return this.#scroll(command, timeoutMs, signal)
+    }
     const testId = command.locator.by === 'testId' ? command.locator.value : undefined
     const touch = this.options.emulation?.touch === true
     if (testId === undefined || (command.kind === 'tap' && !touch)) {
       return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${describeCommand(command)}.` } }
     }
-    if (command.kind === 'observe') return { ok: true, kind: 'observe', observation: this.#observe(testId) }
+    if (command.kind === 'observe') return { ok: true, kind: 'observe', observation: this.#observe(testId), ...this.#facts() }
     const action = command.kind === 'fill' ? command : { kind: touch ? 'tap' : 'click', locator: command.locator } as const
     const missing = await this.#find(action, action.locator, timeoutMs, signal)
     if (missing !== undefined) return missing
+    const facts = this.#facts()
     if (action.kind === 'fill') this.#fill(action)
     else this.#click(testId)
-    return { ok: true, kind: action.kind }
+    return { ok: true, kind: action.kind, ...facts }
+  }
+
+  /**
+   * The page moves by itself, as a redirect or a timer moves it, or, with `action`, as a link the test clicked
+   * does. The address moves at once; the title settles as `titleDelayMs` says.
+   */
+  navigate(path: string, cause: NavigationCause = 'page'): void {
+    const url = URL.parse(path, this.url ?? this.baseUrl)
+    if (url === null) throw new Error(`The fake page cannot open ${path}.`)
+    this.#commit(url, cause, false)
   }
 
   async captureState(): Promise<StorageState> {
@@ -165,10 +255,11 @@ export class FakePage implements OwnedPage {
     await this.#browser.options.onRead?.(this, earlier)
     if (!this.#browser.connected) throw new BrowserError({ class: 'session_lost', message: 'The page lost its browser.' })
     const text = this.visibleText
-    return { url: this.url, navigating: this.navigating, found: queries.map((query) => pageTextHolds(text, query)) }
+    const title = readPageTitle(this.documentTitle)
+    return { url: this.url, ...(title === undefined ? {} : { title }), navigating: this.navigating, found: queries.map((query) => pageTextHolds(text, query)) }
   }
 
-  onNavigation(listener: (url: string) => void): () => void {
+  onNavigation(listener: (navigation: PageNavigation) => void): () => void {
     this.#navigation.add(listener)
     return () => this.#navigation.delete(listener)
   }
@@ -183,25 +274,121 @@ export class FakePage implements OwnedPage {
   #goto(url: string): CommandResult {
     const resolved = URL.parse(url, this.baseUrl)
     if (resolved === null) return { ok: false, failure: { class: 'usage', message: `Cannot open ${url}.` } }
-    const page = `${resolved.origin}${resolved.pathname}`
-    this.url = page
-    for (const listener of this.#navigation) listener(page)
-    return { ok: true, kind: 'goto', url: page }
+    const page = this.#commit(resolved, 'goto', true)
+    return { ok: true, kind: 'goto', url: page, ...this.#facts() }
+  }
+
+  // A later commit settles the title of the one before, with the title it had then.
+  #commit(url: URL, cause: NavigationCause, settleAtOnce: boolean): string {
+    this.#settleTitles()
+    const address = `${url.origin}${url.pathname}`
+    this.url = address
+    this.documentTitle = this.#browser.options.titles?.[url.pathname] ?? ''
+    const title = Promise.withResolvers<string | undefined>()
+    const settle = (): void => title.resolve(readPageTitle(this.documentTitle))
+    const delay = this.#browser.options.titleDelayMs
+    if (settleAtOnce || delay === undefined) settle()
+    else {
+      this.#unsettledTitles.push(settle)
+      setTimeout(settle, delay).unref()
+    }
+    for (const listener of this.#navigation) listener({ url: address, title: title.promise, cause })
+    return address
+  }
+
+  #settleTitles(): void {
+    const unsettled = this.#unsettledTitles
+    this.#unsettledTitles = []
+    for (const settle of unsettled) settle()
+  }
+
+  // The page as the command found it, before its input: its address, and its title when it has one.
+  #facts(): { page?: PageFacts } {
+    if (this.url === undefined) return {}
+    const title = readPageTitle(this.documentTitle)
+    return { page: title === undefined ? { url: this.url } : { url: this.url, title } }
   }
 
   // A key on the page's keyboard goes to whatever has the focus, which the fake does not track.
   async #press(command: Press, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult> {
     const { locator, key } = command
     if (locator === undefined) {
+      const facts = this.#facts()
       this.pressed.push({ key })
-      return { ok: true, kind: 'press' }
+      return { ok: true, kind: 'press', ...facts }
     }
     if (locator.by !== 'testId') return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${describeCommand(command)}.` } }
     const missing = await this.#find(command, locator, timeoutMs, signal)
     if (missing !== undefined) return missing
+    const facts = this.#facts()
     this.pressed.push({ key, testId: locator.value })
     if (key === 'Enter' && locator.value === 'task-title') this.#click('save-task')
-    return { ok: true, kind: 'press' }
+    return { ok: true, kind: 'press', ...facts }
+  }
+
+  // Chooses exactly the options named, as a script in the page does, or says why it cannot.
+  async #select(command: Select, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult> {
+    const { locator, choices } = command
+    const missing = await this.#find(command, locator, timeoutMs, signal)
+    if (missing !== undefined) return missing
+    const select = locator.by === 'testId' ? this.selects.get(locator.value) : undefined
+    const described = describeLocator(locator)
+    if (select === undefined) return { ok: false, failure: { class: 'unsupported', message: `${described} is not a <select>.` } }
+    if (command.multiple === true && !select.multiple) {
+      return { ok: false, failure: { class: 'usage', message: `${described} takes one option, and select() was given a list.` } }
+    }
+    const values: string[] = []
+    for (const choice of choices) {
+      const matches = select.options.filter((each) => matchesChoice(each, choice))
+      const [only] = matches
+      if (only === undefined) return { ok: false, failure: { class: 'not_found', message: `${described} has no option ${describeOptionChoice(choice)}.` } }
+      if (matches.length > 1) return { ok: false, failure: { class: 'ambiguous', message: `${described} has ${matches.length} options ${describeOptionChoice(choice)}.` } }
+      values.push(only.value)
+    }
+    const facts = this.#facts()
+    const changed = values.length !== select.selected.length || values.some((value) => !select.selected.includes(value))
+    select.selected = values
+    return { ok: true, kind: 'select', changed, ...facts }
+  }
+
+  // Clicks, or taps, a control once when it is not as asked, through its label when it is hidden.
+  async #check(command: Check, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult> {
+    const { locator, kind } = command
+    const missing = await this.#find(command, locator, timeoutMs, signal)
+    if (missing !== undefined) return missing
+    const testId = locator.by === 'testId' ? locator.value : undefined
+    const control = testId === undefined ? undefined : this.checkboxes.get(testId)
+    const described = describeLocator(locator)
+    if (testId === undefined || control === undefined) return { ok: false, failure: { class: 'unsupported', message: `${described} is not a checkbox or a radio button.` } }
+    if (kind === 'uncheck' && control.role === 'radio') {
+      return { ok: false, failure: { class: 'unsupported', message: `${described} is a radio button; choose another to uncheck it.` } }
+    }
+    const wanted = kind === 'check'
+    const facts = this.#facts()
+    if (control.checked === wanted) return { ok: true, kind, changed: false, ...facts }
+    const via = control.hidden === true ? ({ via: 'label' } as const) : {}
+    this.ticked.push({ testId, input: this.options.emulation?.touch === true ? 'tap' : 'click', ...via })
+    if (control.stuck === true) {
+      const message = `Retest clicked ${described} once, and it stayed ${wanted ? 'unchecked' : 'checked'}. Retest does not click again.`
+      return { ok: false, failure: { class: 'not_actionable', message, details: { check: 'state', inputSent: true } } }
+    }
+    control.checked = wanted
+    return { ok: true, kind, changed: true, ...via, ...facts }
+  }
+
+  // Turns the wheel at an element, or at the viewport's centre when there is no locator.
+  async #scroll(command: Scroll, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult> {
+    const { locator, x, y } = command
+    if (locator === undefined) {
+      const facts = this.#facts()
+      this.scrolled.push({ x, y })
+      return { ok: true, kind: 'scroll', ...facts }
+    }
+    const missing = await this.#find(command, locator, timeoutMs, signal)
+    if (missing !== undefined) return missing
+    const facts = this.#facts()
+    this.scrolled.push({ ...(locator.by === 'testId' ? { testId: locator.value } : {}), x, y })
+    return { ok: true, kind: 'scroll', ...facts }
   }
 
   #fill(command: Extract<BrowserCommand, { kind: 'fill' }>): void {
@@ -222,6 +409,10 @@ export class FakePage implements OwnedPage {
   }
 
   #click(testId: string): void {
+    if (testId === 'tasks-link') {
+      this.navigate('/tasks', 'action')
+      return
+    }
     if (testId === 'sign-in') {
       const value = `signed-in-${this.#browser.pages.indexOf(this)}`
       this.cookies = [{ name: sessionCookie, value, domain: '127.0.0.1', path: '/', expires: -1, httpOnly: true, secure: false }]
@@ -261,9 +452,25 @@ export class FakePage implements OwnedPage {
         return { text: this.typed.at(-1)?.value ?? '', visible: true }
       case 'password':
         return { text: '', visible: true }
+      case 'tasks-link':
+        return { text: 'Tasks', visible: true }
+      case 'terms':
+        return { text: 'Terms of use', visible: true }
       default:
-        return undefined
+        return this.#control(testId)
     }
+  }
+
+  // A select shows its chosen options' labels; a control its own state, which a hidden one shows through its label.
+  #control(testId: string): Element | undefined {
+    const select = this.selects.get(testId)
+    if (select !== undefined) {
+      const labels = select.options.filter((each) => select.selected.includes(each.value)).map((each) => each.label)
+      return { text: labels.join(', '), visible: true }
+    }
+    const control = this.checkboxes.get(testId)
+    if (control === undefined) return undefined
+    return { text: control.checked ? 'checked' : 'unchecked', visible: control.hidden !== true }
   }
 
   #observe(testId: string): Observation {
@@ -294,6 +501,14 @@ export class FakePage implements OwnedPage {
     const message = `${cause.message} ${describeCommand(command)} was stopped before it sent any input.`
     return { ok: false, failure: { class: cause.class, message, details: { ...cause.details, inputSent: false } } }
   }
+}
+
+function option(label: string, value: string): FakeOption {
+  return { label, value }
+}
+
+function matchesChoice(each: FakeOption, choice: OptionChoiceRecord): boolean {
+  return 'label' in choice ? each.label === choice.label : each.value === choice.value
 }
 
 // Above any process id an operating system hands out, so nothing can mistake a fake for a real process.

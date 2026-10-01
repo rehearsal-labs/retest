@@ -1,8 +1,8 @@
 import type { RetestEvent } from '../../protocol/events.ts'
 import type { TestResult } from '../../protocol/result.ts'
 import type { Variant } from '../../protocol/variant.ts'
+import type { RunFolder } from '../../store/read-run-folder.ts'
 import type { CliDependencies, Command } from '../command.ts'
-import type { RunFolder } from '../inspect/read-run-folder.ts'
 import { resolve } from 'node:path'
 import { matchesTargets, variantKey } from '../../protocol/variant.ts'
 import { testCard } from '../../reporters/failure-card.ts'
@@ -12,10 +12,10 @@ import { recordEvents } from '../../reporters/run-record.ts'
 import { createStyle } from '../../reporters/style.ts'
 import { runTargets } from '../../reporters/targets.ts'
 import { listWords } from '../../shared/list-words.ts'
+import { readRunFolder, RunFolderReadError } from '../../store/read-run-folder.ts'
 import { readTargetPairs } from '../app-pairs.ts'
 import { flag, list, parseArguments, value } from '../arguments.ts'
 import { CliError, UsageError } from '../errors.ts'
-import { readRunFolder } from '../inspect/read-run-folder.ts'
 import { renderTimeline } from '../inspect/test-timeline.ts'
 import { suggest } from '../suggest.ts'
 import { shouldUseColor } from '../terminal.ts'
@@ -56,7 +56,7 @@ export const inspectCommand: Command = {
     const [shown, ...extra] = parsed.positionals
     if (shown === undefined) throw new UsageError('Name the run folder to read, such as .retest/runs/<time>.')
     if (extra.length > 0) throw new UsageError(`inspect reads one run folder, received ${parsed.positionals.length}.`)
-    const folder = readRunFolder(resolve(dependencies.cwd, shown), shown)
+    const folder = readFolder(resolve(dependencies.cwd, shown), shown)
     for (const warning of folder.warnings) dependencies.stderr.write(`warning: ${warning}\n`)
     const testId = parsed.value('test')
     const json = parsed.flag('json')
@@ -67,6 +67,16 @@ export const inspectCommand: Command = {
     else writeRun(folder, shown, dependencies)
     return 0
   },
+}
+
+// A folder that is not a run folder is an expected failure, told as the store tells it.
+function readFolder(folder: string, shown: string): RunFolder {
+  try {
+    return readRunFolder(folder, shown)
+  } catch (error) {
+    if (error instanceof RunFolderReadError) throw new CliError(error.message, { cause: error })
+    throw error
+  }
 }
 
 type TestRequest = { folder: RunFolder; shown: string; testId: string; targets: Variant | undefined; json: boolean }

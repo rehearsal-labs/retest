@@ -113,9 +113,9 @@ test('checks decide each test with its body: by test id and by file, in order, e
   assert.deepEqual(
     passed.filter((event) => event.testId === `${tasks} > saves a task`).map((event) => [event.session, event.check, event.actual]),
     [
-      ['web', { kind: 'address', origin: app.url, path: '/' }, { url: `${app.url}/` }],
-      ['web', { kind: 'text', text: 'Release checklist' }, { url: `${app.url}/`, found: true }],
-      ['web', { kind: 'text', text: 'Could not save', absent: true }, { url: `${app.url}/`, found: false }],
+      ['web', { kind: 'address', origin: app.url, path: '/' }, { url: `${app.url}/`, title: 'Tasks' }],
+      ['web', { kind: 'text', text: 'Release checklist' }, { url: `${app.url}/`, title: 'Tasks', found: true }],
+      ['web', { kind: 'text', text: 'Could not save', absent: true }, { url: `${app.url}/`, title: 'Tasks', found: false }],
     ],
   )
 
@@ -165,7 +165,7 @@ test('checks decide each test with its body: by test id and by file, in order, e
   // tests again; each card points to inspect.
   const report = await runCli(t, ['inspect', run.output], { env: { NO_COLOR: '1' } })
   assert.equal(report.exit.code, 0, report.stderr)
-  assert.match(report.stdout, /\n {4}Host check failed {2}address on web\n {4}Expected {9}http:\/\/127\.0\.0\.1:\d+\/\n {4}Page {13}http:\/\/127\.0\.0\.1:\d+\/account\n/)
+  assert.match(report.stdout, /\n {4}Host check failed {2}address on web\n {4}Expected {9}http:\/\/127\.0\.0\.1:\d+\/\n {4}Page {13}"Account" at http:\/\/127\.0\.0\.1:\d+\/account\n/)
   assert.match(report.stdout, /\n {4}Not run {10}host check text on web: "Release checklist"\n/)
   assert.match(report.stdout, /\n {2}Host checks {2}4 failed · 10 passed · 1 not run\n/)
   assert.doesNotMatch(report.stdout, /Rerun|retest run/)
@@ -174,7 +174,7 @@ test('checks decide each test with its body: by test id and by file, in order, e
   // The checks come after the body's last assertion and the look it rested on, each with what the page showed.
   assert.match(
     timeline.stdout,
-    /✓ toHaveText getByTestId\('account'\) [^\n]*\n +looked 1 time, passed on o\d+: 1 match, text "Signed out"\n +[\d.]+ m?s {2}web {2}✗ host check address: http:\/\/127\.0\.0\.1:\d+\/ {2}[^\n]*host_check_failed\n +page http:\/\/127\.0\.0\.1:\d+\/account\n/,
+    /✓ toHaveText getByTestId\('account'\) [^\n]*\n +looked 1 time, passed on o\d+: 1 match, text "Signed out"\n +[\d.]+ m?s {2}web {2}✗ host check address: http:\/\/127\.0\.0\.1:\d+\/ {2}[^\n]*host_check_failed\n +page "Account" at http:\/\/127\.0\.0\.1:\d+\/account\n/,
   )
 })
 

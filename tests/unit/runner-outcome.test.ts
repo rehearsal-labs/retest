@@ -2,7 +2,7 @@ import type { Failure } from '../../src/protocol/failures.ts'
 import type { FileResult, TestResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { countTests, interruptedExitCode, runOutcome, stopSignalOf, testStatus } from '../../src/runner/outcome.ts'
+import { countTests, interruptedExitCode, interruptionOf, runOutcome, stopReasonOf, stopSignalOf, stoppedExitCode, testStatus } from '../../src/runner/outcome.ts'
 
 const failed = (kind: Failure['class'], message: string = kind): Failure => ({ class: kind, message })
 
@@ -80,6 +80,29 @@ describe('runOutcome', () => {
     assert.equal(stopSignalOf(stopped(new Error('SIGTERM'))), 'SIGINT')
     assert.equal(interruptedExitCode(stopped('SIGTERM')), 143)
     assert.equal(interruptedExitCode(stopped()), 130)
+  })
+
+  test('a Failure a caller stopped the run with exits 130, and is the run\'s own failure, ahead of anything else', () => {
+    const reason = failed('interrupted', 'The host stopped the run: its budget ran out.')
+    const files = [file([result('passed'), result('error', { failure: reason }), result('not_run', { failure: reason })])]
+    const outcome = runOutcome({ stoppedBy: reason, runFailures: [], outputFailures: [], files })
+    assert.deepEqual([outcome.exitCode, outcome.status, outcome.complete, outcome.failure], [130, 'interrupted', false, reason])
+    const withLostOutput = runOutcome({ stoppedBy: reason, runFailures: [], outputFailures: [lostEvents], files })
+    assert.deepEqual(withLostOutput.failure, { ...reason, details: { also: `reporting_failed: ${lostEvents.message}` } })
+    const bySignal = runOutcome({ stoppedBy: 'SIGINT', runFailures: [], outputFailures: [], files })
+    assert.equal(bySignal.failure, undefined, 'a signal says so in the status alone')
+  })
+
+  test('the reason comes from the abort signal: a Failure as it is, SIGTERM, and anything else as SIGINT', () => {
+    const reason = failed('setup_failed', 'The host lost its proxy.')
+    assert.deepEqual(stopReasonOf(AbortSignal.abort(reason)), reason)
+    assert.equal(stopReasonOf(AbortSignal.abort('SIGTERM')), 'SIGTERM')
+    assert.equal(stopReasonOf(AbortSignal.abort()), 'SIGINT')
+    assert.equal(stopReasonOf(AbortSignal.abort({ class: 'nonsense', message: 'not a failure' })), 'SIGINT')
+    assert.deepEqual(interruptionOf(reason), reason)
+    assert.deepEqual(interruptionOf('SIGTERM'), { class: 'interrupted', message: 'The run was stopped by SIGTERM.' })
+    assert.deepEqual(interruptionOf('SIGINT'), { class: 'interrupted', message: 'The run was interrupted.' })
+    assert.deepEqual([stoppedExitCode(reason), interruptedExitCode(AbortSignal.abort(reason))], [130, 130])
   })
 
   test('2 when nothing trustworthy came out: no tests, every file failing collection, or nothing run', () => {

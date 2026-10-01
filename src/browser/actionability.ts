@@ -1,30 +1,47 @@
-import type { ActionIntent, Check, Readiness } from './element-queries.ts'
-import type { Guard } from './input-guard.ts'
+import type { ActionIntent, Check, DocumentAction, Readiness } from './element-queries.ts'
 import type { Point } from './input.ts'
 import type { InDocument, IsolatedWorld } from './isolated-world.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
+import type { PageFacts } from '../protocol/page-facts.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { describeLocator } from '../protocol/locator.ts'
+import { describeOptionChoice } from '../protocol/option-choices.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
 import { CdpTimeoutError } from './cdp/errors.ts'
-import { armKeyboard, describeAction, prepare } from './element-queries.ts'
+import { pageFactsOf } from './document-facts.ts'
+import { armDocument, describeAction, prepare } from './element-queries.ts'
 import { originRefusal } from './origin-refusal.ts'
 import { originAndPath } from './page-url.ts'
 
 /**
- * Where to press an element that passed every check, and the guard it armed for the input. A key goes to the
- * focus, not to a point, so its point is null.
+ * An element, or the document, that passed every check. `point` is where to act, or null for a key, which goes to
+ * the focus. `context` is the document the look ran in, which holds the guard the look armed with `token`, or none
+ * for a `select`. `via` is `'label'` when a hidden control is acted on through its label, `scale` the visual
+ * viewport's, and `page` the page the look read.
  */
-export type ActionTarget = { ok: true; point: Point | null; guard: Guard } | { ok: false; failure: Failure }
+export type ReadyTarget = {
+  point: Point | null
+  context: number
+  token: number | null
+  via: 'label' | undefined
+  scale: number
+  page: PageFacts
+}
+
+/** Where to act, or a `check` or `select` already as asked, which needs no input, or why the action cannot go. */
+export type ActionTarget =
+  | ({ ok: true; kind: 'ready' } & ReadyTarget)
+  | { ok: true; kind: 'unchanged'; page: PageFacts }
+  | { ok: false; failure: Failure }
 
 /** A navigation the browser has begun in the main frame. Its document replaces the current one when it commits. */
 export type PendingNavigation = { url: string }
 
 export type ActionabilityOptions = {
   world: IsolatedWorld
-  /** The element to act on, or undefined for a key sent to the page's keyboard, which only waits out a navigation. */
+  /** The element to act on, or undefined for input the document takes, which only waits out a navigation. */
   locator: LocatorRecipe | undefined
   intent: ActionIntent
   deadline: Deadline
@@ -32,13 +49,17 @@ export type ActionabilityOptions = {
   pendingNavigation: () => PendingNavigation | undefined
 }
 
-type Unready = Extract<Readiness, { status: 'missing' | 'blocked' }> | { status: 'navigating'; url: string }
+type Unready =
+  | Extract<Readiness, { status: 'missing' | 'blocked' }>
+  | { status: 'option'; problem: 'missing' | 'disabled'; choice: number }
+  | { status: 'navigating'; url: string }
 type Look = { kind: 'settled'; target: ActionTarget } | { kind: 'unready'; unready: Unready }
 
 const firstPauseMs = 20
 const maxPauseMs = 200
 
 const fieldTypes = 'a textarea, or an input of type text, search, email, url, tel, password or number'
+const checkableKinds = 'a checkbox, a radio button, or an element whose role is checkbox, radio, switch, menuitemcheckbox or menuitemradio'
 
 const becauseOf: Record<Check, string> = {
   attached: 'it was removed from the page while Retest checked it',
@@ -52,11 +73,12 @@ const becauseOf: Record<Check, string> = {
 }
 
 /**
- * Resolves the locator again and again until one element passes every check, then returns where to press.
- * More than one match, a field `fill` cannot use, or an origin it may not type into fails at once; anything else
- * waits for the deadline. While the browser is opening another document in the frame, the page is not looked
- * at: the element is looked for in the document that arrives. A key for the page's keyboard has no element, and
- * is ready once no such navigation is under way.
+ * Resolves the locator again and again until one element passes every check, then returns where to act. More
+ * than one match, an element the action cannot use, a choice that names several options, or an origin a fill may
+ * not type into fails at once; anything else waits for the deadline. While the browser is opening another
+ * document in the frame, the page is not looked at: the element is looked for in the document that arrives. Input
+ * the document takes, a key for the page's keyboard or the wheel for the page, has no element, and is ready once
+ * no such navigation is under way.
  *
  * @example const target = await waitUntilActionable({ world, locator, intent, deadline, pendingNavigation })
  */
@@ -77,29 +99,69 @@ async function look({ world, locator, intent, deadline, pendingNavigation }: Act
   if (pending !== undefined) return { kind: 'unready', unready: { status: 'navigating', url: pending.url } }
   let seen: InDocument<Readiness>
   try {
-    if (locator === undefined) {
-      const { value: token, context } = await armKeyboard(world, deadline)
-      return { kind: 'settled', target: { ok: true, point: null, guard: { context, token } } }
-    }
-    seen = await prepare(world, locator, intent, deadline)
+    seen = locator === undefined ? await armDocument(world, documentAction(intent), deadline) : await prepare(world, locator, intent, deadline)
   } catch (error) {
     // The deadline ran out during a look, so the previous look is the latest answer there is.
     if (last !== undefined && error instanceof CdpTimeoutError) return { kind: 'settled', target: failed(unready(last, locator, intent, deadline)) }
     throw error
   }
-  const { value: readiness, context } = seen
+  return lookedAt(seen, locator, intent)
+}
+
+function lookedAt({ value: readiness, context }: InDocument<Readiness>, locator: LocatorRecipe | undefined, intent: ActionIntent): Look {
   switch (readiness.status) {
     case 'ready':
-      return { kind: 'settled', target: { ok: true, point: readiness.point, guard: { context, token: readiness.token } } }
+      return { kind: 'settled', target: readyTarget(readiness, context) }
+    case 'unchanged':
+      return { kind: 'settled', target: { ok: true, kind: 'unchanged', page: pageFactsOf(readiness.page) } }
+    case 'selected':
+      throw new Error("Retest's page script made a selection while it only looked")
+    case 'missing':
+    case 'blocked':
+      return { kind: 'unready', unready: readiness }
+    default:
+      return settledFailure(readiness, elementOf(locator), intent)
+  }
+}
+
+/**
+ * A look that settles the action as a failure, at once, or a choice that waits: one that matched no option yet, or
+ * a disabled one.
+ */
+function settledFailure(
+  readiness: Extract<Readiness, { status: 'ambiguous' | 'unsupported' | 'refused' | 'option' }>,
+  locator: LocatorRecipe,
+  intent: ActionIntent,
+): Look {
+  switch (readiness.status) {
     case 'ambiguous':
       return { kind: 'settled', target: failed(ambiguous(readiness.count, locator, intent)) }
     case 'unsupported':
       return { kind: 'settled', target: failed(unsupported(readiness, locator, intent)) }
     case 'refused':
       return { kind: 'settled', target: failed(originRefusal(readiness, intent, locator)) }
-    default:
-      return { kind: 'unready', unready: readiness }
+    case 'option': {
+      const { problem, choice, count } = readiness
+      if (problem !== 'ambiguous') return { kind: 'unready', unready: { status: 'option', problem, choice } }
+      return { kind: 'settled', target: failed(ambiguousOption(choice, count, locator, intent)) }
+    }
   }
+}
+
+function readyTarget(readiness: Extract<Readiness, { status: 'ready' }>, context: number): ActionTarget {
+  const { point, token, via, scale, page } = readiness
+  return { ok: true, kind: 'ready', point, context, token, via: via ?? undefined, scale, page: pageFactsOf(page) }
+}
+
+// Only an action on an element can meet an element that does not suit it.
+function elementOf(locator: LocatorRecipe | undefined): LocatorRecipe {
+  if (locator === undefined) throw new Error("Retest's page script judged an element for input the document takes")
+  return locator
+}
+
+function documentAction({ action }: ActionIntent): DocumentAction {
+  if (action === 'press' || action === 'scroll') return action
+  throw new Error(`Retest cannot ${action} without an element`)
 }
 
 function failed(failure: Failure): ActionTarget {
@@ -114,48 +176,97 @@ function ambiguous(count: number, locator: LocatorRecipe, intent: ActionIntent):
   }
 }
 
-function unsupported(readiness: Extract<Readiness, { status: 'unsupported' }>, locator: LocatorRecipe, { secret }: ActionIntent): Failure {
-  const { field } = readiness
-  if (readiness.reason === 'multiline') {
-    const value = secret === undefined ? 'a line break' : `${secretPlaceholder(secret)}, which has a line break`
-    return {
-      class: 'unsupported',
-      message: `Could not fill ${describeLocator(locator)} with ${value}: it is ${field}, which holds one line. Use a textarea for text with \\n or \\r.`,
-      details: { field },
-    }
-  }
+function ambiguousOption(choice: number, count: number, locator: LocatorRecipe, intent: ActionIntent): Failure {
+  const named = choiceOf(intent, choice)
   return {
-    class: 'unsupported',
-    message: `Could not fill ${describeLocator(locator)}: it is ${field}, and fill supports ${fieldTypes}.`,
-    details: { field },
+    class: 'ambiguous',
+    message: `Could not ${describeAction(intent, locator)}: ${count} options match ${named}, and each choice must match exactly one. Retest selected nothing.`,
+    details: { choice: named, count },
+  }
+}
+
+function unsupported(readiness: Extract<Readiness, { status: 'unsupported' }>, locator: LocatorRecipe, intent: ActionIntent): Failure {
+  const { element } = readiness
+  const action = describeAction(intent, locator)
+  switch (readiness.reason) {
+    case 'multiline': {
+      const value = intent.secret === undefined ? 'a line break' : `${secretPlaceholder(intent.secret)}, which has a line break`
+      return {
+        class: 'unsupported',
+        message: `Could not fill ${describeLocator(locator)} with ${value}: it is ${element}, which holds one line. Use a textarea for text with \\n or \\r.`,
+        details: { field: element },
+      }
+    }
+    case 'field':
+      return { class: 'unsupported', message: `Could not ${action}: it is ${element}, and fill supports ${fieldTypes}.`, details: { field: element } }
+    case 'checkable':
+      return { class: 'unsupported', message: `Could not ${action}: it is ${element}, and ${intent.action}() works on ${checkableKinds}.`, details: { element } }
+    case 'radio':
+      return {
+        class: 'unsupported',
+        message: `Could not ${action}: it is a radio button, ${element}. A person unchecks a radio button by choosing another one, so check that one instead.`,
+        details: { element },
+      }
+    case 'select':
+      return {
+        class: 'unsupported',
+        message: `Could not ${action}: it is ${element}, and select() chooses from a <select> element. Choose from a list the page draws itself with click().`,
+        details: { element },
+      }
+    case 'multiple':
+      return {
+        class: 'usage',
+        message: `Could not ${action}: it is ${element}, which takes one option, and select() was given a list. Pass one option, not a list.`,
+        details: { element },
+      }
   }
 }
 
 function unready(last: Unready, locator: LocatorRecipe | undefined, intent: ActionIntent, deadline: Deadline): Failure {
   const action = describeAction(intent, locator)
   const waitedMs = deadline.budgetMs
-  if (last.status === 'missing') {
-    return {
-      class: 'not_found',
-      message: `Could not ${action}: no element matched within ${waitedMs} ms.`,
-      details: { waitedMs },
+  switch (last.status) {
+    case 'missing':
+      return { class: 'not_found', message: `Could not ${action}: no element matched within ${waitedMs} ms.`, details: { waitedMs } }
+    case 'navigating': {
+      const opening = describeAddress(last.url)
+      return {
+        class: 'not_actionable',
+        message: `Could not ${action} within ${waitedMs} ms: the page was still opening ${opening}, and Retest does not ${intent.action} in a document about to be replaced.`,
+        details: { check: 'navigation', url: opening, waitedMs },
+      }
+    }
+    case 'option':
+      return optionUnready(last, action, intent, waitedMs)
+    case 'blocked': {
+      const covering = last.check === 'hit-target' ? last.detail : null
+      const reason = covering === null ? becauseOf[last.check] : `another element, ${covering}, covers its centre`
+      return {
+        class: 'not_actionable',
+        message: `Could not ${action} within ${waitedMs} ms: ${reason}.`,
+        details: { check: last.check, covering, waitedMs },
+      }
     }
   }
-  if (last.status === 'navigating') {
-    const opening = describeAddress(last.url)
-    return {
-      class: 'not_actionable',
-      message: `Could not ${action} within ${waitedMs} ms: the page was still opening ${opening}, and Retest does not ${intent.action} in a document about to be replaced.`,
-      details: { check: 'navigation', url: opening, waitedMs },
-    }
+}
+
+// Options often arrive late, so a choice that matched none, or only a disabled one, is waited for.
+function optionUnready({ problem, choice }: Extract<Unready, { status: 'option' }>, action: string, intent: ActionIntent, waitedMs: number): Failure {
+  const named = choiceOf(intent, choice)
+  if (problem === 'missing') {
+    return { class: 'not_found', message: `Could not ${action}: no option matched ${named} within ${waitedMs} ms.`, details: { choice: named, waitedMs } }
   }
-  const covering = last.check === 'hit-target' ? last.detail : null
-  const reason = covering === null ? becauseOf[last.check] : `another element, ${covering}, covers its centre`
   return {
     class: 'not_actionable',
-    message: `Could not ${action} within ${waitedMs} ms: ${reason}.`,
-    details: { check: last.check, covering, waitedMs },
+    message: `Could not ${action} within ${waitedMs} ms: the option ${named} is disabled.`,
+    details: { check: 'enabled', choice: named, waitedMs },
   }
+}
+
+function choiceOf(intent: ActionIntent, index: number): string {
+  const choice = intent.action === 'select' ? intent.choices[index] : undefined
+  if (choice === undefined) throw new Error("Retest's page script named a choice the select was not given")
+  return describeOptionChoice(choice)
 }
 
 // An address is recorded as its origin and path, since a query can carry what a page was given.

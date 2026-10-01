@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { app, chrome, chromium, defineConfig, edge, env } from '../../src/config/define.ts'
 import { validateConfig } from '../../src/config/validate.ts'
+import { isPlainObject } from '../../src/protocol/schema.ts'
 import { maxTimeout } from '../../src/protocol/timeouts.ts'
 
 const path = '/work/retest.config.ts'
@@ -24,6 +25,7 @@ function problems(value: unknown): string[] {
 }
 
 const web = { web: chromium({ baseUrl: 'http://127.0.0.1:4173' }) }
+const waiting = { signal: new AbortController().signal }
 
 describe('validateConfig: what it reads', () => {
   test('a target on its own is an app with one target, named after its browser', () => {
@@ -102,7 +104,7 @@ describe('validateConfig: what it reads', () => {
     const code = config.secrets.get('code')
     assert.deepEqual(code?.origins, [])
     assert.ok(code !== undefined && 'read' in code.source)
-    assert.equal(await code.source.read(), '482913')
+    assert.equal(await code.source.read(waiting), '482913')
   })
 
   test('a proxy is kept as its scheme, host and port, with its bypass rules as given, none by default', () => {
@@ -398,12 +400,35 @@ describe('function secrets', () => {
     const read = (name: string): Promise<string> => {
       const source = config.secrets.get(name)?.source
       assert.ok(source !== undefined && 'read' in source, name)
-      return source.read()
+      return source.read(waiting)
     }
     assert.equal(await read('code'), 'code-1')
     assert.equal(await read('code'), 'code-2')
     await assert.rejects(read('empty'), { name: 'TypeError', message: 'The function for secret "empty" returned an empty string, not the secret\'s text.' })
     await assert.rejects(read('number'), { name: 'TypeError', message: 'The function for secret "number" returned number, not the secret\'s text.' })
     await assert.rejects(read('broken'), { message: 'The vault is locked.' })
+  })
+
+  // A function that waits on a network or an inbox can give up once Retest has stopped waiting for it.
+  test('are called with the signal of each read, and nothing more', async () => {
+    const calls: unknown[][] = []
+    const config = loaded({
+      apps: web,
+      secrets: {
+        code: (...args: unknown[]) => {
+          calls.push(args)
+          return 'code-1'
+        },
+      },
+    })
+    const source = config.secrets.get('code')?.source
+    assert.ok(source !== undefined && 'read' in source)
+    const reading = new AbortController()
+    assert.equal(await source.read({ signal: reading.signal }), 'code-1')
+    assert.equal(calls.length, 1)
+    const [[context, ...rest] = []] = calls
+    assert.deepEqual(rest, [])
+    assert.ok(isPlainObject(context))
+    assert.equal(context['signal'], reading.signal)
   })
 })

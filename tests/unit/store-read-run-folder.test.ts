@@ -3,43 +3,37 @@ import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { CliError } from '../../src/cli/errors.ts'
-import { readEvents, readRunFolder } from '../../src/cli/inspect/read-run-folder.ts'
-import { rebuildResult } from '../../src/cli/inspect/rebuild-result.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
+import { eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
 import { parse } from '../../src/protocol/schema.ts'
+import { readEvents, readRunFolder, RunFolderReadError } from '../../src/store/read-run-folder.ts'
+import { rebuildResult } from '../../src/store/rebuild-result.ts'
+import { tempFolder } from '../support/temp-folder.ts'
 import { writeRunFolder } from './cli-fixtures.ts'
-import {
-  failingRun,
-  file,
-  lateError,
-  lateErrorRun,
-  launchFailureRun,
-  passingRun,
-  projectFolder,
-  resultOf,
-  savesTask,
-  showsCount,
-  stamp,
-  temporaryFolder,
-} from './reporters-fixtures.ts'
-import { checkoutProject, hostCheckFailureRun, hostChecksPassRun, noError, notPlaced, offThanks, onThanks, orderPlaced } from './reporters-host-check-fixtures.ts'
+import { failingRun, file, lateError, lateErrorRun, launchFailureRun, passingRun, resultOf, savesTask, showsCount, stamp } from './reporters-fixtures.ts'
+import { hostCheckFailureRun, hostChecksPassRun, noError, notPlaced, offThanks, onThanks, orderPlaced } from './reporters-host-check-fixtures.ts'
 
-const root = projectFolder()
-const workspace = temporaryFolder()
+// The recorded runs name their root directory; no file of it is read.
+const root = '/work/tasks'
+const checkout = '/work/checkout'
+const workspace = tempFolder('store-read-run-folder-')
 
 function lines(events: RetestEvent[]): string {
   return events.map((event) => `${JSON.stringify(event)}\n`).join('')
 }
 
-function cliError(action: () => unknown): string {
+function readError(action: () => unknown): RunFolderReadError {
   try {
     action()
   } catch (error) {
-    assert.ok(error instanceof CliError, String(error))
-    return error.message
+    assert.ok(error instanceof RunFolderReadError, String(error))
+    return error
   }
-  assert.fail('expected a CliError')
+  assert.fail('expected a RunFolderReadError')
+}
+
+function readErrorMessage(action: () => unknown): string {
+  return readError(action).message
 }
 
 // Everything up to the moment the first test's check was still polling: a run killed mid-test.
@@ -178,7 +172,6 @@ describe('rebuildResult', () => {
   })
 
   test("lists the host checks a test's events recorded, in the order they ran", () => {
-    const checkout = checkoutProject()
     assert.deepEqual(rebuildResult(hostCheckFailureRun(checkout)).files[0]?.tests[0]?.hostChecks, [
       { check: onThanks, app: 'web', status: 'failed', failure: offThanks },
       { check: orderPlaced, app: 'web', status: 'failed', failure: notPlaced },
@@ -188,7 +181,7 @@ describe('rebuildResult', () => {
   })
 
   test('a run cut off during the host checks never passes: a check with no ending is not listed', () => {
-    const events = hostChecksPassRun(checkoutProject())
+    const events = hostChecksPassRun(checkout)
     const cut = events.slice(0, events.findIndex((event) => event.type === 'host_check.passed') + 1)
     const result = rebuildResult(cut)
     assert.ok(parse(runResultSchema, result).ok)
@@ -202,7 +195,7 @@ describe('rebuildResult', () => {
   test('needs the run.started event', () => {
     const events = passingRun(root).slice(1)
     assert.match(
-      cliError(() => rebuildResult(events)),
+      readErrorMessage(() => rebuildResult(events)),
       /events\.jsonl has no run\.started event/,
     )
   })
@@ -218,6 +211,25 @@ describe('readRunFolder', () => {
       events,
       warnings: [],
     })
+  })
+
+  // A host reads the folder it chose, and names it no other way.
+  test('messages name the folder as given, unless the caller shows it otherwise', () => {
+    const missing = join(workspace, 'not-there')
+    assert.equal(readErrorMessage(() => readRunFolder(missing)), `No run folder at ${missing}.`)
+    assert.equal(readErrorMessage(() => readRunFolder(missing, 'runs/not-there')), 'No run folder at runs/not-there.')
+    const error = readError(() => readRunFolder(missing))
+    assert.equal(error.name, 'RunFolderReadError')
+    assert.ok(error instanceof Error)
+  })
+
+  test('a file that is there but cannot be read makes the folder unreadable, and keeps the cause', () => {
+    const folder = join(workspace, 'result-is-a-folder')
+    mkdirSync(join(folder, resultFile), { recursive: true })
+    writeFileSync(join(folder, eventsFile), lines(passingRun(root)))
+    const error = readError(() => readRunFolder(folder))
+    assert.ok(error.message.startsWith(`${join(folder, resultFile)} could not be read: `), error.message)
+    assert.ok(error.cause instanceof Error)
   })
 
   test('a run without result.json is rebuilt from its events and says so', () => {
@@ -251,33 +263,33 @@ describe('readRunFolder', () => {
 
   test('refuses what is not a readable run folder', () => {
     assert.equal(
-      cliError(() => readRunFolder(join(workspace, 'nowhere'), 'nowhere')),
+      readErrorMessage(() => readRunFolder(join(workspace, 'nowhere'), 'nowhere')),
       'No run folder at nowhere.',
     )
     writeFileSync(join(workspace, 'plain-file'), '')
     assert.equal(
-      cliError(() => readRunFolder(join(workspace, 'plain-file'), 'plain-file')),
+      readErrorMessage(() => readRunFolder(join(workspace, 'plain-file'), 'plain-file')),
       'plain-file is a file, not a run folder.',
     )
     mkdirSync(join(workspace, 'empty'))
     assert.match(
-      cliError(() => readRunFolder(join(workspace, 'empty'), 'empty')),
+      readErrorMessage(() => readRunFolder(join(workspace, 'empty'), 'empty')),
       /has neither result\.json nor events\.jsonl/,
     )
     const noEvents = writeRunFolder(workspace, 'nothing', { events: [] })
     assert.match(
-      cliError(() => readRunFolder(noEvents, 'nothing')),
+      readErrorMessage(() => readRunFolder(noEvents, 'nothing')),
       /has no result\.json and no events: the run stopped before it recorded anything\./,
     )
     const tornOnly = writeRunFolder(workspace, 'torn-only', { tail: '{"schem' })
     assert.match(
-      cliError(() => readRunFolder(tornOnly, 'torn-only')),
+      readErrorMessage(() => readRunFolder(tornOnly, 'torn-only')),
       /no events/,
     )
     const badEvents = writeRunFolder(workspace, 'bad-events', { events: passingRun(root), tail: '' })
     writeFileSync(join(badEvents, 'events.jsonl'), 'nonsense\n')
     assert.equal(
-      cliError(() => readRunFolder(badEvents, 'bad-events')),
+      readErrorMessage(() => readRunFolder(badEvents, 'bad-events')),
       'events.jsonl cannot be read: line 1 is not valid JSON.',
     )
   })
@@ -285,7 +297,7 @@ describe('readRunFolder', () => {
   test('refuses a result.json that is not JSON or not a version 1 result', () => {
     const notJson = writeRunFolder(workspace, 'not-json', { result: '{"schemaVersion":' })
     assert.equal(
-      cliError(() => readRunFolder(notJson, 'not-json')),
+      readErrorMessage(() => readRunFolder(notJson, 'not-json')),
       'result.json is not valid JSON.',
     )
     const events = passingRun(root)
@@ -293,7 +305,7 @@ describe('readRunFolder', () => {
       result: JSON.stringify({ ...resultOf(events), exitCode: 7, extra: true }),
     })
     assert.match(
-      cliError(() => readRunFolder(wrong, 'wrong')),
+      readErrorMessage(() => readRunFolder(wrong, 'wrong')),
       /^result\.json does not match the version 1 result: \$\.exitCode expected 0 or 1 or 2 or 130 or 143, received 7; \$\.extra unknown key\.$/,
     )
   })

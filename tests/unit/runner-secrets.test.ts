@@ -14,7 +14,7 @@ const declared = new Map<string, LoadedSecret>([
 const config: LoadedConfig = { file: '/work/retest.config.ts', apps: new Map(), runs: [], secrets: declared, timeouts: {} }
 
 const fill = (secret: string): SecretFill => ({ kind: 'fill', locator: { by: 'testId', value: 'password' }, value: { secret } })
-const on = (pageUrl: string | undefined): FillContext => ({ pageUrl, appOrigins: ['http://127.0.0.1:4173'], timeoutMs: 500 })
+const on = (pageUrl: string | undefined, signal = new AbortController().signal): FillContext => ({ pageUrl, appOrigins: ['http://127.0.0.1:4173'], timeoutMs: 500, signal })
 
 describe('resolveSecrets', () => {
   test('reads each env source once and keeps each function source to call on use', () => {
@@ -150,5 +150,57 @@ describe('SecretFiller', () => {
   test('a secret the config does not declare is a usage failure', async () => {
     const resolved = await filler(new Map()).filler.resolve(fill('missing'), on('http://127.0.0.1:4173/'))
     assert.deepEqual(resolved, { ok: false, failure: { class: 'usage', message: 'secret("missing") is not one of the config\'s secrets.' } })
+  })
+})
+
+describe("a function source's signal", () => {
+  const page = 'http://127.0.0.1:4173/login'
+  const reasonName = (signal: AbortSignal | undefined): string | undefined => (signal?.reason instanceof DOMException ? signal.reason.name : undefined)
+
+  function waiting(signals: AbortSignal[]): ReadonlyMap<string, ResolvedSecret> {
+    return new Map([['code', { read: ({ signal }) => {
+      signals.push(signal)
+      return new Promise<string>(() => {})
+    } }]])
+  }
+
+  test('is aborted once the fill runs out of time, which fails it as before', async () => {
+    const signals: AbortSignal[] = []
+    const redactor = new Redactor()
+    const resolved = await new SecretFiller(waiting(signals), declared, redactor).resolve(fill('code'), { ...on(page), timeoutMs: 30 })
+    assert.deepEqual(resolved, { ok: false, failure: { class: 'setup_failed', message: 'Retest could not read the secret "code": it took longer than 30 ms' } })
+    assert.deepEqual([signals.length, signals[0]?.aborted, reasonName(signals[0])], [1, true, 'TimeoutError'])
+  })
+
+  test('is aborted once the fill is stopped, which ends it as its reason says, typing nothing, and never after the value came', async () => {
+    const signals: AbortSignal[] = []
+    const stop = new AbortController()
+    const resolving = new SecretFiller(waiting(signals), declared, new Redactor()).resolve(fill('code'), on(page, stop.signal))
+    await Promise.resolve()
+    assert.equal(signals[0]?.aborted, false, 'not before it is stopped')
+    stop.abort({ class: 'interrupted', message: 'The run was interrupted.' })
+    assert.deepEqual(await resolving, {
+      ok: false,
+      failure: { class: 'interrupted', message: 'The run was interrupted. Retest stopped reading the secret "code", and typed nothing.', details: { inputSent: false } },
+    })
+    assert.deepEqual([signals[0]?.aborted, reasonName(signals[0])], [true, 'AbortError'])
+    const quick = new Map<string, ResolvedSecret>([['code', { read: async ({ signal }) => {
+      signals.push(signal)
+      return 'code-5521'
+    } }]])
+    const later = new AbortController()
+    const resolved = await new SecretFiller(quick, declared, new Redactor()).resolve(fill('code'), on(page, later.signal))
+    later.abort({ class: 'interrupted', message: 'The run was interrupted.' })
+    assert.equal(resolved.ok ? resolved.command.value : undefined, 'code-5521')
+    assert.equal(signals[1]?.aborted, false)
+  })
+
+  test('a fill stopped before it began never waits for its source', async () => {
+    const signals: AbortSignal[] = []
+    const started = performance.now()
+    const resolved = await new SecretFiller(waiting(signals), declared, new Redactor()).resolve(fill('code'), { ...on(page, AbortSignal.abort({ class: 'timeout', message: 'The test ran out of time.' })), timeoutMs: 5000 })
+    assert.ok(performance.now() - started < 1000)
+    assert.equal(resolved.ok ? undefined : resolved.failure.class, 'timeout')
+    assert.equal(signals[0]?.aborted, true)
   })
 })

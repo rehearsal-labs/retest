@@ -12,7 +12,8 @@ import { originAndPath } from './page-url.ts'
 
 /**
  * What navigation needs from a page. `currentUrl` is the main frame's address as the browser last reported it,
- * and `proxyServer` the proxy the page's context sends its requests through, if any.
+ * and `proxyServer` the proxy the page's context sends its requests through, if any. `opened`, when given, hears the
+ * loader of the document the navigation started, as soon as the browser names it.
  */
 export type NavigationContext = {
   session: CdpSession
@@ -20,6 +21,7 @@ export type NavigationContext = {
   mainFrameId: () => string
   currentUrl: () => URL | undefined
   proxyServer: string | undefined
+  opened?: (loaderId: string) => void
 }
 
 // A session that detached or was blocked will never report the load.
@@ -61,6 +63,7 @@ export async function navigate(page: NavigationContext, url: string, deadline: D
       if (error instanceof CdpTimeoutError) return notLoaded(address, deadline)
       throw error
     }
+    if (started.loaderId !== undefined) page.opened?.(started.loaderId)
     if (started.errorText !== undefined) {
       // The browser shows its error page as a document of its own; waiting for it lets a screenshot show it.
       if (started.loaderId !== undefined) await watcher.loaded(started.loaderId, deadline)

@@ -8,6 +8,7 @@ import { TestRun } from '../api/test-run.ts'
 import { failure } from '../protocol/failures.ts'
 import { parentMessageSchema } from '../protocol/messages.ts'
 import { parse } from '../protocol/schema.ts'
+import { resolveOwnPackage } from './own-package.ts'
 
 // The process a test file runs in. It has no browser: page commands go to the parent, one message at a time.
 
@@ -22,6 +23,9 @@ if (process.send === undefined) {
   process.stderr.write('This is the process Retest runs a test file in. Start tests with retest run.\n')
   process.exit(2)
 }
+
+// Before any test file loads, so each one imports the copy of Retest that runs it, wherever the file is.
+resolveOwnPackage()
 
 process.on('message', (raw: unknown) => {
   const parsed = parse(parentMessageSchema, raw)

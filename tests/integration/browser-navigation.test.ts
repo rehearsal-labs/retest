@@ -1,3 +1,5 @@
+import type { TestContext } from 'node:test'
+import type { OwnedPage, PageNavigation } from '../../src/browser/contract.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
@@ -5,11 +7,14 @@ import {
   assertOk,
   click,
   failureOf,
+  fill,
   goto,
   observe,
   observeUntil,
   openApp,
   openPage,
+  press,
+  select,
   servePages,
   sharedBrowser,
   timed,
@@ -22,13 +27,13 @@ const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 test('goto resolves against the base URL and answers with origin and path only', async (t) => {
   const app = await openApp(t)
   const page = await openPage(t, browser(), app.url)
-  assert.deepEqual(await goto(page, '/?token=secret#top'), { ok: true, kind: 'goto', url: `${app.url}/` })
+  assert.deepEqual(await goto(page, '/?token=secret#top'), { ok: true, kind: 'goto', url: `${app.url}/`, page: { url: `${app.url}/`, title: 'Tasks' } })
 })
 
 test('goto accepts a full URL without a base URL', async (t) => {
   const app = await openApp(t)
   const page = await openPage(t, browser())
-  assert.deepEqual(await goto(page, `${app.url}/`), { ok: true, kind: 'goto', url: `${app.url}/` })
+  assert.deepEqual(await goto(page, `${app.url}/`), { ok: true, kind: 'goto', url: `${app.url}/`, page: { url: `${app.url}/`, title: 'Tasks' } })
 })
 
 test('main frame navigations are reported as origin and path, including one a click caused', async (t) => {
@@ -38,7 +43,7 @@ test('main frame navigations are reported as origin and path, including one a cl
   })
   const page = await openPage(t, browser(), site.url)
   const seen: string[] = []
-  page.onNavigation((url) => seen.push(url))
+  page.onNavigation((navigation) => seen.push(navigation.url))
   assertOk(await goto(page, '/'))
   assertOk(await click(page, 'next'))
   await observeUntil(page, 'here', (observation) => observation.count === 1)
@@ -56,7 +61,7 @@ test('a path change within the document is reported, and a fragment change is no
   })
   const page = await openPage(t, browser(), site.url)
   const seen: string[] = []
-  const stop = page.onNavigation((url) => seen.push(url))
+  const stop = page.onNavigation((navigation) => seen.push(navigation.url))
   assertOk(await goto(page, '/'))
   assertOk(await click(page, 'hash'))
   assertOk(await click(page, 'route'))
@@ -78,7 +83,7 @@ test('a page that sends the browser elsewhere before it loads counts as loaded o
   })
   const page = await openPage(t, browser(), site.url)
   const { value, ms } = await timed(goto(page, '/start', 5000))
-  assert.deepEqual(value, { ok: true, kind: 'goto', url: `${site.url}/final` })
+  assert.deepEqual(value, { ok: true, kind: 'goto', url: `${site.url}/final`, page: { url: `${site.url}/final` } })
   assert.ok(ms < 2000, `took ${ms} ms`)
   assert.equal((await observe(page, 'here')).text, 'Final')
 })
@@ -88,7 +93,7 @@ test('goto to a fragment of the current document is complete at once', async (t)
   const page = await openPage(t, browser(), app.url)
   assertOk(await goto(page, '/'))
   const { value, ms } = await timed(goto(page, '/#details'))
-  assert.deepEqual(value, { ok: true, kind: 'goto', url: `${app.url}/` })
+  assert.deepEqual(value, { ok: true, kind: 'goto', url: `${app.url}/`, page: { url: `${app.url}/`, title: 'Tasks' } })
   assert.ok(ms < 1000, `took ${ms} ms`)
 })
 
@@ -162,4 +167,136 @@ test('a screenshot is a PNG of the page', async (t) => {
   const png = await page.screenshot(2000)
   assert.deepEqual([...png.subarray(0, 8)], PNG_SIGNATURE)
   assert.ok(png.length > 1000, `${png.length} bytes`)
+})
+
+type Told = { path: string; cause: string; title: string | undefined }
+
+// Every navigation of the page, as told: its path, its cause, and its title once it settles.
+function recordNavigations(page: OwnedPage): { told: () => Promise<Told[]>; count: () => number } {
+  const seen: PageNavigation[] = []
+  page.onNavigation((navigation) => void seen.push(navigation))
+  const told = () => Promise.all(seen.map(async ({ url, cause, title }) => ({ path: new URL(url).pathname, cause, title: await title })))
+  return { told, count: () => seen.length }
+}
+
+async function titlesPage(t: TestContext) {
+  const app = await openApp(t)
+  const page = await openPage(t, browser(), app.url)
+  return { app, page, ...recordNavigations(page) }
+}
+
+test("a server page's title is read when its content has loaded, and the goto that opened it names it and says so", async (t) => {
+  const { app, page, told } = await titlesPage(t)
+  const started = performance.now()
+  assert.deepEqual(await goto(page, '/titles?token=1'), { ok: true, kind: 'goto', url: `${app.url}/titles`, page: { url: `${app.url}/titles`, title: 'Titles' } })
+  assert.deepEqual(await told(), [{ path: '/titles', cause: 'goto', title: 'Titles' }])
+  assert.ok(performance.now() - started < 900, 'the title came from DOMContentLoaded, not the one-second wait')
+  assert.equal(page.url, `${app.url}/titles`)
+})
+
+test('a redirect chain gives each document its own title, and a redirect the page makes on its own is its own', async (t) => {
+  const { page, told } = await titlesPage(t)
+  assertOk(await goto(page, '/titles/chain'))
+  await observeUntil(page, 'arrived', (seen) => seen.count === 1)
+  assert.deepEqual(await told(), [
+    { path: '/titles/redirect', cause: 'goto', title: 'Redirecting' },
+    { path: '/titles/next', cause: 'page', title: 'Next' },
+  ])
+})
+
+test('a link clicked, Enter in a form and a new path set by a click listener are each the action that caused them', async (t) => {
+  const { page, told } = await titlesPage(t)
+  assertOk(await goto(page, '/titles'))
+  assertOk(await click(page, 'next'))
+  await observeUntil(page, 'arrived', (seen) => seen.count === 1)
+  assertOk(await goto(page, '/titles'))
+  assertOk(await fill(page, 'query', 'release'))
+  assertOk(await press(page, 'query', 'Enter'))
+  await observeUntil(page, 'arrived', (seen) => seen.count === 1)
+  assertOk(await goto(page, '/titles'))
+  assertOk(await click(page, 'push'))
+  await observeUntil(page, 'push', () => page.url?.endsWith('/titles/pushed') === true)
+  assert.deepEqual(await told(), [
+    { path: '/titles', cause: 'goto', title: 'Titles' },
+    { path: '/titles/next', cause: 'action', title: 'Next' },
+    { path: '/titles', cause: 'goto', title: 'Titles' },
+    { path: '/titles/next', cause: 'action', title: 'Next' },
+    { path: '/titles', cause: 'goto', title: 'Titles' },
+    { path: '/titles/pushed', cause: 'action', title: 'Pushed' },
+  ])
+})
+
+test('a title the page writes after it loads is no navigation, and the next look reads it', async (t) => {
+  const { app, page, count } = await titlesPage(t)
+  assertOk(await goto(page, '/titles'))
+  assertOk(await click(page, 'retitle'))
+  const end = performance.now() + 3000
+  for (;;) {
+    const result = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'next' } }, 1000)
+    assert.ok(result.ok && result.kind === 'observe')
+    if (result.page?.title === 'Retitled') {
+      assert.deepEqual(result.page, { url: `${app.url}/titles`, title: 'Retitled' })
+      break
+    }
+    assert.ok(performance.now() < end, 'the new title never showed')
+  }
+  assert.equal(count(), 1)
+})
+
+// The parent redacts a title before it cuts it to the 300 code units it records, so the browser hands over far more.
+test('a title loses its control characters and surrounding space, reaches the parent whole up to 4096 code units, and an empty one is none', async (t) => {
+  const { app, page, told } = await titlesPage(t)
+  const echo = (title: string) => `/titles/echo?title=${encodeURIComponent(title)}`
+  const cleaned = await goto(page, echo('\u0007Bell\t tab \u001b[2J '))
+  assert.deepEqual(cleaned, { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo`, title: 'Bell tab [2J' } })
+  assert.deepEqual(await goto(page, echo('   ')), { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo` } })
+  const longer = `${'a'.repeat(299)}😀tail`
+  assertOk(await goto(page, echo(longer)))
+  const longest = `${'b'.repeat(4095)}😀tail`
+  assertOk(await goto(page, echo(longest)))
+  assert.deepEqual(
+    (await told()).map(({ title }) => title),
+    ['Bell tab [2J', undefined, longer, 'b'.repeat(4095)],
+  )
+  const reading = await page.readPage([{ text: 'Titled', ignoreCase: false }], 1000)
+  assert.deepEqual(reading, { url: `${app.url}/titles/echo`, title: 'b'.repeat(4095), navigating: false, found: [true] })
+})
+
+test("a document replaced while it parses, or by a refresh as it loads, never takes the title of the one that replaced it", async (t) => {
+  const site = await servePages(t, {
+    '/parse-leave': '<!doctype html><title>Leaving</title><script>location.replace("/after")</script><p>Leaving</p>',
+    '/refresh': '<!doctype html><title>Refreshing</title><meta http-equiv="refresh" content="0;url=/after"><p>Refreshing</p>',
+    '/after': '<!doctype html><title>After</title><p data-testid="after">After</p>',
+  })
+  const page = await openPage(t, browser(), site.url)
+  const { told } = recordNavigations(page)
+  for (const path of ['/parse-leave', '/refresh']) {
+    assertOk(await goto(page, path))
+    await observeUntil(page, 'after', (seen) => seen.count === 1)
+  }
+  const titles = await told()
+  assert.deepEqual(titles.map(({ path, cause }) => `${path} ${cause}`), ['/parse-leave goto', '/after page', '/refresh goto', '/after page'])
+  const [leaving, afterLeaving, refreshing, afterRefresh] = titles
+  assert.ok(leaving?.title === undefined || leaving.title === 'Leaving', JSON.stringify(leaving))
+  assert.ok(refreshing?.title === undefined || refreshing.title === 'Refreshing', JSON.stringify(refreshing))
+  assert.equal(afterLeaving?.title, 'After')
+  assert.equal(afterRefresh?.title, 'After')
+})
+
+test("a select whose change listener opens another page passes, and the navigation is the select's", async (t) => {
+  const site = await servePages(t, {
+    '/': `<!doctype html><title>Pick</title><select data-testid="plan"><option>Free</option><option>Team</option></select><script>
+      document.querySelector('[data-testid="plan"]').addEventListener('change', (event) => { location.href = '/chosen?plan=' + event.target.value })
+    </script>`,
+    '/chosen?plan=Team': '<!doctype html><title>Chosen</title><p data-testid="chosen">Chosen</p>',
+  })
+  const page = await openPage(t, browser(), site.url)
+  const { told } = recordNavigations(page)
+  assertOk(await goto(page, '/'))
+  assert.deepEqual(await select(page, 'plan', 'Team'), { ok: true, kind: 'select', changed: true, page: { url: `${site.url}/`, title: 'Pick' } })
+  await observeUntil(page, 'chosen', (seen) => seen.count === 1)
+  assert.deepEqual(await told(), [
+    { path: '/', cause: 'goto', title: 'Pick' },
+    { path: '/chosen', cause: 'action', title: 'Chosen' },
+  ])
 })

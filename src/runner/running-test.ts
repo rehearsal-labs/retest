@@ -1,4 +1,4 @@
-import type { OwnedPage } from '../browser/contract.ts'
+import type { OwnedPage, PageNavigation } from '../browser/contract.ts'
 import type { ActionKind, CommandResult, FillValue, PageCommand } from '../protocol/commands.ts'
 import type { ChildEvent, EventBody, EventOrigin } from '../protocol/events.ts'
 import type { Failure, FailureClass } from '../protocol/failures.ts'
@@ -6,6 +6,8 @@ import type { ChildMessage } from '../protocol/messages.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
+import type { PageFields } from './observations.ts'
+import type { NotedNavigation, PageDocument } from './page-navigations.ts'
 import type { Redactor } from './redactor.ts'
 import type { FillResolution, SecretFill } from './secrets.ts'
 import type { ProcessEvent, TestFileMessage, TestFileProcess } from './test-file-process.ts'
@@ -14,9 +16,12 @@ import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol
 import { errorMessage, failure, withAlso, withLocation } from '../protocol/failures.ts'
 import { parseKey } from '../protocol/keys.ts'
 import { observedRecord } from '../protocol/observation-record.ts'
+import { selectCommandProblem } from '../protocol/option-choices.ts'
+import { scrollProblem } from '../protocol/scroll-delta.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { bounded } from './bounded.ts'
-import { ServedObservations } from './observations.ts'
+import { pageFields, ServedObservations } from './observations.ts'
+import { PageNavigations } from './page-navigations.ts'
 
 /** How long a stopped test's process has to answer, and a page that lost its browser has to say so. */
 export const abortGraceMs = 1000
@@ -36,12 +41,18 @@ export type RunningTestOptions = {
   timeouts: Timeouts
   emit: (body: EventBody, origin?: EventOrigin) => void
   /** Turns a secret fill into the text to type, or says why it may not be typed. Without it, a secret fill fails. */
-  fillSecret?: (command: SecretFill, pageUrl: string | undefined, timeoutMs: number) => Promise<FillResolution>
+  fillSecret?: (command: SecretFill, context: SecretFillContext) => Promise<FillResolution>
   /** Hides secret values in everything sent to the child. */
   redactor?: Redactor
   /** The apps whose page emulates a touch screen, where a click is sent, and recorded, as a tap. */
   touch?: ReadonlySet<string>
 }
+
+/**
+ * Where a secret fill is going: the page's address as it stands now, the fill's own time, and a signal aborted
+ * when the fill is stopped, as when its test is.
+ */
+export type SecretFillContext = { pageUrl: string | undefined; timeoutMs: number; signal: AbortSignal }
 
 /** What the parent knows once the test body is over. */
 export type BodyReport = {
@@ -61,13 +72,17 @@ type InFlight = {
   message: CommandMessage
   /** The page of the app the command names. */
   page: OwnedPage
-  /** The address the parent last saw that page commit when the command arrived. */
-  pageUrl: string | undefined
+  /** The document the parent last saw that page commit when the command arrived. */
+  document: PageDocument | undefined
+  /** Settles once every navigation of that page told before the command arrived is written; absent when none waits. */
+  navigations: Promise<void> | undefined
   startedAt: number
   /** Settles once the page has answered. It exists before the page is called, which may lose its browser at once. */
   done: PromiseWithResolvers<void>
   /** Stops the page's work on the command when the test is revoked, with the revocation as its reason. */
   stop: AbortController
+  /** The page's answer, kept while the command waits for the navigations before it to be written. */
+  pageAnswer: CommandResult | undefined
   answered: boolean
   reported: boolean
 }
@@ -91,7 +106,9 @@ export class RunningTest {
   #deadline: Deadline | undefined
   #testTimer: NodeJS.Timeout | undefined
   #killTimer: NodeJS.Timeout | undefined
-  readonly #pageUrls = new Map<string, string>()
+  /** The document each app's page last committed, as far as the parent knows. */
+  readonly #documents = new Map<string, PageDocument>()
+  readonly #navigations = new PageNavigations((navigation) => this.#writeNavigation(navigation))
   readonly #observations = new ServedObservations()
   #stepId: string | undefined
   #revocation: Failure | undefined
@@ -114,7 +131,7 @@ export class RunningTest {
       this.#finish({ assertionCount: 0, endedBeforeStart: process.exit })
       return this.#finished.promise
     }
-    this.#stopNavigation = [...pages].map(([app, page]) => page.onNavigation((url) => this.#navigated(app, url)))
+    this.#stopNavigation = [...pages].map(([app, page]) => page.onNavigation((navigation) => this.#navigated(app, navigation)))
     process.listen((event) => this.#receive(event))
     process.send({ type: 'run', testId, attemptId, timeouts, apps: [...pages.keys()], ...(variant === undefined ? {} : { variant }) })
     this.#deadline = new Deadline(timeouts.test)
@@ -127,6 +144,7 @@ export class RunningTest {
     if (this.#revocation !== undefined || this.#report !== undefined) return
     this.#revocation = reason
     clearTimeout(this.#testTimer)
+    this.#completeAnswered()
     for (const entry of this.#inFlight.values()) {
       this.#answer(entry, { ok: false, failure: withLocation(reason, entry.message.location) })
       entry.stop.abort(reason)
@@ -152,28 +170,39 @@ export class RunningTest {
   browserLost(reason: string): void {
     const answers = [...this.#inFlight.values()].map((entry) => entry.done.promise)
     void bounded(Promise.all(answers), abortGraceMs).then(() => {
-      if (this.#report === undefined) this.revoke(this.#lossFailure(reason), abortGraceMs)
+      if (this.#report !== undefined) return
+      this.#navigations.writeWaiting()
+      this.#completeAnswered()
+      this.revoke(this.#lossFailure(reason), abortGraceMs)
     })
   }
 
   /**
-   * Waits for commands still with the browser, up to `timeoutMs`. An action that never answers is
-   * reported as one whose outcome is unknown, and every command left is stopped in the page.
+   * Waits for commands still with the browser, and for the titles of the navigations still to be written, up to
+   * `timeoutMs`. Every navigation is written by then, before any action whose outcome is unknown: an action that
+   * never answers is reported as one, and every command left is stopped in the page.
    */
   async settle(timeoutMs: number): Promise<void> {
+    const deadline = new Deadline(timeoutMs)
     await bounded(Promise.all([...this.#inFlight.values()].map((entry) => entry.done.promise)), timeoutMs)
+    await this.#navigations.flush(deadline.remainingMs)
+    this.#completeAnswered()
     for (const entry of this.#inFlight.values()) {
       const message = 'The browser had not answered when the test ended, so whether the action took effect is unknown.'
       const unknown = failure('outcome_unknown', message, entry.message.location)
-      this.#reportAction(entry, { ok: false, failure: unknown })
+      this.#reportAction(entry, { ok: false, failure: unknown }, this.#documentFields(entry.message.app))
       entry.stop.abort(unknown)
     }
   }
 
-  /** Stops listening to the page and the process. A process being ended after a timeout is still killed on time. */
+  /**
+   * Stops listening to the page and the process, and writes any navigation still waiting for its title. A process
+   * being ended after a timeout is still killed on time.
+   */
   close(): void {
     clearTimeout(this.#testTimer)
     for (const stop of this.#stopNavigation) stop()
+    this.#navigations.writeWaiting()
     this.#options.process.listen(undefined)
   }
 
@@ -205,10 +234,12 @@ export class RunningTest {
     const entry: InFlight = {
       message,
       page,
-      pageUrl: this.#pageUrls.get(message.app),
+      document: this.#documents.get(message.app),
+      navigations: this.#navigations.waiting(message.app),
       startedAt: monotonicClock(),
       done: Promise.withResolvers(),
       stop: new AbortController(),
+      pageAnswer: undefined,
       answered: false,
       reported: false,
     }
@@ -216,6 +247,8 @@ export class RunningTest {
     void this.#execute(entry, timeoutMs).finally(() => entry.done.resolve())
   }
 
+  // The page's answer is written after every navigation that came before the command, and a goto's after the
+  // navigations it made, which have their titles by then since it answers after `load`.
   async #execute(entry: InFlight, timeoutMs: number): Promise<void> {
     const { command, location, app } = entry.message
     let result: CommandResult
@@ -224,49 +257,66 @@ export class RunningTest {
     } catch (error) {
       result = thrownResult(command, error)
     }
-    this.#inFlight.delete(entry.message.id)
-    if (result.ok && result.kind === 'goto') this.#pageUrls.set(app, result.url)
-    const reported: CommandResult = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
-    if (!reported.ok && lossClasses.has(reported.failure.class)) this.#lossAnswer = reported.failure
-    this.#reportAction(entry, reported, result.ok && result.kind === 'goto' ? result.url : entry.pageUrl)
-    this.#answer(entry, reported)
+    entry.pageAnswer = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
+    const earlier = result.ok && result.kind === 'goto' ? this.#navigations.waiting(app) : entry.navigations
+    if (earlier !== undefined) await earlier
+    this.#complete(entry)
   }
 
-  // A secret is read, within the command's own time, only once its page's origin may take it. A key is read
-  // again here, since the test process may send one its own check never saw.
+  // A command the page answered is recorded, then answered, once.
+  #complete(entry: InFlight): void {
+    const answer = entry.pageAnswer
+    const { id, app } = entry.message
+    if (answer === undefined || !this.#inFlight.delete(id)) return
+    if (answer.ok && answer.kind === 'goto') this.#documents.set(app, gotoDocument(answer))
+    if (!answer.ok && lossClasses.has(answer.failure.class)) this.#lossAnswer = answer.failure
+    this.#reportAction(entry, answer, commandPage(entry, answer))
+    this.#answer(entry, answer)
+  }
+
+  // As the test ends, a command the page answered that still waits for the navigations before it is recorded
+  // with that answer, after those navigations, which are written at once.
+  #completeAnswered(): void {
+    const answered = [...this.#inFlight.values()].filter((entry) => entry.pageAnswer !== undefined)
+    if (answered.length === 0) return
+    this.#navigations.writeWaiting()
+    for (const entry of answered) this.#complete(entry)
+  }
+
+  // A secret is read, within the command's own time, only once the page's current address may take it. What the
+  // test process's own checks refuse is refused again here, since it may send what those checks never saw.
   async #run({ message, page, stop }: InFlight, timeoutMs: number): Promise<CommandResult> {
-    const { command, app } = message
-    if (command.kind === 'press') {
-      const parsed = parseKey(command.key)
-      if (!parsed.ok) return { ok: false, failure: parsed.failure }
-    }
+    const { command } = message
+    const problem = commandProblem(command)
+    if (problem !== undefined) return { ok: false, failure: problem }
     if (command.kind !== 'fill') return page.execute(command, timeoutMs, stop.signal)
     const { locator, value } = command
     if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal)
     const deadline = new Deadline(timeoutMs)
     const { fillSecret } = this.#options
-    const resolved = fillSecret === undefined ? noSecrets(value.secret) : await fillSecret({ kind: 'fill', locator, value }, this.#pageUrls.get(app), timeoutMs)
+    const context: SecretFillContext = { pageUrl: page.url, timeoutMs, signal: stop.signal }
+    const resolved = fillSecret === undefined ? noSecrets(value.secret) : await fillSecret({ kind: 'fill', locator, value }, context)
     if (!resolved.ok) return { ok: false, failure: resolved.failure }
     return page.execute(resolved.command, deadline.commandTimeoutMs, stop.signal)
   }
 
   // An action is reported once: by the page's answer, or as unknown when the page gave none in time.
-  #reportAction(entry: InFlight, result: CommandResult, pageUrl = this.#pageUrls.get(entry.message.app)): void {
+  #reportAction(entry: InFlight, result: CommandResult, page: PageFields): void {
     const { command, location, stepId, app } = entry.message
     if (command.kind === 'observe' || entry.reported) return
     entry.reported = true
+    const touch = this.#options.touch?.has(app) === true
     const fields = {
       testId: this.#options.testId,
       attemptId: this.#options.attemptId,
       ...(stepId === undefined ? {} : { stepId }),
       session: app,
-      command: recordedKind(command.kind, result, this.#options.touch?.has(app) === true),
+      command: recordedKind(command.kind, result, touch),
       ...('locator' in command && command.locator !== undefined ? { locator: command.locator } : {}),
-      ...(command.kind === 'press' ? { key: command.key } : {}),
-      ...(pageUrl === undefined ? {} : { pageUrl }),
+      ...page,
       durationMs: elapsedMs(entry.startedAt),
       ...(location === undefined ? {} : { location }),
-      ...(command.kind === 'fill' ? typedValue(command.value) : {}),
+      ...actionDetails(command, result, touch),
     }
     this.#options.emit(result.ok ? { type: 'action.completed', ...fields } : { type: 'action.failed', ...fields, failure: result.failure })
   }
@@ -288,16 +338,16 @@ export class RunningTest {
 
   // A look the page answered is written down, as the test process receives it, before the answer goes; the
   // id it carries is how an assertion names it.
-  #serve({ message, pageUrl, startedAt }: InFlight, result: CommandResult): CommandResult {
-    const { command, app, stepId } = message
+  #serve(entry: InFlight, result: CommandResult): CommandResult {
+    const { command, app, stepId } = entry.message
     if (!result.ok || result.kind !== 'observe' || command.kind !== 'observe') return result
     const { locator } = command
     const { observation } = result
-    const page = pageUrl === undefined ? {} : { pageUrl }
+    const page = commandPage(entry, result)
     const observationId = this.#observations.serve({ app, locator, observation, ...page })
     const { testId, attemptId } = this.#options
     const step = stepId === undefined ? {} : { stepId }
-    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(startedAt) })
+    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(entry.startedAt) })
     return { ...result, observationId }
   }
 
@@ -308,7 +358,7 @@ export class RunningTest {
       const { command, location } = unanswered.message
       const message = `The browser was lost during ${describeCommand(command)}, which had not answered ${abortGraceMs} ms later, so whether it took effect is unknown. ${reason}`
       const unknown = failure('outcome_unknown', message, location)
-      this.#reportAction(unanswered, { ok: false, failure: unknown })
+      this.#reportAction(unanswered, { ok: false, failure: unknown }, this.#documentFields(unanswered.message.app))
       return unknown
     }
     return this.#lossAnswer ?? failure('session_lost', `The browser was lost: ${reason}`)
@@ -321,7 +371,7 @@ export class RunningTest {
     // An assertion that names no app looks at the test's first one, as milestone 1's single page.
     const [firstApp] = this.#options.pages.keys()
     const app = event.session ?? firstApp
-    const judged = this.#observations.judge(event, { app, pageUrl: app === undefined ? undefined : this.#pageUrls.get(app) })
+    const judged = this.#observations.judge(event, { app, ...(app === undefined ? {} : this.#documentFields(app)) })
     if (!judged.ok) return this.#violation(judged.problem)
     this.#assertionsSeen++
     this.#options.emit(judged.event, 'child')
@@ -371,11 +421,21 @@ export class RunningTest {
     this.revoke(failure('test_error', `The process for this file ${problem}.`), 0)
   }
 
-  #navigated(app: string, url: string): void {
-    this.#pageUrls.set(app, url)
+  // The address moves at the commit, and the step is the one the test was in then; the event waits for the title.
+  #navigated(app: string, navigation: PageNavigation): void {
+    this.#documents.set(app, this.#navigations.note(app, navigation, this.#stepId))
+  }
+
+  #writeNavigation({ app, document, stepId, cause }: NotedNavigation): void {
     const { testId, attemptId } = this.#options
-    const stepId = this.#stepId
-    this.#options.emit({ type: 'navigation', testId, attemptId, ...(stepId === undefined ? {} : { stepId }), session: app, url })
+    const { url, title } = document
+    const step = stepId === undefined ? {} : { stepId }
+    this.#options.emit({ type: 'navigation', testId, attemptId, ...step, session: app, url, ...(title === undefined ? {} : { title }), cause })
+  }
+
+  // The document the parent last saw an app's page commit, as an event records its page.
+  #documentFields(app: string): PageFields {
+    return documentFields(this.#documents.get(app))
   }
 
   // A timed-out test's process is asked to close; the kill timer from `revoke` ends it if it does not.
@@ -387,6 +447,77 @@ export class RunningTest {
     else clearTimeout(this.#killTimer)
     this.#finished.resolve(this.#report)
   }
+}
+
+// What a command's events record of its page: the page it went to as the page read it, or, when the page said
+// nothing, a goto's address or the document the command arrived on.
+function commandPage(entry: InFlight, result: CommandResult): PageFields {
+  if (result.ok && result.page !== undefined) return pageFields(result.page.url, result.page.title)
+  if (result.ok && result.kind === 'goto') return { pageUrl: result.url }
+  return documentFields(entry.document)
+}
+
+function documentFields(document: PageDocument | undefined): PageFields {
+  return document === undefined ? {} : pageFields(document.url, document.title)
+}
+
+function gotoDocument(result: Extract<CommandResult, { kind: 'goto' }>): PageDocument {
+  const title = result.page?.title
+  return title === undefined ? { url: result.url } : { url: result.url, title }
+}
+
+// What the test process's own checks refuse, which the parent refuses again before the page sees the command.
+function commandProblem(command: PageCommand): Failure | undefined {
+  switch (command.kind) {
+    case 'press': {
+      const parsed = parseKey(command.key)
+      return parsed.ok ? undefined : parsed.failure
+    }
+    case 'select':
+      return selectCommandProblem(command)
+    case 'scroll':
+      return scrollProblem(command)
+    default:
+      return undefined
+  }
+}
+
+type ActionDetails = Pick<
+  Extract<EventBody, { type: 'action.completed' }>,
+  'valueLength' | 'secret' | 'key' | 'choices' | 'multiple' | 'changed' | 'scroll' | 'input' | 'via' | 'touch'
+>
+
+const listed = { multiple: true } as const
+const scripted = { input: 'script' } as const
+const tapped = { touch: true } as const
+
+/**
+ * What an action's event says besides its kind, locator and page, each only when it says something: how much a
+ * fill typed or which secret, the key a press sent, the options a select chose, and whether the test passed them
+ * as a list, the wheel's delta, and how the input reached the page. A select sets the choice from Retest's world,
+ * and a check or uncheck on a touch screen taps. Whether the element changed, and a label clicked in the control's
+ * place, come from the page's answer.
+ */
+function actionDetails(command: PageCommand, result: CommandResult, touch: boolean): ActionDetails {
+  switch (command.kind) {
+    case 'fill':
+      return typedValue(command.value)
+    case 'press':
+      return { key: command.key }
+    case 'select':
+      return { choices: command.choices, ...(command.multiple === true ? listed : {}), ...changedOf(result), ...scripted }
+    case 'check':
+    case 'uncheck':
+      return { ...changedOf(result), ...(result.ok && 'via' in result && result.via !== undefined ? { via: result.via } : {}), ...(touch ? tapped : {}) }
+    case 'scroll':
+      return { scroll: { x: command.x, y: command.y } }
+    default:
+      return {}
+  }
+}
+
+function changedOf(result: CommandResult): { changed?: boolean } {
+  return result.ok && 'changed' in result ? { changed: result.changed } : {}
 }
 
 // The page's answer says what it did; a failed click on a touch screen was a tap too.

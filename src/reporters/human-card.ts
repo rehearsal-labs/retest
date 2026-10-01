@@ -7,6 +7,7 @@ import { diffLines } from './diff.ts'
 import {
   callLocator,
   callName,
+  callNotes,
   describeFileProblem,
   describeWait,
   messageRepeatsValues,
@@ -16,6 +17,7 @@ import {
   type RecordedValues,
 } from './failure-card.ts'
 import {
+  describePage,
   failureLabel,
   formatDetail,
   formatDuration,
@@ -82,10 +84,11 @@ function callLines(card: FailureCard, style: Style): string[] {
   const { failure, call } = card
   const values = recordedValues(call)
   const locator = call === undefined ? undefined : callLocator(call)
-  const lines = [field(style.red(style.bold(headline(card))), call === undefined ? '' : callName(call))]
+  const name = call === undefined ? '' : [callName(call), ...callNotes(call)].join(', ')
+  const lines = [field(style.red(style.bold(headline(card))), name)]
   if (failure !== undefined && !messageRepeatsValues(card)) lines.push(...indented(failure.message))
   if (locator !== undefined) lines.push(field('Locator', describeLocator(locator)))
-  if (call?.pageUrl !== undefined) lines.push(field('Page', call.pageUrl))
+  if (call?.pageUrl !== undefined) lines.push(field('Page', describePage(call.pageUrl, call.pageTitle)))
   if (values !== undefined) lines.push(...valueLines(values, style))
   if (call?.type === 'assertion.failed' && call.comparison !== undefined) lines.push(field('Compared', call.comparison))
   if (call !== undefined) lines.push(field('Waited', describeWait(call, formatDuration)))

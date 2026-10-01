@@ -4,12 +4,12 @@ import type { RunResult } from '../../src/protocol/result.ts'
 import type { Variant } from '../../src/protocol/variant.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { rebuildResult } from '../../src/cli/inspect/rebuild-result.ts'
 import { emulationFor } from '../../src/config/devices.ts'
 import { truncateText } from '../../src/protocol/failures.ts'
 import { testId } from '../../src/protocol/run-folder.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { variantKey } from '../../src/protocol/variant.ts'
+import { rebuildResult } from '../../src/store/rebuild-result.ts'
 import { resultOf, stamp, temporaryFolder } from './reporters-fixtures.ts'
 
 // A run from a config: one app, web, on two targets, chromium and an emulated Pixel 9. A setup signs in on each, and

@@ -7,11 +7,20 @@ import { describeLocator } from '../protocol/locator.ts'
 import { formatObservationId } from '../protocol/observation-record.ts'
 import { quoteText } from '../protocol/text.ts'
 
-/** A look the parent served: the app and locator it read, the observation as sent, redacted and whole, and the page's address. */
-export type ServedObservation = { app: string; locator: LocatorRecipe; observation: Observation; pageUrl?: string }
+/** A page as an event records it: its origin and path, and its title when it has one. */
+export type PageFields = { pageUrl?: string; pageTitle?: string }
 
-/** Where an assertion looked, as the parent knows it: its app, and the address the parent last saw that app's page commit. */
-export type AssertionPage = { app: string | undefined; pageUrl: string | undefined }
+/**
+ * A look the parent served: the app and locator it read, the observation as sent, redacted and whole, and the
+ * page it read, as the look itself read it.
+ */
+export type ServedObservation = PageFields & { app: string; locator: LocatorRecipe; observation: Observation }
+
+/**
+ * Where an assertion looked, as the parent knows it: its app, and the document the parent last saw that app's page
+ * commit, with its title when it has one.
+ */
+export type AssertionPage = PageFields & { app: string | undefined }
 
 type SentAssertion = Extract<ChildEvent, { type: 'assertion.passed' | 'assertion.failed' }>
 type AssertionBody = Extract<EventBody, { type: 'assertion.passed' | 'assertion.failed' }>
@@ -37,13 +46,13 @@ export class ServedObservations {
    * Checks an assertion the test process sent, and writes it as the parent's own record. A locator assertion
    * must carry its check, and a passed one must name a look this attempt served, for its app and locator, on
    * which that check passes. Its matcher, expected text and comparison come from the check, its actual value and
-   * page address from the look it names. A value assertion names neither; its pass is the test process's claim.
-   * A page address the test process sent is never kept.
+   * page from the look it names. A value assertion names neither; its pass is the test process's claim. A page
+   * address or title the test process sent is never kept.
    *
    * @example observations.judge(event, { app: 'web', pageUrl: 'http://127.0.0.1:4173/' })
    */
   judge(assertion: SentAssertion, page: AssertionPage): Judged {
-    const { check, observationId, pageUrl: _claimedPage, ...claimed } = assertion
+    const { check, observationId, pageUrl: _claimedPage, pageTitle: _claimedTitle, ...claimed } = assertion
     const { locator } = assertion
     if (locator === undefined) {
       if (check !== undefined || observationId !== undefined) return refused(`sent ${assertion.type} for a value, naming a look or a locator check, which only a locator assertion has`)
@@ -55,7 +64,7 @@ export class ServedObservations {
     const judged = { matcher: rule.matcher, expected: truncateText(rule.expected), ...(rule.comparison === undefined ? {} : { comparison: rule.comparison }) }
     if (observationId === undefined) {
       if (kept.type === 'assertion.passed') return refused(`sent assertion.passed for ${describeLocator(locator)} without naming the look it rested on`)
-      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageAt(page.pageUrl) } }
+      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle) } }
     }
     const served = this.#served.get(observationId)
     if (served === undefined) return refused(`named the look ${quoteText(observationId)}, which Retest did not serve to this test`)
@@ -68,7 +77,7 @@ export class ServedObservations {
       return refused(`sent assertion.passed for expect(${describeLocator(locator)}).${rule.matcher}(), which fails on ${observationId}, the look it named, where ${matched(observation.count)}`)
     }
     const actual = rule.actual(observation)
-    const recorded = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageAt(served.pageUrl) }
+    const recorded = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle) }
     return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...recorded, judgedBy: 'parent' } : { ...kept, ...recorded } }
   }
 }
@@ -77,8 +86,13 @@ function refused(problem: string): Judged {
   return { ok: false, problem }
 }
 
-function pageAt(pageUrl: string | undefined): { pageUrl?: string } {
-  return pageUrl === undefined ? {} : { pageUrl }
+/**
+ * A page as an event records it, each field only when it is known.
+ *
+ * @example pageFields('http://127.0.0.1:4173/done', undefined) // { pageUrl: 'http://127.0.0.1:4173/done' }
+ */
+export function pageFields(url: string | undefined, title: string | undefined): PageFields {
+  return { ...(url === undefined ? {} : { pageUrl: url }), ...(title === undefined ? {} : { pageTitle: title }) }
 }
 
 // Recipes are flat, so two are the same when they hold the same keys with the same values, in any order.

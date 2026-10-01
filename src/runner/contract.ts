@@ -1,4 +1,5 @@
 import type { LoadedConfig } from '../config/loaded.ts'
+import type { SecretContext } from '../config/types.ts'
 import type { CollectedTest } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { HostCheck } from '../protocol/host-check.ts'
@@ -11,14 +12,22 @@ export type { HostCheck } from '../protocol/host-check.ts'
 /** What stops a run from outside. The run stops the same way for each; its exit code says which it was. */
 export type StopSignal = 'SIGINT' | 'SIGTERM'
 
+/**
+ * Why a run was stopped: the signal that asked, or a `Failure` that says why, which the run records as its
+ * interruption, in `run.finished` and in each test it stopped. A run stopped by a `Failure` exits 130, as for
+ * SIGINT.
+ */
+export type StopReason = StopSignal | Failure
+
 /** Milestone 1's mode, from `--browser`: one app, named `page`, on one browser, with no config. */
 export type SingleApp = { kind: 'browser'; browserPath: string; baseUrl?: string }
 
 /**
  * A secret ready for the run: the value of an `env` source, read once when the run started, or a function
- * source's `read`, which the parent calls each time a `fill` uses the secret.
+ * source's `read`, which the parent calls each time a `fill` uses the secret, with a signal aborted when the
+ * fill's time runs out.
  */
-export type ResolvedSecret = { readonly value: string } | { readonly read: () => Promise<string> }
+export type ResolvedSecret = { readonly value: string } | { readonly read: (context: SecretContext) => Promise<string> }
 
 /**
  * A run from a config. `baseUrls` are the command line's base URLs by app name, each replacing that app's own.
@@ -81,7 +90,7 @@ export type RunOptions = {
   headless: boolean
   /** Absent runs every test in `files`. */
   selection?: Selection
-  /** Aborted to stop the run, with the `StopSignal` that asked as its reason; any other reason counts as SIGINT. */
+  /** Aborted to stop the run. Its reason is a `StopReason`: 'SIGINT', 'SIGTERM' or a `Failure` that says why. */
   signal: AbortSignal
   /** Receives each test file's stdout and stderr as it arrives. The run folder keeps a copy either way. */
   onOutput?: (output: ChildOutput) => void
@@ -94,6 +103,12 @@ export type RunOptions = {
   hostChecks?: Readonly<Record<string, readonly HostCheck[]>>
   /** The test process's whole environment. Absent: the parent's, without the variables secrets read. */
   testEnvironment?: Readonly<Record<string, string>>
+  /**
+   * Where the run records the tests it did not pass, which `--last-failed` reads: a path, resolved from the
+   * current directory as `outputDir` is, or false to record nothing. Absent: `.retest/last-run.json` under
+   * `rootDir`.
+   */
+  lastRunFile?: string | false
 }
 
 export type ChildOutput = { file: string; stream: 'stdout' | 'stderr'; text: string }

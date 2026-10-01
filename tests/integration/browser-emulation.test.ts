@@ -88,23 +88,23 @@ test('the emulation holds for every document the page opens', async (t) => {
 })
 
 test('tap fires the touch handlers and then the click handler, and reports a tap', async (t) => {
-  const { page } = await emulatedPage(t, emulationFor('Pixel 9', browser().version))
+  const { app, page } = await emulatedPage(t, emulationFor('Pixel 9', browser().version))
   assertOk(await goto(page, '/device'))
-  assert.deepEqual(await tap(page, 'touch-target'), { ok: true, kind: 'tap' })
+  assert.deepEqual(await tap(page, 'touch-target'), { ok: true, kind: 'tap', page: { url: `${app.url}/device`, title: 'Device' } })
   assert.equal((await observe(page, 'touch-events')).text, 'touchstart touchend click:touch')
 })
 
 test('on a touch screen a click is sent as a tap and reported as one', async (t) => {
-  const { page } = await emulatedPage(t, emulationFor('Galaxy S24', browser().version))
+  const { app, page } = await emulatedPage(t, emulationFor('Galaxy S24', browser().version))
   assertOk(await goto(page, '/device'))
-  assert.deepEqual(await click(page, byRole('button', 'Touch me')), { ok: true, kind: 'tap' })
+  assert.deepEqual(await click(page, byRole('button', 'Touch me')), { ok: true, kind: 'tap', page: { url: `${app.url}/device`, title: 'Device' } })
   assert.equal((await observe(page, 'touch-events')).text, 'touchstart touchend click:touch')
 })
 
 test('a click on a screen without touch is a mouse click', async (t) => {
-  const { page } = await emulatedPage(t, undefined)
+  const { app, page } = await emulatedPage(t, undefined)
   assertOk(await goto(page, '/device'))
-  assert.deepEqual(await click(page, 'touch-target'), { ok: true, kind: 'click' })
+  assert.deepEqual(await click(page, 'touch-target'), { ok: true, kind: 'click', page: { url: `${app.url}/device`, title: 'Device' } })
   assert.equal((await observe(page, 'touch-events')).text, 'click:mouse')
 })
 
@@ -124,7 +124,7 @@ test('tap saves a task on the task page, whose layout is zoomed out to fit a pho
   const { app, page } = await emulatedPage(t, emulationFor('Pixel 9', browser().version))
   assertOk(await goto(page, '/'))
   assertOk(await fill(page, 'task-title', 'Release checklist'))
-  assert.deepEqual(await tap(page, 'save-task'), { ok: true, kind: 'tap' })
+  assert.deepEqual(await tap(page, 'save-task'), { ok: true, kind: 'tap', page: { url: `${app.url}/`, title: 'Tasks' } })
   await observeUntil(page, 'saved-task', (seen) => seen.text === 'Release checklist')
   assert.equal(app.submissions(), 1)
 })

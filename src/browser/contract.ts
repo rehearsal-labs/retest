@@ -3,6 +3,7 @@ import type { Emulation } from '../protocol/emulation.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { TextQuery } from '../protocol/host-check.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
+import type { NavigationCause } from '../protocol/page-facts.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 
 export type { Emulation } from '../protocol/emulation.ts'
@@ -26,10 +27,20 @@ export type ProxyOptions = { server: string; bypass: readonly string[] }
 export type NewPageOptions = { baseUrl?: string; emulation?: Emulation; storageState?: StorageState; proxy?: ProxyOptions }
 
 /**
- * What `readPage` saw. `url` is the main frame's origin and path as of its latest commit. `navigating` is true
- * while the frame is opening another document. `found` answers each query in order.
+ * What `readPage` saw. `url` is the main frame's origin and path as of its latest commit, and `title` the
+ * document's title, read by `readPageTitle`, when it has one. `navigating` is true while the frame is opening
+ * another document. `found` answers each query in order.
  */
-export type PageReading = { url: string | undefined; navigating: boolean; found: boolean[] }
+export type PageReading = { url: string | undefined; title?: string | undefined; navigating: boolean; found: boolean[] }
+
+/**
+ * A navigation of the main frame, told when it commits. `url` is its origin and path. `title` settles, and never
+ * rejects, with the document's title read by `readPageTitle`, or undefined when it has none: once its
+ * `DOMContentLoaded` fires, once the next command to the page begins, or one second after the commit, whichever
+ * comes first, and at the next commit with the title it had then. A navigation within the document settles at
+ * once, with the title as it stands. `cause` says what started it.
+ */
+export type PageNavigation = { url: string; title: Promise<string | undefined>; cause: NavigationCause }
 
 /**
  * A `fill` whose value is the text to type. The parent reads a secret, and checks the page's origin may take
@@ -45,7 +56,10 @@ export type PageReading = { url: string | undefined; navigating: boolean; found:
  */
 export type ResolvedFill = { kind: 'fill'; locator: LocatorRecipe; value: string; secret?: string; allowedOrigins?: readonly string[] }
 
-/** A page command as the page runs it: every `fill` carries the text to type, and every other command is as the test sent it. */
+/**
+ * A page command as the page runs it: every `fill` carries the text to type, and every other command, `select`,
+ * `check`, `uncheck` and `scroll` among them, is as the test sent it.
+ */
 export type BrowserCommand = Exclude<PageCommand, { kind: 'fill' }> | ResolvedFill
 
 /**
@@ -78,10 +92,18 @@ export interface OwnedBrowser {
 
 export interface OwnedPage {
   /**
+   * The main frame's origin and path as of its latest commit, as navigations are told, or undefined while it has
+   * none. The parent's secret origin check reads it, so it never waits for a title.
+   */
+  readonly url: string | undefined
+  /**
    * Runs a command within `timeoutMs`. Never throws for a page or application problem; the result carries the
    * failure instead. Aborting `signal` stops the command: input not yet sent is never sent, and input already
    * sent is not taken back. The failure then takes its class from `signal.reason`, a `Failure` (anything else
-   * counts as a timeout), and says whether input was sent. `tap` needs a page that emulates a touch screen.
+   * counts as a timeout), and says whether input was sent. `tap` needs a page that emulates a touch screen. A
+   * result that passed names the page the command went to in `page`, read in the same call that checked or read
+   * the element, and after `load` for a `goto`. Before a command goes past its start, every navigation already
+   * told has its `title` settled.
    */
   execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult>
   screenshot(timeoutMs: number): Promise<Uint8Array>
@@ -91,13 +113,16 @@ export interface OwnedPage {
    */
   captureState(timeoutMs: number): Promise<StorageState>
   /**
-   * Reads the page's address and whether its visible text holds each query, within `timeoutMs`. Sends no input.
-   * The visible text is `document.body.innerText` of the top-level document, read by `pageTextHolds`, and never
-   * leaves the page: only the answers do.
+   * Reads the page's address, its title and whether its visible text holds each query, within `timeoutMs`. Sends
+   * no input. The visible text is `document.body.innerText` of the top-level document, read by `pageTextHolds`,
+   * and never leaves the page: only the answers do.
    */
   readPage(queries: readonly TextQuery[], timeoutMs: number): Promise<PageReading>
-  /** Main frame navigations. `url` is the origin and path. Returns a function that removes the listener. */
-  onNavigation(listener: (url: string) => void): () => void
+  /**
+   * Main frame navigations, each told when it commits: a new document, or a new path within the document. Returns
+   * a function that removes the listener.
+   */
+  onNavigation(listener: (navigation: PageNavigation) => void): () => void
   /** Disposes the page's browser context. */
   dispose(timeoutMs: number): Promise<void>
 }

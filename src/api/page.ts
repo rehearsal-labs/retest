@@ -47,6 +47,13 @@ export interface Page<Touch extends boolean = boolean> {
   getByText(text: string, options?: TextOptions): Locator<Touch>
   /** The keyboard of this app's page. It presses keys on whatever holds the keyboard focus. */
   readonly keyboard: Keyboard
+  /**
+   * Turns the mouse wheel once at the centre of the viewport, by `x` and `y` CSS pixels. It passes once the page
+   * received the wheel, and does not wait for the page to finish moving.
+   *
+   * @example await page.scroll({ y: 600 })
+   */
+  scroll(delta: ScrollDelta): Promise<void>
 }
 
 /** An app's keyboard. Await each press, because an app takes one command at a time. */
@@ -87,9 +94,46 @@ export interface Locator<Touch extends boolean = boolean> {
    */
   press<const K extends string>(key: KeyArgument<K>): Promise<void>
   /**
+   * Chooses options in a `<select>` once it is visible, stable, enabled and not covered, then tells the page with
+   * the `input` and `change` events a person's choice sends. A string names an option by its label, `{ value }` by
+   * its `value` attribute, and a list chooses exactly those options in a `<select multiple>`. Retest sets the
+   * choice from the page's script, so a page that ignores events whose `isTrusted` is false ignores it too.
+   *
+   * @example await page.getByLabel('Country').select('Canada')
+   */
+  select(choice: OptionChoice | readonly OptionChoice[]): Promise<void>
+  /**
+   * Ticks a checkbox, radio button or switch by clicking it once, unless it is ticked already. A hidden native
+   * control is clicked through its label. It fails if the click leaves it unticked, and never clicks again.
+   *
+   * @example await page.getByRole('checkbox', { name: 'Remember me' }).check()
+   */
+  check(): Promise<void>
+  /**
+   * Unticks a checkbox or switch by clicking it once, unless it is unticked already. A radio button is unticked by
+   * choosing another one.
+   *
+   * @example await page.getByLabel('Newsletter').uncheck()
+   */
+  uncheck(): Promise<void>
+  /**
+   * Turns the mouse wheel once over the element's centre, by `x` and `y` CSS pixels, once it is visible, stable,
+   * enabled and not covered. Every action already brings its element into view: scroll for what the page does on
+   * scroll, such as loading more items.
+   *
+   * @example await page.getByTestId('terms').scroll({ y: 600 })
+   */
+  scroll(delta: ScrollDelta): Promise<void>
+  /**
    * Taps the element's centre, on an app whose every target has a touch screen.
    *
    * @example await phone.getByRole('button', { name: 'Save' }).tap()
    */
   readonly tap: Touch extends true ? () => Promise<void> : RetestTypeError<"One of this app's targets has no touch screen. Use click().">
 }
+
+/** An option by its label, as a person reads it, or by its `value` attribute. */
+export type OptionChoice = string | { readonly value: string }
+
+/** CSS pixels. Positive is right and down. An axis not given is 0. */
+export type ScrollDelta = { readonly x?: number | undefined; readonly y?: number | undefined }

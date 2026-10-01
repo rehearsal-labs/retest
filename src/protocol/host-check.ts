@@ -38,8 +38,11 @@ export type HostCheckRecord =
   | { kind: 'address'; name?: string; origin: string; path?: string | { pattern: string; flags: string } }
   | { kind: 'text'; name?: string; text: string; ignoreCase?: true; absent?: true }
 
-/** What a check saw on its last look: the page's origin and path, and for a text check whether the text was there. */
-export type HostCheckActual = { url?: string; found?: boolean }
+/**
+ * What a check saw on its last look: the page's origin and path and its title, and for a text check whether the
+ * text was there. The title is the page's own text, present only when the page has one.
+ */
+export type HostCheckActual = { url?: string; title?: string; found?: boolean }
 
 export type HostCheckStatus = 'passed' | 'failed' | 'not_run'
 
@@ -68,7 +71,11 @@ export const hostCheckRecordSchema: Schema<HostCheckRecord> = s.discriminatedUni
   }),
 ])
 
-export const hostCheckActualSchema: Schema<HostCheckActual> = s.object({ url: s.optional(s.string()), found: s.optional(s.boolean()) })
+export const hostCheckActualSchema: Schema<HostCheckActual> = s.object({
+  url: s.optional(s.string()),
+  title: s.optional(s.string()),
+  found: s.optional(s.boolean()),
+})
 
 export const hostCheckResultSchema: Schema<HostCheckResult> = s.object({
   check: hostCheckRecordSchema,

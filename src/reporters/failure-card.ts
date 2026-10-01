@@ -8,9 +8,9 @@ import type { EventOfType, RunRecord, TestEvent } from './run-record.ts'
 import type { RunTargets } from './targets.ts'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { describeCommand } from '../protocol/commands.ts'
+import { actionNotes, describeWrittenAction } from './actions.ts'
 import { canRerun, formatRerunCommand } from './commands.ts'
-import { plural, printable, testTitle } from './format.ts'
+import { plural, testTitle } from './format.ts'
 import { failedHostChecks, notRunHostChecks } from './host-checks.ts'
 import { namingTargets, variantLabel } from './targets.ts'
 
@@ -101,14 +101,15 @@ export function testsNotRun(result: RunResult): TestResult[] {
 
 /**
  * The run's own failure, unless a file's own card already shows it. A report prints it once, and leaves
- * it off the tests it kept from running.
+ * it off the tests it kept from running. A stopped run always gets it, since it says why the run stopped, even when
+ * the file the run stopped in carries the same failure.
  *
  * @example runFailureToShow(result)?.message // 'No browser at /opt/chromium.'
  */
 export function runFailureToShow(result: RunResult): Failure | undefined {
   const { failure } = result
-  if (failure === undefined || result.files.some((file) => isDeepStrictEqual(file.failure, failure))) return undefined
-  return failure
+  if (failure === undefined || result.status === 'interrupted') return failure
+  return result.files.some((file) => isDeepStrictEqual(file.failure, failure)) ? undefined : failure
 }
 
 /** Why a test did not run, unless that is the run's own failure, which the report prints once. */
@@ -262,27 +263,26 @@ export function messageRepeatsValues(card: FailureCard): boolean {
   return card.failure?.class === 'check_failed' && recordedValues(card.call) !== undefined
 }
 
-/** The matcher or command that failed. A press is written as the test wrote it, with its key. */
+/**
+ * The matcher or command that failed. A press, a select, a check, an uncheck and a scroll are written as the test
+ * wrote them.
+ */
 export function callName(call: FailingCall): string {
-  return call.type === 'assertion.failed' ? call.matcher : (describePress(call) ?? call.command)
+  return call.type === 'assertion.failed' ? call.matcher : (describeWrittenAction(call) ?? call.command)
 }
 
 /** The locator the failing call used, unless its name already says it. */
 export function callLocator(call: FailingCall): LocatorRecipe | undefined {
-  return call.type === 'action.failed' && describePress(call) !== undefined ? undefined : call.locator
+  return call.type === 'action.failed' && describeWrittenAction(call) !== undefined ? undefined : call.locator
 }
 
-type ActionEvent = EventOfType<'action.completed'> | EventOfType<'action.failed'>
-
 /**
- * A press as the test wrote it, with its key. Undefined for any other action.
+ * What the failing call's name leaves out: for an action, how its input reached the page when that was not the usual.
  *
- * @example describePress(event) // "getByLabel('Search').press('Enter')"
+ * @example callNotes(call) // ['clicked its label']
  */
-export function describePress(event: ActionEvent): string | undefined {
-  const { key, locator } = event
-  if (event.command !== 'press' || key === undefined) return undefined
-  return printable(describeCommand(locator === undefined ? { kind: 'press', key } : { kind: 'press', locator, key }))
+export function callNotes(call: FailingCall): string[] {
+  return call.type === 'action.failed' ? actionNotes(call) : []
 }
 
 /**

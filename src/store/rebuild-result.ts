@@ -1,13 +1,17 @@
-import type { RetestEvent } from '../../protocol/events.ts'
-import type { Failure } from '../../protocol/failures.ts'
-import type { HostCheckResult } from '../../protocol/host-check.ts'
-import type { BrowserInfo, FileResult, RunResult, TestResult } from '../../protocol/result.ts'
-import type { EventOfType, TestEvent } from '../../reporters/run-record.ts'
-import { failure, withAlso } from '../../protocol/failures.ts'
-import { eventsFile, resultFile } from '../../protocol/run-folder.ts'
-import { recordEvents, type FileRecord, type TestRecord } from '../../reporters/run-record.ts'
-import { countTests } from '../../runner/outcome.ts'
-import { CliError } from '../errors.ts'
+import type { RetestEvent } from '../protocol/events.ts'
+import type { Failure } from '../protocol/failures.ts'
+import type { HostCheckResult } from '../protocol/host-check.ts'
+import type { BrowserInfo, FileResult, RunResult, TestResult } from '../protocol/result.ts'
+import type { EventOfType, TestEvent } from '../reporters/run-record.ts'
+import { failure, withAlso } from '../protocol/failures.ts'
+import { eventsFile, resultFile } from '../protocol/run-folder.ts'
+import { recordEvents, type FileRecord, type TestRecord } from '../reporters/run-record.ts'
+import { countTests } from '../runner/outcome.ts'
+
+/** Thrown when a folder is not a run folder Retest can read. The message says why. */
+export class RunFolderReadError extends Error {
+  override readonly name = 'RunFolderReadError'
+}
 
 /**
  * The result of a run that ended before writing `result.json`, from its events. It is always
@@ -23,7 +27,7 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
   const record = recordEvents(events)
   const { started, finished, last } = record
   if (started === undefined || last === undefined) {
-    throw new CliError(`${eventsFile} has no run.started event, so the run cannot be rebuilt.`)
+    throw new RunFolderReadError(`${eventsFile} has no run.started event, so the run cannot be rebuilt.`)
   }
   const files = [...record.files.values()].map((file) => fileResult(file, last.elapsedMs))
   const browsers = record.browsers.map(browserInfo)

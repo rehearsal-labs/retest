@@ -106,6 +106,7 @@ export function pageWithText(text: string): Responder {
   return (command) => {
     if (command.kind === 'observe') return { ok: true, kind: 'observe', observation: observationOf([{ text, visible: true }]) }
     if (command.kind === 'goto') return { ok: true, kind: 'goto', url: 'http://127.0.0.1:4173/' }
+    if (command.kind === 'select' || command.kind === 'check' || command.kind === 'uncheck') return { ok: true, kind: command.kind, changed: true }
     return { ok: true, kind: command.kind }
   }
 }

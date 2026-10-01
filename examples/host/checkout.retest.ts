@@ -14,7 +14,8 @@ test('signs in with a code and saves a task', async ({ page }) => {
   await page.getByLabel('Code').fill(secret('code'))
   await page.getByLabel('Code').press('Enter')
   await expect(page.getByTestId('account')).toHaveText('Signed in as alice')
-  await page.goto('/')
+  // The host checks the page the test ends on, and that no goto opened it, so the test follows the app's own link.
+  await page.getByRole('link', { name: 'Your tasks' }).click()
   await page.getByLabel('Title').fill('Release checklist')
   await page.getByRole('button', { name: 'Save' }).click()
   await expect(page.getByTestId('saved-task')).toHaveText('Release checklist')

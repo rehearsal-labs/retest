@@ -4,7 +4,8 @@ import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { ResolvedSecret } from './contract.ts'
 import type { Redactor } from './redactor.ts'
-import { errorMessage, failure } from '../protocol/failures.ts'
+import { errorMessage, failure, failureSchema } from '../protocol/failures.ts'
+import { parse } from '../protocol/schema.ts'
 import { originOf } from '../protocol/url.ts'
 import { bounded } from './bounded.ts'
 
@@ -14,11 +15,13 @@ export type ResolvedSecrets = { ok: true; secrets: Map<string, ResolvedSecret> }
 export type SecretFill = { kind: 'fill'; locator: LocatorRecipe; value: { secret: string } }
 
 export type FillContext = {
-  /** The page's origin and path, as its last navigation left it. */
+  /** The page's origin and path, as it stands now. */
   pageUrl: string | undefined
   /** The origins of the base URLs of the test's apps. */
   appOrigins: readonly string[]
   timeoutMs: number
+  /** Aborted, with a `Failure` as its reason, when the fill is stopped, as when its test is. */
+  signal: AbortSignal
 }
 
 export type FillResolution = { ok: true; command: ResolvedFill } | { ok: false; failure: Failure }
@@ -96,14 +99,29 @@ export class SecretFiller {
     const allowedOrigins = [...new Set([...context.appOrigins, ...(this.#declared.get(name)?.origins ?? [])])]
     const origin = originOf(context.pageUrl)
     if (origin === undefined || !allowedOrigins.includes(origin)) return refused('not_actionable', wrongOrigin(name, origin, allowedOrigins), { origin: origin ?? null })
-    const value = await this.#read(name, secret, context.timeoutMs)
+    const value = await this.#read(name, secret, context)
     if (typeof value !== 'string') return { ok: false, failure: value }
     return { ok: true, command: { kind: 'fill', locator: command.locator, value, secret: name, allowedOrigins } }
   }
 
-  async #read(name: string, secret: ResolvedSecret, timeoutMs: number): Promise<string | Failure> {
+  // A function source is told, through its signal, when Retest stops waiting for its value: the fill's time ran
+  // out, or the fill was stopped.
+  async #read(name: string, secret: ResolvedSecret, { timeoutMs, signal }: FillContext): Promise<string | Failure> {
     if ('value' in secret) return secret.value.length < minSecretLength ? failure('setup_failed', tooShort(name)) : secret.value
-    const read = await bounded(new Promise<string>((resolve) => resolve(secret.read())), timeoutMs)
+    const waiting = new AbortController()
+    const stopped = Promise.withResolvers<void>()
+    const stop = (): void => stopped.resolve()
+    signal.addEventListener('abort', stop, { once: true })
+    if (signal.aborted) stop()
+    const read = await bounded(new Promise<string>((resolve) => resolve(secret.read({ signal: waiting.signal }))), timeoutMs, stopped.promise)
+    signal.removeEventListener('abort', stop)
+    if (read.status === 'stopped') {
+      waiting.abort(new DOMException(`Retest stopped reading the secret ${JSON.stringify(name)}: its fill was stopped.`, 'AbortError'))
+      return stoppedFill(name, signal.reason)
+    }
+    if (read.status === 'timed_out') {
+      waiting.abort(new DOMException(`Retest stopped reading the secret ${JSON.stringify(name)}: it took longer than ${timeoutMs} ms.`, 'TimeoutError'))
+    }
     if (read.status === 'done' && typeof read.value === 'string' && read.value.length >= minSecretLength) {
       this.#redactor.learn(name, read.value)
       return read.value
@@ -112,6 +130,14 @@ export class SecretFiller {
     const problem = read.status === 'failed' ? errorMessage(read.error) : read.status === 'done' ? 'it gave no text' : `it took longer than ${timeoutMs} ms`
     return failure('setup_failed', `Retest could not read the secret ${JSON.stringify(name)}: ${this.#redactor.redact(problem)}`)
   }
+}
+
+// A fill stopped while its secret was read ends as the reason it was stopped says, and types nothing.
+function stoppedFill(name: string, reason: unknown): Failure {
+  const parsed = parse(failureSchema, reason)
+  const cause = parsed.ok ? parsed.value : failure('interrupted', 'The fill was stopped.')
+  const message = `${cause.message} Retest stopped reading the secret ${JSON.stringify(name)}, and typed nothing.`
+  return { class: cause.class, message, details: { ...cause.details, inputSent: false } }
 }
 
 function tooShort(name: string, variable?: string): string {

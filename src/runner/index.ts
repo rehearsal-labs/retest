@@ -5,6 +5,7 @@ export type {
   NewPageOptions,
   OwnedBrowser,
   OwnedPage,
+  PageNavigation,
   PageReading,
   ProxyOptions,
   ResolvedFill,
@@ -29,6 +30,7 @@ export type {
   RunOptions,
   Selection,
   SingleApp,
+  StopReason,
   StopSignal,
   TagExpression,
 } from './contract.ts'
@@ -36,3 +38,5 @@ export { collectFiles, runFiles, RunFolderError } from './run.ts'
 export type { FindExecutable, LaunchBrowser } from './run.ts'
 export { resolveSecrets } from './secrets.ts'
 export type { ResolvedSecrets } from './secrets.ts'
+export { readRunFolder, RunFolderReadError } from '../store/read-run-folder.ts'
+export type { RunFolder } from '../store/read-run-folder.ts'

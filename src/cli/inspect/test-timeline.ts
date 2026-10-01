@@ -1,3 +1,4 @@
+import type { NavigationCause } from '../../protocol/page-facts.ts'
 import type { TestResult } from '../../protocol/result.ts'
 import type { EventOfType, TestEvent } from '../../reporters/run-record.ts'
 import type { Style } from '../../reporters/style.ts'
@@ -7,8 +8,8 @@ import { join } from 'node:path'
 import { describeLocator } from '../../protocol/locator.ts'
 import { secretPlaceholder } from '../../protocol/secret.ts'
 import { formatLocation } from '../../protocol/location.ts'
-import { describePress } from '../../reporters/failure-card.ts'
-import { describeStateEvent, formatDuration, plural, statusLabel, testTitle } from '../../reporters/format.ts'
+import { actionNotes, describeWrittenAction, type ActionEvent } from '../../reporters/actions.ts'
+import { describePage, describeStateEvent, formatDuration, plural, printable, statusLabel, testTitle } from '../../reporters/format.ts'
 import { describeHostCheck, hostCheckPage } from '../../reporters/host-checks.ts'
 import { visibleLength } from '../../reporters/style.ts'
 import { describeVariant } from '../../reporters/targets.ts'
@@ -23,8 +24,9 @@ type Described = [string, ...string[]]
 
 /**
  * One test's events as lines, in order: steps, actions, navigations, checks, host checks and evidence, each at its
- * time since the test started. The looks an assertion took are shown under it. A test with a variant names it,
- * and each line about a page names its app.
+ * time since the test started. The looks an assertion took are shown under it. A navigation names the page's title
+ * and what started it, when the run recorded them. A test with a variant names it, and each line about a page names
+ * its app.
  *
  * @example stdout.write(renderTimeline(test, events, { style, runFolder, targets }))
  */
@@ -92,13 +94,11 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
     }
     case 'action.completed':
     case 'action.failed': {
-      const target = event.locator === undefined ? '' : ` ${describeLocator(event.locator)}`
-      const page = event.command === 'goto' && event.pageUrl !== undefined ? ` → ${event.pageUrl}` : ''
-      const text = `${describePress(event) ?? `${event.command}${target}`}${typed(event)}${page}  ${style.dim(formatDuration(event.durationMs))}`
+      const text = `${describeAction(event)}  ${style.dim(formatDuration(event.durationMs))}`
       return [event.type === 'action.failed' ? `${style.red('✗')} ${text}  ${style.red(event.failure.class)}` : text]
     }
     case 'navigation':
-      return [style.dim(`navigated to ${event.url}`)]
+      return [style.dim(describeNavigation(event))]
     case 'host_check.passed':
       return [`${style.green('✓')} host check ${describeHostCheck(event.check)}  ${style.dim(hostCheckFacts(event))}`]
     case 'host_check.failed':
@@ -121,6 +121,21 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       return [`${statusLabel(event.status).toLowerCase()}${duration}`]
     }
   }
+}
+
+function describeAction(event: ActionEvent): string {
+  const target = event.locator === undefined ? '' : ` ${describeLocator(event.locator)}`
+  const notes = actionNotes(event).map((note) => `, ${note}`)
+  const page = event.command === 'goto' && event.pageUrl !== undefined ? ` → ${printable(event.pageUrl)}` : ''
+  return `${describeWrittenAction(event) ?? `${event.command}${target}`}${typed(event)}${notes.join('')}${page}`
+}
+
+const causes: Record<NavigationCause, string> = { goto: 'by goto', action: 'by an action', page: 'by the page' }
+
+// A run from before titles and causes has neither, and the line claims neither.
+function describeNavigation(event: EventOfType<'navigation'>): string {
+  const cause = event.cause === undefined ? '' : `, ${causes[event.cause]}`
+  return `navigated to ${describePage(event.url, event.title)}${cause}`
 }
 
 type AssertionEvent = EventOfType<'assertion.passed'> | EventOfType<'assertion.failed'>

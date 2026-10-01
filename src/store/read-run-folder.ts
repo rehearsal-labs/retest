@@ -1,14 +1,17 @@
-import type { RetestEvent } from '../../protocol/events.ts'
+import type { RetestEvent } from '../protocol/events.ts'
+import { readFileSync, statSync, type Stats } from 'node:fs'
 import { join } from 'node:path'
-import { retestEventSchema } from '../../protocol/events.ts'
-import { runResultSchema, type RunResult } from '../../protocol/result.ts'
-import { eventsFile, resultFile } from '../../protocol/run-folder.ts'
-import { parse, type Issue } from '../../protocol/schema.ts'
-import { CliError } from '../errors.ts'
-import { readTextIfPresent, statIfPresent } from '../file-system.ts'
-import { rebuildResult } from './rebuild-result.ts'
+import { retestEventSchema } from '../protocol/events.ts'
+import { errorMessage } from '../protocol/failures.ts'
+import { runResultSchema, type RunResult } from '../protocol/result.ts'
+import { eventsFile, resultFile } from '../protocol/run-folder.ts'
+import { parse, type Issue } from '../protocol/schema.ts'
+import { isMissingFile } from '../shared/error-code.ts'
+import { rebuildResult, RunFolderReadError } from './rebuild-result.ts'
 
-/** A run folder as `inspect` read it. Without `result.json` the result is rebuilt and never complete. */
+export { RunFolderReadError } from './rebuild-result.ts'
+
+/** A run folder as it was read. Without `result.json` the result is rebuilt and never complete. */
 export type RunFolder = {
   source: 'result.json' | 'events.jsonl'
   result: RunResult
@@ -21,24 +24,26 @@ export type RunFolder = {
 export type EventsReading = { ok: true; events: RetestEvent[]; tornLine?: number } | { ok: false; problem: string }
 
 /**
- * Reads and validates a run folder. A folder that is missing, unreadable or invalid throws a `CliError`.
+ * Reads and validates a run folder. A run cut off halfway, with no `result.json`, is rebuilt from its events and
+ * marked incomplete. A folder that is missing, unreadable or invalid throws a `RunFolderReadError`, whose message
+ * names the folder as `shown`, the folder itself by default.
  *
- * @example readRunFolder('/work/.retest/runs/latest', '.retest/runs/latest').result.exitCode
+ * @example readRunFolder('/work/.retest/runs/latest').result.exitCode
  */
-export function readRunFolder(folder: string, shown: string): RunFolder {
+export function readRunFolder(folder: string, shown: string = folder): RunFolder {
   const stats = statIfPresent(folder)
-  if (stats === undefined) throw new CliError(`No run folder at ${shown}.`)
-  if (!stats.isDirectory()) throw new CliError(`${shown} is a file, not a run folder.`)
+  if (stats === undefined) throw new RunFolderReadError(`No run folder at ${shown}.`)
+  if (!stats.isDirectory()) throw new RunFolderReadError(`${shown} is a file, not a run folder.`)
   const resultText = readTextIfPresent(join(folder, resultFile))
   const eventsText = readTextIfPresent(join(folder, eventsFile))
   if (resultText !== undefined) return withResult(readResult(resultText), eventsText)
   if (eventsText === undefined) {
-    throw new CliError(`${shown} has neither ${resultFile} nor ${eventsFile}, so it is not a run folder.`)
+    throw new RunFolderReadError(`${shown} has neither ${resultFile} nor ${eventsFile}, so it is not a run folder.`)
   }
   const reading = readEvents(eventsText)
-  if (!reading.ok) throw new CliError(`${eventsFile} cannot be read: ${reading.problem}.`)
+  if (!reading.ok) throw new RunFolderReadError(`${eventsFile} cannot be read: ${reading.problem}.`)
   if (reading.events.length === 0) {
-    throw new CliError(`${shown} has no ${resultFile} and no events: the run stopped before it recorded anything.`)
+    throw new RunFolderReadError(`${shown} has no ${resultFile} and no events: the run stopped before it recorded anything.`)
   }
   const warnings = [
     `${resultFile} is missing, so the run did not finish. This result is rebuilt from ${reading.events.length} events and marked incomplete.`,
@@ -72,10 +77,10 @@ function tornWarning(reading: EventsReading): string[] {
 
 function readResult(text: string): RunResult {
   const json = parseJson(text)
-  if (!json.ok) throw new CliError(`${resultFile} is not valid JSON.`)
+  if (!json.ok) throw new RunFolderReadError(`${resultFile} is not valid JSON.`)
   const parsed = parse(runResultSchema, json.value)
   if (!parsed.ok)
-    throw new CliError(`${resultFile} does not match the version 1 result: ${describeIssues(parsed.issues)}.`)
+    throw new RunFolderReadError(`${resultFile} does not match the version 1 result: ${describeIssues(parsed.issues)}.`)
   return parsed.value
 }
 
@@ -133,4 +138,22 @@ function describeIssues(issues: Issue[]): string {
   const shown = issues.slice(0, 3).map((issue) => `${issue.path} ${issue.message}`)
   const more = issues.length > shown.length ? `, and ${issues.length - shown.length} more` : ''
   return `${shown.join('; ')}${more}`
+}
+
+function statIfPresent(path: string): Stats | undefined {
+  return ifPresent(path, () => statSync(path))
+}
+
+function readTextIfPresent(path: string): string | undefined {
+  return ifPresent(path, () => readFileSync(path, 'utf8'))
+}
+
+// Nothing at the path is an answer; any other problem makes the folder unreadable.
+function ifPresent<T>(path: string, read: () => T): T | undefined {
+  try {
+    return read()
+  } catch (error) {
+    if (isMissingFile(error)) return undefined
+    throw new RunFolderReadError(`${path} could not be read: ${errorMessage(error)}`, { cause: error })
+  }
 }

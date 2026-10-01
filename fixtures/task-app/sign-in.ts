@@ -80,13 +80,17 @@ export class Sessions {
   }
 }
 
-/** The account page, which shows who the session cookie signs in and the user name the browser kept. */
+/**
+ * The account page, which shows who the session cookie signs in and the user name the browser kept, and links to the
+ * tasks.
+ */
 export function renderAccountPage(user: string | undefined): string {
   const session = user === undefined ? 'Signed out' : `Signed in as ${escapeHtml(user)}`
   return page(
     'Account',
     `<p data-testid="account">${session}</p>
-<p>Saved in this browser: <span data-testid="stored-user"></span></p>`,
+<p>Saved in this browser: <span data-testid="stored-user"></span></p>
+<p><a href="/" data-testid="tasks-link">Your tasks</a></p>`,
     ACCOUNT_SCRIPT,
   )
 }

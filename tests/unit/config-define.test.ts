@@ -45,6 +45,28 @@ describe('defineConfig and app', () => {
   })
 })
 
+describe('secret functions', () => {
+  // In a project with Node's types or the DOM's, the signal is the project's own AbortSignal, so it can go to fetch.
+  test("take a context whose signal is the project's own AbortSignal", async () => {
+    const config = defineConfig({
+      apps: { web: chromium() },
+      secrets: {
+        code: async ({ signal }) => {
+          signal.throwIfAborted()
+          return signal.aborted ? 'never' : 'code-1'
+        },
+        plain: () => 'written-in-place',
+      },
+    })
+    type Context = Parameters<typeof config.secrets.code>[0]
+    sameType<Context['signal'], AbortSignal>(true)
+    assert.equal(await config.secrets.code({ signal: new AbortController().signal }), 'code-1')
+    const stopped = new AbortController()
+    stopped.abort(new Error('Retest stopped waiting.'))
+    await assert.rejects(config.secrets.code({ signal: stopped.signal }), { message: 'Retest stopped waiting.' })
+  })
+})
+
 describe('target constructors', () => {
   test('tag a copy of their options with the browser', () => {
     const options = { headless: false, emulate: 'Pixel 9' } as const

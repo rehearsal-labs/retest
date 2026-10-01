@@ -9,6 +9,7 @@ import {
   CdpTimeoutError,
 } from './cdp/errors.ts'
 import { sendOptions } from './cdp-results.ts'
+import { neverRan } from './isolated-world.ts'
 
 /**
  * Records whether a command's effect may have reached the page. Before that, a lost connection loses nothing;
@@ -35,6 +36,25 @@ export class Dispatch {
       throw error
     }
   }
+
+  /**
+   * Sends, through `send`'s own dispatch, a command whose answer says whether it made the action happen, such as a
+   * page call that checks the element again and acts only when every check passes. An answer that says it did not
+   * leaves `sent` as it was. A command that got no answer may have.
+   *
+   * @example const readiness = await dispatch.attempt((attempt) => world.callIn(context, source, args, schema, deadline, attempt), (answer) => answer.status === 'selected')
+   */
+  async attempt<T>(send: (attempt: Dispatch) => Promise<T>, happened: (answer: T) => boolean): Promise<T> {
+    const attempt = new Dispatch()
+    try {
+      const answer = await send(attempt)
+      if (happened(answer)) this.#sent = true
+      return answer
+    } catch (error) {
+      if (attempt.sent) this.#sent = true
+      throw error
+    }
+  }
 }
 
 function mayHaveArrived(error: unknown): boolean {
@@ -46,5 +66,5 @@ function mayHaveArrived(error: unknown): boolean {
   ) {
     return error.written
   }
-  return !(error instanceof CdpClosedError || error instanceof CdpPendingLimitError)
+  return !(error instanceof CdpClosedError || error instanceof CdpPendingLimitError || neverRan(error))
 }

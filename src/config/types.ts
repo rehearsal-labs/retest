@@ -80,11 +80,19 @@ export type AppConfig = AppSettings & {
 /** A secret read from the parent's environment, once, when the run starts. */
 export type EnvSecret = { readonly env: string }
 
+// The project's own AbortSignal, from Node's types or the DOM's, so a secret's function can pass it to fetch. Retest's
+// declarations need neither, so a project with neither sees only whether the signal was aborted.
+type GlobalAbortSignal = typeof globalThis extends { AbortSignal: { prototype: infer Signal } } ? Signal : { readonly aborted: boolean }
+
+/** What a secret's function is called with. `signal` is aborted once Retest stops waiting for the value. */
+export type SecretContext = { readonly signal: GlobalAbortSignal }
+
 /**
  * Where a secret's value comes from: an environment variable, or a function the parent calls each time a
- * `fill` uses the secret, for values such as one-time codes that change between reads.
+ * `fill` uses the secret, for values such as one-time codes that change between reads. The function's
+ * `signal` is aborted when the fill's time runs out.
  */
-export type SecretSource = EnvSecret | (() => string | Promise<string>)
+export type SecretSource = EnvSecret | ((context: SecretContext) => string | Promise<string>)
 
 /**
  * The default export of `retest.config.ts`.

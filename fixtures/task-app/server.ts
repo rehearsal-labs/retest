@@ -3,6 +3,7 @@ import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { text } from 'node:stream/consumers'
 import { ACTIONS_PAGE, renderSubmittedPage } from './actions-page.ts'
+import { CHOICES_PAGE, TOGGLE_PATH } from './choices-page.ts'
 import { CODE_PAGE, CODE_SIGN_IN_PAGE, CodeSignIns, renderRefusal } from './code-sign-in.ts'
 import { renderDevicePage } from './device-page.ts'
 import { KEY_DOWN_PATH, KEYS_PAGE } from './keys-page.ts'
@@ -10,8 +11,10 @@ import { LOCATORS_PAGE } from './locators-page.ts'
 import { MODES, type Mode, type TaskAppMode } from './modes.ts'
 import { renderPage } from './page.ts'
 import { PROXY_CHECK_FRAME, PROXY_CHECK_PAGE, PROXY_CHECK_PATH, PROXY_CHECK_WORKER } from './proxy-page.ts'
+import { MORE_PATH, SCROLL_PAGE } from './scroll-page.ts'
 import { SERVICE_WORKER, SERVICE_WORKER_PAGE } from './service-worker.ts'
 import { renderAccountPage, Sessions, SIGN_IN_PAGE } from './sign-in.ts'
+import { GREETING_PAGE, NEXT_TITLE_PAGE, REDIRECTING_PAGE, renderTitledPage, TITLES_PAGE } from './titles-page.ts'
 
 export type TaskAppOptions = {
   mode?: TaskAppMode
@@ -36,6 +39,10 @@ export type TaskApp = {
   searches(): number
   /** How many presses of the actions page's count button reached the server. */
   clicks(): number
+  /** How many clicks on the choices page's locked setting reached the server. */
+  toggles(): number
+  /** How many times the scroll page's feed asked for more items. */
+  loads(): number
   /** How many key downs in the keys page's frozen field reached the server. */
   keyDowns(): number
   /** Every one-time code the app sent, oldest first. */
@@ -63,6 +70,8 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
   let refused = 0
   let searches = 0
   let clicks = 0
+  let toggles = 0
+  let loads = 0
   let keyDowns = 0
   let closing: Promise<void> | undefined
 
@@ -162,6 +171,42 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
         respond(response, 204, 'text/plain; charset=utf-8', '')
       },
     ],
+    ['GET /actions/choices', (_request, response) => respond(response, 200, HTML, CHOICES_PAGE)],
+    [
+      `POST ${TOGGLE_PATH}`,
+      (request, response) => {
+        toggles += 1
+        request.resume()
+        respond(response, 204, 'text/plain; charset=utf-8', '')
+      },
+    ],
+    ['GET /actions/scroll', (_request, response) => respond(response, 200, HTML, SCROLL_PAGE)],
+    [
+      `POST ${MORE_PATH}`,
+      (request, response) => {
+        loads += 1
+        request.resume()
+        respond(response, 204, 'text/plain; charset=utf-8', '')
+      },
+    ],
+    ['GET /titles', (_request, response) => respond(response, 200, HTML, TITLES_PAGE)],
+    ['GET /titles/next', (_request, response) => respond(response, 200, HTML, NEXT_TITLE_PAGE)],
+    ['GET /titles/redirect', (_request, response) => respond(response, 200, HTML, REDIRECTING_PAGE)],
+    ['GET /titles/greeting', (_request, response) => respond(response, 200, HTML, GREETING_PAGE)],
+    [
+      'GET /titles/chain',
+      (_request, response) => {
+        response.writeHead(302, { location: '/titles/redirect', 'cache-control': 'no-store' })
+        response.end()
+      },
+    ],
+    [
+      'GET /titles/echo',
+      (request, response) => {
+        const title = new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('title') ?? ''
+        respond(response, 200, HTML, renderTitledPage(title))
+      },
+    ],
     ['GET /keys', (_request, response) => respond(response, 200, HTML, KEYS_PAGE)],
     [
       `POST ${KEY_DOWN_PATH}`,
@@ -232,6 +277,8 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     refused: () => refused,
     searches: () => searches,
     clicks: () => clicks,
+    toggles: () => toggles,
+    loads: () => loads,
     keyDowns: () => keyDowns,
     sentCodes: () => codeSignIns.sent(),
     close: () => (closing ??= stop()),

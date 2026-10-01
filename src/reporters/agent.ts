@@ -8,6 +8,7 @@ import { formatInspectCommand } from './commands.ts'
 import {
   callLocator,
   callName,
+  callNotes,
   describeFileProblem,
   describeWait,
   failureCards,
@@ -111,7 +112,8 @@ function failureLines(card: FailureCard): string[] {
   if (call === undefined) return indent(failure === undefined ? [failureClass] : failureText(failure))
   const recipe = callLocator(call)
   const locator = recipe === undefined ? '' : ` ${describeLocator(recipe)}`
-  const lines = [`  ${failureClass} ${callName(call)}${locator}`]
+  const notes = callNotes(call).map((note) => `, ${note}`)
+  const lines = [`  ${failureClass} ${callName(call)}${locator}${notes.join('')}`]
   if (failure !== undefined && !messageRepeatsValues(card)) lines.push(...indent(messageLines(failure.message)))
   const waited = `waited ${describeWait(call, milliseconds)}`
   const values = recordedValues(call)

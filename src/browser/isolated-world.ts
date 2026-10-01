@@ -1,5 +1,6 @@
 import type { CommandIdentity } from './cdp/errors.ts'
 import type { CdpSession } from './cdp/session.ts'
+import type { Dispatch } from './dispatch.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -31,9 +32,11 @@ type Creation = { readonly promise: Promise<number>; readonly startedBy: Deadlin
 const worldName = 'retest'
 const retryPauseMs = 10
 
+const missingContextMessage = 'Cannot find context with specified id'
+
 // What Chrome answers when a call reaches a world whose document has gone, or is cut off by a navigation.
 const goneContextMessages = new Set([
-  'Cannot find context with specified id',
+  missingContextMessage,
   'Execution context was destroyed.',
   'No frame for given id found',
   'Inspected target navigated or closed',
@@ -83,11 +86,7 @@ export class IsolatedWorld {
     for (;;) {
       const context = await this.#context(deadline)
       try {
-        const value =
-          typeof args === 'function'
-            ? await this.#callWithObjects(context, functionDeclaration, args, schema, deadline)
-            : await this.callIn(context, functionDeclaration, args, schema, deadline)
-        return { value, context }
+        return { value: await this.callIn(context, functionDeclaration, args, schema, deadline), context }
       } catch (error) {
         if (!isGoneContext(error)) throw error
         if (this.#creation?.context === context) this.#creation = undefined
@@ -96,15 +95,20 @@ export class IsolatedWorld {
     }
   }
 
-  /** Calls a function in the world of one document. Once that document has gone the call fails, and never moves on. */
+  /**
+   * Calls a function in the world of one document. Once that document has gone the call fails, and never moves on.
+   * A call that is itself an action's input, such as one that sets a selection, goes through its `dispatch`.
+   */
   async callIn<T>(
     context: number,
     functionDeclaration: string,
-    args: readonly unknown[],
+    args: WorldArguments,
     schema: Schema<T>,
     deadline: Deadline,
+    dispatch?: Dispatch,
   ): Promise<T> {
-    return this.#invoke(context, functionDeclaration, args.map((value) => ({ value })), schema, deadline)
+    if (typeof args === 'function') return this.#callWithObjects(context, functionDeclaration, args, schema, deadline, dispatch)
+    return this.#invoke(context, functionDeclaration, args.map((value) => ({ value })), schema, deadline, dispatch)
   }
 
   async #callWithObjects<T>(
@@ -113,11 +117,12 @@ export class IsolatedWorld {
     args: ArgumentsIn,
     schema: Schema<T>,
     deadline: Deadline,
+    dispatch: Dispatch | undefined,
   ): Promise<T> {
     this.#calls += 1
     const scope = { session: this.#session, context, objectGroup: `retest-call-${this.#calls}` }
     try {
-      return await this.#invoke(context, functionDeclaration, await args(scope, deadline), schema, deadline)
+      return await this.#invoke(context, functionDeclaration, await args(scope, deadline), schema, deadline, dispatch)
     } finally {
       this.#session.send('Runtime.releaseObjectGroup', { objectGroup: scope.objectGroup }).catch(() => {
         // The objects go with their document, so a release that fails holds them only until it closes.
@@ -131,9 +136,14 @@ export class IsolatedWorld {
     args: readonly WorldArgument[],
     schema: Schema<T>,
     deadline: Deadline,
+    dispatch: Dispatch | undefined,
   ): Promise<T> {
+    const method = 'Runtime.callFunctionOn'
     const params = { functionDeclaration, executionContextId: context, arguments: args, returnByValue: true, awaitPromise: true }
-    const raw = await this.#session.send('Runtime.callFunctionOn', params, sendOptions(deadline))
+    const raw =
+      dispatch === undefined
+        ? await this.#session.send(method, params, sendOptions(deadline))
+        : await dispatch.send(this.#session, method, params, deadline)
     const source = callIdentity(this.#session)
     const { exceptionDetails } = readProtocol(exceptionSchema, raw, source)
     if (exceptionDetails !== undefined) {
@@ -185,6 +195,15 @@ export class IsolatedWorld {
 /** True for the answer Chrome gives a call into a world whose document has gone. */
 export function isGoneContext(error: unknown): boolean {
   return error instanceof CdpProtocolError && goneContextMessages.has(error.protocolMessage)
+}
+
+/**
+ * True for the answer Chrome gives a call into a world that was gone before the call reached it, as one held while
+ * the frame opened another document is. Such a call never ran. The other gone answers can come from a call that
+ * had begun to run.
+ */
+export function neverRan(error: unknown): boolean {
+  return error instanceof CdpProtocolError && error.protocolMessage === missingContextMessage
 }
 
 function beforeDeadline<T>(work: Promise<T>, deadline: Deadline, command: CommandIdentity): Promise<T> {

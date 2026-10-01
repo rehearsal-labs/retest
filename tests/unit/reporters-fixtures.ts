@@ -4,11 +4,11 @@ import type { RunResult } from '../../src/protocol/result.ts'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { rebuildResult } from '../../src/cli/inspect/rebuild-result.ts'
 import { truncateText } from '../../src/protocol/failures.ts'
 import { testId } from '../../src/protocol/run-folder.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import type { Writer } from '../../src/reporters/style.ts'
+import { rebuildResult } from '../../src/store/rebuild-result.ts'
 
 // Recorded event sequences for reporter and inspect tests, shaped as the runner writes them.
 

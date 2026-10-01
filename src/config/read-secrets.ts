@@ -1,6 +1,7 @@
 import type { Path } from '../protocol/schema.ts'
 import type { LoadedSecret, LoadedSecretSource } from './loaded.ts'
 import type { Problems } from './problems.ts'
+import type { SecretContext } from './types.ts'
 import { describeChoices, describeValue, isPlainObject, s } from '../protocol/schema.ts'
 import { readOrigin } from '../protocol/url.ts'
 
@@ -43,9 +44,9 @@ function kindOf(value: unknown): string {
 }
 
 // What a source gives back is checked here, once, and an error never shows it: it may be the secret itself.
-function reader(name: string, source: Function): () => Promise<string> {
-  return async () => {
-    const value: unknown = await source()
+function reader(name: string, source: Function): (context: SecretContext) => Promise<string> {
+  return async (context) => {
+    const value: unknown = await source(context)
     if (typeof value === 'string' && value !== '') return value
     const received = typeof value === 'string' ? 'an empty string' : kindOf(value)
     throw new TypeError(`The function for secret ${JSON.stringify(name)} returned ${received}, not the secret's text.`)

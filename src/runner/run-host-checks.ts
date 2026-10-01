@@ -122,10 +122,11 @@ function passes(check: HostCheck, reading: PageReading | undefined): boolean {
   return check.absent === true ? !found : found
 }
 
+// What the last look saw: the page's address and title, and for a text check whether the text was there.
 function actualOf(check: HostCheck, last: PageReading | undefined): HostCheckActual {
   if (last === undefined) return {}
-  const url = last.url === undefined ? {} : { url: last.url }
-  return check.kind === 'text' ? { ...url, found: last.found[0] === true } : url
+  const page = { ...(last.url === undefined ? {} : { url: last.url }), ...(last.title === undefined ? {} : { title: last.title }) }
+  return check.kind === 'text' ? { ...page, found: last.found[0] === true } : page
 }
 
 function checkFailure(check: HostCheck, app: string, last: PageReading | undefined, looked: { attempts: number; timeoutMs: number }): Failure {

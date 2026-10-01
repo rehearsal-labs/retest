@@ -3,10 +3,14 @@ import type { OwnedPage } from '../../src/browser/contract.ts'
 import type { TaskApp, TaskAppOptions } from '../../fixtures/task-app/server.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { BrowserError } from '../../src/browser/browser-error.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
 import {
   assertOk,
+  byLabel,
+  byRole,
+  check,
   click,
   failureOf,
   fill,
@@ -17,9 +21,12 @@ import {
   openApp,
   openPage,
   press,
+  scroll,
+  select,
   servePages,
   sharedBrowser,
   timed,
+  uncheck,
 } from './browser-harness.ts'
 import { observationOf } from '../support/observation.ts'
 
@@ -525,7 +532,7 @@ async function actionsPage(t: TestContext) {
   const app = await openApp(t)
   const page = await openPage(t, browser(), app.url)
   const visited: string[] = []
-  page.onNavigation((url) => void visited.push(url))
+  page.onNavigation((navigation) => void visited.push(navigation.url))
   assertOk(await goto(page, '/actions'))
   return { app, page, visited }
 }
@@ -533,7 +540,7 @@ async function actionsPage(t: TestContext) {
 test('Enter in a form field submits the form once, and the page that answers is followed as a navigation', async (t) => {
   const { app, page, visited } = await actionsPage(t)
   assertOk(await fill(page, 'query', 'release notes'))
-  assert.deepEqual(await press(page, 'query', 'Enter'), { ok: true, kind: 'press' })
+  assert.deepEqual(await press(page, 'query', 'Enter'), { ok: true, kind: 'press', page: { url: `${app.url}/actions`, title: 'Actions' } })
   await observeUntil(page, 'submitted', (seen) => seen.text === 'Searched for release notes')
   assert.equal(app.searches(), 1)
   assert.deepEqual(visited, [`${app.url}/actions`, `${app.url}/actions/submit`])
@@ -542,7 +549,7 @@ test('Enter in a form field submits the form once, and the page that answers is 
 test("Enter on the page's keyboard goes to the field a fill left the focus in, and submits its form once", async (t) => {
   const { app, page, visited } = await actionsPage(t)
   assertOk(await fill(page, 'query', 'keyboard'))
-  assert.deepEqual(await press(page, undefined, 'Enter'), { ok: true, kind: 'press' })
+  assert.deepEqual(await press(page, undefined, 'Enter'), { ok: true, kind: 'press', page: { url: `${app.url}/actions`, title: 'Actions' } })
   await observeUntil(page, 'submitted', (seen) => seen.text === 'Searched for keyboard')
   assert.equal(app.searches(), 1)
   assert.equal(visited.at(-1), `${app.url}/actions/submit`)
@@ -602,13 +609,13 @@ test('each editing key edits a field once', async (t) => {
 })
 
 test('a key whose keydown the page cancels still reached its element, and the press passes', async (t) => {
-  const { page } = await customPage(
+  const { page, site } = await customPage(
     t,
     `<input data-testid="field">${mirror('field')}<script>
       document.querySelector('[data-testid="field"]').addEventListener('keydown', (event) => event.preventDefault())
     </script>`,
   )
-  assert.deepEqual(await press(page, 'field', 'a'), { ok: true, kind: 'press' })
+  assert.deepEqual(await press(page, 'field', 'a'), { ok: true, kind: 'press', page: { url: `${site.url}/` } })
   assert.equal((await observe(page, 'mirror')).text, '')
 })
 
@@ -713,4 +720,222 @@ test('a browser lost between the key down and the key up leaves the outcome unkn
   assert.equal(failure.class, 'outcome_unknown', JSON.stringify(failure))
   assert.match(failure.message, /^Retest lost the page after it began to press Enter on getByTestId\('query'\), so it cannot tell whether that took effect: /)
   assert.deepEqual(keyDowns, ['keyDown'])
+})
+
+async function choicesPage(t: TestContext) {
+  const app = await openApp(t)
+  const page = await openPage(t, browser(), app.url)
+  assertOk(await goto(page, '/actions/choices'))
+  return { app, page, facts: { url: `${app.url}/actions/choices`, title: 'Choices' } }
+}
+
+test('select chooses an option by its label or its value, and the page hears input then change, as script', async (t) => {
+  const { page, facts } = await choicesPage(t)
+  assert.deepEqual(await select(page, 'country', 'Canada'), { ok: true, kind: 'select', changed: true, page: facts })
+  assert.equal((await observe(page, 'country-shown')).text, 'ca')
+  assert.deepEqual(await select(page, byLabel('Country'), { value: 'mx' }), { ok: true, kind: 'select', changed: true, page: facts })
+  assert.equal((await observe(page, 'country-shown')).text, 'mx')
+  assert.equal((await observe(page, 'changes-heard')).text, 'input:country:false change:country:false input:country:false change:country:false')
+  // The option already chosen is left alone, and the page hears nothing.
+  assert.deepEqual(await select(page, 'country', 'Mexico'), { ok: true, kind: 'select', changed: false, page: facts })
+  assert.equal((await observe(page, 'changes-heard')).text, 'input:country:false change:country:false input:country:false change:country:false')
+})
+
+test('a list chooses exactly those options of a select multiple and clears the others; one option chooses just that one', async (t) => {
+  const { page, facts } = await choicesPage(t)
+  assert.equal((await observe(page, 'toppings-shown')).text, 'cheese')
+  assert.deepEqual(await select(page, 'toppings', ['Basil', { value: 'olives' }]), { ok: true, kind: 'select', changed: true, page: facts })
+  assert.equal((await observe(page, 'toppings-shown')).text, 'olives,basil')
+  assert.deepEqual(await select(page, 'toppings', ['Olives', 'Basil']), { ok: true, kind: 'select', changed: false, page: facts })
+  assertOk(await select(page, 'toppings', 'Garlic'))
+  assert.equal((await observe(page, 'toppings-shown')).text, 'garlic')
+})
+
+test('an option that arrives late is waited for, and one that never does fails as not found, naming it', async (t) => {
+  const { page } = await choicesPage(t)
+  assertOk(await click(page, 'add-peru'))
+  const { value: late, ms } = await timed(select(page, 'country', 'Peru', 3000))
+  assertOk(late)
+  assert.ok(ms >= 150, `the option arrived about 300 ms after the click, and the select waited ${ms} ms`)
+  assert.equal((await observe(page, 'country-shown')).text, 'pe')
+  const { value: missing, ms: waited } = await timed(select(page, 'country', 'Atlantis', 400))
+  assert.deepEqual(failureOf(missing), {
+    class: 'not_found',
+    message: "Could not select 'Atlantis' in getByTestId('country'): no option matched 'Atlantis' within 400 ms.",
+    details: { choice: "'Atlantis'", waitedMs: 400 },
+  })
+  assert.ok(waited >= 390, `waited ${waited} ms`)
+  assert.equal((await observe(page, 'country-shown')).text, 'pe')
+})
+
+test('two options whose labels differ only in spacing fail as ambiguous at once, and nothing is chosen', async (t) => {
+  const { page } = await choicesPage(t)
+  const { value, ms } = await timed(select(page, 'city', 'Paris', 5000))
+  assert.deepEqual(failureOf(value), {
+    class: 'ambiguous',
+    message: "Could not select 'Paris' in getByTestId('city'): 2 options match 'Paris', and each choice must match exactly one. Retest selected nothing.",
+    details: { choice: "'Paris'", count: 2 },
+  })
+  assert.ok(ms < 1000, `ambiguity fails at once, took ${ms} ms`)
+  assert.equal((await observe(page, 'city-shown')).text, 'paris-fr')
+  assert.equal((await observe(page, 'changes-heard')).text, '')
+})
+
+test('a disabled option, on its own or in a disabled group, waits and fails as not actionable', async (t) => {
+  const { page } = await choicesPage(t)
+  for (const choice of ['France', 'Germany']) {
+    assert.deepEqual(failureOf(await select(page, 'country', choice, 300)), {
+      class: 'not_actionable',
+      message: `Could not select '${choice}' in getByTestId('country') within 300 ms: the option '${choice}' is disabled.`,
+      details: { check: 'enabled', choice: `'${choice}'`, waitedMs: 300 },
+    })
+  }
+  assert.equal((await observe(page, 'country-shown')).text, 'none')
+})
+
+test('a list for a select that takes one option is usage, and an element that is not a select is unsupported, both at once', async (t) => {
+  const { page } = await choicesPage(t)
+  const { value: list, ms } = await timed(select(page, 'country', ['Canada'], 5000))
+  assert.deepEqual(failureOf(list), {
+    class: 'usage',
+    message: `Could not select ['Canada'] in getByTestId('country'): it is <select id="country" data-testid="country">, which takes one option, and select() was given a list. Pass one option, not a list.`,
+    details: { element: '<select id="country" data-testid="country">' },
+  })
+  assert.ok(ms < 1000, `took ${ms} ms`)
+  const notSelect = failureOf(await select(page, 'agree', 'Canada', 5000))
+  assert.equal(notSelect.class, 'unsupported')
+  assert.equal(
+    notSelect.message,
+    `Could not select 'Canada' in getByTestId('agree'): it is <input data-testid="agree">, and select() chooses from a <select> element. Choose from a list the page draws itself with click().`,
+  )
+  assert.equal((await observe(page, 'country-shown')).text, 'none')
+})
+
+test('a click on a checkbox lets the input and change events the checkbox fires reach the page', async (t) => {
+  const { page } = await choicesPage(t)
+  assertOk(await click(page, 'agree'))
+  await observeUntil(page, 'changes-heard', (seen) => seen.text === 'input:agree:true change:agree:true')
+})
+
+test('check clicks a native checkbox once; one already checked is left alone; uncheck clicks it once more', async (t) => {
+  const { page, facts } = await choicesPage(t)
+  assert.deepEqual(await check(page, byLabel('I agree')), { ok: true, kind: 'check', changed: true, page: facts })
+  assert.deepEqual(await check(page, 'agree'), { ok: true, kind: 'check', changed: false, page: facts })
+  assert.equal((await observe(page, 'clicks-heard')).text, 'agree=1', 'the second check sent nothing')
+  assert.deepEqual(await uncheck(page, 'agree'), { ok: true, kind: 'uncheck', changed: true, page: facts })
+  assert.equal((await observe(page, 'clicks-heard')).text, 'agree=2')
+  assert.match((await observe(page, 'checks-shown')).text ?? '', /agree=false/)
+})
+
+test('check and uncheck work an element whose role is checkbox, by its aria-checked', async (t) => {
+  const { page, facts } = await choicesPage(t)
+  assert.deepEqual(await check(page, byRole('checkbox', 'Remember me')), { ok: true, kind: 'check', changed: true, page: facts })
+  assert.match((await observe(page, 'checks-shown')).text ?? '', /remember=true/)
+  assert.deepEqual(await uncheck(page, 'remember'), { ok: true, kind: 'uncheck', changed: true, page: facts })
+  assert.match((await observe(page, 'checks-shown')).text ?? '', /remember=false/)
+})
+
+test('a hidden checkbox is checked through its styled label, which passes the click on to it', async (t) => {
+  const { page, facts } = await choicesPage(t)
+  assert.deepEqual(await check(page, byLabel('Newsletter')), { ok: true, kind: 'check', changed: true, via: 'label', page: facts })
+  assert.match((await observe(page, 'checks-shown')).text ?? '', /newsletter=true/)
+  assert.equal((await observe(page, 'clicks-heard')).text, 'newsletter-label=1 newsletter=1')
+  assert.deepEqual(await uncheck(page, 'newsletter'), { ok: true, kind: 'uncheck', changed: true, via: 'label', page: facts })
+  assert.match((await observe(page, 'checks-shown')).text ?? '', /newsletter=false/)
+})
+
+test('a control that takes its click and stays as it was fails after one click, and is not clicked again', async (t) => {
+  const { app, page } = await choicesPage(t)
+  const { value, ms } = await timed(check(page, 'locked', 500))
+  assert.deepEqual(failureOf(value), {
+    class: 'not_actionable',
+    message: "Could not check getByTestId('locked'): Retest clicked it once, and it stayed unchecked. Retest does not click again.",
+    details: { check: 'state', inputSent: true },
+  })
+  assert.ok(ms >= 450, `the state was read until the time ran out, ${ms} ms`)
+  await observeUntil(page, 'clicks-heard', (seen) => seen.text === 'locked=1')
+  const end = performance.now() + 2000
+  while (app.toggles() < 1 && performance.now() < end) await delay(10)
+  assert.equal(app.toggles(), 1, 'the server heard one click')
+})
+
+test('uncheck refuses a radio button at once, and check on another radio button unchecks the first', async (t) => {
+  const { page, facts } = await choicesPage(t)
+  const { value, ms } = await timed(uncheck(page, 'small', 5000))
+  assert.deepEqual(failureOf(value), {
+    class: 'unsupported',
+    message: `Could not uncheck getByTestId('small'): it is a radio button, <input data-testid="small">. A person unchecks a radio button by choosing another one, so check that one instead.`,
+    details: { element: '<input data-testid="small">' },
+  })
+  assert.ok(ms < 1000, `took ${ms} ms`)
+  assert.equal((await observe(page, 'clicks-heard')).text, '')
+  assert.deepEqual(await check(page, byLabel('Large')), { ok: true, kind: 'check', changed: true, page: facts })
+  assert.match((await observe(page, 'checks-shown')).text ?? '', /small=false large=true/)
+})
+
+test('a covered checkbox is not checked, and no listener of the page hears any part of a click', async (t) => {
+  const { page } = await choicesPage(t)
+  assert.deepEqual(failureOf(await check(page, 'covered', 300)), {
+    class: 'not_actionable',
+    message: `Could not check getByTestId('covered') within 300 ms: another element, <span class="cover" data-testid="cover">, covers its centre.`,
+    details: { check: 'hit-target', covering: '<span class="cover" data-testid="cover">', waitedMs: 300 },
+  })
+  assert.deepEqual(failureOf(await check(page, 'hover-covered')), {
+    class: 'not_actionable',
+    message: `Could not check getByTestId('hover-covered'): another element, <span class="cover" data-testid="hover-cover">, was on top of it when Retest pressed. Retest stopped the click before the page received it.`,
+    details: { check: 'hit-target', interceptedBy: '<span class="cover" data-testid="hover-cover">', event: 'pointerdown' },
+  })
+  assert.equal((await observe(page, 'pointer-heard')).text, '')
+  assert.match((await observe(page, 'checks-shown')).text ?? '', /covered=false/)
+})
+
+async function scrollPage(t: TestContext, options: Parameters<typeof openPage>[3] = {}) {
+  const app = await openApp(t)
+  const page = await openPage(t, browser(), app.url, options)
+  assertOk(await goto(page, '/actions/scroll'))
+  return { app, page, facts: { url: `${app.url}/actions/scroll`, title: 'Scroll' } }
+}
+
+test('the wheel turned at the centre of the viewport scrolls the page, which loads more items once', async (t) => {
+  const { app, page, facts } = await scrollPage(t)
+  assert.equal((await observe(page, 'items-count')).text, '20')
+  assert.deepEqual(await scroll(page, undefined, { y: 5000 }), { ok: true, kind: 'scroll', page: facts })
+  await observeUntil(page, 'items-count', (seen) => seen.text === '30')
+  assert.equal(app.loads(), 1)
+  assert.match((await observe(page, 'wheels-heard')).text ?? '', /^[^ ]+$/, 'the page heard one wheel')
+})
+
+test('the wheel turned on the terms scrolls them to their end, which enables Accept', async (t) => {
+  const { page, facts } = await scrollPage(t)
+  assert.equal((await observe(page, 'accept-state')).text, 'disabled')
+  assert.deepEqual(await scroll(page, 'terms', { y: 2000 }), { ok: true, kind: 'scroll', page: facts })
+  await observeUntil(page, 'accept-state', (seen) => seen.text === 'enabled')
+  assertOk(await click(page, 'accept'))
+})
+
+test('a scroll delta is in CSS pixels, also on a phone page zoomed out to fit, where the wheel still scrolls', async (t) => {
+  const phone = { emulation: { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2.625, touch: true, isMobile: true } }
+  for (const options of [{}, phone]) {
+    const { page } = await scrollPage(t, options)
+    assertOk(await scroll(page, 'terms', { y: 60 }))
+    await observeUntil(page, 'terms-scrolled', (seen) => Math.abs(Number(seen.text) - 60) <= 2)
+  }
+})
+
+test('a covered list is not scrolled, and no listener of the page hears the wheel', async (t) => {
+  const { page } = await scrollPage(t)
+  assert.deepEqual(failureOf(await scroll(page, 'covered-list', { y: 100 }, 300)), {
+    class: 'not_actionable',
+    message: `Could not scroll getByTestId('covered-list') within 300 ms: another element, <div class="cover" data-testid="list-cover">, covers its centre.`,
+    details: { check: 'hit-target', covering: '<div class="cover" data-testid="list-cover">', waitedMs: 300 },
+  })
+  assert.equal((await observe(page, 'wheels-heard')).text, '')
+})
+
+test('a scroll with no distance is usage, and sends nothing', async (t) => {
+  const { page } = await scrollPage(t)
+  const failure = failureOf(await scroll(page, 'terms', {}))
+  assert.equal(failure.class, 'usage')
+  assert.equal(failure.message, 'scroll() takes x and y in CSS pixels, one of them other than 0, received { x: 0, y: 0 }.')
+  assert.equal((await observe(page, 'wheels-heard')).text, '')
 })

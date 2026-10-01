@@ -3,7 +3,7 @@ import type { HostCheckActual, HostCheckRecord, HostCheckStatus } from '../proto
 import type { TestResult } from '../protocol/result.ts'
 import type { TestEvent } from './run-record.ts'
 import { truncateText } from '../protocol/failures.ts'
-import { plural, printable, quoteRecorded } from './format.ts'
+import { describePage, plural, printable, quoteRecorded } from './format.ts'
 
 /** How a host check looked at the page, and what it saw last. Only its event knows. */
 export type HostCheckLooks = { actual: HostCheckActual; attempts: number; timeoutMs: number; durationMs: number }
@@ -55,12 +55,13 @@ export function describeHostCheck(check: HostCheckRecord, app?: string): string 
 }
 
 /**
- * What the page showed a check on its last look: its address, and for a text check whether the text was there.
+ * What the page showed a check on its last look: its address, after its title when it had one, and for a text check
+ * whether the text was there.
  *
- * @example hostCheckPage({ kind: 'text', text: 'Order placed' }, { url: 'https://app.example/cart', found: false }) // 'https://app.example/cart, text not found'
+ * @example hostCheckPage({ kind: 'text', text: 'Order placed' }, { url: 'https://app.example/cart', title: 'Your cart', found: false }) // '"Your cart" at https://app.example/cart, text not found'
  */
 export function hostCheckPage(check: HostCheckRecord, actual: HostCheckActual): string {
-  const page = actual.url === undefined ? '(no web address)' : printable(actual.url)
+  const page = actual.url === undefined ? '(no web address)' : describePage(actual.url, actual.title)
   if (check.kind !== 'text' || actual.found === undefined) return page
   return `${page}, ${actual.found ? 'text found' : 'text not found'}`
 }

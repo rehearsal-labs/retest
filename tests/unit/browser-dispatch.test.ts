@@ -74,3 +74,28 @@ test('the command carries the time the deadline has left, and its signal', async
   assert.ok(timeoutMs !== undefined && timeoutMs <= 700 && timeoutMs > 600, String(timeoutMs))
   assert.equal(signal, stop.signal)
 })
+
+test('a call that never ran, because its document had gone before it arrived, was not sent', async () => {
+  const neverRan = new CdpProtocolError(command, { code: -32000, message: 'Cannot find context with specified id', data: undefined })
+  assert.equal(await sentAfter(() => Promise.reject(neverRan)), false)
+})
+
+test('an attempt counts as sent only when its answer says it acted, or when no answer came', async () => {
+  const session = sessionAnswering(async () => ({ acted: false }))
+  const dispatch = new Dispatch()
+  const acted = (answer: unknown) => typeof answer === 'object' && answer !== null && 'acted' in answer && answer.acted === true
+  assert.deepEqual(await dispatch.attempt((attempt) => attempt.send(session, 'Runtime.callFunctionOn', {}, new Deadline(1000)), acted), { acted: false })
+  assert.equal(dispatch.sent, false, 'an answer that says it did not act')
+  const actingSession = sessionAnswering(async () => ({ acted: true }))
+  await dispatch.attempt((attempt) => attempt.send(actingSession, 'Runtime.callFunctionOn', {}, new Deadline(1000)), acted)
+  assert.equal(dispatch.sent, true, 'an answer that says it acted')
+  const lost = new Dispatch()
+  const gone = new CdpDisconnectedError(command, { reason: 'gone', written: true })
+  const failing = sessionAnswering(() => Promise.reject(gone))
+  await assert.rejects(lost.attempt((attempt) => attempt.send(failing, 'Runtime.callFunctionOn', {}, new Deadline(1000)), acted), gone)
+  assert.equal(lost.sent, true, 'no answer came')
+  const unwritten = new Dispatch()
+  const refused = sessionAnswering(() => Promise.reject(new CdpClosedError(command, 'closed')))
+  await assert.rejects(unwritten.attempt((attempt) => attempt.send(refused, 'Runtime.callFunctionOn', {}, new Deadline(1000)), acted))
+  assert.equal(unwritten.sent, false, 'it never reached the browser')
+})

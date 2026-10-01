@@ -1,7 +1,9 @@
 import type { CommandResult, Observation } from '../protocol/commands.ts'
 import type { Failure, FailureDetail } from '../protocol/failures.ts'
+import type { PageFacts } from '../protocol/page-facts.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { hostCheckRecordSchema } from '../protocol/host-check.ts'
+import { recordedTitle } from '../protocol/page-facts.ts'
 import { isPlainObject, parse } from '../protocol/schema.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
 
@@ -10,9 +12,12 @@ type Known = { value: string; placeholder: string }
 
 // The text a page or a person can write a secret into: failure messages and details, what an assertion expected
 // and saw, what a look observed, every address, since a page puts what it was given into its path or query, and a
-// text host check's text, which a host writes. Identifiers Retest makes itself (ids, names, locators, variants,
-// file paths) are never rewritten.
+// text host check's text, which a host writes. Page titles are free text too, under `titleKeys`. Identifiers
+// Retest makes itself (ids, names, locators, variants, file paths) are never rewritten.
 const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls'])
+
+// A page's title reaches the parent long, and is cut to the length Retest records only once it is redacted.
+const titleKeys: ReadonlySet<string> = new Set(['title', 'pageTitle'])
 
 /**
  * Replaces every secret value the run has read with `{{name}}` in free text: page text, addresses, failure
@@ -47,14 +52,16 @@ export class Redactor {
 
   /**
    * A copy of an event or a result with its free text redacted, checked again against its schema: every
-   * `message`, `details`, `expected`, `actual`, `observed`, address and text host check's text, at any depth.
-   * Identifiers and structure stay as they are.
+   * `message`, `details`, `expected`, `actual`, `observed`, address, page title and text host check's text, at any
+   * depth. Page titles are then cut to the length Retest records, even while no value is known. Identifiers and
+   * structure stay as they are, and a value with nothing to change is returned as it is.
    *
    * @example redactor.redactFields(runResultSchema, result)
    */
   redactFields<T>(schema: Schema<T>, value: T): T {
-    if (!this.active) return value
-    const parsed = parse(schema, this.#redactFields(value, false))
+    const redacted = this.#redactFields(value, false)
+    if (redacted === value) return value
+    const parsed = parse(schema, redacted)
     if (parsed.ok) return parsed.value
     throw new Error(`Redacting changed the shape of a value: ${parsed.issues.map((issue) => `${issue.path} ${issue.message}`).join('; ')}`)
   }
@@ -68,12 +75,25 @@ export class Redactor {
     return { ...redacted, details: Object.fromEntries(Object.entries(details).map(([key, detail]) => [key, this.#redactDetail(detail)])) }
   }
 
-  /** An answer for the test file's process with the page text in it redacted: an observation, an address, or a failure. */
+  /**
+   * An answer for the test file's process with the page text in it redacted: an observation, an address, the page
+   * the command went to, whose title is also cut to the length Retest records, or a failure.
+   */
   redactCommandResult(result: CommandResult): CommandResult {
-    if (!this.active) return result
     if (!result.ok) return { ok: false, failure: this.redactFailure(result.failure) }
-    if (result.kind === 'observe') return { ...result, observation: this.#redactObservation(result.observation) }
-    return result.kind === 'goto' ? { ...result, url: this.redact(result.url) } : result
+    const page = result.page === undefined ? {} : { page: this.#redactPage(result.page) }
+    if (result.kind === 'observe') return { ...result, observation: this.#redactObservation(result.observation), ...page }
+    return result.kind === 'goto' ? { ...result, url: this.redact(result.url), ...page } : { ...result, ...page }
+  }
+
+  /**
+   * A page's title as Retest records it: every value in it redacted, and only then cut to `pageTitleLimit`, so a
+   * value that runs past the cut is hidden whole rather than cut in two.
+   *
+   * @example redactor.redactTitle('Signed in as hunter2') // 'Signed in as {{password}}'
+   */
+  redactTitle(title: string): string {
+    return recordedTitle(this.redact(title))
   }
 
   /** A stream of text redacted as it arrives, for output that may cut a value in two. */
@@ -115,12 +135,24 @@ export class Redactor {
     return undefined
   }
 
-  // Inside a free-text key every string is text; outside one, only the keys below it can be.
+  // Inside a free-text key every string is text; outside one, only the keys below it can be. An array or an object
+  // none of whose parts changed is returned as it is.
   #redactFields(value: unknown, inText: boolean): unknown {
     if (typeof value === 'string') return inText ? this.redact(value) : value
-    if (Array.isArray(value)) return value.map((item: unknown) => this.#redactFields(item, inText))
+    if (Array.isArray(value)) {
+      const items = value.map((item: unknown) => this.#redactFields(item, inText))
+      return items.every((item, index) => item === value[index]) ? value : items
+    }
     if (!isPlainObject(value)) return value
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.#redactFields(item, inText || freeText.has(key) || isHostCheckText(value, key))]))
+    const entries = Object.entries(value).map(([key, item]): [string, unknown] => {
+      if (titleKeys.has(key) && typeof item === 'string') return [key, this.redactTitle(item)]
+      return [key, this.#redactFields(item, inText || freeText.has(key) || isHostCheckText(value, key))]
+    })
+    return entries.every(([key, item]) => item === value[key]) ? value : Object.fromEntries(entries)
+  }
+
+  #redactPage({ url, title }: PageFacts): PageFacts {
+    return title === undefined ? { url: this.redact(url) } : { url: this.redact(url), title: this.redactTitle(title) }
   }
 
   #redactDetail(detail: FailureDetail): FailureDetail {

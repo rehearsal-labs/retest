@@ -203,6 +203,42 @@ const parentEvents: EventBody[] = [
   { type: 'action.completed', ...scope, command: 'press', locator: { by: 'label', text: 'Search' }, key: 'Enter', pageUrl, durationMs: 12, session: 'page' },
   { type: 'action.completed', ...scope, command: 'press', key: 'Shift+Tab', durationMs: 9, session: 'page' },
   {
+    type: 'action.completed',
+    ...scope,
+    command: 'select',
+    locator: { by: 'label', text: 'Country' },
+    choices: [{ label: 'Canada' }, { value: 'mx' }],
+    changed: true,
+    input: 'script',
+    pageUrl,
+    pageTitle: 'Sign up',
+    durationMs: 15,
+    session: 'page',
+  },
+  {
+    type: 'action.completed',
+    ...scope,
+    ...variant,
+    command: 'check',
+    locator: { by: 'role', role: 'checkbox', name: 'Remember me' },
+    changed: true,
+    via: 'label',
+    touch: true,
+    durationMs: 22,
+    session: 'mobile',
+  },
+  { type: 'action.completed', ...scope, command: 'uncheck', locator: { by: 'label', text: 'Newsletter' }, changed: false, durationMs: 3, session: 'page' },
+  { type: 'action.completed', ...scope, command: 'scroll', scroll: { x: 0, y: 600 }, pageUrl, pageTitle: 'Tasks', durationMs: 5, session: 'page' },
+  {
+    type: 'action.failed',
+    ...scope,
+    command: 'scroll',
+    locator: { by: 'testId', value: 'terms' },
+    scroll: { x: -40.5, y: 1200 },
+    durationMs: 10_000,
+    failure: { class: 'not_actionable', message: 'Another element receives the wheel.' },
+  },
+  {
     type: 'assertion.passed',
     ...scope,
     ...variant,
@@ -215,6 +251,7 @@ const parentEvents: EventBody[] = [
     timeoutMs: 5000,
     durationMs: 120,
     pageUrl,
+    pageTitle: 'Release checklist · Tasks',
     observationId: 'o7',
     judgedBy: 'parent',
     session: 'web',
@@ -240,6 +277,9 @@ const parentEvents: EventBody[] = [
     failure: { class: 'not_actionable', message: 'Another element receives the click.' },
   },
   { type: 'navigation', ...scope, url: pageUrl, session: 'page' },
+  { type: 'navigation', ...scope, stepId: 'step-1', url: pageUrl, title: 'Tasks', cause: 'goto', session: 'page' },
+  { type: 'navigation', ...scope, ...variant, url: `${pageUrl}done`, cause: 'action', session: 'web' },
+  { type: 'navigation', ...scope, url: `${pageUrl}login`, title: 'Sign in', cause: 'page', session: 'page' },
   {
     type: 'observation',
     ...scope,
@@ -249,6 +289,7 @@ const parentEvents: EventBody[] = [
     observationId: 'o7',
     locator,
     pageUrl,
+    pageTitle: 'Verify your email',
     observed: observedRecord(observationOf([{ text: 'Your code is {{code}}', visible: true }])),
     durationMs: 14,
   },
@@ -259,7 +300,7 @@ const parentEvents: EventBody[] = [
     ...variant,
     session: 'web',
     check: { kind: 'address', origin: 'https://shop.example', path: { pattern: '^\\/orders\\/\\d+$', flags: '' } },
-    actual: { url: 'https://shop.example/orders/42' },
+    actual: { url: 'https://shop.example/orders/42', title: 'Order 42' },
     attempts: 1,
     timeoutMs: 5000,
     durationMs: 4,
@@ -397,7 +438,27 @@ describe('events', () => {
       { path: '$.pid', message: 'expected integer >= 1, received 0' },
     ])
     assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), command: 'hover' }), [
-      { path: '$.command', message: 'expected one of "goto", "fill", "click", "tap", "press", received "hover"' },
+      { path: '$.command', message: 'expected one of "goto", "fill", "click", "tap", "press", "select", "check", "uncheck", "scroll", received "hover"' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), input: 'keyboard', via: 'control', touch: false }), [
+      { path: '$.input', message: 'expected "script", received "keyboard"' },
+      { path: '$.via', message: 'expected "label", received "control"' },
+      { path: '$.touch', message: 'expected true, received false' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), scroll: { y: 600 }, changed: 'yes' }), [
+      { path: '$.changed', message: 'expected boolean, received "yes"' },
+      { path: '$.scroll.x', message: 'missing required key' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), choices: ['Canada'] }), [
+      { path: '$.choices[0]', message: 'expected object, received "Canada"' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('navigation'), cause: 'link', title: null }), [
+      { path: '$.title', message: 'expected string, received null' },
+      { path: '$.cause', message: 'expected one of "goto", "action", "page", received "link"' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('observation'), pageTitle: 3 }), [{ path: '$.pageTitle', message: 'expected string, received 3' }])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('host_check.passed'), actual: { title: ['Order 42'] } }), [
+      { path: '$.actual.title', message: 'expected string, received array' },
     ])
     assert.deepEqual(issues(retestEventSchema, { ...sample('browser.started'), target: { name: 'hosted', proxy: { server: 'http://p:1', username: 'ada' } } }), [
       { path: '$.target.proxy.username', message: 'unknown key' },
@@ -512,16 +573,34 @@ describe('commands', () => {
     { kind: 'tap', locator: { by: 'role', role: 'button', name: 'Menu', exact: false } },
     { kind: 'press', locator: { by: 'label', text: 'Search' }, key: 'Enter' },
     { kind: 'press', key: 'Shift+Tab' },
+    { kind: 'select', locator: { by: 'label', text: 'Country' }, choices: [{ label: 'Canada' }] },
+    { kind: 'select', locator: { by: 'testId', value: 'colours' }, choices: [{ label: 'Red' }, { value: 'b' }] },
+    { kind: 'select', locator: { by: 'testId', value: 'colours' }, choices: [] },
+    { kind: 'select', locator: { by: 'testId', value: 'colours' }, choices: [{ label: 'Red' }], multiple: true },
+    { kind: 'select', locator: { by: 'testId', value: 'colours' }, choices: [{ label: 'Red' }, { value: 'b' }], multiple: true },
+    { kind: 'check', locator: { by: 'role', role: 'checkbox', name: 'Remember me' } },
+    { kind: 'uncheck', locator: { by: 'label', text: 'Newsletter' } },
+    { kind: 'scroll', x: 0, y: 600 },
+    { kind: 'scroll', locator: { by: 'testId', value: 'terms' }, x: -40.5, y: 1200 },
+    { kind: 'scroll', x: 0, y: 0 },
     { kind: 'observe', locator },
     { kind: 'observe', locator: { by: 'text', text: 'Saved' } },
   ]
   const many = Array.from({ length: 101 }, (_, index) => ({ text: `Task ${index}`, visible: index % 2 === 0 }))
   const results: CommandResult[] = [
     { ok: true, kind: 'goto', url: pageUrl },
+    { ok: true, kind: 'goto', url: pageUrl, page: { url: pageUrl, title: 'Tasks' } },
     { ok: true, kind: 'fill' },
     { ok: true, kind: 'click' },
+    { ok: true, kind: 'click', page: { url: pageUrl } },
     { ok: true, kind: 'tap' },
     { ok: true, kind: 'press' },
+    { ok: true, kind: 'scroll', page: { url: pageUrl, title: 'Terms' } },
+    { ok: true, kind: 'select', changed: true, page: { url: pageUrl, title: 'Sign up' } },
+    { ok: true, kind: 'select', changed: false },
+    { ok: true, kind: 'check', changed: true, via: 'label' },
+    { ok: true, kind: 'uncheck', changed: false },
+    { ok: true, kind: 'observe', observation: observationOf([{ text: 'Saved', visible: true }]), observationId: 'o4', page: { url: pageUrl, title: 'Tasks' } },
     { ok: true, kind: 'observe', observation: observationOf([{ text: 'Release checklist', visible: true }]) },
     { ok: true, kind: 'observe', observation: observationOf([{ text: 'Saved', visible: true }]), observationId: 'o3' },
     { ok: true, kind: 'observe', observation: observationOf([{ text: '', visible: true }], 'Release checklist') },
@@ -537,8 +616,36 @@ describe('commands', () => {
 
   test('malformed commands and results are rejected', () => {
     assert.deepEqual(issues(pageCommandSchema, { kind: 'hover', locator }), [
-      { path: '$.kind', message: 'expected one of "goto", "fill", "click", "tap", "press", "observe", received "hover"' },
+      {
+        path: '$.kind',
+        message: 'expected one of "goto", "fill", "click", "tap", "press", "select", "check", "uncheck", "scroll", "observe", received "hover"',
+      },
     ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'select', locator, choices: 'Canada' }), [{ path: '$.choices', message: 'expected array, received "Canada"' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'select', locator, choices: [{ label: 'Canada', value: 'ca' }] }).map((issue) => issue.path), [
+      '$.choices[0].value',
+    ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'select', locator, choices: [{ text: 'Canada' }] }).map((issue) => issue.path), [
+      '$.choices[0].label',
+      '$.choices[0].text',
+    ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'select', locator, choices: [{ label: 'Red' }], multiple: false }), [
+      { path: '$.multiple', message: 'expected true, received false' },
+    ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'check', locator, force: true }), [{ path: '$.force', message: 'unknown key' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'uncheck' }), [{ path: '$.locator', message: 'missing required key' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'scroll', y: 600 }), [{ path: '$.x', message: 'missing required key' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'scroll', x: '0', y: 600 }), [{ path: '$.x', message: 'expected number, received "0"' }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'select' }), [{ path: '$.changed', message: 'missing required key' }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'click', changed: true }), [{ path: '$.changed', message: 'unknown key' }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'select', changed: false, via: 'label' }), [{ path: '$.via', message: 'unknown key' }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'check', changed: true, via: 'control' }), [
+      { path: '$.via', message: 'expected "label", received "control"' },
+    ])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'press', page: { url: pageUrl, title: 7 } }), [
+      { path: '$.page.title', message: 'expected string, received 7' },
+    ])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'press', page: { title: 'Tasks' } }), [{ path: '$.page.url', message: 'missing required key' }])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'press', locator }), [{ path: '$.key', message: 'missing required key' }])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'press', key: 13 }), [{ path: '$.key', message: 'expected string, received 13' }])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'press', key: 'a', modifiers: ['Control'] }), [{ path: '$.modifiers', message: 'unknown key' }])
@@ -584,6 +691,32 @@ describe('commands', () => {
       `getByLabel('Password').fill(secret("password"))`,
     )
   })
+
+  test('select, check, uncheck and scroll are named as a test writes them', () => {
+    const country = { by: 'label', text: 'Country' } as const
+    assert.equal(describeCommand({ kind: 'select', locator: country, choices: [{ label: 'Canada' }] }), "getByLabel('Country').select('Canada')")
+    assert.equal(describeCommand({ kind: 'select', locator: country, choices: [{ value: 'ca' }] }), "getByLabel('Country').select({ value: 'ca' })")
+    assert.equal(
+      describeCommand({ kind: 'select', locator: { by: 'testId', value: 'colours' }, choices: [{ label: 'Red' }, { value: 'b' }] }),
+      "getByTestId('colours').select(['Red', { value: 'b' }])",
+    )
+    assert.equal(describeCommand({ kind: 'select', locator: country, choices: [] }), "getByLabel('Country').select([])")
+    assert.equal(describeCommand({ kind: 'select', locator: country, choices: [{ label: 'Canada' }], multiple: true }), "getByLabel('Country').select(['Canada'])")
+    assert.equal(
+      describeCommand({ kind: 'select', locator: country, choices: [{ label: 'Red' }, { value: 'b' }], multiple: true }),
+      "getByLabel('Country').select(['Red', { value: 'b' }])",
+    )
+    assert.equal(describeCommand({ kind: 'select', locator: country, choices: [], multiple: true }), "getByLabel('Country').select([])")
+    assert.equal(describeCommand({ kind: 'select', locator: country, choices: [{ label: "Côte d'Ivoire" }] }), "getByLabel('Country').select('Côte d\\'Ivoire')")
+    assert.equal(describeCommand({ kind: 'select', locator: country, choices: [{ label: 'x'.repeat(500) }] }), `getByLabel('Country').select('${'x'.repeat(200)}…')`)
+    const remember = { by: 'role', role: 'checkbox', name: 'Remember me' } as const
+    assert.equal(describeCommand({ kind: 'check', locator: remember }), "getByRole('checkbox', { name: 'Remember me' }).check()")
+    assert.equal(describeCommand({ kind: 'uncheck', locator: remember }), "getByRole('checkbox', { name: 'Remember me' }).uncheck()")
+    assert.equal(describeCommand({ kind: 'scroll', x: 0, y: 600 }), 'page.scroll({ y: 600 })')
+    assert.equal(describeCommand({ kind: 'scroll', x: 120, y: 0 }), 'page.scroll({ x: 120 })')
+    assert.equal(describeCommand({ kind: 'scroll', locator: { by: 'testId', value: 'terms' }, x: -40.5, y: 1200 }), "getByTestId('terms').scroll({ x: -40.5, y: 1200 })")
+    assert.equal(describeCommand({ kind: 'scroll', x: 0, y: 0 }), 'page.scroll({ x: 0, y: 0 })')
+  })
 })
 
 describe('recorded URLs', () => {
@@ -612,6 +745,7 @@ describe('messages', () => {
     { type: 'run', ...scope, timeouts: { ...defaultTimeouts, action: 500 }, apps: ['page'] },
     { type: 'run', ...scope, timeouts: defaultTimeouts, apps: ['web', 'mobile'], variant: variant.variant },
     { type: 'command-result', id: 1, result: { ok: true, kind: 'goto', url: pageUrl } },
+    { type: 'command-result', id: 3, result: { ok: true, kind: 'check', changed: false, page: { url: pageUrl, title: 'Settings' } } },
     { type: 'command-result', id: 2, result: { ok: false, failure: { class: 'timeout', message: 'Out of time.' } } },
     { type: 'abort', reason: 'The test ran out of time.' },
     { type: 'close' },
@@ -640,6 +774,9 @@ describe('messages', () => {
     { type: 'command', id: 2, app: 'page', command: { kind: 'click', locator }, location, timeoutMs: 0 },
     { type: 'command', id: 3, app: 'owner', command: { kind: 'observe', locator }, location, stepId: 'step-2', timeoutMs: 300 },
     { type: 'command', id: 4, app: 'member', command: { kind: 'fill', locator, value: { secret: 'password' } }, timeoutMs: 300 },
+    { type: 'command', id: 5, app: 'page', command: { kind: 'select', locator, choices: [{ label: 'Canada' }] }, timeoutMs: 300 },
+    { type: 'command', id: 6, app: 'page', command: { kind: 'scroll', x: 0, y: 600 }, stepId: 'step-1', timeoutMs: 300 },
+    { type: 'command', id: 7, app: 'page', command: { kind: 'select', locator, choices: [{ value: 'b' }], multiple: true }, timeoutMs: 300 },
     ...childEvents.map((event): ChildMessage => ({ type: 'event', event })),
     { type: 'test-finished', ...scope, status: 'passed', assertionCount: 2, durationMs: 120 },
     { type: 'test-finished', ...scope, status: 'failed', failure, assertionCount: 0, durationMs: 5 },

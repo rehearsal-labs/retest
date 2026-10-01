@@ -43,6 +43,16 @@ test('syncs a task', { apps: ['web', 'phone', 'tablet', 'phones'], state: { web:
   await phones.getByText('Saved').click()
 })
 
+// A touch screen chooses, ticks and scrolls as a desktop does: check taps, and scroll turns the wheel.
+test('files a task', { apps: ['web', 'phone', 'kiosk'] }, async ({ web, phone, kiosk }) => {
+  await web.getByLabel('List').select(['Work', { value: 'home' }])
+  await phone.getByRole('checkbox', { name: 'Done' }).check()
+  await phone.getByTestId('task-title').scroll({ y: 600 })
+  await phone.scroll({ y: -600 })
+  await kiosk.getByRole('switch', { name: 'Remind me' }).uncheck()
+  await expect(phone.getByTestId('saved-task')).toBeVisible()
+})
+
 test('mistakes', { apps: ['web', 'kiosk', 'mixed'] }, async ({ web, kiosk, mixed, phone }) => { // type-error TS2339 Property 'phone' does not exist on type 'Apps<
   await web.getByTestId('save-task').tap() // type-error TS2349 One of this app's targets has no touch screen. Use click().
   await kiosk.getByTestId('save-task').tap() // type-error TS2349 One of this app's targets has no touch screen. Use click().

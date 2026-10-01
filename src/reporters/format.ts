@@ -120,6 +120,17 @@ export function printable(text: string): string {
 }
 
 /**
+ * A page as reports name it: its address, after its title when it has one. A title is the page's own text, so it is
+ * quoted and escaped, and it never stands in for the address.
+ *
+ * @example describePage('http://127.0.0.1:4173/cart', 'Your cart') // '"Your cart" at http://127.0.0.1:4173/cart'
+ */
+export function describePage(url: string, title?: string): string {
+  const address = printable(url)
+  return title === undefined || title === '' ? address : `${quoteRecorded(truncateText(title))} at ${address}`
+}
+
+/**
  * A failure message as the lines a report prints. A message may quote page text, so each line is printable.
  *
  * @example messageLines('Expected "Saved".\nLooked 3 times.') // ['Expected "Saved".', 'Looked 3 times.']

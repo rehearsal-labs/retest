@@ -189,6 +189,9 @@ export async function servePages(t: TestContext, pages: Record<string, string>, 
 /** A locator, or the test id of one, which is how most of these tests name elements. */
 export type Target = string | LocatorRecipe
 
+/** An option as a test names it: a label, or `{ value }`. */
+export type OptionChoice = string | { value: string }
+
 export function byTestId(value: string): LocatorRecipe {
   return { by: 'testId', value }
 }
@@ -229,6 +232,27 @@ export function fill(page: OwnedPage, target: Target, value: string, timeoutMs =
 export function press(page: OwnedPage, target: Target | undefined, key: string, timeoutMs = 2000): Promise<CommandResult> {
   const locator = target === undefined ? {} : { locator: locatorOf(target) }
   return page.execute({ kind: 'press', ...locator, key }, timeoutMs)
+}
+
+/** Selects options by label, a string, or by `{ value }`. A list goes as the test's list, `multiple`. */
+export function select(page: OwnedPage, target: Target, choice: OptionChoice | readonly OptionChoice[], timeoutMs = 2000): Promise<CommandResult> {
+  const list = Array.isArray(choice)
+  const choices = (list ? [...choice] : [choice]).map((item: OptionChoice) => (typeof item === 'string' ? { label: item } : item))
+  return page.execute({ kind: 'select', locator: locatorOf(target), choices, ...(list ? { multiple: true } : {}) }, timeoutMs)
+}
+
+export function check(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+  return page.execute({ kind: 'check', locator: locatorOf(target) }, timeoutMs)
+}
+
+export function uncheck(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+  return page.execute({ kind: 'uncheck', locator: locatorOf(target) }, timeoutMs)
+}
+
+/** Turns the wheel on the element `target` names, or, with none, at the centre of the viewport. */
+export function scroll(page: OwnedPage, target: Target | undefined, delta: { x?: number; y?: number }, timeoutMs = 2000): Promise<CommandResult> {
+  const locator = target === undefined ? {} : { locator: locatorOf(target) }
+  return page.execute({ kind: 'scroll', ...locator, x: delta.x ?? 0, y: delta.y ?? 0 }, timeoutMs)
 }
 
 export async function observe(page: OwnedPage, target: Target): Promise<Observation> {

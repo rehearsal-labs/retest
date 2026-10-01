@@ -4,6 +4,7 @@ import type { RunResult, TestResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { retestEventSchema } from '../../src/protocol/events.ts'
+import { pageTitleLimit } from '../../src/protocol/page-facts.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 
@@ -353,6 +354,104 @@ describe('Redactor', () => {
     }
     const recorded = redactor.redactFields(retestEventSchema, run)
     assert.deepEqual(recorded.type === 'run.started' ? recorded.options.baseUrls : undefined, { web: 'http://{{password}}@127.0.0.1:4173/' })
+  })
+
+  test('redacts every page title an event records: a navigation, an action, a look, an assertion and a host check', () => {
+    const redactor = taught({ password: 'hunter2' })
+    const stamp = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent' } as const
+    const scope = { testId: 'tests/a.retest.ts > hunter2', attemptId: 'a', session: 'page' }
+    const title = 'Signed in as hunter2'
+    const events: RetestEvent[] = [
+      { ...stamp, type: 'navigation', ...scope, url: 'http://127.0.0.1:4173/', title, cause: 'action' },
+      { ...stamp, type: 'action.completed', ...scope, command: 'click', pageUrl: 'http://127.0.0.1:4173/', pageTitle: title, durationMs: 1 },
+      {
+        ...stamp,
+        type: 'observation',
+        ...scope,
+        observationId: 'o1',
+        locator: { by: 'text', text: 'hunter2' },
+        pageTitle: title,
+        observed: { count: 0, visible: null, text: null, value: null, items: [], itemsTruncated: false },
+        durationMs: 1,
+      },
+      { ...stamp, type: 'assertion.failed', ...scope, matcher: 'toBeVisible', expected: null, actual: null, pageTitle: title, attempts: 1, durationMs: 1, failure: { class: 'check_failed', message: 'hidden' } },
+      {
+        ...stamp,
+        type: 'host_check.passed',
+        ...scope,
+        check: { kind: 'address', origin: 'http://127.0.0.1:4173' },
+        actual: { url: 'http://127.0.0.1:4173/', title },
+        attempts: 1,
+        timeoutMs: 300,
+        durationMs: 1,
+      },
+    ]
+    const redacted = events.map((event) => redactor.redactFields(retestEventSchema, event))
+    const titles = redacted.map((event) => ('title' in event ? event.title : 'pageTitle' in event ? event.pageTitle : 'actual' in event && event.actual !== null && 'url' in event.actual ? event.actual.title : undefined))
+    assert.deepEqual(titles, Array(5).fill('Signed in as {{password}}'))
+    assert.equal(redacted[0]?.type === 'navigation' ? redacted[0].testId : undefined, scope.testId, 'an id stays as it is')
+  })
+
+  test('tells the test process the page each command went to, with its address and title redacted', () => {
+    const redactor = taught({ password: 'hunter2' })
+    const page = { url: 'http://127.0.0.1:4173/hunter2', title: 'Signed in as hunter2' }
+    const shown = { url: 'http://127.0.0.1:4173/{{password}}', title: 'Signed in as {{password}}' }
+    const results: CommandResult[] = [
+      { ok: true, kind: 'goto', url: page.url, page },
+      { ok: true, kind: 'click', page },
+      { ok: true, kind: 'select', changed: true, page },
+      { ok: true, kind: 'check', changed: false, via: 'label', page },
+      { ok: true, kind: 'observe', observation: { count: 0, visible: null, text: null, value: null, items: [], itemsTruncated: false }, page },
+    ]
+    for (const result of results) {
+      const redacted = redactor.redactCommandResult(result)
+      assert.deepEqual(redacted, { ...result, ...(result.ok && result.kind === 'goto' ? { url: shown.url } : {}), page: shown })
+    }
+    assert.deepEqual(redactor.redactCommandResult({ ok: true, kind: 'scroll', page: { url: 'http://127.0.0.1:4173/' } }), {
+      ok: true,
+      kind: 'scroll',
+      page: { url: 'http://127.0.0.1:4173/' },
+    })
+  })
+
+  // The browser hands a title over long, and the parent cuts it to the length it records only once it is redacted.
+  test('redacts a title before it cuts it, so a value that runs across the cut is hidden whole', () => {
+    const redactor = taught({ password: 'hunter2' })
+    const kept = 'a'.repeat(pageTitleLimit - 5)
+    const spanning = `${kept}hunter2 signed in`
+    assert.equal(redactor.redactTitle(spanning), `${kept}{{pas`)
+    assert.equal(redactor.redactTitle(`${'a'.repeat(pageTitleLimit - 1)}hunter2`), `${'a'.repeat(pageTitleLimit - 1)}{`)
+    const navigation: RetestEvent = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent', type: 'navigation', testId: 't', attemptId: 'a', url: 'http://127.0.0.1:4173/', title: spanning }
+    const redacted = redactor.redactFields(retestEventSchema, navigation)
+    assert.equal(redacted.type === 'navigation' ? redacted.title : undefined, `${kept}{{pas`)
+    const answer = redactor.redactCommandResult({ ok: true, kind: 'click', page: { url: 'http://127.0.0.1:4173/', title: spanning } })
+    assert.equal(answer.ok ? answer.page?.title : undefined, `${kept}{{pas`)
+    assert.ok(![JSON.stringify(redacted), JSON.stringify(answer)].some((text) => text.includes('hunte')), 'no part of the value is left')
+  })
+
+  test('a value that starts after the cut is gone with the rest, and a title is never longer than the limit, even once a placeholder is longer than its value', () => {
+    const redactor = taught({ password: 'hunter2' })
+    assert.equal(redactor.redactTitle(`${'a'.repeat(pageTitleLimit + 5)} hunter2`), 'a'.repeat(pageTitleLimit))
+    const redacted = redactor.redactTitle(`${'a'.repeat(pageTitleLimit - 20)}hunter2${'b'.repeat(30)}`)
+    assert.equal(redacted, `${'a'.repeat(pageTitleLimit - 20)}{{password}}${'b'.repeat(8)}`)
+    assert.equal(redacted.length, pageTitleLimit)
+    assert.equal(redactor.redactTitle('Welcome back, hunt'), 'Welcome back, hunt', 'a short title ending in the start of a value is its own text')
+  })
+
+  test('cuts a long title even while it knows no secret, and leaves a value with nothing to change as it was', () => {
+    const redactor = new Redactor()
+    const long = 'x'.repeat(pageTitleLimit + 100)
+    assert.equal(redactor.redactTitle(long), 'x'.repeat(pageTitleLimit))
+    const navigation: RetestEvent = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent', type: 'navigation', testId: 't', attemptId: 'a', url: 'http://127.0.0.1:4173/', title: long }
+    const cut = redactor.redactFields(retestEventSchema, navigation)
+    assert.deepEqual(cut, { ...navigation, title: 'x'.repeat(pageTitleLimit) })
+    const short = { ...navigation, title: 'Tasks' }
+    assert.equal(redactor.redactFields(retestEventSchema, short), short)
+    assert.deepEqual(redactor.redactCommandResult({ ok: true, kind: 'click', page: { url: 'http://127.0.0.1:4173/', title: long } }), {
+      ok: true,
+      kind: 'click',
+      page: { url: 'http://127.0.0.1:4173/', title: 'x'.repeat(pageTitleLimit) },
+    })
   })
 
   test('returns the same value while it knows no secret', () => {

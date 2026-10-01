@@ -488,16 +488,28 @@ export type HostRequest = {
 }
 
 /**
- * Runs a host's own program, one that calls `runFiles` itself, with a new run folder as its last argument, in its
- * own process group with its own temporary folder. Besides what `finishRun` checks, stdout must be exactly the
- * events its reporter received, as JSON lines, and the result it printed on stderr as `result <json>` must be
- * `result.json`.
+ * Starts a host's own program, one that calls `runFiles` itself, with a new run folder as its last argument, in its
+ * own process group with its own temporary folder. Its stdout is the events its reporter received, as JSON lines, so
+ * `waitForEvent` reads them as they arrive.
  */
-export async function runHost(t: TestContext, request: HostRequest): Promise<HostRun> {
+export async function startHost(t: TestContext, request: HostRequest): Promise<StartedRun> {
   const output = join(await scratchFolder(t), 'run')
   const [executable = process.execPath, ...leading] = request.command
   const retest = await RetestProcess.start(t, { cwd: request.cwd, command: [executable], args: [...leading, output], env: request.env ?? {} })
-  const run = await finishRun({ retest, output })
+  return { retest, output }
+}
+
+/** Runs a host's own program to its end, as `startHost` starts it and `finishHost` checks it. */
+export async function runHost(t: TestContext, request: HostRequest): Promise<HostRun> {
+  return finishHost(await startHost(t, request))
+}
+
+/**
+ * Waits for a host's program to end. Besides what `finishRun` checks, stdout must be exactly the events its reporter
+ * received, as JSON lines, and the result it printed on stderr as `result <json>` must be `result.json`.
+ */
+export async function finishHost(started: StartedRun): Promise<HostRun> {
+  const run = await finishRun(started)
   assertStdoutIsEvents(run)
   const printed = /^result (.+)$/m.exec(run.stderr)?.[1]
   assert.ok(printed !== undefined, `the host printed the result runFiles returned. stderr:\n${run.stderr}`)

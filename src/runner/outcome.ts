@@ -1,8 +1,9 @@
 import type { Counts, ExitCode, RunStatus } from '../protocol/events.ts'
 import type { Failure, FailureClass } from '../protocol/failures.ts'
 import type { FileResult } from '../protocol/result.ts'
-import type { StopSignal } from './contract.ts'
-import { failure, withAlso } from '../protocol/failures.ts'
+import type { StopReason, StopSignal } from './contract.ts'
+import { failure, failureSchema, withAlso } from '../protocol/failures.ts'
+import { parse } from '../protocol/schema.ts'
 
 // Our own infrastructure, or something the test could not decide, rather than the application failing a check.
 const errorClasses: ReadonlySet<FailureClass> = new Set<FailureClass>([
@@ -28,8 +29,8 @@ export function testStatus(failure: Failure | undefined, cleanupFailures: readon
 
 /** What the runner knows at the end of a run, beyond the results in each file. */
 export type RunFacts = {
-  /** The signal that stopped the run, if one did. */
-  stoppedBy: StopSignal | undefined
+  /** Why the run was stopped from outside, if it was: the signal, or the `Failure` its caller gave. */
+  stoppedBy: StopReason | undefined
   /** What stopped the run before any test could run: a base URL for an app the config lacks, or a selection that matches nothing. */
   runFailures: readonly Failure[]
   /** Events, the result, a test file's output or a reporter that could not take the run's output, in order. */
@@ -41,9 +42,9 @@ export type RunFacts = {
 export type RunOutcome = { status: RunStatus; exitCode: ExitCode; complete: boolean; counts: Counts; failure?: Failure }
 
 /**
- * Decides the run's status and exit code, in this order: 130 or 143 when interrupted; 2 when nothing
- * trustworthy came out; 1 when a test failed its checks; 2 when anything else did not finish cleanly,
- * including a file whose process failed outside its tests; otherwise 0.
+ * Decides the run's status and exit code, in this order: 130 or 143 when interrupted, 130 for a `Failure` its
+ * caller stopped it with; 2 when nothing trustworthy came out; 1 when a test failed its checks; 2 when anything
+ * else did not finish cleanly, including a file whose process failed outside its tests; otherwise 0.
  *
  * @example runOutcome({ stoppedBy: undefined, runFailures: [], outputFailures: [], files }).exitCode
  */
@@ -73,9 +74,31 @@ export function stopSignalOf(signal: AbortSignal): StopSignal {
   return reason === 'SIGTERM' ? 'SIGTERM' : 'SIGINT'
 }
 
+/**
+ * Why a run was stopped, from the reason its abort signal carries: a `Failure` as it is, SIGTERM, and anything
+ * else as SIGINT.
+ *
+ * @example stopReasonOf(AbortSignal.abort({ class: 'interrupted', message: 'The host ran out of time.' })) // the Failure
+ */
+export function stopReasonOf(signal: AbortSignal): StopReason {
+  const reason = parse(failureSchema, signal.reason)
+  return reason.ok ? reason.value : stopSignalOf(signal)
+}
+
+/**
+ * What a stopped run records as its interruption, in `run.finished` and in each test it stopped: the `Failure` it
+ * was stopped with, or what the signal says.
+ *
+ * @example interruptionOf('SIGTERM') // { class: 'interrupted', message: 'The run was stopped by SIGTERM.' }
+ */
+export function interruptionOf(reason: StopReason): Failure {
+  if (typeof reason !== 'string') return reason
+  return failure('interrupted', reason === 'SIGTERM' ? 'The run was stopped by SIGTERM.' : 'The run was interrupted.')
+}
+
 /** @example stoppedExitCode('SIGTERM') // 143 */
-export function stoppedExitCode(signal: StopSignal): 130 | 143 {
-  return signal === 'SIGTERM' ? 143 : 130
+export function stoppedExitCode(reason: StopReason): 130 | 143 {
+  return reason === 'SIGTERM' ? 143 : 130
 }
 
 /** The exit code of a command whose run was stopped through `signal`. */
@@ -91,10 +114,12 @@ function decideExitCode(facts: RunFacts, counts: Counts): ExitCode {
   return 0
 }
 
-// What stopped the run before its tests, lost output, a file's process that failed outside its tests, or the
-// reason no test ran. An interrupted run says so in its status instead.
+// The Failure the run was stopped with, what stopped the run before its tests, lost output, a file's process that
+// failed outside its tests, or the reason no test ran. A run a signal interrupted says so in its status instead.
 function runFailure(facts: RunFacts, counts: Counts): Failure | undefined {
-  const [first, ...rest] = [...facts.runFailures, ...facts.outputFailures, ...processFailures(facts.files)]
+  const { stoppedBy } = facts
+  const stopped = stoppedBy === undefined || typeof stoppedBy === 'string' ? [] : [stoppedBy]
+  const [first, ...rest] = [...stopped, ...facts.runFailures, ...facts.outputFailures, ...processFailures(facts.files)]
   if (first !== undefined) return withAlso(first, rest)
   if (facts.stoppedBy !== undefined || testsRan(counts) > 0) return undefined
   return whyNothingRan(facts.files)

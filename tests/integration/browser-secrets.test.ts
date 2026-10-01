@@ -79,7 +79,7 @@ test('a secret is typed like any value, and the sign-in it completes succeeds', 
   const page = await openPage(t, launched(), app.url)
   assertOk(await goto(page, '/login'))
   assertOk(await fill(page, byLabel('User name'), 'alice'))
-  assert.deepEqual(await fillSecret(page, byLabel('Password'), TASK_APP_PASSWORD), { ok: true, kind: 'fill' })
+  assert.deepEqual(await fillSecret(page, byLabel('Password'), TASK_APP_PASSWORD), { ok: true, kind: 'fill', page: { url: `${app.url}/login`, title: 'Sign in' } })
   assertOk(await click(page, 'sign-in'))
   await observeUntil(page, 'account', (seen) => seen.text === 'Signed in as alice')
 })
@@ -144,7 +144,7 @@ test('a page that sets off for another origin as the field takes focus is kept w
   })
   const page = await openPage(t, launched(), site.url)
   const visited: string[] = []
-  page.onNavigation((url) => void visited.push(url))
+  page.onNavigation((navigation) => void visited.push(navigation.url))
   assertOk(await goto(page, '/'))
   const failure = hidden(await fillBound(page, [site.url]))
   assert.deepEqual(failure, {
@@ -185,7 +185,8 @@ test('a fill bound to its origin still lets the page move within the document, a
   })
   const page = await openPage(t, launched(), site.url)
   assertOk(await goto(page, '/'))
-  assert.deepEqual(await fillBound(page, [site.url]), { ok: true, kind: 'fill' })
+  // The field's focus moved the page to /focused within the document, and the fill names the page it typed on.
+  assert.deepEqual(await fillBound(page, [site.url]), { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
   await observeUntil(page, 'done', (seen) => seen.text === 'Done')
   assert.equal(site.posts('/typed'), 1)
 })

@@ -1,64 +1,25 @@
-import type { Transport } from '../../src/browser/cdp/transport.ts'
-import type { SentCommand } from './browser-fixtures.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { BrowserError } from '../../src/browser/browser-error.ts'
-import { CdpConnection } from '../../src/browser/cdp/connection.ts'
-import { ChromiumPage } from '../../src/browser/page.ts'
 import { disarmFunction, prepareFunction, readPageFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
-import { never, scriptedSession } from './browser-fixtures.ts'
-
-const silent: Transport = { listen: () => {}, send: () => ({ written: true, withdraw: () => {} }), close: () => {} }
-const mainFrame = 'F1'
+import { functionsCalled, isRecord, mainFrame, never, scriptedPage, value } from './browser-fixtures.ts'
 
 // A page over a scripted session: `call` answers each call into Retest's world by its function.
-function pageAnswering(call: (functionDeclaration: unknown, params: Record<string, unknown>) => Promise<unknown>) {
-  const scripted = scriptedSession((method, params) => {
-    if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 5 })
-    if (method === 'Input.dispatchKeyEvent') return Promise.resolve({})
-    if (method === 'Runtime.callFunctionOn' && isRecord(params)) return call(params['functionDeclaration'], params)
-    return Promise.reject(new Error(`unexpected ${method}`))
-  })
-  const connection = new CdpConnection(silent, { timeoutMs: 1000, onDiagnostic: () => {} })
-  const options = {
-    connection,
-    session: scripted.session,
-    browserContextId: 'C1',
-    baseUrl: undefined,
-    emulation: undefined,
-    restoredOrigins: [],
-    proxyServer: undefined,
-    onListenerError: (error: unknown) => {
-      throw error
-    },
-  }
-  const page = new ChromiumPage(options, { id: mainFrame, url: 'http://app.test/start?token=1#top' })
-  const startNavigating = (navigationType = 'differentDocument') =>
-    scripted.emit('Page.frameStartedNavigating', { frameId: mainFrame, url: 'http://app.test/next?code=1', loaderId: 'L2', navigationType })
-  return { page, sent: scripted.sent, emit: scripted.emit, startNavigating }
+function pageAnswering(call: (functionDeclaration: unknown) => Promise<unknown>) {
+  return scriptedPage({ call })
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-function value(result: unknown): Promise<unknown> {
-  return Promise.resolve({ result: { value: result } })
-}
-
-function calls(sent: SentCommand[]): unknown[] {
-  return sent.flatMap(({ method, params }) => (method === 'Runtime.callFunctionOn' && isRecord(params) ? [params['functionDeclaration']] : []))
-}
+const facts = { href: 'http://app.test/start?token=1', title: 'Start' }
 
 test('a press readies its element, then sends the key down and up as real key events while the guard watches', async () => {
   const { page, sent } = pageAnswering((functionDeclaration) => {
-    if (functionDeclaration === prepareFunction) return value({ status: 'ready', point: null, token: 1 })
+    if (functionDeclaration === prepareFunction) return value({ status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts })
     if (functionDeclaration === verdictFunction) return value({ reached: ['keydown'], intercepted: null, landed: '<input>', leaving: null })
     if (functionDeclaration === disarmFunction) return value(true)
     return Promise.reject(new Error('unexpected call'))
   })
   const result = await page.execute({ kind: 'press', locator: { by: 'testId', value: 'query' }, key: 'Shift+Tab' }, 1000)
-  assert.deepEqual(result, { ok: true, kind: 'press' })
+  assert.deepEqual(result, { ok: true, kind: 'press', page: { url: 'http://app.test/start', title: 'Start' } })
   assert.deepEqual(
     sent.filter(({ method }) => method !== 'Page.createIsolatedWorld').map(({ method, params }) => (method === 'Input.dispatchKeyEvent' ? params : method)),
     [
@@ -69,7 +30,7 @@ test('a press readies its element, then sends the key down and up as real key ev
       'Runtime.callFunctionOn',
     ],
   )
-  assert.deepEqual(calls(sent), [prepareFunction, verdictFunction, disarmFunction])
+  assert.deepEqual(functionsCalled(sent), [prepareFunction, verdictFunction, disarmFunction])
 })
 
 test('the page refuses a key it cannot send before it sends anything, as unsupported or as usage', async () => {
@@ -81,13 +42,14 @@ test('the page refuses a key it cannot send before it sends anything, as unsuppo
   assert.deepEqual(sent, [])
 })
 
-test('reading the page sends the queries as arguments and answers with its address, as origin and path, and what it found', async () => {
+test('reading the page sends the queries as arguments and answers with its address, as origin and path, its title and what it found', async () => {
   const queries = [
     { text: 'Order placed', ignoreCase: false },
     { text: 'error', ignoreCase: true },
   ]
-  const { page, sent } = pageAnswering((functionDeclaration) => (functionDeclaration === readPageFunction ? value([true, false]) : Promise.reject(new Error('unexpected'))))
-  assert.deepEqual(await page.readPage(queries, 1000), { url: 'http://app.test/start', navigating: false, found: [true, false] })
+  const reading = value({ found: [true, false], title: '  Order\u0007 placed ' })
+  const { page, sent } = pageAnswering((functionDeclaration) => (functionDeclaration === readPageFunction ? reading : Promise.reject(new Error('unexpected'))))
+  assert.deepEqual(await page.readPage(queries, 1000), { url: 'http://app.test/start', title: 'Order placed', navigating: false, found: [true, false] })
   const call = sent.find(({ method }) => method === 'Runtime.callFunctionOn')
   assert.ok(isRecord(call?.params))
   assert.deepEqual(call.params['arguments'], [{ value: queries }])
@@ -95,14 +57,14 @@ test('reading the page sends the queries as arguments and answers with its addre
 })
 
 test('while the frame is opening another document the page is not read, and the reading says so', async () => {
-  const { page, sent, startNavigating } = pageAnswering(() => value([true]))
+  const { page, sent, startNavigating } = pageAnswering(() => value({ found: [true], title: '' }))
   startNavigating()
   assert.deepEqual(await page.readPage([{ text: 'Done', ignoreCase: false }], 1000), { url: 'http://app.test/start', navigating: true, found: [] })
   assert.deepEqual(sent, [])
 })
 
 test('a navigation within the document is not one that replaces it, and the page is read', async () => {
-  const { page, startNavigating } = pageAnswering(() => value([true]))
+  const { page, startNavigating } = pageAnswering(() => value({ found: [true], title: '' }))
   startNavigating('historySameDocument')
   assert.deepEqual(await page.readPage([{ text: 'Done', ignoreCase: false }], 1000), { url: 'http://app.test/start', navigating: false, found: [true] })
 })
@@ -122,14 +84,17 @@ test('a navigation that begins while the page is read ends the read at once, and
 })
 
 test('once the new document commits, the reading is of that document', async () => {
-  const { page, emit, startNavigating } = pageAnswering(() => value([false]))
+  const { page, emit, startNavigating } = pageAnswering((functionDeclaration) =>
+    functionDeclaration === readPageFunction ? value({ found: [false], title: 'Next' }) : value({ href: 'http://app.test/next?code=1', title: 'Next' }),
+  )
   startNavigating()
   emit('Page.frameNavigated', { frame: { id: mainFrame, url: 'http://app.test/next?code=1', loaderId: 'L2' } })
-  assert.deepEqual(await page.readPage([{ text: 'Done', ignoreCase: false }], 1000), { url: 'http://app.test/next', navigating: false, found: [false] })
+  assert.equal(page.url, 'http://app.test/next')
+  assert.deepEqual(await page.readPage([{ text: 'Done', ignoreCase: false }], 1000), { url: 'http://app.test/next', title: 'Next', navigating: false, found: [false] })
 })
 
 test('a page a dialog holds, or one that does not answer in time, cannot be read, and the error says which', async () => {
-  const held = pageAnswering(() => value([true]))
+  const held = pageAnswering(() => value({ found: [true], title: '' }))
   held.emit('Page.javascriptDialogOpening', { type: 'confirm' })
   await assert.rejects(held.page.readPage([], 1000), (error) => error instanceof BrowserError && error.failure.class === 'unsupported')
   assert.deepEqual(held.sent, [])

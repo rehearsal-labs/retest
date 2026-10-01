@@ -270,3 +270,24 @@ test('a long key is cut short in a message', () => {
   const message = keyFailure({ kind: 'replaced' }, key, undefined)?.message ?? ''
   assert.ok(message.length < 300 + 100 && message.includes('k'.repeat(200) + '…'), message)
 })
+
+test('a check or uncheck is judged as the click or tap that made it, and named by its own verb', () => {
+  const check: ActionIntent = { action: 'check', pointer: 'click', multiline: false }
+  const uncheck: ActionIntent = { action: 'uncheck', pointer: 'tap', multiline: false }
+  assert.equal(guardFailure(seen({ reached: ['pointerdown'] }), check, save), undefined)
+  assert.equal(guardFailure(seen({ reached: ['touchstart'] }), uncheck, save), undefined)
+  assert.deepEqual(guardFailure(seen({ reached: [], intercepted: { event: 'pointerdown', by: cover } }), check, save), {
+    class: 'not_actionable',
+    message: `Could not check getByTestId('save'): another element, ${cover}, was on top of it when Retest pressed. Retest stopped the click before the page received it.`,
+    details: { check: 'hit-target', interceptedBy: cover, event: 'pointerdown' },
+  })
+  assert.match(
+    guardFailure(seen({ reached: [], intercepted: { event: 'touchend', by: cover } }), uncheck, save)?.message ?? '',
+    /^Could not uncheck getByTestId\('save'\): it took the touch, but another element/,
+  )
+  assert.deepEqual(guardFailure({ kind: 'replaced' }, uncheck, save), {
+    class: 'outcome_unknown',
+    message: "The page moved to a new document while Retest tried to uncheck getByTestId('save'), so Retest cannot tell whether the uncheck took effect.",
+    details: { reason: 'the page moved to a new document' },
+  })
+})

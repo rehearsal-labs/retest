@@ -95,13 +95,20 @@ const describeHelper = String.raw`
 // A key's press decides at its keydown, which must reach the element. The rest of the keystroke then belongs to
 // the page, which may have moved the focus or submitted a form, and the arming lasts until the key is released,
 // so none of it is stopped as stray typing.
+// Stray typing is what a keyboard or an editing input sends. The input event a checkbox, a radio button or a
+// select fires after it changes is a plain event of the page's own, and passes.
+// A wheel listener that is not passive makes the browser wait for it before every scroll, so the guard listens for
+// the wheel only while a scroll is armed. Waiting is also what makes the wheel reach it before the browser answers.
 const guardHelpers = String.raw`
   const guarded = {
     click: { events: ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'], last: 'click' },
     tap: { events: ['pointerdown', 'touchstart', 'pointerup', 'touchend', 'mousedown', 'mouseup', 'click'], last: 'click' },
     fill: { events: ['keydown', 'beforeinput', 'input', 'keyup'], last: 'input' },
     press: { events: ['keydown', 'keypress', 'beforeinput', 'input', 'keyup'], last: 'keyup', decides: 'keydown' },
+    scroll: { events: ['wheel'], last: 'wheel', whileArmed: true },
   }
+  const isTyping = (event) =>
+    guarded.fill.events.includes(event.type) && (event instanceof KeyboardEvent || event instanceof InputEvent)
   const installGuard = () => {
     if (globalThis.retestGuard !== undefined) return globalThis.retestGuard
     const guard = { armed: null, latest: null, count: 0, stray: null }
@@ -120,7 +127,7 @@ const guardHelpers = String.raw`
       if (!event.isTrusted) return
       const { target } = event
       if (armed === null || !armed.events.includes(event.type)) {
-        if (!guarded.fill.events.includes(event.type)) return
+        if (!isTyping(event)) return
         stop(event)
         guard.stray ??= { event: event.type, by: target instanceof Element ? describe(target) : 'the page', origin: location.origin }
         return
@@ -144,8 +151,15 @@ const guardHelpers = String.raw`
       // Later events belong to the page, such as the click a label passes on to its field.
       if (event.type === armed.last) armed.settle()
     }
-    for (const type of new Set(Object.values(guarded).flatMap(({ events }) => events))) {
-      window.addEventListener(type, check, { capture: true, passive: false })
+    const options = { capture: true, passive: false }
+    const always = Object.values(guarded).filter((entry) => entry.whileArmed !== true)
+    for (const type of new Set(always.flatMap(({ events }) => events))) window.addEventListener(type, check, options)
+    // Adds the listener for events heard only while armed, and returns what removes it.
+    guard.listen = (types) => {
+      for (const type of types) window.addEventListener(type, check, options)
+      return () => {
+        for (const type of types) window.removeEventListener(type, check, options)
+      }
     }
     navigation.addEventListener('navigate', hold)
     globalThis.retestGuard = guard
@@ -162,6 +176,7 @@ const armHelper = String.raw`
       resolve = settle
     })
     const armed = { element, action, ...guarded[action], origins, leaving: null, reached: [], intercepted: null, decided: null }
+    const unlisten = armed.whileArmed === true ? guard.listen(armed.events) : () => {}
     // What the guard saw so far, once: an action whose input decides early answers before the rest arrives.
     armed.report = () => {
       const landed = point === null ? document.activeElement : document.elementFromPoint(point.x, point.y)
@@ -170,6 +185,7 @@ const armHelper = String.raw`
     }
     armed.settle = () => {
       if (guard.armed === armed) guard.armed = null
+      unlisten()
       armed.report()
     }
     guard.count += 1
@@ -178,6 +194,12 @@ const armHelper = String.raw`
     armed.token = guard.count
     return armed
   }
+`
+
+// The page a command went to, read in the same call that checks or reads the element: its address and its title,
+// as the page has them. The browser keeps the origin and path, and cleans the title.
+const pageFactsHelper = String.raw`
+  const pageFacts = () => ({ href: location.href, title: document.title })
 `
 
 const actionHelpers = String.raw`
@@ -212,14 +234,115 @@ const actionHelpers = String.raw`
   const sameBox = (first, second) =>
     first.x === second.x && first.y === second.y && first.width === second.width && first.height === second.height
   const blocked = (check, detail = null) => ({ status: 'blocked', check, detail })
+  const ready = (point, token, via = null) => ({ status: 'ready', point, token, via, scale: visualViewport.scale, page: pageFacts() })
   // A key goes to whatever holds the keyboard focus, never through a point, so there is no hit test.
   const readyForKeys = (element) => {
     if (element.matches(':disabled')) return blocked('enabled')
     const armed = arm(element, 'press', null, null)
     element.focus()
-    if (document.activeElement === element) return { status: 'ready', point: null, token: armed.token }
+    if (document.activeElement === element) return ready(null, armed.token)
     armed.settle()
     return blocked('focused')
+  }
+`
+
+// A checkbox or radio button of the page's own, or an element whose role says it is one. Only the role's first
+// word counts, as it does for the browser.
+const checkableHelper = String.raw`
+  const checkableRoles = new Map([
+    ['checkbox', 'checkbox'],
+    ['switch', 'checkbox'],
+    ['menuitemcheckbox', 'checkbox'],
+    ['radio', 'radio'],
+    ['menuitemradio', 'radio'],
+  ])
+  const checkable = (element) => {
+    if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+      return { native: true, kind: element.type }
+    }
+    const kind = checkableRoles.get((element.getAttribute('role') ?? '').trim().split(/\s+/)[0])
+    return kind === undefined ? null : { native: false, kind }
+  }
+  const isChecked = (element, control) => (control.native ? element.checked : element.getAttribute('aria-checked') === 'true')
+  // A hidden native control is ticked through its one visible label of its own, as a person ticks a styled checkbox.
+  const visibleLabel = (control) => {
+    const labels = [...(control.labels ?? [])].filter(isVisible)
+    return labels.length === 1 ? labels[0] : null
+  }
+`
+
+// Each choice names exactly one option, by its label as a person reads it, whitespace normalised, or by its value.
+// An option is disabled on its own or inside a disabled group, which :disabled covers both.
+const selectHelper = String.raw`
+  const chooseOptions = (select, choices) => {
+    const options = [...select.options]
+    const matches = choices.map((choice) =>
+      options.filter((option) => ('label' in choice ? normalize(option.label) === normalize(choice.label) : option.value === choice.value)),
+    )
+    const problem = (kind, index) => ({ status: 'option', problem: kind, choice: index, count: matches[index].length })
+    const ambiguous = matches.findIndex((found) => found.length > 1)
+    if (ambiguous !== -1) return problem('ambiguous', ambiguous)
+    const missing = matches.findIndex((found) => found.length === 0)
+    if (missing !== -1) return problem('missing', missing)
+    const disabled = matches.findIndex(([option]) => option.matches(':disabled'))
+    if (disabled !== -1) return problem('disabled', disabled)
+    return { status: 'chosen', options: matches.map(([option]) => option) }
+  }
+  const isSelection = (select, chosen) => {
+    const selected = [...select.selectedOptions]
+    return selected.length === new Set(chosen).size && chosen.every((option) => selected.includes(option))
+  }
+  // As the browser does once a person picks from the list: the selection, then input and change, both bubbling.
+  const applySelection = (select, chosen) => {
+    if (select.multiple) for (const option of select.options) option.selected = chosen.includes(option)
+    else chosen[0].selected = true
+    select.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+`
+
+// What an action asks of the element it found before any check, which may settle the action at once: the kind of
+// element it takes, and for check and select whether there is anything to do. Otherwise it names the element to
+// check and act on, which for a hidden native control is its label.
+const fitHelper = String.raw`
+  const settled = (readiness) => ({ settled: readiness })
+  const fitField = (intent, control) => {
+    if (!isField(control)) return settled({ status: 'unsupported', reason: 'field', element: describeField(control) })
+    if (intent.multiline && control instanceof HTMLInputElement) {
+      return settled({ status: 'unsupported', reason: 'multiline', element: describeField(control) })
+    }
+    return { element: control }
+  }
+  const fitCheckable = (intent, control) => {
+    const kind = checkable(control)
+    if (kind === null) return settled({ status: 'unsupported', reason: 'checkable', element: describe(control) })
+    if (!intent.checked && kind.kind === 'radio') return settled({ status: 'unsupported', reason: 'radio', element: describe(control) })
+    if (isChecked(control, kind) === intent.checked) return settled({ status: 'unchanged', page: pageFacts() })
+    const label = kind.native && !isVisible(control) ? visibleLabel(control) : null
+    return label === null ? { element: control, kind } : { element: label, via: 'label', kind }
+  }
+  const fitSelect = (intent, control) => {
+    if (!(control instanceof HTMLSelectElement)) return settled({ status: 'unsupported', reason: 'select', element: describe(control) })
+    if (intent.multiple && !control.multiple) return settled({ status: 'unsupported', reason: 'multiple', element: describe(control) })
+    const chosen = chooseOptions(control, intent.choices)
+    return chosen.status === 'chosen' ? { element: control } : settled(chosen)
+  }
+  const fit = (intent, control) => {
+    if (intent.action === 'fill') return fitField(intent, control)
+    if (intent.action === 'check') return fitCheckable(intent, control)
+    if (intent.action === 'select') return fitSelect(intent, control)
+    return { element: control }
+  }
+  // In the task of the hit test: the selection is read again, left alone when it is already the one asked for,
+  // and otherwise set only when the call applies it.
+  const finishSelect = (intent, select, point) => {
+    const chosen = chooseOptions(select, intent.choices)
+    if (chosen.status !== 'chosen') return chosen
+    if (isSelection(select, chosen.options)) return { status: 'unchanged', page: pageFacts() }
+    if (!intent.apply) return ready(point, null)
+    const page = pageFacts()
+    applySelection(select, chosen.options)
+    return { status: 'selected', page }
   }
 `
 
@@ -233,45 +356,59 @@ export const guardScript: string = `(() => {
 /**
  * Finds the matches of `query`, and lists the first `limit` of them; for a single match, reads whether it is
  * visible, its text and, for a field, its value. Never waits. A query `{ by: 'elements' }` takes the elements that
- * follow it, found already, and keeps those in the document's own tree, in document order.
+ * follow it, found already, and keeps those in the document's own tree, in document order. Returns the observation
+ * and the page it was read on.
  */
 export const observeFunction: string = `function observe(limit, query, ...elements) {
   ${helpers}
+  ${pageFactsHelper}
   const found = find(query, elements)
   const items = found.slice(0, limit).map((element) => ({ text: textOf(element), visible: isVisible(element) }))
   const listed = { count: found.length, items, itemsTruncated: found.length > limit }
-  if (found.length !== 1) return { ...listed, visible: null, text: null, value: null }
+  if (found.length !== 1) return { observation: { ...listed, visible: null, text: null, value: null }, page: pageFacts() }
   const element = found[0]
   const isField = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
-  return { ...listed, visible: isVisible(element), text: textOf(element), value: isField ? element.value : null }
+  const observation = { ...listed, visible: isVisible(element), text: textOf(element), value: isField ? element.value : null }
+  return { observation, page: pageFacts() }
 }`
 
 /**
  * Finds the matches of `query` as `observe` does, checks the one match in the order the build plan gives, and
- * returns the point to press. Once every check passes it arms the input guard for the element, all in the same
- * task as the hit test, so no page script runs between them. For `fill` it then focuses the field and selects its
- * whole value. `origins`, when not null, are the only origins the text may reach: a document on another is
- * refused, and so is one the focus sets off to leave, which the armed guard keeps from going. A `press` checks
- * that the element is visible and enabled, arms the guard and focuses it, and is ready with no point once it
- * keeps the focus.
+ * returns the point to act at, the page it is on, and the visual viewport's scale. Once every check passes it arms
+ * the input guard for the element, all in the same task as the hit test, so no page script runs between them.
+ * `intent` names the action and what it needs:
+ *
+ * - `fill`: `multiline` and `origins`. It focuses the field and selects its whole value. `origins`, when not null,
+ *   are the only origins the text may reach: a document on another is refused, and so is one the focus sets off
+ *   to leave, which the armed guard keeps from going.
+ * - `press`: checks that the element is visible and enabled, arms the guard and focuses it, and is ready with no
+ *   point once it keeps the focus.
+ * - `check`: `checked`, the state asked for, and `pointer`, the input that clicks it. A control already in that
+ *   state is `unchanged`. A hidden native control is checked and armed through its one visible label.
+ * - `select`: `choices`, `multiple`, and `apply`. Each choice must name one enabled option. The selection is set,
+ *   and input and change dispatched, only when `apply` is true, in the task of the hit test; nothing is armed.
+ * - `click`, `tap` and `scroll` need nothing more.
  */
-export const prepareFunction: string = `async function prepare(action, multiline, origins, query, ...elements) {
+export const prepareFunction: string = `async function prepare(intent, query, ...elements) {
   ${helpers}
   ${describeHelper}
   ${guardHelpers}
   ${armHelper}
+  ${pageFactsHelper}
   ${actionHelpers}
+  ${checkableHelper}
+  ${selectHelper}
+  ${fitHelper}
+  const { action } = intent
+  const origins = intent.origins ?? null
   if (origins !== null && !origins.includes(location.origin)) return { status: 'refused', origin: location.origin, leaving: false }
   const found = find(query, elements)
   if (found.length === 0) return { status: 'missing' }
   if (found.length > 1) return { status: 'ambiguous', count: found.length }
-  const element = found[0]
-  if (action === 'fill') {
-    if (!isField(element)) return { status: 'unsupported', reason: 'field', field: describeField(element) }
-    if (multiline && element instanceof HTMLInputElement) {
-      return { status: 'unsupported', reason: 'multiline', field: describeField(element) }
-    }
-  }
+  const control = found[0]
+  const fitted = fit(intent, control)
+  if (fitted.settled !== undefined) return fitted.settled
+  const { element, via = null } = fitted
   if (!isVisible(element)) return blocked('visible')
   if (action === 'press') return readyForKeys(element)
   if (!isCentreInView(element.getBoundingClientRect())) {
@@ -281,7 +418,7 @@ export const prepareFunction: string = `async function prepare(action, multiline
   const after = await boxAfterFrame(element)
   if (!element.isConnected) return blocked('attached')
   if (!isVisible(element)) return blocked('visible')
-  if (element.matches(':disabled')) return blocked('enabled')
+  if (control.matches(':disabled')) return blocked('enabled')
   if (action === 'fill' && element.readOnly) return blocked('editable')
   if (!sameBox(before, after)) return blocked('stable')
   const point = visibleCentre(after)
@@ -289,7 +426,9 @@ export const prepareFunction: string = `async function prepare(action, multiline
   const hit = document.elementFromPoint(point.x, point.y)
   if (hit === null) return blocked('hit-target')
   if (hit !== element && !element.contains(hit)) return blocked('hit-target', describe(hit))
-  const armed = arm(element, action, action === 'fill' ? null : point, origins)
+  if (action === 'select') return finishSelect(intent, element, point)
+  if (action === 'check' && isChecked(control, fitted.kind) === intent.checked) return { status: 'unchanged', page: pageFacts() }
+  const armed = arm(element, intent.pointer ?? action, action === 'fill' ? null : point, origins)
   if (action === 'fill') {
     element.focus()
     element.select()
@@ -300,18 +439,42 @@ export const prepareFunction: string = `async function prepare(action, multiline
       return unready
     }
   }
-  return { status: 'ready', point, token: armed.token }
+  return ready(point, armed.token, via)
 }`
 
 /**
- * Arms the guard for a key sent to the page's keyboard, which goes to whatever holds the focus: any element of
- * this document may take it. Returns the arming's token.
+ * Arms the guard for input that goes to the document rather than to an element, and is ready as `prepare` is: a
+ * key for the page's keyboard, which goes to whatever holds the focus, or the wheel at the centre of the viewport.
+ * Any element of this document may take it.
  */
-export const armKeyboardFunction: string = `function armKeyboard() {
+export const armDocumentFunction: string = `function armDocument(action) {
   ${describeHelper}
   ${guardHelpers}
   ${armHelper}
-  return arm(document, 'press', null, null).token
+  ${pageFactsHelper}
+  ${actionHelpers}
+  const view = viewport()
+  const point = action === 'scroll' ? { x: (view.left + view.right) / 2, y: (view.top + view.bottom) / 2 } : null
+  return ready(point, arm(document, action, point, null).token)
+}`
+
+/**
+ * Whether the one element `query` finds is checked, as `check` reads it, or null when there is not exactly one
+ * such element, or it is not a control that can be checked.
+ */
+export const checkedFunction: string = `function checked(query, ...elements) {
+  ${helpers}
+  ${checkableHelper}
+  const found = find(query, elements)
+  if (found.length !== 1) return null
+  const kind = checkable(found[0])
+  return kind === null ? null : isChecked(found[0], kind)
+}`
+
+/** The page's address and title, as the page has them. */
+export const pageFactsFunction: string = `function readPageFacts() {
+  ${pageFactsHelper}
+  return pageFacts()
 }`
 
 /** Waits until the guard armed with `token` has seen its input through, and returns what it saw. */
@@ -336,14 +499,15 @@ export const strayFunction: string = `function stray() {
 
 /**
  * Whether the visible text of the document, `document.body.innerText`, holds each query, read as
- * `pageTextHolds` reads it: whitespace normalised, and in any case when the query ignores case. Only the
- * answers leave the page.
+ * `pageTextHolds` reads it: whitespace normalised, and in any case when the query ignores case, and the document's
+ * title. Only the answers and the title leave the page.
  */
 export const readPageFunction: string = `function readPage(queries) {
   ${textMatchHelper}
   const text = normalize(document.body?.innerText ?? '')
   const lowered = text.toLowerCase()
-  return queries.map((query) => (query.ignoreCase ? lowered.includes(normalize(query.text).toLowerCase()) : text.includes(normalize(query.text))))
+  const found = queries.map((query) => (query.ignoreCase ? lowered.includes(normalize(query.text).toLowerCase()) : text.includes(normalize(query.text))))
+  return { found, title: document.title }
 }`
 
 /** Reads the document origin's `localStorage`, or null when the document may not use it. */

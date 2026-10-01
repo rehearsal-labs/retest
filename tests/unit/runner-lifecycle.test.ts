@@ -11,12 +11,12 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { readRunFolder } from '../../src/cli/inspect/read-run-folder.ts'
 import { eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
 import { RunFolderError, runFiles } from '../../src/runner/run.ts'
+import { readRunFolder } from '../../src/store/read-run-folder.ts'
 import { fakeLauncher } from '../support/fake-browser.ts'
 import { eventsOfType, isGoneWithin, isRunning, printedPids, rootDir, runSupportFiles, supportFile, testNamed } from '../support/run-harness.ts'
 import { tempFolder } from '../support/temp-folder.ts'
@@ -169,7 +169,8 @@ describe('the browser', () => {
     assert.equal(failure.class, 'outcome_unknown')
     assert.match(failure.message, /^The browser was lost during getByTestId\('save-task'\)\.click\(\), which had not answered 1000 ms later, so whether it took effect is unknown\./)
     const [click] = eventsOfType(record.events, 'action.failed')
-    assert.ok((click?.durationMs ?? 0) >= 1000, `the page had its grace period, and the click was reported after ${click?.durationMs} ms`)
+    // A timer can fire up to a millisecond before the clock agrees, as Deadline allows.
+    assert.ok((click?.durationMs ?? 0) >= 999, `the page had its grace period, and the click was reported after ${click?.durationMs} ms`)
     assert.ok(performance.now() - started < 3000, 'the run did not wait for the page to answer')
   })
 

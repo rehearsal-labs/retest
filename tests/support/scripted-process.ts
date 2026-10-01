@@ -3,7 +3,7 @@ import type { ChildEvent, EventBody } from '../../src/protocol/events.ts'
 import type { ParentMessage } from '../../src/protocol/messages.ts'
 import type { Timeouts } from '../../src/protocol/timeouts.ts'
 import type { Redactor } from '../../src/runner/redactor.ts'
-import type { BodyReport, TestProcess } from '../../src/runner/running-test.ts'
+import type { BodyReport, RunningTestOptions, TestProcess } from '../../src/runner/running-test.ts'
 import type { ProcessEvent } from '../../src/runner/test-file-process.ts'
 import type { ProcessExit } from '../../src/shared/process-exit.ts'
 import type { FakeOptions, FakePage } from './fake-browser.ts'
@@ -81,7 +81,13 @@ export type ScriptedTestOptions = {
   redactor?: Redactor
   attemptId?: string
   timeouts?: Partial<Timeouts>
+  /** The page emulates a touch screen, as a phone's does. */
+  touch?: boolean
+  fillSecret?: RunningTestOptions['fillSecret']
 }
+
+// A phone's screen, as far as the fake page cares: it taps where it is asked to click.
+const touchScreen = { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2.625, touch: true, isMobile: true }
 
 /** One test body run against a fake page, with the test process played by the unit test. */
 export type ScriptedTest = {
@@ -111,7 +117,7 @@ export async function scriptedTest(options: ScriptedTestOptions = {}): Promise<S
   const timeline: string[] = []
   const process = new ScriptedProcess((message) => timeline.push(message.type))
   const browser = new FakeBrowser(options.fake ?? {}, { executablePath: '/fake/chromium', logFile: '/dev/null', headless: true })
-  const page = await browser.newPage({ baseUrl: 'http://127.0.0.1:4173' }, 1000)
+  const page = await browser.newPage({ baseUrl: 'http://127.0.0.1:4173', ...(options.touch === true ? { emulation: touchScreen } : {}) }, 1000)
   const events: ScriptedTest['events'] = []
   const testId = 'tests/a.retest.ts > runs'
   const attemptId = options.attemptId ?? 'attempt1'
@@ -126,6 +132,8 @@ export async function scriptedTest(options: ScriptedTestOptions = {}): Promise<S
       timeline.push(body.type)
     },
     ...(options.redactor === undefined ? {} : { redactor: options.redactor }),
+    ...(options.touch === true ? { touch: new Set([scriptedApp]) } : {}),
+    ...(options.fillSecret === undefined ? {} : { fillSecret: options.fillSecret }),
   })
   const report = running.run()
   return {

@@ -53,7 +53,7 @@ describe('package subpaths', () => {
     assert.deepEqual(resolved.secrets.get('password'), { value: 'correct horse' })
     const code = resolved.secrets.get('code')
     assert.ok(code !== undefined && 'read' in code)
-    assert.equal(await code.read(), '481516')
+    assert.equal(await code.read({ signal: new AbortController().signal }), '481516')
     const unset = runner.resolveSecrets(validated.config, {})
     assert.equal(unset.ok, false)
     assert.equal(unset.ok ? '' : unset.failure.class, 'setup_failed')
@@ -76,6 +76,16 @@ describe('package subpaths', () => {
     assert.equal(protocol.parse(protocol.failureSchema, { class: 'timeout', message: 'Out of time.' }).ok, true)
     assert.match(protocol.eventSchemaUrl, /^file:.*\/dist\/schemas\/event-v1\.schema\.json$/)
     assert.match(protocol.resultSchemaUrl, /^file:.*\/dist\/schemas\/result-v1\.schema\.json$/)
+  })
+
+  // A host that ran Retest reads the run folder afterwards through the same reader as inspect.
+  test('the runner entry reads a run folder, and the protocol entry names its files', () => {
+    assert.equal(typeof runner.readRunFolder, 'function')
+    const error = new runner.RunFolderReadError('No run folder at /work/runs/1.')
+    assert.ok(error instanceof Error)
+    assert.equal(error.name, 'RunFolderReadError')
+    assert.throws(() => runner.readRunFolder(new URL('does-not-exist/', root).pathname), runner.RunFolderReadError)
+    assert.deepEqual([protocol.eventsFile, protocol.resultFile, protocol.logsFolder], ['events.jsonl', 'result.json', 'logs'])
   })
 
   // A host that writes the test file keys its host checks by the id the run will give the test.
