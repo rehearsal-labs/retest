@@ -3,7 +3,8 @@ import { s, type Schema } from './schema.ts'
 
 /**
  * The page a command went to, as the browser read it in the same call that checked or read the element: the
- * main frame's origin and path, and its title when it has one. Titles are page text.
+ * main frame's origin and path, and its title when it has one. Titles are page text. The browser hands a title over
+ * as the page has it; the parent redacts, cleans and cuts it before it records it or tells the test process.
  */
 export type PageFacts = { url: string; title?: string }
 
@@ -14,42 +15,47 @@ export type PageFacts = { url: string; title?: string }
  */
 export type NavigationCause = 'goto' | 'action' | 'page'
 
+/**
+ * What a navigation of the main frame did to its document: `new` when the frame committed a document, `same` when
+ * the page moved to a new path within the document it held, through the history API.
+ */
+export type NavigationDocument = 'new' | 'same'
+
 /** How many UTF-16 code units of a page's title Retest records. */
 export const pageTitleLimit = 300
 
 /**
- * How many code units of a page's title the browser hands the parent. The parent cuts a title to `pageTitleLimit`
- * only after it has redacted it, so a secret that runs past the cut is hidden whole.
+ * How many code units of `document.title` the page hands over at most, so that no page can send a title of any
+ * size. The parent redacts a title before it cleans and cuts it, and drops the start of a value at the end of a
+ * title this long, since the page may have cut it there.
  */
-export const readTitleLimit = 4096
+export const titleReadLimit = 65_536
 
 export const navigationCauseSchema: Schema<NavigationCause> = s.enum(['goto', 'action', 'page'])
+
+export const navigationDocumentSchema: Schema<NavigationDocument> = s.enum(['new', 'same'])
 
 export const pageFactsSchema: Schema<PageFacts> = s.object({ url: s.string(), title: s.optional(s.string()) })
 
 const controlCharacters = /\p{Cc}/gu
 
 /**
- * A page's title as the browser hands it to the parent: `document.title` with every control character removed,
- * trimmed, and cut to `readTitleLimit` code units, never inside a surrogate pair. A title that leaves nothing is none.
+ * A page's title with every control character removed and trimmed, or none when that leaves nothing. The parent
+ * cleans a title only once it has redacted it, so nothing cleaning removes can keep a value from being found.
  *
- * @example readPageTitle('  Checkout\u001b[2J ') // 'Checkout[2J'
+ * @example cleanTitle('  Checkout\u001b[2J ') // 'Checkout[2J'
  */
-export function readPageTitle(title: string): string | undefined {
+export function cleanTitle(title: string): string | undefined {
   const cleaned = title.replace(controlCharacters, '').trim()
-  return cleaned === '' ? undefined : cutTitle(cleaned, readTitleLimit)
+  return cleaned === '' ? undefined : cleaned
 }
 
 /**
- * A title as Retest records it, once the parent has redacted it: cut to `pageTitleLimit` code units, never inside
- * a surrogate pair, and never ending on a space.
+ * A title as Retest records it, once the parent has redacted and cleaned it: cut to `pageTitleLimit` code units,
+ * never inside a surrogate pair, and never ending on a space.
  *
  * @example recordedTitle(`${'x'.repeat(299)} yz`) // 'x'.repeat(299)
  */
 export function recordedTitle(title: string): string {
-  return cutTitle(title, pageTitleLimit)
-}
-
-function cutTitle(title: string, limit: number): string {
-  return truncateText(title, limit).text.trimEnd()
+  return truncateText(title, pageTitleLimit).text.trimEnd()
 }

@@ -3,6 +3,7 @@ import type { Failure } from '../protocol/failures.ts'
 import type { ChildMessage, ParentMessage } from '../protocol/messages.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
 import { fork } from 'node:child_process'
+import { playwrightArgument } from './playwright-resolve.ts'
 import { extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { childMessageSchema } from '../protocol/messages.ts'
@@ -24,6 +25,8 @@ export type ProcessEvent =
 export type ClosedProcess = { exit: ProcessExit; forced: boolean }
 
 export type SpawnOptions = {
+  /** The file is a Playwright test file: its imports of `@playwright/test` resolve to Retest's own subpath. */
+  playwright?: boolean
   /** Receives the process's stdout and stderr. Without it, both are discarded. */
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void
   /** Environment variables the process must not see, such as the ones secrets are read from. */
@@ -74,7 +77,7 @@ export class TestFileProcess {
   static spawn(options: SpawnOptions = {}): TestFileProcess {
     const output = options.onOutput
     const hidden = new Set(options.hiddenVariables)
-    const child = fork(childEntry, [], {
+    const child = fork(childEntry, options.playwright === true ? [playwrightArgument] : [], {
       execArgv: conditionArguments(process.execArgv),
       env: Object.fromEntries(Object.entries(options.environment ?? process.env).filter(([name]) => !hidden.has(name))),
       serialization: 'json',

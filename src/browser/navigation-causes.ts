@@ -1,6 +1,15 @@
 import type { NavigationCause } from '../protocol/page-facts.ts'
 
 /**
+ * What started a navigation of the main frame, and the token of the command whose input or `goto` started it, when
+ * one did and its caller gave it a token.
+ */
+export type NavigationStart = { cause: NavigationCause; commandToken?: number }
+
+/** A command at work in the page, by the token its caller gave it. */
+type Working = { commandToken: number | undefined }
+
+/**
  * Tells what started each navigation of the main frame, from the browser's events about it, as fact F12 showed
  * them:
  *
@@ -13,48 +22,42 @@ import type { NavigationCause } from '../protocol/page-facts.ts'
  *   action's delivery lasts until such a call has answered: the guard's disarm, or the `select` call itself.
  *
  * A navigation is `'action'` when the page requested it, or moved within its document, while an action was being
- * delivered; `'goto'` when a `goto` started it; and `'page'` otherwise.
+ * delivered; `'goto'` when a `goto` started it; and `'page'` otherwise. An action's and a goto's carry the token of
+ * their command, however late they commit. A request the browser never started is forgotten when a document
+ * commits or the frame stops loading, so it lends its cause to no later navigation to the same address.
  */
 export class NavigationCauses {
-  #delivering = 0
-  #opening = 0
-  #requested: { url: string; cause: NavigationCause } | undefined
-  readonly #started = new Map<string, NavigationCause>()
+  readonly #delivering: Working[] = []
+  readonly #opening: Working[] = []
+  #requested: { url: string; start: NavigationStart } | undefined
+  readonly #started = new Map<string, NavigationStart>()
 
   /**
-   * Runs `work`, which delivers an action's input and then calls into the page. Navigations the page requests
-   * meanwhile are the action's.
+   * Runs `work`, which delivers the input of the command `commandToken` names and then calls into the page.
+   * Navigations the page requests meanwhile are the action's.
    */
-  async delivering<T>(work: () => Promise<T>): Promise<T> {
-    this.#delivering += 1
-    try {
-      return await work()
-    } finally {
-      this.#delivering -= 1
-    }
+  delivering<T>(commandToken: number | undefined, work: () => Promise<T>): Promise<T> {
+    return during(this.#delivering, { commandToken }, work)
   }
 
-  /** Runs `work`, which opens an address for `goto`. A navigation it starts that the page did not request is the goto's. */
-  async opening<T>(work: () => Promise<T>): Promise<T> {
-    this.#opening += 1
-    try {
-      return await work()
-    } finally {
-      this.#opening -= 1
-    }
+  /**
+   * Runs `work`, which opens an address for the `goto` `commandToken` names. A navigation it starts that the page
+   * did not request is the goto's.
+   */
+  opening<T>(commandToken: number | undefined, work: () => Promise<T>): Promise<T> {
+    return during(this.#opening, { commandToken }, work)
   }
 
   /** The page asked for a navigation of the main frame in its own tab. */
   requested(url: string): void {
-    this.#requested = { url, cause: this.#delivering > 0 ? 'action' : 'page' }
+    this.#requested = { url, start: startOf('action', this.#delivering) ?? { cause: 'page' } }
   }
 
   /** The browser began a navigation of the main frame that replaces its document when it commits. */
   started(url: string, loaderId: string): void {
     const requested = this.#requested
     this.#requested = undefined
-    const cause = requested !== undefined && requested.url === url ? requested.cause : this.#opening > 0 ? 'goto' : 'page'
-    this.#started.set(loaderId, cause)
+    this.#started.set(loaderId, requested !== undefined && requested.url === url ? requested.start : this.#unannounced())
   }
 
   /**
@@ -62,18 +65,44 @@ export class NavigationCauses {
    * page that asks for the same address at that moment cannot pass the goto off as its own.
    */
   opened(loaderId: string): void {
-    this.#started.set(loaderId, 'goto')
+    this.#started.set(loaderId, startOf('goto', this.#opening) ?? { cause: 'goto' })
   }
 
   /** A new document committed. Returns what started it; one nothing announced is the goto's while one opens. */
-  committed(loaderId: string): NavigationCause {
-    const cause = this.#started.get(loaderId) ?? (this.#opening > 0 ? 'goto' : 'page')
+  committed(loaderId: string): NavigationStart {
+    const start = this.#started.get(loaderId) ?? this.#unannounced()
     this.#started.clear()
-    return cause
+    this.#requested = undefined
+    return start
+  }
+
+  /** The main frame stopped loading: a request the browser has not started by now never will be. */
+  stoppedLoading(): void {
+    this.#requested = undefined
   }
 
   /** The page moved to a new path within its document, which `goto` never does, since a goto opens a document. */
-  movedWithinDocument(): NavigationCause {
-    return this.#delivering > 0 ? 'action' : 'page'
+  movedWithinDocument(): NavigationStart {
+    return startOf('action', this.#delivering) ?? { cause: 'page' }
   }
+
+  #unannounced(): NavigationStart {
+    return startOf('goto', this.#opening) ?? { cause: 'page' }
+  }
+}
+
+// Commands at work in one page come one at a time, so the latest is the one the browser acts for.
+async function during<T>(working: Working[], entry: Working, work: () => Promise<T>): Promise<T> {
+  working.push(entry)
+  try {
+    return await work()
+  } finally {
+    working.splice(working.indexOf(entry), 1)
+  }
+}
+
+function startOf(cause: NavigationCause, working: readonly Working[]): NavigationStart | undefined {
+  const latest = working.at(-1)
+  if (latest === undefined) return undefined
+  return latest.commandToken === undefined ? { cause } : { cause, commandToken: latest.commandToken }
 }

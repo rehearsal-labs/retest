@@ -53,6 +53,27 @@ export function scheduleRun(plan: Plan, selection: Selection, variants: boolean)
   return { visits: intoVisits([...inDependencyOrder([...setups.values()], plan), ...rest]), selected: chosen.length }
 }
 
+/** The visits in two phases: those that run setups, which come first one after another, and those that run tests. */
+export type Phases = { setups: Visit[]; tests: Visit[] }
+
+/**
+ * Splits the visits into the setup phase and the test phase. A visit that holds both, the last setup's file going
+ * straight on to its own tests, becomes one visit in each, so a file's setups run in a visit of their own.
+ *
+ * @example phasesOf(scheduleRun(plan, {}, true).visits).tests.length
+ */
+export function phasesOf(visits: readonly Visit[]): Phases {
+  const setups: Visit[] = []
+  const tests: Visit[] = []
+  for (const { file, attempts } of visits) {
+    const own = attempts.filter((attempt) => attempt.test.registered.setup === true)
+    const rest = attempts.filter((attempt) => attempt.test.registered.setup !== true)
+    if (own.length > 0) setups.push({ file, attempts: own })
+    if (rest.length > 0) tests.push({ file, attempts: rest })
+  }
+  return { setups, tests }
+}
+
 /** An attempt's identity in a run: its test id and its variant's key. */
 export function attemptKey({ test, targets }: Attempt): string {
   return `${test.testId}\n${variantKey(targets)}`

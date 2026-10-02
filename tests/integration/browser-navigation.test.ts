@@ -3,6 +3,7 @@ import type { OwnedPage, PageNavigation } from '../../src/browser/contract.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
+import { titleReadLimit } from '../../src/protocol/page-facts.ts'
 import {
   assertOk,
   click,
@@ -243,12 +244,14 @@ test('a title the page writes after it loads is no navigation, and the next look
   assert.equal(count(), 1)
 })
 
-// The parent redacts a title before it cuts it to the 300 code units it records, so the browser hands over far more.
-test('a title loses its control characters and surrounding space, reaches the parent whole up to 4096 code units, and an empty one is none', async (t) => {
+// The parent redacts a title before it cleans it or cuts it to the 300 code units it records, so the browser hands
+// it over as the page has it. Chrome's own `document.title` already reads each C0 control character and DEL as a
+// space, joins runs of spaces and trims the ends; a C1 control character, such as U+009B, reaches Retest as it is.
+test('a title reaches the parent as the page has it, a C1 control character and all, and an empty one is none', async (t) => {
   const { app, page, told } = await titlesPage(t)
   const echo = (title: string) => `/titles/echo?title=${encodeURIComponent(title)}`
-  const cleaned = await goto(page, echo('\u0007Bell\t tab \u001b[2J '))
-  assert.deepEqual(cleaned, { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo`, title: 'Bell tab [2J' } })
+  const raw = await goto(page, echo('\u009bBell\t tab \u001b[2J '))
+  assert.deepEqual(raw, { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo`, title: '\u009bBell tab [2J' } })
   assert.deepEqual(await goto(page, echo('   ')), { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo` } })
   const longer = `${'a'.repeat(299)}😀tail`
   assertOk(await goto(page, echo(longer)))
@@ -256,10 +259,43 @@ test('a title loses its control characters and surrounding space, reaches the pa
   assertOk(await goto(page, echo(longest)))
   assert.deepEqual(
     (await told()).map(({ title }) => title),
-    ['Bell tab [2J', undefined, longer, 'b'.repeat(4095)],
+    ['\u009bBell tab [2J', undefined, longer, longest],
   )
   const reading = await page.readPage([{ text: 'Titled', ignoreCase: false }], 1000)
-  assert.deepEqual(reading, { url: `${app.url}/titles/echo`, title: 'b'.repeat(4095), navigating: false, found: [true] })
+  assert.deepEqual(reading, { url: `${app.url}/titles/echo`, title: longest, navigating: false, found: [true] })
+})
+
+test(`a title a script makes longer than ${titleReadLimit} code units reaches the parent cut there, and no longer`, async (t) => {
+  const site = await servePages(t, { '/': `<!doctype html><title>Short</title><body><script>document.title = 'x'.repeat(${titleReadLimit + 100})</script></body>` })
+  const page = await openPage(t, browser(), site.url)
+  const opened = await goto(page, '/')
+  assert.ok(opened.ok && opened.kind === 'goto')
+  assert.equal(opened.page?.title, 'x'.repeat(titleReadLimit))
+  assert.equal((await page.readPage([], 1000)).title, 'x'.repeat(titleReadLimit))
+})
+
+// The runner gives each command a token; the navigation the command's input or goto started carries it back, so
+// the parent can name that command's step however late the navigation commits.
+test('a navigation names the token of the command that started it, and says whether it opened a document', async (t) => {
+  const app = await openApp(t)
+  const page = await openPage(t, browser(), app.url)
+  const seen: PageNavigation[] = []
+  page.onNavigation((navigation) => void seen.push(navigation))
+  assertOk(await page.execute({ kind: 'goto', url: '/titles' }, 5000, undefined, 1))
+  assertOk(await page.execute({ kind: 'click', locator: { by: 'testId', value: 'next' } }, 2000, undefined, 2))
+  await observeUntil(page, 'arrived', (look) => look.count === 1)
+  assertOk(await page.execute({ kind: 'goto', url: '/titles' }, 5000, undefined, 3))
+  assertOk(await page.execute({ kind: 'click', locator: { by: 'testId', value: 'push' } }, 2000, undefined, 4))
+  await observeUntil(page, 'push', () => page.url?.endsWith('/titles/pushed') === true)
+  assert.deepEqual(
+    seen.map(({ url, cause, document, commandToken }) => [new URL(url).pathname, cause, document, commandToken]),
+    [
+      ['/titles', 'goto', 'new', 1],
+      ['/titles/next', 'action', 'new', 2],
+      ['/titles', 'goto', 'new', 3],
+      ['/titles/pushed', 'action', 'same', 4],
+    ],
+  )
 })
 
 test("a document replaced while it parses, or by a refresh as it loads, never takes the title of the one that replaced it", async (t) => {

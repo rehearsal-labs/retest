@@ -7,7 +7,7 @@ import { errorMessage } from '../protocol/failures.ts'
 import { lastRunFile, lastRunSchema } from '../protocol/last-run.ts'
 import { formatLine } from '../protocol/location.ts'
 import { parse } from '../protocol/schema.ts'
-import { testFileSuffix } from '../shared/test-files.ts'
+import { playwrightFileSuffixes, playwrightSpecSuffixes, testFileSuffix } from '../shared/test-files.ts'
 import { parseTargets } from './app-pairs.ts'
 import { flag, list, value } from './arguments.ts'
 import { CliError, UsageError } from './errors.ts'
@@ -36,6 +36,8 @@ export type ScopeRequest = {
   /** Without a config, files must be named; with one, no files means every test file under the root. */
   config: LoadedConfig | undefined
   flags: SelectionArguments
+  /** The run is of Playwright test files: files end as Playwright's do, and none named means every `.spec` file. */
+  playwright?: boolean
 }
 
 /** Reads the selection flags from any command's parsed arguments that include `selectionOptions`. */
@@ -62,10 +64,13 @@ export function selectionArguments(parsed: SelectionFlagReader): SelectionArgume
 export function readTestScope(request: ScopeRequest): TestScope {
   const { cwd, config, flags } = request
   const named = request.positionals.length > 0
-  if (!named && config === undefined) {
+  const playwright = request.playwright === true
+  if (!named && config === undefined && !playwright) {
     throw new UsageError(`Name at least one test file, such as examples/task${testFileSuffix}.`)
   }
-  const { files, locations } = named ? readFileArguments(cwd, request.positionals) : { files: everyTestFile(cwd), locations: [] }
+  const { files, locations } = named
+    ? readFileArguments(cwd, request.positionals, playwright ? playwrightFileSuffixes : undefined)
+    : { files: everyTestFile(cwd, playwright ? playwrightSpecSuffixes : undefined), locations: [] }
   const lastFailed = flags.lastFailed ? readLastFailed(cwd) : undefined
   const selection: Selection = {
     ...(flags.grep === undefined ? {} : { grep: parseGrep(flags.grep) }),

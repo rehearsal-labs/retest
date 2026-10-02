@@ -68,6 +68,7 @@ export async function runProject(root: string, options: ProjectRunOptions): Prom
       timeouts: { ...quickTimeouts, ...options.timeouts },
       outputDir: folder,
       headless: true,
+      workers: 1,
       signal: options.signal ?? new AbortController().signal,
       onOutput: (chunk) => void output.push(chunk),
       ...runOptions(options),

@@ -1,13 +1,14 @@
 import type { OwnedPage, PageNavigation } from '../browser/contract.ts'
 import type { ActionKind, CommandResult, FillValue, PageCommand } from '../protocol/commands.ts'
 import type { ChildEvent, EventBody, EventOrigin } from '../protocol/events.ts'
-import type { Failure, FailureClass } from '../protocol/failures.ts'
+import type { Failure, FailureClass, SourceLocation } from '../protocol/failures.ts'
+import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { ChildMessage } from '../protocol/messages.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
 import type { PageFields } from './observations.ts'
-import type { NotedNavigation, PageDocument } from './page-navigations.ts'
+import type { NavigationStamp, NotedNavigation, PageDocument } from './page-navigations.ts'
 import type { Redactor } from './redactor.ts'
 import type { FillResolution, SecretFill } from './secrets.ts'
 import type { ProcessEvent, TestFileMessage, TestFileProcess } from './test-file-process.ts'
@@ -42,7 +43,7 @@ export type RunningTestOptions = {
   emit: (body: EventBody, origin?: EventOrigin) => void
   /** Turns a secret fill into the text to type, or says why it may not be typed. Without it, a secret fill fails. */
   fillSecret?: (command: SecretFill, context: SecretFillContext) => Promise<FillResolution>
-  /** Hides secret values in everything sent to the child. */
+  /** Hides secret values in everything sent to the child, and refuses a locator that holds one. */
   redactor?: Redactor
   /** The apps whose page emulates a touch screen, where a click is sent, and recorded, as a tap. */
   touch?: ReadonlySet<string>
@@ -72,6 +73,8 @@ type InFlight = {
   message: CommandMessage
   /** The page of the app the command names. */
   page: OwnedPage
+  /** The token the page is given with the command, which a navigation the command starts carries back. */
+  commandToken: number
   /** The document the parent last saw that page commit when the command arrived. */
   document: PageDocument | undefined
   /** Settles once every navigation of that page told before the command arrived is written; absent when none waits. */
@@ -89,6 +92,9 @@ type InFlight = {
 
 // Failures that say the browser went away, from the page that saw it go.
 const lossClasses: ReadonlySet<FailureClass> = new Set<FailureClass>(['session_lost', 'outcome_unknown'])
+
+/** A command the parent sent a page: its app, and its step and place, which a navigation it started names. */
+type SentCommand = { app: string; stamp: NavigationStamp }
 
 /**
  * The parent's side of one test body. It forwards the child's page commands to the browser, reports
@@ -109,7 +115,9 @@ export class RunningTest {
   /** The document each app's page last committed, as far as the parent knows. */
   readonly #documents = new Map<string, PageDocument>()
   readonly #navigations = new PageNavigations((navigation) => this.#writeNavigation(navigation))
-  readonly #observations = new ServedObservations()
+  readonly #observations: ServedObservations
+  /** Every command sent to a page in this attempt, by the token the page was given with it. */
+  readonly #sent = new Map<number, SentCommand>()
   #stepId: string | undefined
   #revocation: Failure | undefined
   /** The page's latest answer saying that it or the browser was gone. */
@@ -122,6 +130,7 @@ export class RunningTest {
 
   constructor(options: RunningTestOptions) {
     this.#options = options
+    this.#observations = new ServedObservations(options.redactor)
   }
 
   /** Starts the body in the child and resolves when it is over, however it ends. A process that has ended gets no body. */
@@ -239,9 +248,12 @@ export class RunningTest {
     const deadline = this.#deadline
     const timeoutMs = deadline === undefined ? message.timeoutMs : smallestBudget(message.timeoutMs, deadline.remainingMs)
     this.#stepId = message.stepId
+    const commandToken = this.#sent.size + 1
+    this.#sent.set(commandToken, { app: message.app, stamp: stampOf(message.stepId, message.location) })
     const entry: InFlight = {
       message,
       page,
+      commandToken,
       document: this.#documents.get(message.app),
       navigations: this.#navigations.waiting(message.app),
       startedAt: monotonicClock(),
@@ -293,20 +305,21 @@ export class RunningTest {
   }
 
   // A secret is read, within the command's own time, only once the page's current address may take it. What the
-  // test process's own checks refuse is refused again here, since it may send what those checks never saw.
-  async #run({ message, page, stop }: InFlight, timeoutMs: number): Promise<CommandResult> {
+  // test process's own checks refuse is refused again here, since it may send what those checks never saw. A
+  // locator that holds a secret's value never reaches the page, which matches it against its own unredacted text.
+  async #run({ message, page, stop, commandToken }: InFlight, timeoutMs: number): Promise<CommandResult> {
     const { command } = message
-    const problem = commandProblem(command)
+    const problem = commandProblem(command) ?? secretLocatorProblem(command, this.#options.redactor)
     if (problem !== undefined) return { ok: false, failure: problem }
-    if (command.kind !== 'fill') return page.execute(command, timeoutMs, stop.signal)
+    if (command.kind !== 'fill') return page.execute(command, timeoutMs, stop.signal, commandToken)
     const { locator, value } = command
-    if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal)
+    if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal, commandToken)
     const deadline = new Deadline(timeoutMs)
     const { fillSecret } = this.#options
     const context: SecretFillContext = { pageUrl: page.url, timeoutMs, signal: stop.signal }
     const resolved = fillSecret === undefined ? noSecrets(value.secret) : await fillSecret({ kind: 'fill', locator, value }, context)
     if (!resolved.ok) return { ok: false, failure: resolved.failure }
-    return page.execute(resolved.command, deadline.commandTimeoutMs, stop.signal)
+    return page.execute(resolved.command, deadline.commandTimeoutMs, stop.signal, commandToken)
   }
 
   // An action is reported once: by the page's answer, or as unknown when the page gave none in time.
@@ -356,7 +369,8 @@ export class RunningTest {
     const observationId = this.#observations.serve({ app, locator, observation, ...page })
     const { testId, attemptId } = this.#options
     const step = stepId === undefined ? {} : { stepId }
-    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(entry.startedAt) })
+    const waited = result.waitedMs === undefined ? {} : { waitedMs: result.waitedMs }
+    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(entry.startedAt), ...waited })
     return { ...result, observationId }
   }
 
@@ -430,16 +444,22 @@ export class RunningTest {
     this.revoke(failure('test_error', `The process for this file ${problem}.`), 0)
   }
 
-  // The address moves at the commit, and the step is the one the test was in then; the event waits for the title.
+  // The address moves at the commit; the event waits for the title. A navigation a command started belongs to that
+  // command's step and place, however late it commits, as when Chrome tells of a link's navigation after the next
+  // command began. Any other belongs to the step the test was in when it committed.
   #navigated(app: string, navigation: PageNavigation): void {
-    this.#documents.set(app, this.#navigations.note(app, navigation, this.#stepId))
+    const sent = navigation.commandToken === undefined ? undefined : this.#sent.get(navigation.commandToken)
+    const stamp = sent !== undefined && sent.app === app ? sent.stamp : stampOf(this.#stepId, undefined)
+    this.#documents.set(app, this.#navigations.note(app, navigation, stamp))
   }
 
-  #writeNavigation({ app, document, stepId, cause }: NotedNavigation): void {
+  #writeNavigation({ app, document, stamp, cause, opened }: NotedNavigation): void {
     const { testId, attemptId } = this.#options
     const { url, title } = document
+    const { stepId, location } = stamp
     const step = stepId === undefined ? {} : { stepId }
-    this.#options.emit({ type: 'navigation', testId, attemptId, ...step, session: app, url, ...(title === undefined ? {} : { title }), cause })
+    const place = location === undefined ? {} : { location }
+    this.#options.emit({ type: 'navigation', testId, attemptId, ...step, session: app, url, ...(title === undefined ? {} : { title }), cause, document: opened, ...place })
   }
 
   // The document the parent last saw an app's page commit, as an event records its page.
@@ -473,6 +493,10 @@ function documentFields(document: PageDocument | undefined): PageFields {
   return document === undefined ? {} : pageFields(document.url, document.title)
 }
 
+function stampOf(stepId: string | undefined, location: SourceLocation | undefined): NavigationStamp {
+  return { ...(stepId === undefined ? {} : { stepId }), ...(location === undefined ? {} : { location }) }
+}
+
 function gotoDocument(result: Extract<CommandResult, { kind: 'goto' }>): PageDocument {
   const title = result.page?.title
   return title === undefined ? { url: result.url } : { url: result.url, title }
@@ -491,6 +515,33 @@ function commandProblem(command: PageCommand): Failure | undefined {
       return scrollProblem(command)
     default:
       return undefined
+  }
+}
+
+/**
+ * A command whose locator's text or name holds a whole value the run has read, which the parent refuses before the
+ * page is asked: the page matches a locator against its own text, unredacted, so such a locator could find a value
+ * the page shows. The refusal never quotes the text. Part of a value is not refused, since refusing it would itself
+ * say which texts are part of a secret.
+ */
+function secretLocatorProblem(command: PageCommand, redactor: Redactor | undefined): Failure | undefined {
+  const matched = 'locator' in command && command.locator !== undefined ? matchedText(command.locator) : undefined
+  if (redactor === undefined || matched === undefined || !redactor.holdsValue(matched.text, matched.exact)) return undefined
+  const message = `Retest did not send this command to the page: its locator's ${matched.named} holds the value of a secret. Find the element by its test id, or by text that holds no secret.`
+  return failure('usage', message)
+}
+
+// The text a locator matches against the page's own text, and how: a text or label locator's text, and a role
+// locator's name.
+function matchedText(locator: LocatorRecipe): { text: string; exact: boolean; named: 'text' | 'name' } | undefined {
+  switch (locator.by) {
+    case 'testId':
+      return undefined
+    case 'role':
+      return locator.name === undefined ? undefined : { text: locator.name, exact: locator.exact !== false, named: 'name' }
+    case 'label':
+    case 'text':
+      return { text: locator.text, exact: locator.exact !== false, named: 'text' }
   }
 }
 

@@ -1,5 +1,7 @@
+import { titleReadLimit } from '../protocol/page-facts.ts'
+
 // Functions sent to Retest's isolated world in the page, where page scripts cannot reach or replace them.
-// Values arrive as call arguments and are never written into this source.
+// Values arrive as call arguments and are never written into this source; Retest's own limits are.
 
 // Matches text the way `matchesText` in text-match.ts does, which a unit test checks.
 export const textMatchHelper: string = String.raw`
@@ -72,12 +74,14 @@ const helpers = String.raw`
   }
 `
 
+// Attribute values go whole: the parent redacts the failure that names the element, and a value cut here could not
+// be found there.
 const describeHelper = String.raw`
   const describe = (element) => {
     let text = '<' + element.localName
     for (const name of ['id', 'class', 'data-testid']) {
       const value = element.getAttribute(name)
-      if (value !== null) text += ' ' + name + '="' + value.slice(0, 40) + '"'
+      if (value !== null) text += ' ' + name + '="' + value + '"'
     }
     return text + '>'
   }
@@ -196,10 +200,22 @@ const armHelper = String.raw`
   }
 `
 
+// A page's title as it has it, up to Retest's limit and never inside a surrogate pair, so no page can send a title
+// of any size. The parent redacts it before it cleans or cuts it.
+const titleHelper = String.raw`
+  const titleOf = () => {
+    const title = document.title
+    if (title.length <= ${titleReadLimit}) return title
+    const code = title.charCodeAt(${titleReadLimit} - 1)
+    return title.slice(0, code >= 0xd800 && code <= 0xdbff ? ${titleReadLimit} - 1 : ${titleReadLimit})
+  }
+`
+
 // The page a command went to, read in the same call that checks or reads the element: its address and its title,
-// as the page has them. The browser keeps the origin and path, and cleans the title.
+// as the page has them. The browser keeps the origin and path.
 const pageFactsHelper = String.raw`
-  const pageFacts = () => ({ href: location.href, title: document.title })
+  ${titleHelper}
+  const pageFacts = () => ({ href: location.href, title: titleOf() })
 `
 
 const actionHelpers = String.raw`
@@ -359,6 +375,18 @@ export const guardScript: string = `(() => {
  * follow it, found already, and keeps those in the document's own tree, in document order. Returns the observation
  * and the page it was read on.
  */
+// The page tells Retest when its document changes, so a look can follow a change at once instead of on a timer. The
+// observer reports once per task however much changed in it, through the binding `Runtime.addBinding` gave this
+// world; nothing of the page's own can see or call it. Loading a document changes it as it is parsed, which counts.
+export const changeScript: string = `(() => {
+  if (globalThis.retestChanges !== undefined) return
+  globalThis.retestChanges = true
+  const tell = () => {
+    if (typeof globalThis.retestChanged === 'function') globalThis.retestChanged('')
+  }
+  new MutationObserver(tell).observe(document, { subtree: true, childList: true, attributes: true, characterData: true })
+})()`
+
 export const observeFunction: string = `function observe(limit, query, ...elements) {
   ${helpers}
   ${pageFactsHelper}
@@ -500,14 +528,17 @@ export const strayFunction: string = `function stray() {
 /**
  * Whether the visible text of the document, `document.body.innerText`, holds each query, read as
  * `pageTextHolds` reads it: whitespace normalised, and in any case when the query ignores case, and the document's
- * title. Only the answers and the title leave the page.
+ * title. Only the answers and the title leave the page. A document with no body, such as an XML or SVG one, has no
+ * visible text: it says so, and finds nothing.
  */
 export const readPageFunction: string = `function readPage(queries) {
   ${textMatchHelper}
-  const text = normalize(document.body?.innerText ?? '')
+  ${titleHelper}
+  if (document.body === null) return { found: queries.map(() => false), title: titleOf(), body: false }
+  const text = normalize(document.body.innerText)
   const lowered = text.toLowerCase()
   const found = queries.map((query) => (query.ignoreCase ? lowered.includes(normalize(query.text).toLowerCase()) : text.includes(normalize(query.text))))
-  return { found, title: document.title }
+  return { found, title: titleOf(), body: true }
 }`
 
 /** Reads the document origin's `localStorage`, or null when the document may not use it. */

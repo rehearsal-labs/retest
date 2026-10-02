@@ -42,14 +42,14 @@ test('the page refuses a key it cannot send before it sends anything, as unsuppo
   assert.deepEqual(sent, [])
 })
 
-test('reading the page sends the queries as arguments and answers with its address, as origin and path, its title and what it found', async () => {
+test('reading the page sends the queries as arguments and answers with its address, as origin and path, its title as the page has it and what it found', async () => {
   const queries = [
     { text: 'Order placed', ignoreCase: false },
     { text: 'error', ignoreCase: true },
   ]
-  const reading = value({ found: [true, false], title: '  Order\u0007 placed ' })
+  const reading = value({ found: [true, false], title: '  Order\u0007 placed ', body: true })
   const { page, sent } = pageAnswering((functionDeclaration) => (functionDeclaration === readPageFunction ? reading : Promise.reject(new Error('unexpected'))))
-  assert.deepEqual(await page.readPage(queries, 1000), { url: 'http://app.test/start', title: 'Order placed', navigating: false, found: [true, false] })
+  assert.deepEqual(await page.readPage(queries, 1000), { url: 'http://app.test/start', title: '  Order\u0007 placed ', navigating: false, found: [true, false] })
   const call = sent.find(({ method }) => method === 'Runtime.callFunctionOn')
   assert.ok(isRecord(call?.params))
   assert.deepEqual(call.params['arguments'], [{ value: queries }])
@@ -57,14 +57,14 @@ test('reading the page sends the queries as arguments and answers with its addre
 })
 
 test('while the frame is opening another document the page is not read, and the reading says so', async () => {
-  const { page, sent, startNavigating } = pageAnswering(() => value({ found: [true], title: '' }))
+  const { page, sent, startNavigating } = pageAnswering(() => value({ found: [true], title: '', body: true }))
   startNavigating()
   assert.deepEqual(await page.readPage([{ text: 'Done', ignoreCase: false }], 1000), { url: 'http://app.test/start', navigating: true, found: [] })
   assert.deepEqual(sent, [])
 })
 
 test('a navigation within the document is not one that replaces it, and the page is read', async () => {
-  const { page, startNavigating } = pageAnswering(() => value({ found: [true], title: '' }))
+  const { page, startNavigating } = pageAnswering(() => value({ found: [true], title: '', body: true }))
   startNavigating('historySameDocument')
   assert.deepEqual(await page.readPage([{ text: 'Done', ignoreCase: false }], 1000), { url: 'http://app.test/start', navigating: false, found: [true] })
 })
@@ -85,7 +85,7 @@ test('a navigation that begins while the page is read ends the read at once, and
 
 test('once the new document commits, the reading is of that document', async () => {
   const { page, emit, startNavigating } = pageAnswering((functionDeclaration) =>
-    functionDeclaration === readPageFunction ? value({ found: [false], title: 'Next' }) : value({ href: 'http://app.test/next?code=1', title: 'Next' }),
+    functionDeclaration === readPageFunction ? value({ found: [false], title: 'Next', body: true }) : value({ href: 'http://app.test/next?code=1', title: 'Next' }),
   )
   startNavigating()
   emit('Page.frameNavigated', { frame: { id: mainFrame, url: 'http://app.test/next?code=1', loaderId: 'L2' } })
@@ -94,7 +94,7 @@ test('once the new document commits, the reading is of that document', async () 
 })
 
 test('a page a dialog holds, or one that does not answer in time, cannot be read, and the error says which', async () => {
-  const held = pageAnswering(() => value({ found: [true], title: '' }))
+  const held = pageAnswering(() => value({ found: [true], title: '', body: true }))
   held.emit('Page.javascriptDialogOpening', { type: 'confirm' })
   await assert.rejects(held.page.readPage([], 1000), (error) => error instanceof BrowserError && error.failure.class === 'unsupported')
   assert.deepEqual(held.sent, [])
@@ -103,4 +103,20 @@ test('a page a dialog holds, or one that does not answer in time, cannot be read
     silentPage.page.readPage([], 50),
     (error) => error instanceof BrowserError && error.failure.class === 'timeout' && error.failure.message === 'Could not read the page within 50 ms.',
   )
+})
+
+// Only Retest's own function answers a read, so an answer of the wrong shape is a fault of the browser, not a page.
+test('a reading that answers another number of queries than it was asked is refused as a protocol problem', async () => {
+  const { page } = pageAnswering(() => value({ found: [true], title: 'Order placed', body: true }))
+  const queries = [
+    { text: 'Order placed', ignoreCase: false },
+    { text: 'error', ignoreCase: true },
+  ]
+  await assert.rejects(page.readPage(queries, 1000), /got a response that could not be read: it answered 1 of 2 text queries/)
+  await assert.rejects(pageAnswering(() => value({ found: [], title: '', body: true })).page.readPage([{ text: 'Done', ignoreCase: false }], 1000), /answered 0 of 1/)
+})
+
+test('a document with no body says so, rather than reading as empty text', async () => {
+  const { page } = pageAnswering(() => value({ found: [false], title: '', body: false }))
+  assert.deepEqual(await page.readPage([{ text: 'Done', ignoreCase: false }], 1000), { url: 'http://app.test/start', navigating: false, found: [false], body: false })
 })

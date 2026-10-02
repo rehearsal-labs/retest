@@ -56,14 +56,15 @@ export function describeHostCheck(check: HostCheckRecord, app?: string): string 
 
 /**
  * What the page showed a check on its last look: its address, after its title when it had one, and for a text check
- * whether the text was there.
+ * whether the text was there, or that the page had no body to read.
  *
  * @example hostCheckPage({ kind: 'text', text: 'Order placed' }, { url: 'https://app.example/cart', title: 'Your cart', found: false }) // '"Your cart" at https://app.example/cart, text not found'
  */
 export function hostCheckPage(check: HostCheckRecord, actual: HostCheckActual): string {
   const page = actual.url === undefined ? '(no web address)' : describePage(actual.url, actual.title)
-  if (check.kind !== 'text' || actual.found === undefined) return page
-  return `${page}, ${actual.found ? 'text found' : 'text not found'}`
+  if (check.kind !== 'text') return page
+  if (actual.body === false) return `${page}, no body to read`
+  return actual.found === undefined ? page : `${page}, ${actual.found ? 'text found' : 'text not found'}`
 }
 
 /**

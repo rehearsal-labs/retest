@@ -89,6 +89,8 @@ export class ChromiumProcess {
     return this.#stopping
   }
 
+  // The exit hook is taken away however the stop ends, and put back only while the group is still there, so a host
+  // that runs many runs in one process gains no hook for a browser that is gone.
   async #stop(graceMs: number): Promise<string[]> {
     const problems: string[] = []
     try {
@@ -98,11 +100,13 @@ export class ChromiumProcess {
       }
     } catch (error) {
       problems.push(`Could not end process group ${this.pid}: ${errorMessage(error)}`)
+    } finally {
+      process.off('exit', this.#lastResort)
+      if (groupRemains(this.pid)) process.on('exit', this.#lastResort)
     }
     await rm(this.profile, { recursive: true, force: true, maxRetries: 3 }).catch((error: unknown) => {
       problems.push(`Could not remove the browser profile ${this.profile}: ${errorMessage(error)}`)
     })
-    if (problems.length === 0) process.off('exit', this.#lastResort)
     return problems
   }
 
@@ -169,6 +173,15 @@ async function openLog(logFile: string) {
     return await open(logFile, 'a')
   } catch (error) {
     throw new LaunchError(`Cannot open the browser log ${logFile}: ${errorMessage(error)}`, { cause: error })
+  }
+}
+
+// A group that cannot be asked about is counted as still there, so its hook stays.
+function groupRemains(pgid: number): boolean {
+  try {
+    return signalGroup(pgid, 0)
+  } catch {
+    return true
   }
 }
 

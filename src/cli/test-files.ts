@@ -3,6 +3,7 @@ import { readdirSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { relativePosixPath } from '../shared/posix-path.ts'
 import { findTestFiles, testFileSuffix } from '../shared/test-files.ts'
+import { listWords } from '../shared/list-words.ts'
 import { CliError, UsageError } from './errors.ts'
 import { statIfPresent } from './file-system.ts'
 import { suggest } from './suggest.ts'
@@ -13,7 +14,7 @@ export type NamedFiles = { files: string[]; locations: FileLine[] }
 type Place = { line: number; row?: number }
 
 const listedFiles = 5
-const withLine = /^(.+\.retest\.ts):([^/\\]*)$/
+const ownSuffixes: readonly string[] = [testFileSuffix]
 const lineColumnAndRow = /^([1-9]\d*)(?::[1-9]\d*)?(?:#([1-9]\d*))?$/
 
 /**
@@ -21,16 +22,18 @@ const lineColumnAndRow = /^([1-9]\d*)(?::[1-9]\d*)?(?:#([1-9]\d*))?$/
  * `test.for` rows or `test.describe` block declared there; a column after it, as a code frame prints, is allowed.
  * `#row` after the line keeps one row of the `test.for` there, counted from 1.
  *
+ * `suffixes` are the endings a test file may have: Retest's own, or Playwright's in a run of Playwright files.
+ *
  * @example readFileArguments('/work', ['tests/a.retest.ts:7#2']) // { files: ['tests/a.retest.ts'], locations: [{ file: 'tests/a.retest.ts', line: 7, row: 2 }] }
  */
-export function readFileArguments(cwd: string, args: readonly string[]): NamedFiles {
+export function readFileArguments(cwd: string, args: readonly string[], suffixes: readonly string[] = ownSuffixes): NamedFiles {
   const files: string[] = []
   const locations: FileLine[] = []
   const wholeFiles = new Set<string>()
   for (const arg of args) {
-    const { path, place } = splitLine(arg)
+    const { path, place } = splitLine(arg, suffixes)
     const absolute = resolve(cwd, path)
-    checkFile(path, absolute)
+    checkFile(path, absolute, suffixes)
     const file = relativePosixPath(cwd, absolute)
     if (!files.includes(file)) files.push(file)
     const named = place === undefined ? wholeFiles.has(file) : locations.some((known) => known.file === file && known.line === place.line && known.row === place.row)
@@ -49,14 +52,20 @@ export function readFileArguments(cwd: string, args: readonly string[]): NamedFi
  *
  * @example everyTestFile('/work') // ['tests/example.retest.ts']
  */
-export function everyTestFile(root: string): string[] {
-  const found = findTestFiles(root)
-  if (found.length === 0) throw new CliError(`No test files found. Test files end in ${testFileSuffix}.`)
+export function everyTestFile(root: string, suffixes: readonly string[] = ownSuffixes): string[] {
+  const found = findTestFiles(root, suffixes)
+  if (found.length === 0) throw new CliError(`No test files found. Test files end in ${listWords(suffixes)}.`)
   return found
 }
 
-function splitLine(arg: string): { path: string; place?: Place } {
-  const match = withLine.exec(arg)
+// A file with a line after it, such as a.retest.ts:7: the path up to one of the endings, then what follows the colon.
+function withLine(suffixes: readonly string[]): RegExp {
+  const endings = suffixes.map((suffix) => suffix.replaceAll('.', String.raw`\.`)).join('|')
+  return new RegExp(String.raw`^(.+(?:${endings})):([^/\\]*)$`)
+}
+
+function splitLine(arg: string, suffixes: readonly string[]): { path: string; place?: Place } {
+  const match = withLine(suffixes).exec(arg)
   if (match === null) return { path: arg }
   const [, path = '', text = ''] = match
   const [, line, row] = lineColumnAndRow.exec(text) ?? []
@@ -66,34 +75,34 @@ function splitLine(arg: string): { path: string; place?: Place } {
   return { path, place: row === undefined ? { line: Number(line) } : { line: Number(line), row: Number(row) } }
 }
 
-function checkFile(arg: string, absolute: string): void {
+function checkFile(arg: string, absolute: string, suffixes: readonly string[]): void {
   const stats = statIfPresent(absolute)
-  if (stats?.isDirectory() === true) throw new CliError(folderMessage(arg, absolute))
-  if (!arg.endsWith(testFileSuffix)) {
-    throw new CliError(`${arg} is not a test file. Test files end in ${testFileSuffix}.`)
+  if (stats?.isDirectory() === true) throw new CliError(folderMessage(arg, absolute, suffixes))
+  if (!suffixes.some((suffix) => arg.endsWith(suffix))) {
+    throw new CliError(`${arg} is not a test file. Test files end in ${listWords(suffixes)}.`)
   }
-  if (stats === undefined) throw new CliError(missingMessage(arg, absolute))
+  if (stats === undefined) throw new CliError(missingMessage(arg, absolute, suffixes))
   if (!stats.isFile()) throw new CliError(`${arg} is not a file.`)
 }
 
-function folderMessage(arg: string, absolute: string): string {
-  const inside = testFilesIn(absolute)
+function folderMessage(arg: string, absolute: string, suffixes: readonly string[]): string {
+  const inside = testFilesIn(absolute, suffixes)
     .slice(0, listedFiles)
     .map((name) => join(arg, name))
   const hint = inside.length === 0 ? '' : ` Test files in it: ${inside.join(', ')}.`
   return `${arg} is a folder. Pass files, not folders.${hint}`
 }
 
-function missingMessage(arg: string, absolute: string): string {
-  const guess = suggest(basename(absolute), testFilesIn(dirname(absolute)))
+function missingMessage(arg: string, absolute: string, suffixes: readonly string[]): string {
+  const guess = suggest(basename(absolute), testFilesIn(dirname(absolute), suffixes))
   const hint = guess === undefined ? '' : ` Did you mean ${join(dirname(arg), guess)}?`
   return `${arg} does not exist.${hint}`
 }
 
-function testFilesIn(folder: string): string[] {
+function testFilesIn(folder: string, suffixes: readonly string[]): string[] {
   try {
     return readdirSync(folder, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(testFileSuffix))
+      .filter((entry) => entry.isFile() && suffixes.some((suffix) => entry.name.endsWith(suffix)))
       .map((entry) => entry.name)
       .sort()
   } catch {

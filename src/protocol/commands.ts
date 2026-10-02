@@ -17,7 +17,8 @@ export type FillValue = string | SecretRef
  * order the test named them, which `optionChoicesProblem` checks. `select.multiple` is present when the test passed
  * a list, which only a `<select multiple>` takes, even a list of one. `scroll` turns the mouse wheel by `x` and `y`
  * CSS pixels, which `scrollProblem` checks: at the element's centre, or without a locator at the viewport's.
- * `observe` reads the page once and never waits.
+ * `observe` reads the page once. With `after`, it first waits until the page's document has changed since
+ * `after.changes`, as the page counts its changes, or until `after.waitMs` have passed, and never past its own time.
  */
 export type PageCommand =
   | { kind: 'goto'; url: string }
@@ -29,7 +30,10 @@ export type PageCommand =
   | { kind: 'check'; locator: LocatorRecipe }
   | { kind: 'uncheck'; locator: LocatorRecipe }
   | { kind: 'scroll'; locator?: LocatorRecipe; x: number; y: number }
-  | { kind: 'observe'; locator: LocatorRecipe }
+  | { kind: 'observe'; locator: LocatorRecipe; after?: ObserveAfter }
+
+/** What an `observe` waits for first: a change after the page's `changes` count, or `waitMs`, whichever comes first. */
+export type ObserveAfter = { changes: number; waitMs: number }
 
 export type ActionKind = Exclude<PageCommand['kind'], 'observe'>
 
@@ -58,14 +62,16 @@ export type Observation = {
  * command went to, as the browser read it. `changed` is false when the element already was as a `select`,
  * `check` or `uncheck` asked, and nothing was sent. `via: 'label'` marks a `check` or `uncheck` that clicked the
  * control's own label, because the control is hidden. The parent gives each observation it serves an id,
- * `observationId`, which a locator assertion names as the look its verdict rested on.
+ * `observationId`, which a locator assertion names as the look its verdict rested on. `changes` is how many times
+ * the page's document had changed when the look was taken, as the page counts them, so the next look can wait for
+ * the next change; a page that does not count them leaves it out. `waitedMs` is how long the look waited first.
  */
 export type CommandResult =
   | { ok: true; kind: 'goto'; url: string; page?: PageFacts }
   | { ok: true; kind: 'fill' | 'click' | 'tap' | 'press' | 'scroll'; page?: PageFacts }
   | { ok: true; kind: 'select'; changed: boolean; page?: PageFacts }
   | { ok: true; kind: 'check' | 'uncheck'; changed: boolean; via?: 'label'; page?: PageFacts }
-  | { ok: true; kind: 'observe'; observation: Observation; observationId?: string; page?: PageFacts }
+  | { ok: true; kind: 'observe'; observation: Observation; observationId?: string; changes?: number; waitedMs?: number; page?: PageFacts }
   | { ok: false; failure: Failure }
 
 const fillValueSchema: Schema<FillValue> = s.union([s.string(), secretRefSchema])
@@ -85,7 +91,11 @@ export const pageCommandSchema: Schema<PageCommand> = s.discriminatedUnion('kind
   s.object({ kind: s.literal('check'), locator: locatorRecipeSchema }),
   s.object({ kind: s.literal('uncheck'), locator: locatorRecipeSchema }),
   s.object({ kind: s.literal('scroll'), locator: s.optional(locatorRecipeSchema), x: s.number(), y: s.number() }),
-  s.object({ kind: s.literal('observe'), locator: locatorRecipeSchema }),
+  s.object({
+    kind: s.literal('observe'),
+    locator: locatorRecipeSchema,
+    after: s.optional(s.object({ changes: s.number({ integer: true, min: 0 }), waitMs: s.number({ integer: true, min: 0 }) })),
+  }),
 ])
 
 export const actionKindSchema: Schema<ActionKind> = s.enum(['goto', 'fill', 'click', 'tap', 'press', 'select', 'check', 'uncheck', 'scroll'])
@@ -106,7 +116,15 @@ export const commandResultSchema: Schema<CommandResult> = s.union([
   s.object({ ok: s.literal(true), kind: s.enum(['fill', 'click', 'tap', 'press', 'scroll']), page }),
   s.object({ ok: s.literal(true), kind: s.literal('select'), changed: s.boolean(), page }),
   s.object({ ok: s.literal(true), kind: s.enum(['check', 'uncheck']), changed: s.boolean(), via: s.optional(s.literal('label')), page }),
-  s.object({ ok: s.literal(true), kind: s.literal('observe'), observation: observationSchema, observationId: s.optional(s.string()), page }),
+  s.object({
+    ok: s.literal(true),
+    kind: s.literal('observe'),
+    observation: observationSchema,
+    observationId: s.optional(s.string()),
+    changes: s.optional(s.number({ integer: true, min: 0 })),
+    waitedMs: s.optional(s.number({ integer: true, min: 0 })),
+    page,
+  }),
   s.object({ ok: s.literal(false), failure: failureSchema }),
 ])
 

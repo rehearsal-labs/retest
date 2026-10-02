@@ -113,7 +113,10 @@ export class SecretFiller {
     const stop = (): void => stopped.resolve()
     signal.addEventListener('abort', stop, { once: true })
     if (signal.aborted) stop()
-    const read = await bounded(new Promise<string>((resolve) => resolve(secret.read({ signal: waiting.signal }))), timeoutMs, stopped.promise)
+    const reading = new Promise<string>((resolve) => resolve(secret.read({ signal: waiting.signal })))
+    // A value that comes after Retest stopped waiting for it is still taught, since the app may show it next.
+    void reading.then((value) => this.#learn(name, value), () => undefined)
+    const read = await bounded(reading, timeoutMs, stopped.promise)
     signal.removeEventListener('abort', stop)
     if (read.status === 'stopped') {
       waiting.abort(new DOMException(`Retest stopped reading the secret ${JSON.stringify(name)}: its fill was stopped.`, 'AbortError'))
@@ -123,12 +126,17 @@ export class SecretFiller {
       waiting.abort(new DOMException(`Retest stopped reading the secret ${JSON.stringify(name)}: it took longer than ${timeoutMs} ms.`, 'TimeoutError'))
     }
     if (read.status === 'done' && typeof read.value === 'string' && read.value.length >= minSecretLength) {
-      this.#redactor.learn(name, read.value)
+      this.#learn(name, read.value)
       return read.value
     }
     if (read.status === 'done' && typeof read.value === 'string' && read.value !== '') return failure('setup_failed', tooShort(name))
     const problem = read.status === 'failed' ? errorMessage(read.error) : read.status === 'done' ? 'it gave no text' : `it took longer than ${timeoutMs} ms`
     return failure('setup_failed', `Retest could not read the secret ${JSON.stringify(name)}: ${this.#redactor.redact(problem)}`)
+  }
+
+  // A source gives what it gives: only text long enough to hide safely is a value.
+  #learn(name: string, value: unknown): void {
+    if (typeof value === 'string' && value.length >= minSecretLength) this.#redactor.learn(name, value)
   }
 }
 

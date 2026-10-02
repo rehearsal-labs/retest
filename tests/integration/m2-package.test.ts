@@ -198,8 +198,8 @@ describe('milestone 2 package: init and a registered consumer', () => {
     assert.ok(typeof manifest === 'object' && manifest !== null && 'exports' in manifest)
     const { exports } = manifest
     assert.ok(typeof exports === 'object' && exports !== null)
-    assert.deepEqual(Object.keys(exports), ['.', './runner', './protocol', './package.json'])
-    for (const subpath of ['.', './runner', './protocol']) {
+    assert.deepEqual(Object.keys(exports), ['.', './runner', './protocol', './playwright', './package.json'])
+    for (const subpath of ['.', './runner', './protocol', './playwright']) {
       const entries: unknown = Reflect.get(exports, subpath)
       assert.ok(typeof entries === 'object' && entries !== null, subpath)
       assert.deepEqual(Object.keys(entries), ['retest-source', 'types', 'default'], subpath)

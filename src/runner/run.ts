@@ -28,7 +28,7 @@ export type { FindExecutable, LaunchBrowser } from './browser-pool.ts'
 export { RunFolderError } from '../store/run-store.ts'
 
 /**
- * Runs the tests in each file, one file after another, and writes the run folder and `.retest/last-run.json`.
+ * Runs the tests in each file, up to `workers` files at once, and writes the run folder and `.retest/last-run.json`.
  * Throws `RunFolderError` when the output folder cannot be used; every other problem is part of the result. A
  * service that launches its own browsers passes `launch`, and `findExecutable` when the executables it launches
  * are not on this machine.

@@ -29,7 +29,8 @@ export type WorldArguments = readonly unknown[] | ArgumentsIn
 /** A world being made, and the budget of the call that started it, which bounds how long it may take. */
 type Creation = { readonly promise: Promise<number>; readonly startedBy: Deadline; context: number | undefined }
 
-const worldName = 'retest'
+/** The name of Retest's own world in every document, which `Runtime.addBinding` names too. */
+export const worldName: string = 'retest'
 const retryPauseMs = 10
 
 const missingContextMessage = 'Cannot find context with specified id'

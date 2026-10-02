@@ -31,8 +31,12 @@ export function ownPackageResolver(specifiers: ReadonlySet<string>, ownUrl: stri
   return (specifier, context, nextResolve) => (specifiers.has(specifier) ? nextResolve(specifier, { ...context, parentURL: ownUrl }) : nextResolve(specifier, context))
 }
 
-/** Makes every module this process loads from now on resolve Retest's own specifiers to this copy. */
-export function resolveOwnPackage(): void {
+/** Makes every module this process loads from now on resolve Retest's own specifiers to this copy, and returns the package's name. */
+export function resolveOwnPackage(): string {
   const manifest: unknown = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
-  registerHooks({ resolve: ownPackageResolver(exportedSpecifiers(manifest), import.meta.url) })
+  const specifiers = exportedSpecifiers(manifest)
+  registerHooks({ resolve: ownPackageResolver(specifiers, import.meta.url) })
+  const name = isPlainObject(manifest) ? manifest['name'] : undefined
+  if (typeof name !== 'string') throw new Error('The Retest package.json has no name.')
+  return name
 }

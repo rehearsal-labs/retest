@@ -66,6 +66,8 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
   const sessions = new Sessions()
   const codeSignIns = new CodeSignIns(options.outbox)
   let submissions = 0
+  // Saves by the title received, so a test can count its own while other tests save theirs.
+  const submissionsByTitle = new Map<string, number>()
   let requests = 0
   let refused = 0
   let searches = 0
@@ -112,6 +114,7 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
       return
     }
     submissions += 1
+    submissionsByTitle.set(title, (submissionsByTitle.get(title) ?? 0) + 1)
     const reply = () => respond(response, 200, JSON_TYPE, JSON.stringify({ title: save(title) }))
     if (delayMs === undefined) {
       reply()
@@ -133,7 +136,14 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
         saveTask(request, response).catch(() => response.destroy())
       },
     ],
-    ['GET /api/submissions', (_request, response) => respond(response, 200, JSON_TYPE, JSON.stringify({ count: submissions }))],
+    [
+      'GET /api/submissions',
+      (request, response) => {
+        const title = new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('title')
+        const count = title === null ? submissions : (submissionsByTitle.get(title) ?? 0)
+        respond(response, 200, JSON_TYPE, JSON.stringify({ count }))
+      },
+    ],
     ['GET /locators', (_request, response) => respond(response, 200, HTML, LOCATORS_PAGE)],
     [
       'GET /device',

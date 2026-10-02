@@ -9,7 +9,6 @@ import type { TaskApp, TaskAppOptions } from '../../fixtures/task-app/server.ts'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -24,18 +23,13 @@ import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
 
-const DEFAULT_BROWSER = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-
 /** The budgets these tests give opening a page and closing the browser. */
 export const setupMs = 10_000
 export const closeMs = 5000
 
-export function browserPath(): string {
-  const configured = process.env['RETEST_TEST_BROWSER']
-  if (configured) return configured
-  if (existsSync(DEFAULT_BROWSER)) return DEFAULT_BROWSER
-  throw new Error(`No browser to test with: set RETEST_TEST_BROWSER, or install Google Chrome at ${DEFAULT_BROWSER}`)
-}
+import { browserPath } from '../support/test-browser.ts'
+
+export { browserPath }
 
 /** A folder for one test's files, removed after it. */
 export async function scratchFolder(t: TestContext): Promise<string> {

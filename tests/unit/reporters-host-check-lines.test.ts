@@ -47,6 +47,7 @@ describe('how a host check reads', () => {
     assert.equal(hostCheckPage(onThanks, {}), '(no web address)')
     assert.equal(hostCheckPage(orderPlaced, { url: 'http://127.0.0.1:4173/cart', found: false }), 'http://127.0.0.1:4173/cart, text not found')
     assert.equal(hostCheckPage(noError, { url: 'http://127.0.0.1:4173/cart', found: true }), 'http://127.0.0.1:4173/cart, text found')
+    assert.equal(hostCheckPage(orderPlaced, { url: 'http://127.0.0.1:4173/feed', body: false }), 'http://127.0.0.1:4173/feed, no body to read')
     assert.equal(hostCheckPage(orderPlaced, { url: 'http://127.0.0.1:4173/\u009b' }), 'http://127.0.0.1:4173/\\u009b')
   })
 

@@ -1,43 +1,41 @@
 import type { PageFacts } from '../../src/protocol/page-facts.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { navigationCauseSchema, pageFactsSchema, pageTitleLimit, readPageTitle, readTitleLimit, recordedTitle } from '../../src/protocol/page-facts.ts'
+import { cleanTitle, navigationCauseSchema, navigationDocumentSchema, pageFactsSchema, pageTitleLimit, recordedTitle, titleReadLimit } from '../../src/protocol/page-facts.ts'
 import { parse } from '../../src/protocol/schema.ts'
 
-describe('readPageTitle: a title as the browser hands it to the parent', () => {
+// The browser hands a title over as the page has it; the parent cleans it only once it has redacted it, so nothing
+// the cleaning removes can keep a value from being found.
+describe('cleanTitle: a title as the parent cleans it, after redacting it', () => {
   test('keeps an ordinary title as it is', () => {
-    assert.equal(readPageTitle('Checkout · Shop'), 'Checkout · Shop')
-    assert.equal(readPageTitle('Größe: 42 — 中文 😀'), 'Größe: 42 — 中文 😀')
+    assert.equal(cleanTitle('Checkout · Shop'), 'Checkout · Shop')
+    assert.equal(cleanTitle('Größe: 42 — 中文 😀'), 'Größe: 42 — 中文 😀')
   })
 
   // A title reaches terminals and reports, so nothing in it may move a cursor or start an escape sequence.
   test('removes every control character, C0, DEL and C1 alike, and keeps the rest of the text', () => {
-    assert.equal(readPageTitle('Saved\u001b[2J'), 'Saved[2J')
-    assert.equal(readPageTitle('a\u0000b\u0007c\u007fd\u0080e\u009bf'), 'abcdef')
-    assert.equal(readPageTitle('Line one\nLine two\tend\r'), 'Line oneLine twoend')
+    assert.equal(cleanTitle('Saved\u001b[2J'), 'Saved[2J')
+    assert.equal(cleanTitle('a\u0000b\u0007c\u007fd\u0080e\u009bf'), 'abcdef')
+    assert.equal(cleanTitle('Line one\nLine two\tend\r'), 'Line oneLine twoend')
   })
 
   test('trims both ends, after the control characters are gone', () => {
-    assert.equal(readPageTitle('   Tasks  '), 'Tasks')
-    assert.equal(readPageTitle('\u0007 Tasks \u001b'), 'Tasks')
-    assert.equal(readPageTitle(' Tasks '), 'Tasks')
-    assert.equal(readPageTitle('Two  spaces   inside'), 'Two  spaces   inside')
+    assert.equal(cleanTitle('   Tasks  '), 'Tasks')
+    assert.equal(cleanTitle('\u0007 Tasks \u001b'), 'Tasks')
+    assert.equal(cleanTitle('Two  spaces   inside'), 'Two  spaces   inside')
   })
 
-  // The parent redacts a title before it cuts it to the length it records, so the browser keeps far more than that.
-  test(`keeps a title past the ${pageTitleLimit} code units Retest records, and cuts it only at ${readTitleLimit}, never inside a surrogate pair`, () => {
-    assert.equal(readTitleLimit, 4096)
-    assert.equal(readPageTitle('x'.repeat(301)), 'x'.repeat(301))
-    assert.equal(readPageTitle('x'.repeat(4096)), 'x'.repeat(4096))
-    assert.equal(readPageTitle('x'.repeat(5000)), 'x'.repeat(4096))
-    assert.equal(readPageTitle(`${'x'.repeat(4095)}😀`), 'x'.repeat(4095))
-    assert.equal(readPageTitle(`${'x'.repeat(4094)}😀y`), `${'x'.repeat(4094)}😀`)
-    assert.equal(readPageTitle(`${'x'.repeat(4095)} yz`), 'x'.repeat(4095))
-    assert.equal(readPageTitle(`\u0007${'x'.repeat(4096)}`), 'x'.repeat(4096))
+  test('never cuts: the parent cuts a title only once it is redacted and cleaned', () => {
+    assert.equal(cleanTitle('x'.repeat(5000)), 'x'.repeat(5000))
+    assert.equal(cleanTitle(`${'x'.repeat(4095)} yz`), `${'x'.repeat(4095)} yz`)
   })
 
   test('a title that leaves nothing is none', () => {
-    for (const title of ['', '   ', '\u0000\u001b', ' \n\t ']) assert.equal(readPageTitle(title), undefined, JSON.stringify(title))
+    for (const title of ['', '   ', '\u0000\u001b', ' \n\t ']) assert.equal(cleanTitle(title), undefined, JSON.stringify(title))
+  })
+
+  test(`the page hands over at most ${titleReadLimit} code units, far more than the ${pageTitleLimit} Retest records`, () => {
+    assert.equal(titleReadLimit, 65_536)
   })
 })
 
@@ -62,6 +60,11 @@ describe('page facts and causes as the protocol carries them', () => {
     for (const value of facts) assert.deepEqual(parse(pageFactsSchema, JSON.parse(JSON.stringify(value))), { ok: true, value })
     assert.equal(parse(pageFactsSchema, { title: 'Done' }).ok, false)
     assert.equal(parse(pageFactsSchema, { url: 'http://127.0.0.1:4173/', title: 'Done', pageUrl: 'x' }).ok, false)
+  })
+
+  test('a navigation opens a new document, or moves within the one the frame holds', () => {
+    for (const document of ['new', 'same']) assert.equal(parse(navigationDocumentSchema, document).ok, true, document)
+    assert.equal(parse(navigationDocumentSchema, 'other').ok, false)
   })
 
   test('a navigation is started by goto, by an action, or by the page', () => {

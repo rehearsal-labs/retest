@@ -42,7 +42,7 @@ function settledYet(promise: Promise<unknown>): Promise<boolean> {
   return Promise.race([promise.then(() => true), new Promise<symbol>((resolve) => setImmediate(() => resolve(pending)))]).then((result) => result === true)
 }
 
-test("a new document's title is read when its DOMContentLoaded fires, and cleaned", async () => {
+test("a new document's title is read when its DOMContentLoaded fires, and handed over as the page has it", async () => {
   const page = titledPage()
   page.commit('/next', 'L2')
   const [navigation] = page.navigations
@@ -52,7 +52,7 @@ test("a new document's title is read when its DOMContentLoaded fires, and cleane
   assert.equal(await settledYet(navigation.title), false, 'the title waits for its document')
   page.title.now = '  Next\u0007 page '
   page.contentLoaded('L2')
-  assert.equal(await navigation.title, 'Next page')
+  assert.equal(await navigation.title, '  Next\u0007 page ', 'the parent cleans it once it has redacted it')
 })
 
 test('a title waiting when the next command begins is read before that command sends anything', async () => {
@@ -129,7 +129,7 @@ test('a navigation within the document is read at once, and settles an earlier o
 test('an empty title is none, and a DOMContentLoaded while the frame opens another document waits for the next chance', async () => {
   const page = titledPage()
   page.commit('/blank', 'L2')
-  page.title.now = ' \u0000 '
+  page.title.now = ''
   page.contentLoaded('L2')
   const [blank] = page.navigations
   assert.ok(blank !== undefined)

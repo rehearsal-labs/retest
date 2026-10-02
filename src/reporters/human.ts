@@ -72,9 +72,11 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
     if (headed) return
     headed = true
     const version = record.started === undefined ? '' : ` ${record.started.retestVersion}`
+    const compatibility = record.started?.options.playwright === true ? ', playwright compatibility' : ''
     const shown = record.browser?.app === undefined ? record.browser : undefined
-    const browser = shown === undefined ? '' : `  ${style.dim(describeBrowser(shown))}`
-    write(`\n  ${style.bold('retest')}${version}${browser}\n`)
+    const several = shown?.instances === undefined ? '' : ` · ${shown.instances} browsers`
+    const browser = shown === undefined ? '' : `  ${style.dim(`${describeBrowser(shown)}${several}`)}`
+    write(`\n  ${style.bold('retest')}${version}${compatibility}${browser}\n`)
   }
 
   return {
@@ -83,9 +85,11 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
       record.add(event)
       switch (event.type) {
         case 'browser.started': {
+          // A target's further browsers are in the events; its first line says how many there are.
+          if (event.instance !== undefined) return
           const inHeader = !headed && event.app === undefined
           head()
-          if (!inHeader) write(`    ${style.dim(browserLine(event))}\n`)
+          if (!inHeader) write(`  ${style.dim(browserLine(event))}\n`)
           return
         }
         case 'app.started':
@@ -136,14 +140,15 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
 }
 
 // Milestone 1's one browser has no app or target; a browser a config started names the one it serves, and the
-// proxy its pages go through. The line says what happened, at the tests' indent, since the tests after it are not
-// all the ones that ran in it.
+// proxy its pages go through. The line says what happened, at the run's indent beside the app lines: a browser
+// may start before any file is collected, and the tests after it are not all the ones that ran in it.
 function browserLine(browser: EventOfType<'browser.started'>): string {
   const { app, target } = browser
   const described = describeBrowser(browser)
-  if (app === undefined || target === undefined) return `started ${described}`
+  const several = browser.instances === undefined ? '' : ` · ${browser.instances} browsers`
+  if (app === undefined || target === undefined) return `started ${described}${several}`
   const proxy = target.proxy === undefined ? '' : ` · ${describeProxy(target.proxy)}`
-  return `started ${variantKey({ [app]: target.name })}  ${described}${proxy}`
+  return `started ${variantKey({ [app]: target.name })}  ${described}${proxy}${several}`
 }
 
 type LineContext = { style: Style; targets: RunTargets }

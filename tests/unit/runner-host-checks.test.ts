@@ -404,3 +404,93 @@ test('signs in', async ({ page }) => {
     assert.ok(!readFileSync(join(record.folder, resultFile), 'utf8').includes(password))
   })
 })
+
+// A failure quotes, escapes and cuts what it names, so each value is hidden in the whole text first: a quote in a
+// value would be escaped past the redactor, and a cut could leave only the start of one.
+describe("a failed host check's message", async () => {
+  const quoted = 'ab"cd'
+  const long = 'SYNTHETIC-PASSWORD'
+  const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+export default defineConfig({
+  apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
+  secrets: { quoted: env('RETEST_UNIT_QUOTED_SECRET'), long: env('RETEST_UNIT_LONG_SECRET') },
+})
+`
+  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+test('signs in', async ({ page }) => {
+  await page.goto('/done')
+  expect(true).toBe(true)
+})
+`
+  const record = await runProject(tempProject({ 'retest.config.ts': config, 'tests/sign-in.retest.ts': tests }), {
+    files: ['tests/sign-in.retest.ts'],
+    env: { RETEST_UNIT_QUOTED_SECRET: quoted, RETEST_UNIT_LONG_SECRET: long },
+    hostChecks: {
+      'tests/sign-in.retest.ts': [
+        { kind: 'text', text: quoted, timeoutMs: 30 },
+        { kind: 'text', text: `${'x'.repeat(195)}${long}`, timeoutMs: 30 },
+        { kind: 'text', text: 'Missing', name: `greets ${quoted}`, timeoutMs: 30 },
+        // The expected address is cut at 4096 code units, four of them into the value.
+        { kind: 'address', origin: 'http://127.0.0.1:4173', path: `/${'p'.repeat(4070)}${long}`, timeoutMs: 30 },
+      ],
+    },
+  })
+
+  test('hides a value before it quotes, escapes or cuts it', () => {
+    const failures = eventsOfType(record.events, 'host_check.failed').map((event) => event.failure)
+    assert.equal(failures.length, 4)
+    const written = JSON.stringify([failures, record.written?.files[0]?.tests[0]?.failure])
+    assert.ok(!written.includes('ab\\\\\\"cd'), 'no escaped value')
+    assert.ok(!written.includes('ab\\"cd'), 'no value')
+    assert.ok(!written.includes('SYNT'), 'no start of a value')
+    assert.equal(failures[0]?.message.startsWith('The text check on web failed: the page does not show "{{quoted}}".'), true, failures[0]?.message)
+    assert.equal(failures[2]?.message.startsWith('The host check "greets {{quoted}}" on web failed'), true, failures[2]?.message)
+    assert.ok(!record.lines.some((line) => line.includes('SYNT') || line.includes('ab\\"cd') || line.includes('ab\\\\\\"cd')), 'no line of the events holds any part of either value')
+  })
+})
+
+describe('a failure on our side after a failed check', () => {
+  test('makes the test an error with session_lost, keeps the failed check in also and in order, and the checks after it do not run', async () => {
+    const record = await runSupportFiles(['host-checks.retest.ts'], {
+      hostChecks: { [saves]: [{ kind: 'address', origin, path: '/wrong', timeoutMs: 60 }, { kind: 'text', text: 'Release checklist' }, { kind: 'address', origin }] },
+      selection: onlySaves,
+      fake: { onRead: (page) => void ((page.reads.at(-1)?.length ?? 0) > 0 && page.browser.disconnect('The browser process exited.')) },
+    })
+    const result = testNamed(record.result, 'saves a task')
+    assert.deepEqual([result.status, result.failure?.class], ['error', 'session_lost'])
+    assert.match(String(result.failure?.details?.['also']), /^host_check_failed: The address check on page failed: the page is on http:\/\/127\.0\.0\.1:4173\/done, expected http:\/\/127\.0\.0\.1:4173\/wrong\./)
+    assert.deepEqual(result.hostChecks?.map((entry) => [entry.status, entry.failure?.class]), [['failed', 'host_check_failed'], ['failed', 'session_lost'], ['not_run', undefined]])
+    assert.equal(record.result.exitCode, 2)
+  })
+})
+
+describe('a page that answers no read while a check looks', () => {
+  test('is a failure on our side, not a slow app: the test is an error, and the checks after it do not run', async () => {
+    const record = await runSupportFiles(['host-checks.retest.ts'], {
+      hostChecks: { [saves]: [{ kind: 'text', text: 'Save', timeoutMs: 50 }, { kind: 'address', origin }] },
+      selection: onlySaves,
+      fake: { onRead: () => new Promise<void>(() => {}) },
+    })
+    const result = testNamed(record.result, 'saves a task')
+    assert.deepEqual([result.status, result.failure?.class], ['error', 'session_lost'])
+    assert.match(result.failure?.message ?? '', /^The page of page did not answer a host check within \d+ ms, so Retest could not read it\.$/)
+    assert.deepEqual(result.hostChecks?.map((entry) => entry.status), ['failed', 'not_run'])
+    assert.equal(record.result.exitCode, 2)
+  })
+})
+
+describe('a document with no body', () => {
+  test('is not read as empty text: a text check fails, absent or not, and says the page had no body', async () => {
+    const record = await runSupportFiles(['host-checks.retest.ts'], {
+      hostChecks: { [saves]: [{ kind: 'text', text: 'Error', absent: true, timeoutMs: 60 }, { kind: 'text', text: 'Save', timeoutMs: 60 }, { kind: 'address', origin, path: '/done' }] },
+      selection: onlySaves,
+      fake: { onRead: (page) => void (page.hasBody = false) },
+    })
+    const result = testNamed(record.result, 'saves a task')
+    assert.deepEqual(result.hostChecks?.map((entry) => entry.status), ['failed', 'failed', 'passed'])
+    const failed = eventsOfType(record.events, 'host_check.failed')
+    assert.deepEqual(failed.map((event) => event.actual), [{ url: `${origin}/done`, body: false }, { url: `${origin}/done`, body: false }])
+    for (const event of failed) assert.match(event.failure.message, /failed: the page has no body, so Retest could not read its text\. Looked \d+ times in 60 ms\.$/)
+    assert.deepEqual([result.status, result.failure?.class, record.result.exitCode], ['failed', 'host_check_failed', 1])
+  })
+})

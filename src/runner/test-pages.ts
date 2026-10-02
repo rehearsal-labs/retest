@@ -27,6 +27,8 @@ export type PagesContext = {
   named: boolean
   /** Emits one of the test's events. */
   emit: (body: EventBody) => void
+  /** Hides every secret value the run has read in text, before the text is quoted or cut for an event. */
+  redact: (text: string) => string
   testId: string
   attemptId: string
 }

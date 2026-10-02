@@ -2,6 +2,7 @@ import type { LoadedConfig } from '../../config/loaded.ts'
 import type { RunResult } from '../../protocol/result.ts'
 import type { Reporter } from '../../reporters/reporter.ts'
 import type { ChildOutput, RunApps, RunOptions } from '../../runner/contract.ts'
+import { defaultBrowsers, defaultWorkers } from '../../runner/workers.ts'
 import type { CliDependencies, Command } from '../command.ts'
 import { readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -51,6 +52,15 @@ const options = {
     placeholder: '<list>',
     description: `Budgets in milliseconds, such as action=500,test=3000.\nDefaults: ${timeoutList}`,
   }),
+  workers: value({
+    placeholder: '<n>',
+    description: `How many test files run at once, each in its own process, sharing each browser.\nDefault: half the cores, ${defaultWorkers()} here`,
+  }),
+  browsers: value({
+    placeholder: '<n>',
+    description: `How many browsers each target's tests are spread over, each worker keeping to one.\nDefault: one for every three workers, ${defaultBrowsers(defaultWorkers())} here`,
+  }),
+  playwright: flag('Run Playwright test files: @playwright/test resolves to Retest,\nas far as its compatibility goes. With no files, every .spec file under this folder'),
   headed: flag('Show every browser window'),
   agent: flag('Print the short report for coding agents'),
   'no-agent': flag('Print the report for people, even when a coding agent is detected'),
@@ -61,7 +71,7 @@ export const runCommand: Command = {
   usage: '[files...] [options]',
   summary: 'Run the tests in each file',
   description: [
-    `Runs the tests with the apps and browsers in ${defaultConfigFile}, one file after another.`,
+    `Runs the tests with the apps and browsers in ${defaultConfigFile}, up to --workers files at once.`,
     'With no files, it runs every .retest.ts file under this folder. Add :line to a file to run the test on that line.',
     'Add #row after the line to run one row of a test.for, counted from 1, such as a.retest.ts:12#2.',
     'Without a config, --browser runs the named files in one browser.',
@@ -113,7 +123,8 @@ async function planRun(parsed: Parsed, dependencies: CliDependencies): Promise<R
   const { cwd } = dependencies
   const mode = await chooseMode(parsed, dependencies)
   const config = mode.kind === 'config' ? mode.config : undefined
-  const scope = readTestScope({ cwd, positionals: parsed.positionals, config, flags: selectionArguments(parsed) })
+  const playwright = parsed.flag('playwright')
+  const scope = readTestScope({ cwd, positionals: parsed.positionals, config, flags: selectionArguments(parsed), playwright })
   const commandLineTimeouts = readTimeouts(parsed.value('timeouts'))
   const reporter = chooseReporter({
     reporter: parsed.value('reporter'),
@@ -121,6 +132,8 @@ async function planRun(parsed: Parsed, dependencies: CliDependencies): Promise<R
     noAgent: parsed.flag('no-agent'),
     detected: isCodingAgent(dependencies.env),
   })
+  const workers = readCount('--workers', parsed.value('workers'))
+  const browsers = readCount('--browsers', parsed.value('browsers'))
   const runFolder = parsed.value('output') ?? defaultRunFolder(new Date())
   const outputDir = resolve(cwd, runFolder)
   checkRunFolder(runFolder, outputDir)
@@ -134,9 +147,18 @@ async function planRun(parsed: Parsed, dependencies: CliDependencies): Promise<R
     outputDir,
     headless: !parsed.flag('headed'),
     ...(scope.selection === undefined ? {} : { selection: scope.selection }),
+    ...(workers === undefined ? {} : { workers }),
+    ...(browsers === undefined ? {} : { browsers }),
+    ...(playwright ? { playwright: true as const } : {}),
     signal: dependencies.signal,
   }
   return { options: runOptions, reporter, runFolder }
+}
+
+function readCount(flagName: string, value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (!/^[1-9]\d*$/.test(value)) throw new UsageError(`${flagName} takes a whole number from 1, not ${value}.`)
+  return Number(value)
 }
 
 type Mode = { kind: 'browser'; browser: string } | { kind: 'config'; config: LoadedConfig }

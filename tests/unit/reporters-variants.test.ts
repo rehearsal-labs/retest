@@ -36,6 +36,17 @@ function onlyTarget(events: RetestEvent[], target: 'chromium' | 'pixel'): Retest
   })
 }
 
+describe('human reporter with a target spread over several browsers', () => {
+  test("the target's first line says how many, and its further browsers print nothing", () => {
+    const events = variantRun(root).flatMap((event): RetestEvent[] => {
+      if (event.type !== 'browser.started' || event.target?.name !== 'chromium') return [event]
+      return [{ ...event, instances: 2 }, { ...event, instance: 2, pid: event.pid + 1 }]
+    })
+    const lines = human(events).split('\n').filter((line) => line.includes('started web=chromium'))
+    assert.deepEqual(lines, ['  started web=chromium  Chrome 154.0.7195.41 · 2 browsers'])
+  })
+})
+
 describe('human reporter with targets', () => {
   test('labels each test with its variant, marks the emulated one, and shows servers, browsers and states quietly', () => {
     const stdout = human(variantRun(root))
@@ -47,12 +58,12 @@ describe('human reporter with targets', () => {
         '  web  started, http://127.0.0.1:4173 answered after 2.1s',
         '',
         '  tests/tasks.retest.ts  2 tests',
-        '    started web=chromium  Chrome 154.0.7195.41',
+        '  started web=chromium  Chrome 154.0.7195.41',
         '    ✓ signs in (setup)  web=chromium  300 ms',
         '      saved state signed-in for web',
         '    ✓ tasks › saves a task  web=chromium  800 ms',
         '      restored state signed-in for web',
-        '    started web=pixel  Chrome 154.0.7195.41 as Pixel 9 · emulated',
+        '  started web=pixel  Chrome 154.0.7195.41 as Pixel 9 · emulated',
         '    ✓ signs in (setup)  web=pixel (emulated)  300 ms',
         '      saved state signed-in for web',
         '    ✗ tasks › saves a task  web=pixel (emulated)  5.6s',
@@ -101,7 +112,7 @@ describe('human reporter with targets', () => {
 
   test('one target that is not emulated needs no label on its tests', () => {
     const stdout = human(onlyTarget(variantRun(root), 'chromium'))
-    assert.match(stdout, /\n {4}started web=chromium {2}Chrome 154\.0\.7195\.41\n {4}✓ signs in \(setup\) {2}300 ms\n/)
+    assert.match(stdout, /\n {2}started web=chromium {2}Chrome 154\.0\.7195\.41\n {4}✓ signs in \(setup\) {2}300 ms\n/)
     assert.match(stdout, /\n {4}✓ tasks › saves a task {2}800 ms\n/)
     assert.doesNotMatch(agent(onlyTarget(variantRun(root), 'chromium')), /\[|across/)
   })

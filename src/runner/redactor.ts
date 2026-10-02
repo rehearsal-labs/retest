@@ -1,26 +1,33 @@
 import type { CommandResult, Observation } from '../protocol/commands.ts'
 import type { Failure, FailureDetail } from '../protocol/failures.ts'
+import type { LocatorCheckRecord } from '../protocol/locator-checks.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { hostCheckRecordSchema } from '../protocol/host-check.ts'
-import { recordedTitle } from '../protocol/page-facts.ts'
+import { locatorRecipeSchema } from '../protocol/locator.ts'
+import { cleanTitle, recordedTitle, titleReadLimit } from '../protocol/page-facts.ts'
 import { isPlainObject, parse } from '../protocol/schema.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
+import { normalizeText } from '../protocol/text.ts'
 
 type Scan = { text: string; held: string }
 type Known = { value: string; placeholder: string }
 
 // The text a page or a person can write a secret into: failure messages and details, what an assertion expected
-// and saw, what a look observed, every address, since a page puts what it was given into its path or query, and
-// what a host writes into a check, under `hostCheckWriting`. Page titles are free text too, under `titleKeys`.
-// Identifiers Retest makes itself (ids, names, locators, variants, file paths) are never rewritten.
+// and saw, what a look observed, every address, since a page puts what it was given into its path or query, what a
+// host writes into a check, and the text a locator matches, under `writtenKeys`. Page titles are free text too,
+// under `titleKeys`. Identifiers Retest makes itself (ids, names, test ids, variants, file paths) are never rewritten.
 const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls'])
 
 // A host writes a check's text, name and path itself, and holds the run's secrets, so each is free text wherever
-// a check is recorded. The page is still asked for the text, and the path still matched, as written.
-const hostCheckWriting: ReadonlySet<string> = new Set(['text', 'name', 'path'])
+// a check is recorded. The page is still asked for the text, and the path still matched, as written. A locator's
+// text and name are matched against the page's own text, so a test could have copied a value into one.
+const writtenKeys: readonly { keys: ReadonlySet<string>; holds: (record: Record<string, unknown>) => boolean }[] = [
+  { keys: new Set(['text', 'name', 'path']), holds: (record) => parse(hostCheckRecordSchema, record).ok },
+  { keys: new Set(['text', 'name']), holds: (record) => parse(locatorRecipeSchema, record).ok },
+]
 
-// A page's title reaches the parent long, and is cut to the length Retest records only once it is redacted.
+// A page's title reaches the parent as the page has it, and is cleaned and cut only once it is redacted.
 const titleKeys: ReadonlySet<string> = new Set(['title', 'pageTitle'])
 
 /**
@@ -55,10 +62,28 @@ export class Redactor {
   }
 
   /**
+   * Whether `text` holds a whole value the run has read, in any form a URL gives it, compared as a locator compares
+   * text: whitespace read as one space on both sides, and in any case when not `exact`. Part of a value is not the
+   * value: answering that would tell whoever asks which texts are part of a secret.
+   *
+   * @example redactor.holdsValue('Signed in as HUNTER2', false) // true, once hunter2 is known
+   */
+  holdsValue(text: string, exact: boolean): boolean {
+    const compared = (each: string): string => (exact ? normalizeText(each) : normalizeText(each).toLowerCase())
+    const held = compared(text)
+    for (const form of this.#names.keys()) {
+      const value = compared(form)
+      if (value !== '' && held.includes(value)) return true
+    }
+    return false
+  }
+
+  /**
    * A copy of an event or a result with its free text redacted, checked again against its schema: every
-   * `message`, `details`, `expected`, `actual`, `observed`, address, page title, and a host check's text, name and
-   * path, at any depth. Page titles are then cut to the length Retest records, even while no value is known.
-   * Identifiers and structure stay as they are, and a value with nothing to change is returned as it is.
+   * `message`, `details`, `expected`, `actual`, `observed`, address, page title, a host check's text, name and
+   * path, and a locator's text and name, at any depth. Page titles are then cleaned and cut to the length Retest
+   * records, even while no value is known, and one that leaves nothing is left out. Identifiers and structure stay
+   * as they are, and a value with nothing to change is returned as it is.
    *
    * @example redactor.redactFields(runResultSchema, result)
    */
@@ -81,23 +106,50 @@ export class Redactor {
 
   /**
    * An answer for the test file's process with the page text in it redacted: an observation, an address, the page
-   * the command went to, whose title is also cut to the length Retest records, or a failure.
+   * the command went to, whose title is also cleaned and cut to the length Retest records, or a failure.
    */
   redactCommandResult(result: CommandResult): CommandResult {
     if (!result.ok) return { ok: false, failure: this.redactFailure(result.failure) }
     const page = result.page === undefined ? {} : { page: this.#redactPage(result.page) }
-    if (result.kind === 'observe') return { ...result, observation: this.#redactObservation(result.observation), ...page }
+    if (result.kind === 'observe') return { ...result, observation: this.redactObservation(result.observation), ...page }
     return result.kind === 'goto' ? { ...result, url: this.redact(result.url), ...page } : { ...result, ...page }
   }
 
   /**
-   * A page's title as Retest records it: every value in it redacted, and only then cut to `pageTitleLimit`, so a
-   * value that runs past the cut is hidden whole rather than cut in two.
+   * A page's title as Retest records it, from the title as the page has it: every value in it redacted, then its
+   * control characters removed and its ends trimmed, then redacted again, since removing a control character joins
+   * the text around it, and only then cut to `pageTitleLimit`. So a value with a space at its end, a tab in it, or
+   * one that runs past the cut is hidden whole. A title as long as the page hands over may have been cut inside a
+   * value, so a tail that may begin one is dropped. A title that leaves nothing is none.
    *
-   * @example redactor.redactTitle('Signed in as hunter2') // 'Signed in as {{password}}'
+   * @example redactor.redactTitle('  Signed in as hunter2 ') // 'Signed in as {{password}}'
    */
-  redactTitle(title: string): string {
-    return recordedTitle(this.redact(title))
+  redactTitle(title: string): string | undefined {
+    const redacted = this.scan(title, title.length >= titleReadLimit - 1).text
+    const cleaned = cleanTitle(redacted)
+    return cleaned === undefined ? undefined : recordedTitle(this.redact(cleaned))
+  }
+
+  /**
+   * A locator check with every value in its expected text redacted, as the parent records what it judged.
+   *
+   * @example redactor.redactCheck({ matcher: 'toHaveText', text: 'Hi hunter2' }) // { matcher: 'toHaveText', text: 'Hi {{password}}' }
+   */
+  redactCheck(check: LocatorCheckRecord): LocatorCheckRecord {
+    if ('text' in check) return { ...check, text: this.redact(check.text) }
+    if ('texts' in check) return { ...check, texts: check.texts.map((text) => this.redact(text)) }
+    return 'value' in check ? { ...check, value: this.redact(check.value) } : check
+  }
+
+  /** An observation with the page text in it redacted, as the test process receives one. */
+  redactObservation(observation: Observation): Observation {
+    const { text, value, items } = observation
+    return {
+      ...observation,
+      text: text === null ? null : this.redact(text),
+      value: value === null ? null : this.redact(value),
+      items: items.map((item) => ({ ...item, text: this.redact(item.text) })),
+    }
   }
 
   /** A stream of text redacted as it arrives, for output that may cut a value in two. */
@@ -140,7 +192,7 @@ export class Redactor {
   }
 
   // Inside a free-text key every string is text; outside one, only the keys below it can be. An array or an object
-  // none of whose parts changed is returned as it is.
+  // none of whose parts changed is returned as it is. A title that leaves nothing is left out.
   #redactFields(value: unknown, inText: boolean): unknown {
     if (typeof value === 'string') return inText ? this.redact(value) : value
     if (Array.isArray(value)) {
@@ -150,13 +202,15 @@ export class Redactor {
     if (!isPlainObject(value)) return value
     const entries = Object.entries(value).map(([key, item]): [string, unknown] => {
       if (titleKeys.has(key) && typeof item === 'string') return [key, this.redactTitle(item)]
-      return [key, this.#redactFields(item, inText || freeText.has(key) || isHostCheckWriting(value, key))]
+      return [key, this.#redactFields(item, inText || freeText.has(key) || isWritten(value, key))]
     })
-    return entries.every(([key, item]) => item === value[key]) ? value : Object.fromEntries(entries)
+    if (entries.every(([key, item]) => item === value[key])) return value
+    return Object.fromEntries(entries.filter(([key, item]) => !(titleKeys.has(key) && item === undefined)))
   }
 
   #redactPage({ url, title }: PageFacts): PageFacts {
-    return title === undefined ? { url: this.redact(url) } : { url: this.redact(url), title: this.redactTitle(title) }
+    const recorded = title === undefined ? undefined : this.redactTitle(title)
+    return recorded === undefined ? { url: this.redact(url) } : { url: this.redact(url), title: recorded }
   }
 
   #redactDetail(detail: FailureDetail): FailureDetail {
@@ -164,22 +218,13 @@ export class Redactor {
     return detail !== null && typeof detail === 'object' ? { ...detail, text: this.redact(detail.text) } : detail
   }
 
-  #redactObservation(observation: Observation): Observation {
-    const { text, value, items } = observation
-    return {
-      ...observation,
-      text: text === null ? null : this.redact(text),
-      value: value === null ? null : this.redact(value),
-      items: items.map((item) => ({ ...item, text: this.redact(item.text) })),
-    }
-  }
 }
 
-// A host check is recorded in its events, in `run.started` and in the result, and what the host wrote into it may
-// hold a secret by mistake. A locator's `text`, and any other `name` or `path` Retest records, is an identifier
-// and stays as it is.
-function isHostCheckWriting(record: Record<string, unknown>, key: string): boolean {
-  return hostCheckWriting.has(key) && parse(hostCheckRecordSchema, record).ok
+// A host check is recorded in its events, in `run.started` and in the result, and a locator in every event about
+// an action, a look or an assertion; what a person wrote into either may hold a secret. Any other `text`, `name` or
+// `path` Retest records is an identifier and stays as it is.
+function isWritten(record: Record<string, unknown>, key: string): boolean {
+  return writtenKeys.some(({ keys, holds }) => keys.has(key) && holds(record))
 }
 
 // The characters each part of a URL percent-encodes, from the URL standard: every one is encoded in a path,

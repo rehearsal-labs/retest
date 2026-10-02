@@ -111,15 +111,18 @@ export class ChromiumBrowser implements OwnedBrowser {
     return this.#closing
   }
 
+  // A test browser has nothing to save, and Chrome's own shutdown takes about half a second (fact F4 of the speed
+  // plan), so the close is asked for and not waited on: the process group is ended at once, waited for up to
+  // `closeGraceMs`, and the profile removed.
   async #close(timeoutMs: number): Promise<void> {
     this.#closeRequested = true
     const deadline = new Deadline(timeoutMs)
     if (this.connected) {
-      await this.#connection.send('Browser.close', undefined, sendOptions(deadline)).catch(() => {
+      this.#connection.send('Browser.close', undefined, sendOptions(deadline)).catch(() => {
         // Chrome often closes the pipe instead of answering, and `stop` ends the process group either way.
       })
     }
-    const problems = await this.#process.stop(deadline.remainingMs)
+    const problems = await this.#process.stop(0)
     this.#connection.close()
     if (problems.length > 0) throw new BrowserError({ class: 'cleanup_failed', message: problems.join(' ') })
   }

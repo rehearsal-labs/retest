@@ -195,6 +195,37 @@ describe("a function source's signal", () => {
     assert.equal(signals[1]?.aborted, false)
   })
 
+  // The source may still give its value after Retest stopped waiting, and the app may show that value afterwards.
+  test('a value that arrives after the fill ran out of time, or was stopped, is still taught to the redactor', async () => {
+    for (const ending of ['timed out', 'stopped'] as const) {
+      const late = Promise.withResolvers<string>()
+      const redactor = new Redactor()
+      const source = new Map<string, ResolvedSecret>([['code', { read: () => late.promise }]])
+      const stop = new AbortController()
+      const resolving = new SecretFiller(source, declared, redactor).resolve(fill('code'), { ...on(page, stop.signal), timeoutMs: ending === 'timed out' ? 30 : 5000 })
+      if (ending === 'stopped') stop.abort({ class: 'interrupted', message: 'The run was interrupted.' })
+      const resolved = await resolving
+      assert.equal(resolved.ok, false, ending)
+      late.resolve('code-8812')
+      await new Promise((resolve) => setImmediate(resolve))
+      assert.equal(redactor.redact('your code is code-8812'), 'your code is {{code}}', ending)
+    }
+  })
+
+  test('a late value too short to hide, or a late failure, teaches nothing and is never left unhandled', async () => {
+    const short = Promise.withResolvers<string>()
+    const failing = Promise.withResolvers<string>()
+    const redactor = new Redactor()
+    const sources = new Map<string, ResolvedSecret>([['code', { read: () => short.promise }], ['token', { read: () => failing.promise }]])
+    const filler = new SecretFiller(sources, declared, redactor)
+    await filler.resolve(fill('code'), { ...on(page), timeoutMs: 20 })
+    await filler.resolve(fill('token'), { ...on(page), timeoutMs: 20 })
+    short.resolve('42')
+    failing.reject(new Error('vault is down'))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(redactor.active, false)
+  })
+
   test('a fill stopped before it began never waits for its source', async () => {
     const signals: AbortSignal[] = []
     const started = performance.now()

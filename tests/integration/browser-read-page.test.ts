@@ -108,3 +108,18 @@ test('a page a dialog holds cannot be read, and the error says why', async (t) =
     (error) => error instanceof BrowserError && error.failure.class === 'unsupported' && /read the page/.test(error.failure.message),
   )
 })
+
+// Only Retest's own function reads the page. A document with no body, such as an XML or SVG one, has no visible
+// text, and the reading says so rather than reading as empty text.
+test('a document with no body says so, and finds nothing', async (t) => {
+  const { url, page } = await sitePage(t, {
+    '/': '<!doctype html><title>Feed</title><body><p>Release checklist</p><script>document.body.remove()</script></body>',
+  })
+  assert.deepEqual(await page.readPage([query('Release checklist'), query('anything', true)], 2000), {
+    url: `${url}/`,
+    title: 'Feed',
+    navigating: false,
+    found: [false, false],
+    body: false,
+  })
+})

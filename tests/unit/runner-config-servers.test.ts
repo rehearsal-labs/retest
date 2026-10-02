@@ -68,8 +68,10 @@ describe('an app with a start command', () => {
     assert.equal(record.result.exitCode, 0)
     const [started, ...others] = eventsOfType(record.events, 'app.started')
     assert.deepEqual([started?.app, started?.ready, others.length], ['web', `http://127.0.0.1:${port}/`, 0])
+    // The browser launches while the server starts, so neither comes first; both are up before the first test.
     const types = record.events.map((event) => event.type)
-    assert.ok(types.indexOf('app.started') < types.indexOf('browser.started'))
+    assert.ok(types.indexOf('app.started') < types.indexOf('test.started'))
+    assert.ok(types.indexOf('browser.started') < types.indexOf('test.started'))
     const log = readFileSync(join(record.folder, appLogFile('web')), 'utf8')
     const pid = Number(/pid (\d+)/.exec(log)?.[1])
     assert.equal(await isGoneWithin(pid, 1000), true, 'the server is gone')
@@ -89,7 +91,7 @@ describe('an app with a start command', () => {
     assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 1000), true)
   })
 
-  test('that never answers keeps every test that needs it from running, as setup, without launching a browser', async (t) => {
+  test('that never answers keeps every test that needs it from running, as setup, and the browser launched meanwhile is closed', async (t) => {
     const port = await heldPort(t)
     const record = await runProject(project(port, serverCommand(port, 60_000), 600), { files: ['tests/web.retest.ts'] })
     const [failed] = eventsOfType(record.events, 'app.failed')
@@ -100,7 +102,8 @@ describe('an app with a start command', () => {
       ['not_run', failed?.failure.message],
     ])
     assert.equal(eventsOfType(record.events, 'app.failed').length, 1, 'it is tried once')
-    assert.deepEqual([record.result.exitCode, record.browsers.length], [2, 0])
+    // The browser launches while the server is awaited, so the run has one, closed when the run ends.
+    assert.deepEqual([record.result.exitCode, record.browsers.length, record.browsers[0]?.closed], [2, 1, true])
     const log = readFileSync(join(record.folder, appLogFile('web')), 'utf8')
     assert.equal(await isGoneWithin(Number(/pid (\d+)/.exec(log)?.[1]), 1000), true)
   })

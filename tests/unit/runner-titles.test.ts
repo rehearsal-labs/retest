@@ -127,6 +127,58 @@ describe('navigations', () => {
   })
 })
 
+// Chrome can tell Retest of a link's navigation after the click answered, and the commit can come after the next
+// command began. The browser names the command whose input started it, and the event names that command's step.
+describe('the command that started a navigation', () => {
+  const at = (line: number) => ({ file: 'tests/a.retest.ts', line, column: 3 })
+
+  function commandAt(run: ScriptedTest, id: number, command: PageCommand, stepId: string, line: number): Promise<CommandResult> {
+    run.process.deliver({ type: 'command', id, app: scriptedApp, command, timeoutMs: 500, stepId, location: at(line) })
+    return run.process.answer(id)
+  }
+
+  test("an action's navigation that commits after the next command began names the action's step and place, not the next one's", async () => {
+    const run = await scriptedTest({ fake: { titles } })
+    await commandAt(run, 1, { kind: 'goto', url: '/' }, 'step-1', 4)
+    await commandAt(run, 2, { kind: 'click', locator: saveTask }, 'step-2', 5)
+    await commandAt(run, 3, { kind: 'observe', locator: saveTask }, 'step-3', 6)
+    const clickToken = run.page.commandTokens[1]
+    assert.equal(typeof clickToken, 'number', 'the runner gave the click a token')
+    run.page.navigate('/tasks', 'action', clickToken)
+    run.page.navigate('/login')
+    await run.finish()
+    const written = bodies(run, 'navigation').map((event) => [event.url.slice(origin.length), event.cause, event.document, event.stepId, event.location?.line])
+    assert.deepEqual(written, [
+      ['/', 'goto', 'new', 'step-1', 4],
+      ['/tasks', 'action', 'new', 'step-2', 5],
+      ['/login', 'page', 'new', 'step-3', undefined],
+    ])
+  })
+
+  test('each command gets its own token, and a token the browser names for no command of this test keeps the step the test was in', async () => {
+    const run = await scriptedTest({ fake: { titles } })
+    await commandAt(run, 1, { kind: 'goto', url: '/' }, 'step-1', 4)
+    await commandAt(run, 2, { kind: 'observe', locator: saveTask }, 'step-2', 5)
+    const tokens = run.page.commandTokens
+    assert.equal(new Set(tokens).size, 2)
+    run.page.navigate('/tasks', 'action', 999)
+    await run.finish()
+    const [, unknown] = bodies(run, 'navigation')
+    assert.deepEqual([unknown?.stepId, unknown?.location], ['step-2', undefined])
+  })
+})
+
+describe('titles the page wrote with spaces and control characters', async () => {
+  const record = await runSupportFiles(['titles.retest.ts'], { fake: { titles: { '/': '  Home\u0007\u001b[2J ', '/tasks': ' \t ' } } })
+
+  test('are cleaned by the parent in every event, and one that cleans to nothing is none', () => {
+    assert.equal(record.result.exitCode, 0)
+    assert.deepEqual(eventsOfType(record.events, 'navigation').map((event) => event.title), ['Home[2J', undefined])
+    assert.deepEqual(eventsOfType(record.events, 'action.completed').map((event) => event.pageTitle), ['Home[2J', 'Home[2J'])
+    assert.equal(eventsOfType(record.events, 'observation')[0]?.pageTitle, 'Home[2J')
+  })
+})
+
 describe('the page each event names', () => {
   test('an action, a look and the assertion that rests on it name the page they went to, with its title', async () => {
     const run = await scriptedTest({ fake: { titles } })

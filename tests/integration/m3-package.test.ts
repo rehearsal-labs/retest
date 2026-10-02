@@ -31,7 +31,7 @@ const packageName = '@rehearsal-labs/retest'
 // Every name wave 1 added to the root, runner and protocol entries, used as a consumer uses it: the short list's,
 // then the rest's.
 const names = `import type { KeyArgument, Keyboard, OptionChoice, ScrollDelta, SecretContext } from '${packageName}'
-import type { HostCheckActual, HostCheckRecord, HostCheckResult, HostCheckStatus, NavigationCause, ObservedRecord, OptionChoiceRecord, PageFacts } from '${packageName}/protocol'
+import type { HostCheckActual, HostCheckRecord, HostCheckResult, HostCheckStatus, NavigationCause, NavigationDocument, ObservedRecord, OptionChoiceRecord, PageFacts } from '${packageName}/protocol'
 import type { HostCheck, PageNavigation, PageReading, ProxyOptions, ResolvedSecrets, RunFolder, StopReason, TextQuery } from '${packageName}/runner'
 import { join } from 'node:path'
 import { eventsFile, logsFolder, resultFile, testId, testTitle } from '${packageName}/protocol'
@@ -62,7 +62,8 @@ const delta: ScrollDelta = { y: 600 }
 const recorded: OptionChoiceRecord[] = [{ label: 'Canada' }, { value: 'mx' }]
 const cause: NavigationCause = 'action'
 const facts: PageFacts = { url: 'https://app.example/done', title: 'Done' }
-const navigation: PageNavigation = { url: facts.url, title: Promise.resolve(facts.title), cause }
+const opened: NavigationDocument = 'new'
+const navigation: PageNavigation = { url: facts.url, title: Promise.resolve(facts.title), cause, document: opened, commandToken: 1 }
 const reason: StopReason = { class: 'interrupted', message: 'The host is shutting down, so it stopped the run.' }
 let missing = 'read'
 try {

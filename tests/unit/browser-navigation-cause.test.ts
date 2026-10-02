@@ -137,19 +137,90 @@ test('a request for another tab, or for an address the browser did not then open
 
 test("the goto's loader is the goto's even when the page asked for the same address at that moment", () => {
   const causes = new NavigationCauses()
-  const opening = causes.opening(async () => {
+  const opening = causes.opening(undefined, async () => {
     causes.requested('http://app.test/opened')
     causes.started('http://app.test/opened', 'G1')
     causes.opened('G1')
     return causes.committed('G1')
   })
-  return opening.then((cause) => assert.equal(cause, 'goto'))
+  return opening.then((started) => assert.equal(started.cause, 'goto'))
 })
 
 test('a navigation nothing announced is the goto while one opens, and the page otherwise', async () => {
   const causes = new NavigationCauses()
-  assert.equal(causes.committed('X1'), 'page')
-  assert.equal(await causes.opening(async () => causes.committed('X2')), 'goto')
-  assert.equal(await causes.delivering(async () => causes.movedWithinDocument()), 'action')
-  assert.equal(causes.movedWithinDocument(), 'page')
+  assert.equal(causes.committed('X1').cause, 'page')
+  assert.equal((await causes.opening(undefined, async () => causes.committed('X2'))).cause, 'goto')
+  assert.equal((await causes.delivering(undefined, async () => causes.movedWithinDocument())).cause, 'action')
+  assert.equal(causes.movedWithinDocument().cause, 'page')
+})
+
+test('a navigation says whether it opened a new document or moved within the one the frame held', async () => {
+  const page = causePage()
+  page.startAndCommit(next, 'L2')
+  page.emit('Page.navigatedWithinDocument', { frameId: mainFrame, url: 'http://app.test/next/pushed' })
+  assert.deepEqual(page.navigations.map(({ url, document }) => `${new URL(url).pathname} ${document}`), ['/next new', '/next/pushed same'])
+})
+
+// The runner gives each command a token, so the navigation a command caused can name it, whenever it commits.
+test('a navigation names the token of the command whose input or goto started it, and the page\'s own name none', async () => {
+  const page = causePage({ duringInput: () => page.requestFor(next) })
+  await page.page.execute({ kind: 'goto', url: '/opened' }, 1000, undefined, 3)
+  await page.page.execute({ kind: 'click', locator: button }, 1000, undefined, 7)
+  page.startAndCommit(next, 'L2')
+  page.requestFor('http://app.test/later')
+  page.startAndCommit('http://app.test/later', 'L3')
+  assert.deepEqual(page.navigations.map(({ url, cause, commandToken }) => [new URL(url).pathname, cause, commandToken]), [
+    ['/opened', 'goto', 3],
+    ['/next', 'action', 7],
+    ['/later', 'page', undefined],
+  ])
+})
+
+test('a new path within the document during an action names its token too', async () => {
+  const page = causePage({ duringDisarm: () => page.emit('Page.navigatedWithinDocument', { frameId: mainFrame, url: 'http://app.test/pushed' }) })
+  await page.page.execute({ kind: 'click', locator: button }, 1000, undefined, 9)
+  assert.deepEqual(page.navigations.map(({ cause, commandToken, document }) => [cause, commandToken, document]), [['action', 9, 'same']])
+})
+
+test("a select's navigation names the select's token", async () => {
+  const page = causePage({ duringSelect: () => page.requestFor(next) })
+  await page.page.execute({ kind: 'select', locator: button, choices: [{ label: 'B' }] }, 1000, undefined, 4)
+  page.startAndCommit(next, 'L2')
+  assert.deepEqual(page.navigations.map(({ cause, commandToken }) => [cause, commandToken]), [['action', 4]])
+})
+
+// A request the browser never started must not lend its cause to a later navigation to the same address.
+test("a request the frame stopped loading without starting is forgotten, so a timer's later navigation there is the page's", async () => {
+  const page = causePage({ duringInput: () => page.requestFor(next) })
+  await page.page.execute({ kind: 'click', locator: button }, 1000, undefined, 7)
+  page.emit('Page.frameStoppedLoading', { frameId: mainFrame })
+  page.startAndCommit(next, 'L2')
+  assert.deepEqual(page.navigations.map(({ cause, commandToken }) => [cause, commandToken]), [['page', undefined]])
+})
+
+test('a request still waiting when another document commits is forgotten', async () => {
+  const page = causePage({ duringInput: () => page.requestFor(next) })
+  await page.page.execute({ kind: 'click', locator: button }, 1000, undefined, 7)
+  page.emit('Page.frameNavigated', { frame: { id: mainFrame, url: 'http://app.test/elsewhere', loaderId: 'L1' } })
+  page.startAndCommit(next, 'L2')
+  assert.deepEqual(causes(page), ['/elsewhere page', '/next page'])
+})
+
+test('NavigationCauses carries the token of the command beside the cause it tells', async () => {
+  const causes = new NavigationCauses()
+  const opened = await causes.opening(5, async () => {
+    causes.started('http://app.test/opened', 'G1')
+    causes.opened('G1')
+    return causes.committed('G1')
+  })
+  assert.deepEqual(opened, { cause: 'goto', commandToken: 5 })
+  const delivered = await causes.delivering(6, async () => {
+    causes.requested('http://app.test/next')
+    return causes.movedWithinDocument()
+  })
+  assert.deepEqual(delivered, { cause: 'action', commandToken: 6 })
+  causes.started('http://app.test/next', 'L2')
+  assert.deepEqual(causes.committed('L2'), { cause: 'action', commandToken: 6 })
+  assert.deepEqual(causes.committed('L3'), { cause: 'page' })
+  assert.deepEqual(await causes.delivering(undefined, async () => causes.movedWithinDocument()), { cause: 'action' })
 })

@@ -35,6 +35,11 @@
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
     },
+    "./playwright": {
+      "retest-source": "./src/playwright/index.ts",
+      "types": "./dist/playwright/index.d.ts",
+      "default": "./dist/playwright/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -50,7 +55,8 @@
     "test:unit": "node --conditions=retest-source --test \"tests/unit/**/*.test.ts\"",
     "test:types": "node tests/types/run.ts",
     "test:integration": "node --conditions=retest-source --test --test-concurrency=1 \"tests/integration/**/*.test.ts\"",
-    "test": "npm run test:unit && npm run test:types && npm run test:integration"
+    "test": "npm run test:unit && npm run test:types && npm run test:integration",
+    "bench": "node benchmarks/run.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.0",

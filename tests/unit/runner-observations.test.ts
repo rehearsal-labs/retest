@@ -1,10 +1,11 @@
 import type { BrowserCommand } from '../../src/browser/contract.ts'
-import type { ChildEvent, EventBody } from '../../src/protocol/events.ts'
+import type { ChildEvent, EventBody, RetestEvent } from '../../src/protocol/events.ts'
 import type { LocatorCheckRecord } from '../../src/protocol/locator-checks.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { ScriptedTest } from '../support/scripted-process.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
+import { retestEventSchema } from '../../src/protocol/events.ts'
 import { failure, truncateText } from '../../src/protocol/failures.ts'
 import { textComparison } from '../../src/protocol/text.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
@@ -240,6 +241,73 @@ describe("the parent's judgement", () => {
     await differs.command(2, { kind: 'observe', locator: title })
     differs.event(claim(differs, { locator: title, observationId: 'o1', check: { matcher: 'toHaveText', text: long.replace('b', 'x') } }))
     await violated(differs, /toHaveText\(\), which fails on o1/)
+  })
+})
+
+// A value can be learned after the look that showed it was served, as a function source's is at its first fill. The
+// parent still judges the look as it served it, but writes what it judged with every value it knows by then hidden,
+// before it quotes or cuts anything.
+describe('a value learned after the look was served', () => {
+  const echoed: LocatorRecipe = { by: 'testId', value: 'typed-value' }
+
+  async function judgedAfterLearning(typed: string, check: LocatorCheckRecord, value: string): Promise<RetestEvent | undefined> {
+    const redactor = new Redactor()
+    const run = await scriptedTest({ redactor })
+    await run.command(1, { kind: 'fill', locator: title, value: typed })
+    await run.command(2, { kind: 'observe', locator: echoed })
+    redactor.learn('password', value)
+    run.event(claim(run, { locator: echoed, observationId: 'o1', check }))
+    await run.finish()
+    const [passed] = bodies(run, 'assertion.passed')
+    if (passed === undefined) return undefined
+    const stamped: RetestEvent = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'child', ...passed }
+    return redactor.redactFields(retestEventSchema, stamped)
+  }
+
+  test('is hidden whole in what the parent writes, even where the event cuts the text inside it', async () => {
+    const value = 'SYNTHETIC-PASSWORD'
+    const typed = `${'x'.repeat(4091)}${value}`
+    const written = await judgedAfterLearning(typed, { matcher: 'toHaveText', text: typed }, value)
+    assert.ok(written?.type === 'assertion.passed', 'the pass is judged on the look as it was served')
+    assert.deepEqual([written.judgedBy, written.expected?.text.slice(4091), written.actual?.text.slice(4091)], ['parent', '{{pas', '{{pas'])
+    assert.ok(!JSON.stringify(written).includes('SYNT'), 'no part of the value is written')
+  })
+
+  test('is hidden before it is quoted, so a value with a quote in it is not written escaped', async () => {
+    const value = 'ab"cd'
+    const typed = `Welcome ${value}`
+    const written = await judgedAfterLearning(typed, { matcher: 'toHaveText', texts: [typed] }, value)
+    assert.ok(written?.type === 'assertion.passed')
+    assert.deepEqual([written.expected?.text, written.actual?.text], ['["Welcome {{password}}"]', '["Welcome {{password}}"]'])
+  })
+})
+
+// A locator's text is matched against the page as it is, not redacted. A locator that holds a whole value never goes
+// to the page, and the refusal never repeats it. Part of a value is not refused: refusing it would answer, without any
+// page, which texts are part of a secret.
+describe('a locator whose text or name holds a secret', () => {
+  test('is refused as usage before the page is asked, and the refusal never quotes it', async () => {
+    const redactor = new Redactor()
+    redactor.learn('password', 'hunter2-7391')
+    const run = await scriptedTest({ redactor })
+    await run.command(1, { kind: 'goto', url: '/tasks' })
+    const refused = [
+      await run.command(2, { kind: 'observe', locator: { by: 'text', text: 'Signed in as hunter2-7391' } }),
+      await run.command(3, { kind: 'click', locator: { by: 'role', role: 'button', name: 'Forget HUNTER2-7391', exact: false } }),
+      await run.command(4, { kind: 'fill', locator: { by: 'label', text: ' hunter2-7391 ' }, value: 'new' }),
+    ]
+    // The fake page finds only test ids, so these fail there; what matters is that they reached it.
+    await run.command(5, { kind: 'observe', locator: { by: 'text', text: 'hunter', exact: false } })
+    await run.command(6, { kind: 'observe', locator: { by: 'role', role: 'button', name: 'HUNTER2-7391' } })
+    await run.finish()
+    for (const answer of refused) {
+      assert.ok(!answer.ok, JSON.stringify(answer))
+      assert.equal(answer.failure.class, 'usage')
+      assert.match(answer.failure.message, /holds the value of a secret/)
+      assert.ok(!answer.failure.message.includes('unter2') && !answer.failure.message.includes('Signed in'), answer.failure.message)
+    }
+    assert.deepEqual(run.page.browser.commands.map((command) => command.kind), ['goto', 'observe', 'observe'], 'part of a value, and an exact name in another case, still go to the page')
+    assert.deepEqual(bodies(run, 'action.failed').map((event) => [event.command, event.failure.class]), [['click', 'usage'], ['fill', 'usage']])
   })
 })
 

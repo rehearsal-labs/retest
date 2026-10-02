@@ -105,7 +105,8 @@ test('a server that never answers is a setup failure for every test that needs i
     assert.equal(each.status, 'not_run')
     assert.deepEqual(each.failure, failed.failure, 'each test that needs the server carries its failure')
   }
-  assert.deepEqual(eventsOf(run.events, 'browser.started'), [], 'no browser starts for tests that cannot run')
+  // The browser launches while the server is awaited, once the schedule is known, and is closed when the run ends.
+  assert.equal(eventsOf(run.events, 'browser.started').length, 1, 'the browser launched while the server was awaited')
   assert.deepEqual(await appServersOn(port), [], 'the server that never answered was stopped')
   assert.match(readFileSync(join(run.output, appLogFile('web')), 'utf8'), /starting/)
 })

@@ -34,6 +34,7 @@ import { AppServers } from './app-servers.ts'
 import { newAttemptId } from './attempt-id.ts'
 import { bounded } from './bounded.ts'
 import { BrowserPool } from './browser-pool.ts'
+import { defaultBrowsers, defaultWorkers, runInWorkers } from './workers.ts'
 import { EventLog } from './event-log.ts'
 import { hostChecksScopeProblem, hostChecksShapeProblem, notRunHostChecks, recordedHostChecks, testHostChecks } from './host-checks.ts'
 import { lastRunOf, lastRunPath, writeLastRun } from './last-run.ts'
@@ -45,7 +46,7 @@ import { Redactor } from './redactor.ts'
 import { runConfig } from './run-config.ts'
 import { runHostChecks } from './run-host-checks.ts'
 import { abortGraceMs, RunningTest } from './running-test.ts'
-import { scheduleRun } from './schedule.ts'
+import { phasesOf, scheduleRun } from './schedule.ts'
 import { SecretFiller, secretValuesProblem, secretVariables } from './secrets.ts'
 import { emptySelectionFailure, selectionProblem } from './selection.ts'
 import { searchSetups } from './setup-search.ts'
@@ -79,6 +80,11 @@ type Finished = Described & {
 /** What a file's visits added up to: its results in the order they ran, and its process failures. */
 type FileRecord = { tests: TestResult[]; failures: Failure[] }
 type Output = { write: (stream: ChildOutput['stream'], text: string) => void; end: () => void }
+// A target's first browser keeps the log's name; each further one adds its number, as logs/browser-2.log.
+function instanceLogFile(file: string, instance: number): string {
+  return instance === 0 ? file : file.replace(/\.log$/, `-${instance + 1}.log`)
+}
+
 /** A run's plan: the config it follows and what collection found. */
 type Planned = { config: RunConfig; plan: Plan }
 /** A saved state to restore into an app's new page, and the names its event records. */
@@ -91,8 +97,9 @@ type ResultFacts = Omit<RunResult, keyof RunOutcome>
 /**
  * One run of selected files: the parent's whole lifecycle. Every file is collected first, in a process of its
  * own, so the run knows every test before any starts. Then each visit runs its attempts in a new process for its
- * file: setups first, once per target, then the rest in file order. Browsers and app servers start the first
- * time a test needs them, and every test gets a new page for each of its apps.
+ * file: setups first, once per target and one after another, then the rest in file order on the workers, up to
+ * `workers` files at once. The browsers a scheduled test needs launch once the schedule is known; app servers
+ * start the first time a test needs them, and every test gets a new page for each of its apps.
  */
 export class RunSession {
   readonly #options: RunOptions
@@ -118,15 +125,21 @@ export class RunSession {
   /** The run's host checks, once their shape is known to be right. */
   readonly #hostChecks: HostChecks | undefined
   readonly #hostChecksProblem: Failure | undefined
+  readonly #workers: number
+  /** The most browsers a target's tests are spread over. */
+  readonly #browserCount: number
   #stopReason: Failure | undefined
   /** Why the run was stopped from outside, once it was. */
   #stoppedBy: StopReason | undefined
   #interruption: Failure | undefined
-  #test: { running: RunningTest; browsers: readonly OwnedBrowser[] } | undefined
+  /** Every test whose body is running, with the browsers its pages are in. */
+  readonly #running = new Set<{ running: RunningTest; browsers: readonly OwnedBrowser[] }>()
 
   constructor({ options, reporters, launch, findExecutable, store }: RunSessionOptions) {
     const { apps, timeouts } = options
     this.#options = options
+    this.#workers = options.workers ?? defaultWorkers()
+    this.#browserCount = options.browsers ?? defaultBrowsers(this.#workers)
     this.#store = store
     this.#rootDir = resolve(options.rootDir)
     this.#files = options.files.map((file) => relativePosixPath(this.#rootDir, resolve(this.#rootDir, file)))
@@ -145,15 +158,18 @@ export class RunSession {
     this.#browsers = new BrowserPool({
       launch,
       findExecutable: named ? findExecutable : async () => ({ ok: true, path: apps.browserPath }),
-      logFile: (app, target) => store.pathOf(named ? targetBrowserLogFile(variantKey({ [app]: target })) : browserLogFile),
+      logFile: (app, target, instance) => store.pathOf(instanceLogFile(named ? targetBrowserLogFile(variantKey({ [app]: target })) : browserLogFile, instance)),
       headless: options.headless,
       named,
       timeouts,
       stopped: this.#stopped.promise,
       interruption: () => this.#interruption,
-      onStarted: ({ info, userAgent, pid }) => this.#events.emit({ type: 'browser.started', ...info, userAgent, pid }),
+      onStarted: ({ info, userAgent, pid, instance, instances }) => {
+        const numbered = { ...(instance === undefined ? {} : { instance }), ...(instances === undefined ? {} : { instances }) }
+        this.#events.emit({ type: 'browser.started', ...info, userAgent, pid, ...numbered })
+      },
       onLost: (browser, reason) => {
-        if (this.#test?.browsers.includes(browser) === true) this.#test.running.browserLost(reason)
+        for (const test of this.#running) if (test.browsers.includes(browser)) test.running.browserLost(reason)
       },
     })
     this.#servers = new AppServers({
@@ -202,7 +218,7 @@ export class RunSession {
       platform: `${process.platform}-${process.arch}`,
       rootDir: this.#rootDir,
       files: this.#files,
-      options: { ...recorded, timeouts, ...(commandLineTimeouts === undefined ? {} : { commandLineTimeouts }), reporter: this.#reporterNames, ...checks },
+      options: { ...recorded, timeouts, ...(commandLineTimeouts === undefined ? {} : { commandLineTimeouts }), workers: this.#workers, browsers: this.#browserCount, ...(this.#options.playwright === true ? { playwright: true as const } : {}), reporter: this.#reporterNames, ...checks },
     })
   }
 
@@ -222,13 +238,69 @@ export class RunSession {
     if (this.#stopReason === undefined && schedule.selected === 0 && collected) this.#failRun(emptySelectionFailure(selection))
     const checks = this.#stopReason === undefined ? this.#hostChecksScope(planned.plan, schedule.visits) : undefined
     if (checks !== undefined) this.#failRun(checks)
-    for (const visit of schedule.visits) await this.#runVisit(visit, planned)
+    // Setups run first, one after another, so every state is saved before a test starts from it. Then the test
+    // visits run on the workers, each file in a process of its own, each worker keeping to one of the browsers
+    // its targets are spread over.
+    const phases = phasesOf(schedule.visits)
+    this.#spreadBrowsers(planned.config, phases.tests)
+    if (this.#stopReason === undefined) this.#warmBrowsers(planned.config, schedule.visits)
+    for (const visit of phases.setups) await this.#runVisit(visit, planned, 0)
+    await runInWorkers(phases.tests, this.#workers, (visit, worker) => this.#runVisit(visit, planned, worker))
     return planned.plan.files.map((file) => (file.ok ? this.#fileResult(file.file) : { file: file.file, collection: 'failed', failure: file.failure, tests: [] }))
   }
 
   #failRun(problem: Failure): void {
     this.#runFailures.push(problem)
     this.#stopReason ??= problem
+  }
+
+  // A target's browsers follow its load. The workers that will really run, no more than there are files, get one
+  // browser for every three, or what the run asked for; a target that carries a share of the run's tests gets that
+  // share of them, at least one, and never more than the files that use it. So a run of one target on many workers
+  // spreads over a few browsers, and a matrix of many targets starts one of each.
+  #spreadBrowsers(config: RunConfig, tests: readonly Visit[]): void {
+    const workers = Math.min(this.#workers, tests.length)
+    if (workers < 2) return
+    const base = this.#options.browsers ?? defaultBrowsers(workers)
+    const total = tests.reduce((count, visit) => count + visit.attempts.length, 0)
+    const uses = new Map<string, { app: string; target: string; attempts: number; visits: number }>()
+    for (const visit of tests) {
+      const seen = new Set<string>()
+      for (const attempt of visit.attempts) {
+        for (const [app, target] of Object.entries(attempt.targets)) {
+          const id = JSON.stringify([app, target])
+          const use = uses.get(id) ?? { app, target, attempts: 0, visits: 0 }
+          use.attempts += 1
+          if (!seen.has(id)) use.visits += 1
+          seen.add(id)
+          uses.set(id, use)
+        }
+      }
+    }
+    for (const use of uses.values()) {
+      const app = config.apps.get(use.app)
+      const target = app?.targets.get(use.target)
+      if (app === undefined || target === undefined) continue
+      const share = Math.ceil((base * use.attempts) / total)
+      this.#browsers.spread(app, target, Math.max(1, Math.min(share, workers, use.visits)))
+    }
+  }
+
+  // Once the schedule is known, every app target a scheduled test will use starts launching, in the order the
+  // tests need them, while the first visit's process boots and any app server starts. A run that will run no test,
+  // from a failed collection, an empty selection or a refused check, starts no browser.
+  #warmBrowsers(config: RunConfig, visits: readonly Visit[]): void {
+    const warmed = new Set<string>()
+    for (const attempt of visits.flatMap((visit) => visit.attempts)) {
+      for (const [appName, targetName] of Object.entries(attempt.targets)) {
+        const id = JSON.stringify([appName, targetName])
+        if (warmed.has(id)) continue
+        warmed.add(id)
+        const app = config.apps.get(appName)
+        const target = app?.targets.get(targetName)
+        if (app !== undefined && target !== undefined) this.#browsers.warm(app, target)
+      }
+    }
   }
 
   #hostChecksScope(plan: Plan, visits: readonly Visit[]): Failure | undefined {
@@ -286,7 +358,7 @@ export class RunSession {
 
   // The process is closed before the visit's results are final, so an error it reports after its last test, or
   // an ending no test explains, fails the file. The event keeps that failure for a run that stops before it finishes.
-  async #runVisit({ file, attempts }: Visit, planned: Planned): Promise<void> {
+  async #runVisit({ file, attempts }: Visit, planned: Planned, worker: number): Promise<void> {
     const record = this.#record(file)
     if (this.#stopReason !== undefined) {
       const reason = this.#stopReason
@@ -297,7 +369,7 @@ export class RunSession {
     const output = this.#outputFor(file, logFile)
     const child = this.#spawn(output.write)
     try {
-      const ran = await this.#loadAndRun(child, file, attempts, planned)
+      const ran = await this.#loadAndRun(child, file, attempts, planned, worker)
       const closed = await child.close(abortGraceMs)
       record.tests.push(...ran.tests)
       if (!ran.loaded) return
@@ -311,7 +383,7 @@ export class RunSession {
     }
   }
 
-  async #loadAndRun(child: TestFileProcess, file: string, attempts: readonly Attempt[], planned: Planned): Promise<{ loaded: boolean; tests: TestResult[]; exitRecorded: boolean }> {
+  async #loadAndRun(child: TestFileProcess, file: string, attempts: readonly Attempt[], planned: Planned, worker: number): Promise<{ loaded: boolean; tests: TestResult[]; exitRecorded: boolean }> {
     const logFile = childLogFile(file)
     const loaded = await loadTests(child, { file, rootDir: this.#rootDir, timeoutMs: this.#options.timeouts.collection, logFile })
     if (!loaded.ok) {
@@ -324,7 +396,7 @@ export class RunSession {
     for (const attempt of attempts) {
       const described = this.#describe(attempt, planned)
       const outcome = declared.has(described.testId)
-        ? await this.#runAttempt(child, described, planned, laterTests)
+        ? await this.#runAttempt(child, described, planned, laterTests, worker)
         : { result: this.#notRun(described, failure('collection_failed', 'Not run: its file no longer declared it when it loaded again to run it.')) }
       tests.push(outcome.result)
       laterTests ??= outcome.laterTests
@@ -332,11 +404,11 @@ export class RunSession {
     return { loaded: true, tests, exitRecorded: laterTests !== undefined }
   }
 
-  async #runAttempt(child: TestFileProcess, described: Described, planned: Planned, notRunReason: Failure | undefined): Promise<TestOutcome> {
+  async #runAttempt(child: TestFileProcess, described: Described, planned: Planned, notRunReason: Failure | undefined, worker: number): Promise<TestOutcome> {
     const skip = this.#stopReason ?? notRunReason ?? this.#missingState(described, planned.plan)
     if (skip !== undefined) return { result: this.#notRun(described, skip) }
     if (child.exit !== undefined) return { result: this.#notRun(described, endedBeforeTest(child.exit)) }
-    const ready = await this.#prepare(described, planned.config)
+    const ready = await this.#prepare(described, planned.config, worker)
     if (!ready.ok) return { result: this.#notRun(described, this.#stopReason ?? ready.failure) }
     const startedAt = monotonicClock()
     const { test } = described
@@ -373,7 +445,7 @@ export class RunSession {
   }
 
   // Every app's server and browser, before the test starts; any that is not ready keeps the test from running.
-  async #prepare({ test, targets }: Described, config: RunConfig): Promise<Opened<Map<string, ReadyTarget>>> {
+  async #prepare({ test, targets }: Described, config: RunConfig, worker: number): Promise<Opened<Map<string, ReadyTarget>>> {
     const ready = new Map<string, ReadyTarget>()
     for (const name of test.apps) {
       const app = config.apps.get(name)
@@ -382,7 +454,7 @@ export class RunSession {
       if (app === undefined || target === undefined) return { ok: false, failure: failure('test_error', `The config has no target ${JSON.stringify(targetName)} for ${name}.`) }
       const unready = await this.#servers.ensure(app)
       if (unready !== undefined) return { ok: false, failure: this.#interruption ?? unready }
-      const browser = await this.#browsers.ensure(app, target)
+      const browser = await this.#browsers.ensure(app, target, worker)
       if (!browser.ok) return browser
       ready.set(name, browser.value)
     }
@@ -479,9 +551,16 @@ export class RunSession {
       redactor: this.#redactor,
       touch: new Set(pages.filter((page) => page.touch).map(({ app }) => app)),
     })
-    this.#test = { running, browsers: pages.map(({ browser }) => browser) }
-    const report = await running.run()
-    this.#test = undefined
+    // The test is known as running only while its body runs, as before: a browser lost while it settles is the
+    // next test's problem, not this one's.
+    const active = { running, browsers: pages.map(({ browser }) => browser) }
+    this.#running.add(active)
+    let report: BodyReport
+    try {
+      report = await running.run()
+    } finally {
+      this.#running.delete(active)
+    }
     await running.settle(this.#settleBudget())
     return { report, running }
   }
@@ -549,6 +628,7 @@ export class RunSession {
       release: (work) => void this.#releases.push(work.catch(() => undefined)),
       named: described.variant !== undefined,
       emit: (body) => this.#emitFor(described, body),
+      redact: (text) => this.#redactor.redact(text),
       testId: described.testId,
       attemptId: described.attemptId,
     }
@@ -581,7 +661,7 @@ export class RunSession {
   #spawn(onOutput: Output['write']): TestFileProcess {
     const { testEnvironment } = this.#options
     const environment = testEnvironment === undefined ? {} : { environment: testEnvironment }
-    const child = TestFileProcess.spawn({ onOutput, hiddenVariables: this.#hiddenVariables, ...environment })
+    const child = TestFileProcess.spawn({ onOutput, hiddenVariables: this.#hiddenVariables, playwright: this.#options.playwright === true, ...environment })
     this.#processes.add(child)
     return child
   }
@@ -620,7 +700,7 @@ export class RunSession {
     this.#interruption = reason
     this.#stopReason = reason
     this.#stopped.resolve()
-    this.#test?.running.revoke(reason, 0)
+    for (const test of this.#running) test.running.revoke(reason, 0)
     for (const process of this.#processes) void process.kill()
   }
 

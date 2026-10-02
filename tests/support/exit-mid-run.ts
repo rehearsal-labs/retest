@@ -15,6 +15,7 @@ void runFiles(
     timeouts: { ...defaultTimeouts, test: 60_000 },
     outputDir: newRunFolder(),
     headless: true,
+    workers: 1,
     signal: new AbortController().signal,
     onOutput: ({ text }) => {
       const pid = /pid (\d+)/.exec(text)?.[1]

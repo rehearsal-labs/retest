@@ -18,7 +18,7 @@ import { locatorCheckRecordSchema, type LocatorCheckRecord } from './locator-che
 import { locatorRecipeSchema, type LocatorRecipe } from './locator.ts'
 import { observedRecordSchema, type ObservedRecord } from './observation-record.ts'
 import { optionChoiceRecordSchema, type OptionChoiceRecord } from './option-choices.ts'
-import { navigationCauseSchema, type NavigationCause } from './page-facts.ts'
+import { navigationCauseSchema, navigationDocumentSchema, type NavigationCause, type NavigationDocument } from './page-facts.ts'
 import { s, type Schema } from './schema.ts'
 import { partialTimeoutsSchema, timeoutsSchema, type Timeouts } from './timeouts.ts'
 import { variantSchema, type Variant } from './variant.ts'
@@ -177,7 +177,10 @@ export type ChildEvent = Common &
 /**
  * An event before the parent stamps it. Page URLs are origin and path, with no query or fragment, and page titles
  * are the page's own text, present only when the page has one. A `navigation` of a new document is written once
- * its title is known, and says what started it in `cause`; a run from before milestone 3 has no `cause`. The
+ * its title is known, and says what started it in `cause`, and in `document` whether it committed a new document
+ * or moved to a new path within the one the frame held. A navigation a command's input or `goto` started names
+ * that command's `stepId` and `location`, however late it committed; any other names the step the test was in when
+ * it committed, and no location. A run from before milestone 3 has no `cause`, and an earlier one no `document`. The
  * browser's `pid` is also its process group, and so is an app server's. `browser.started` comes once for
  * each app target, the first time it is used; app targets that launch the same browser share its `pid`.
  * `file.failed` is a collected file whose process failed outside its tests. The failure on `run.finished`
@@ -207,6 +210,12 @@ export type EventBody =
               timeouts: Timeouts
               /** The budgets the command line gave, which a rerun command repeats. Absent when there was no command line. */
               commandLineTimeouts?: Partial<Timeouts>
+              /** How many test files ran at once. Absent in runs recorded before there were workers. */
+              workers?: number
+              /** How many browsers each target's tests were spread over, at most. */
+              browsers?: number
+              /** The run was of Playwright test files, through Retest's compatibility. */
+              playwright?: true
               reporter: string
               /** The host checks the run was asked to run, by test id or file. */
               hostChecks?: Record<string, HostCheckRecord[]>
@@ -221,6 +230,10 @@ export type EventBody =
             executablePath: string
             app?: string
             target?: TargetInfo
+            /** On a target's first browser, when its tests are spread over several: how many. */
+            instances?: number
+            /** On each further browser of a target: its number, from 2. */
+            instance?: number
           }
         | { type: 'app.started'; app: string; ready: string; pid: number; durationMs: number }
         | { type: 'app.reused'; app: string; ready: string }
@@ -240,7 +253,14 @@ export type EventBody =
         | (AttemptScope & { type: 'state.restored'; state: string; app: string; target: string })
         | (ActionFields & { type: 'action.completed' })
         | (ActionFields & { type: 'action.failed'; failure: Failure })
-        | (StepScope & { type: 'navigation'; url: string; title?: string; cause?: NavigationCause })
+        | (StepScope & {
+            type: 'navigation'
+            url: string
+            title?: string
+            cause?: NavigationCause
+            document?: NavigationDocument
+            location?: SourceLocation
+          })
         | (StepScope & {
             type: 'observation'
             observationId: string
@@ -249,6 +269,8 @@ export type EventBody =
             pageTitle?: string
             observed: ObservedRecord
             durationMs: number
+            /** How long the look waited for the page to change before it read it. Absent when it did not wait. */
+            waitedMs?: number
           })
         | (HostCheckFields & { type: 'host_check.passed' })
         | (HostCheckFields & { type: 'host_check.failed'; failure: Failure })
@@ -415,6 +437,9 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
       baseUrls: s.optional(s.record(s.string())),
       timeouts: timeoutsSchema,
       commandLineTimeouts: s.optional(partialTimeoutsSchema),
+      workers: s.optional(s.number({ integer: true, min: 1 })),
+      browsers: s.optional(s.number({ integer: true, min: 1 })),
+      playwright: s.optional(s.literal(true)),
       reporter: s.string(),
       hostChecks: s.optional(s.record(s.array(hostCheckRecordSchema))),
     }),
@@ -429,6 +454,8 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     executablePath: s.string(),
     app: s.optional(s.string()),
     target: s.optional(targetInfoSchema),
+    instances: s.optional(s.number({ integer: true, min: 2 })),
+    instance: s.optional(s.number({ integer: true, min: 2 })),
   }),
   s.object({ ...envelope, type: s.literal('app.started'), app: s.string(), ready: s.string(), pid: processId, durationMs: duration }),
   s.object({ ...envelope, type: s.literal('app.reused'), app: s.string(), ready: s.string() }),
@@ -464,6 +491,8 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     url: s.string(),
     title: s.optional(s.string()),
     cause: s.optional(navigationCauseSchema),
+    document: s.optional(navigationDocumentSchema),
+    location: s.optional(sourceLocationSchema),
   }),
   s.object({
     ...envelope,
@@ -475,6 +504,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     pageTitle: s.optional(s.string()),
     observed: observedRecordSchema,
     durationMs: duration,
+    waitedMs: s.optional(duration),
   }),
   s.object({ ...envelope, type: s.literal('host_check.passed'), ...hostCheckFields }),
   s.object({ ...envelope, type: s.literal('host_check.failed'), ...hostCheckFields, failure: failureSchema }),

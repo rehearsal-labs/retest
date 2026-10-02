@@ -1,6 +1,7 @@
 import type { Observation } from '../protocol/commands.ts'
 import type { ChildEvent, EventBody } from '../protocol/events.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
+import type { Redactor } from './redactor.ts'
 import { truncateText } from '../protocol/failures.ts'
 import { locatorCheck } from '../protocol/locator-checks.ts'
 import { describeLocator } from '../protocol/locator.ts'
@@ -30,10 +31,17 @@ export type Judged = { ok: true; event: AssertionBody } | { ok: false; problem: 
 
 /**
  * The looks one attempt served its test process, by id, and the parent's judgement of the assertions that name
- * them. Ids count from `o1` within the attempt, so a later attempt never matches an earlier one's look.
+ * them. Ids count from `o1` within the attempt, so a later attempt never matches an earlier one's look. A look is
+ * judged as it was served; what the parent writes of it is redacted with every value known when the assertion
+ * comes, before anything is quoted or cut, so a value learned after the look was served is hidden whole too.
  */
 export class ServedObservations {
   readonly #served = new Map<string, ServedObservation>()
+  readonly #redactor: Redactor | undefined
+
+  constructor(redactor?: Redactor) {
+    this.#redactor = redactor
+  }
 
   /** Keeps a look the parent is about to answer with, and gives it the attempt's next id. */
   serve(served: ServedObservation): string {
@@ -61,7 +69,8 @@ export class ServedObservations {
     const { matcher: _matcher, expected: _expected, actual: _actual, comparison: _comparison, ...kept } = claimed
     if (check === undefined) return refused(`sent ${assertion.type} for ${describeLocator(locator)} without the check it made`)
     const rule = locatorCheck(check)
-    const judged = { matcher: rule.matcher, expected: truncateText(rule.expected), ...(rule.comparison === undefined ? {} : { comparison: rule.comparison }) }
+    const recorded = locatorCheck(this.#redactor?.redactCheck(check) ?? check)
+    const judged = { matcher: recorded.matcher, expected: truncateText(recorded.expected), ...(recorded.comparison === undefined ? {} : { comparison: recorded.comparison }) }
     if (observationId === undefined) {
       if (kept.type === 'assertion.passed') return refused(`sent assertion.passed for ${describeLocator(locator)} without naming the look it rested on`)
       return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle) } }
@@ -76,9 +85,9 @@ export class ServedObservations {
     if (kept.type === 'assertion.passed' && !rule.passes(observation)) {
       return refused(`sent assertion.passed for expect(${describeLocator(locator)}).${rule.matcher}(), which fails on ${observationId}, the look it named, where ${matched(observation.count)}`)
     }
-    const actual = rule.actual(observation)
-    const recorded = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle) }
-    return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...recorded, judgedBy: 'parent' } : { ...kept, ...recorded } }
+    const actual = recorded.actual(this.#redactor?.redactObservation(observation) ?? observation)
+    const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle) }
+    return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
   }
 }
 

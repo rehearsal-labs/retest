@@ -385,7 +385,7 @@ Reports write each of these as the test wrote it, with what the call leaves out:
 
 ### Matchers
 
-Locator matchers look again until they pass or the assertion budget runs out. They never repeat an action. Await them.
+Locator matchers look again until they pass or the assertion budget runs out. They never repeat an action. Await them. The page tells Retest when its document changes, so a look follows a change within about 50 ms; without a change, looks come 50, 100 and 250 ms apart, then every 500 ms.
 
 - `toBeVisible()`: exactly one match, and it is visible.
 - `toBeHidden()`: nothing matches, or nothing that matches is visible.
@@ -424,9 +424,10 @@ await page.getByLabel('Password').fill(secret('password'))
 - The function is called as the fill begins, before Retest looks for the field. A test that types a one-time code waits for the page that asks for it first, as with `await expect(page.getByLabel('Code')).toBeVisible()`, so the code has been sent by then.
 - A secret is bound to origins: those of the base URLs of the test's apps, and any `secretOrigins` lists for it. On any other page, the fill fails `not_actionable`, naming the page's origin, and nothing is typed.
 - Retest checks the origin twice: before it reads the value, and again in the page, just before it types. While it types, it stops the page from leaving for another document. While the browser is already opening another document, the fill waits for it and checks that document instead. A document that still arrives while the text is on its way stops the text itself, since nothing was armed there: the fill fails `not_actionable`, naming the document, and the text reaches no document Retest did not check.
-- Retest writes `{{name}}` in place of every value in all text it records or reports: events, results, logs, app server output, browser logs, the terminal, and every address it records, in every form a URL gives a value, percent-encoded or form-encoded. Page text the test reads is redacted before it reaches the test's process, so a check against it compares `{{password}}`.
+- Retest writes `{{name}}` in place of every value in all text it records or reports: events, results, logs, app server output, browser logs, the terminal, and every address it records, in every form a URL gives a value, percent-encoded or form-encoded. Page text the test reads is redacted before it reaches the test's process, so a check against it compares `{{password}}`. Each value is hidden in the whole text before Retest quotes, escapes or cuts it.
+- Locators are not redacted. The page matches a locator's text and name against its own text, as it shows it. So a locator that holds part of a value, with the text the page shows beside it, can match it, and a test that tries can learn what the page shows in place of `{{name}}`. Retest refuses, as `usage`, a command whose locator text or name holds a whole value it has read, and never sends it to the page. The refusal does not repeat the text. A locator's text and name are recorded with every value hidden.
 - A fill of a secret records `secret: name` in its event, instead of the length of the text.
-- A function source's value is known, and so hidden, only once a fill has read it. Every log is read again when the run ends, so a value a server or a test file printed before that is hidden there too. What the terminal and the events already carried before the first read stays as it was, and so does page text the test read before it.
+- A function source's value is known, and so hidden, only once the source has given it. A value that arrives after its fill stopped waiting for it is hidden too, from the moment it arrives. Every log is read again when the run ends, so a value a server or a test file printed before that is hidden there too. What the terminal and the events already carried before the value arrived stays as it was, and so does page text the test read before it.
 
 Screenshots are not redacted. A failure screenshot shows whatever the page showed, including a secret the page displays. Text redaction is not image redaction.
 
@@ -434,7 +435,7 @@ Screenshots are not redacted. A failure screenshot shows whatever the page showe
 
 Await every action and assertion. An app takes one command at a time. A test fails when it makes no assertion, when work it started is still running as it returns, or when an assertion it did not await failed.
 
-Each test file runs in a process of its own, and each test gets new browser contexts and pages. Module state is shared by the tests of one process. The process is not a sandbox for hostile test code.
+Each test file runs in a process of its own, and each test gets new browser contexts and pages. Files run at the same time, up to `--workers` of them, in a few browsers for each target; the tests of one file run one after another. Module state is shared by the tests of one process. The process is not a sandbox for hostile test code.
 
 A file is loaded once to collect its tests, and again each time the run visits it: usually twice, and more when its setups run in a visit of their own before its tests. Code at the top level of a file runs on every load.
 
@@ -505,6 +506,8 @@ The filters combine: a test runs when it passes all of them. The setups the chos
 - `--reporter human|jsonl|agent`. With `jsonl`, stdout holds only event lines.
 - `--timeouts action=500,test=3000` replaces some budgets.
 - `--output <dir>` names a new run folder. Retest refuses one that holds files.
+- `--workers <n>` sets how many test files run at once, each in a process of its own, sharing each target's browser. The default is half the machine's cores, at least one. Setups run first, one after another, so every saved state exists before a test starts from it. `--workers 1` runs the files one after another. Tests in different files run at the same time, so two that share something outside the page, such as one account or one counter on a server, can disturb each other: give each its own, as the example's count of saves does with a title of its own, or run with `--workers 1`.
+- `--browsers <n>` sets how many browsers a target's tests are spread over, each worker keeping to one. The default is one browser for every three workers that have a file to run. A target that runs a share of the run's tests, as each target of a matrix does, gets that share of the browsers, at least one, and never more than the files that use it. One browser serves all its pages from a single process, which many workers saturate; the human report says how many a target has, as in `started web=chromium  Chrome 154 · 3 browsers`, each further browser is a `browser.started` event with its `instance`, and its log is `logs/browser-…-2.log` and so on.
 - `--headed` shows every browser window. Nobody has run it yet.
 - `--agent` and `--no-agent`. Retest prints the short agent report when `CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CURSOR_AGENT`, `GEMINI_CLI`, `AGENT` or `AI_AGENT` is set, unless you pick `--reporter` or `--no-agent`.
 
@@ -524,6 +527,24 @@ Two fixed graces of one second sit on top:
 
 - A test file's process has one second to stop once asked. Then Retest kills it.
 - A browser that has not closed within the cleanup budget, or an app server still running one second after SIGTERM, is killed with its process group. Retest then waits one second more for it to go.
+
+## Run Playwright test files
+
+`retest run --playwright` runs test files written for Playwright, unchanged, as far as Retest's compatibility goes. It is early, and the lists below are all of it.
+
+```sh
+retest run --playwright --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --base-url http://127.0.0.1:3000
+retest run --playwright tests/checkout.spec.ts --browser /usr/bin/chromium --base-url http://127.0.0.1:3000
+```
+
+- Files end in `.spec.ts`, `.spec.js`, `.spec.mts` or `.spec.mjs`, or the same with `.test.`. With none named, Retest takes every `.spec.` file under the folder and leaves `.test.` files out, since a project's unit tests end the same way.
+- `@playwright/test` and `playwright/test` resolve to Retest's own `@rehearsal-labs/retest/playwright`, wherever the file is. Neither package has to be installed in the project.
+- A relative import may leave out its extension, as Playwright suites write them: `./helper` finds `./helper.ts`, then `./helper.js`, then the folder's index.
+- What runs: `test`, `test.describe`, `test.beforeEach`, `test.afterEach` and `test.step`; the `page` fixture; `page.goto`, `getByRole`, `getByLabel`, `getByText`, `getByTestId` and `page.keyboard.press`; a locator's `fill`, `click`, `press`, `check` and `uncheck`; `expect` with `toBeVisible`, `toBeHidden`, `toHaveText`, `toHaveCount`, `toHaveValue`, `toBe`, `toEqual`, `toContain` and `toMatch`, and `expect.soft` and `expect.poll`.
+- Everything else fails where it is used, as `unsupported`, naming the member: "page.getByPlaceholder is not supported yet by Retest's Playwright compatibility." Nothing is skipped or dropped. An options argument such as `{ timeout }`, `.not`, `test.skip`, test details, a titled hook and a fixture other than `page` are each refused by name. A test that meets one ends as an error at that line, and the run exits 2.
+- The rules are Retest's. A test with no assertion fails, a locator that matches several elements is ambiguous, an action is sent once, and `toHaveText` compares whole text.
+- `playwright.config.ts` is not read. The browser and the base URL come from the command line, or from `retest.config.ts`.
+- The human report's first line says `playwright compatibility`, and `run.started.options.playwright` is true, so no reader takes the run for Playwright's own.
 
 ## Check the setup
 
@@ -613,9 +634,9 @@ Every event says who reported it: `origin: 'parent'` for what Retest's own proce
 
 ### Titles and what opened each page
 
-A `navigation` event names the page's title in `title`, and what opened it in `cause`. Actions, looks and assertions name the title of the page they went to in `pageTitle`, beside `pageUrl`, and a host check's `actual` has `title`. Reports show the title before the address, as in `"Account" at http://127.0.0.1:4173/account`.
+A `navigation` event names the page's title in `title`, what opened it in `cause`, and in `document` whether it opened a new document (`new`) or moved to a new path within the one the page had (`same`). Actions, looks and assertions name the title of the page they went to in `pageTitle`, beside `pageUrl`, and a host check's `actual` has `title`. Reports show the title before the address, as in `"Account" at http://127.0.0.1:4173/account`.
 
-- A title is the page's `document.title`, trimmed, with its control characters removed, and cut to 300 code units. A page with no title has none. Titles are page text: a secret in one reads `{{name}}`, and Retest hides a secret before it cuts the title, so none is left half-written.
+- A title is the page's `document.title`, trimmed, with its control characters removed, and cut to 300 code units. A page with no title has none. Titles are page text: a secret in one reads `{{name}}`. The browser hands Retest the title as the page has it, up to 65,536 code units. Retest hides each secret in it before it removes control characters, trims and cuts it, and again after, so no value is left half-written, and none is joined back together by the cleaning.
 - An action or a look reads the title in the same call that checks or reads the element. `goto` reads it after `load`. An action that failed names the page as Retest last saw it commit when the failure came, since the page may have opened another document while the action waited for it, and its event comes after that document's `navigation`.
 - A new document's `navigation` is written once its title is known: when its content has loaded, when the test's next command to that page begins, or one second after it opened, whichever comes first. It is always written before the events of any command that began after it. A page that sends the browser on at once can leave its navigation with no title.
 - A new path within the document, through the history API, is written at once, with the title as it stands. A title the page sets later is not a navigation. The next action or look reads it.
@@ -625,6 +646,8 @@ A `navigation` event names the page's title in `title`, and what opened it in `c
 - `goto`: the navigation a `goto` started.
 - `action`: a navigation the page asked for while an action's input was on its way. For a click, a key or a scroll, that runs from the input until Retest's next call into the page has answered, since Chrome can report a link's navigation after the click itself has answered. For `select`, it runs until the call that sets the selection has answered.
 - `page`: anything else, such as a redirect the page makes on its own after it loads, a timer, or the browser. A navigation a `setTimeout` in a click listener starts is the page's.
+
+A navigation that a `goto` or an action started names that command's step in `stepId`, and where the command is in the test file in `location`. That holds however late it commits, as when Chrome reports a link's navigation after the next command has begun. Any other navigation names the step the test was in when it committed, and has no `location`.
 
 A problem no single test explains, such as a browser that did not start, is the run's own `failure` in `run.finished` and `result.json`. A file whose process failed outside its tests has a `failure` of its own, and a `file.failed` event.
 
@@ -690,7 +713,7 @@ Keys name what the checks apply to:
 Two kinds of check:
 
 - `{ kind: 'address', origin, path? }`: the page's origin must equal `origin`. With `path`, a string must equal the page's path, and a `RegExp` must match it. The query and the fragment are never read.
-- `{ kind: 'text', text, ignoreCase?, absent? }`: the page's visible text must hold `text`. The visible text is `document.body.innerText` of the top-level document, with whitespace read as locators read it. Frames, shadow roots and hidden elements are not in it. The check is case-sensitive unless `ignoreCase`. With `absent`, the text must not be there.
+- `{ kind: 'text', text, ignoreCase?, absent? }`: the page's visible text must hold `text`. The visible text is `document.body.innerText` of the top-level document, with whitespace read as locators read it. Frames, shadow roots and hidden elements are not in it. The check is case-sensitive unless `ignoreCase`. With `absent`, the text must not be there. A document with no body, such as an XML or SVG page, has no visible text, so a text check on it fails, with `absent` too, and its `actual` says `body: false`.
 
 Every check also takes `app`, the app whose page it reads, which defaults to the test's first app, and `name`, which reports show. `timeoutMs` is how long it may look, the assertion budget by default.
 
@@ -701,18 +724,19 @@ How the checks run:
 - After the body and its `afterEach` hooks, and before the failure screenshot, before a setup's state is saved and before the pages close.
 - Only when the body passed. When the body failed, or the test did not run, every check is listed as `not_run`.
 - In the order given, and all of them: a failed check does not stop the next.
-- Each looks at once, then again after waiting 50, 100, 250 and 500 ms in turn, then every 500 ms, until it passes or its time runs out. It only reads the page, so nothing repeats. While the browser is opening another document, a check waits for it. A document that commits while the checks run is written as a `navigation` like any other, with no step, since the body is over.
+- Each looks at once, then again after waiting 50, 100, 250 and 500 ms in turn, then every 500 ms, until it passes or its time runs out. It only reads the page, so nothing repeats. While the browser is opening another document, a check waits for it. A document that commits while the checks run is written as a `navigation` like any other. It has no step, since the body is over, unless an action of the body started it.
 
 The verdict:
 
 - A failed check fails the test with `host_check_failed`, exit 1, like any failed check. The first check that failed is the test's failure, and the others are in `failure.details.also`.
 - The failure screenshot is taken after the checks, so it shows the page they read.
-- A check that could not read the page, because the page or its browser was gone, makes the test an error with `session_lost`, and the checks after it do not run.
+- A check that could not read the page makes the test an error with `session_lost`, and the checks after it do not run. That is a page or browser that was gone, or a page that answered no read in the check's whole time.
+- A failure of ours, such as a lost browser, is the test's failure even after a check that failed. The test is then an error, and the failed checks before it are in `failure.details.also`, in order.
 - An interrupted run stops the checks, and the test ends `interrupted`.
 
 An `absent` check passes at once on a blank page. Pair it with an `address` check.
 
-A check sees the final page, not the steps to it. It cannot tell whether the test reached that page by the flow you meant. It can require that no `goto` opened that page: the app's last `navigation` before the checks must not say `cause: 'goto'`. That says nothing about the steps before that navigation.
+A check sees the final page, not the steps to it. It cannot tell whether the test reached that page by the flow you meant. It can require that no `goto` opened that page: of the app's navigations before the checks, the last one whose `cause` is not `page` must say `cause: 'action'`. Leave out the navigations the page made on its own, such as an app that tidies its address as it loads, or a script that sends it on. They come after the navigation that brought the test there, and do not say who opened the page. That says nothing about the steps before that navigation.
 
 The parent writes `host_check.passed` or `host_check.failed` for each check, with the check, the app, what the page showed on the last look, how many times it looked and for how long. `run.started` records every check the run was asked for, so a reader can tell a check that was never asked for from one that is missing. Each test's result lists its checks in `hostChecks`, in order, with `passed`, `failed` or `not_run`. A check's `text`, `name` and `path` are redacted as page text is, since a host holds the run's secrets and writes every field of a check; the page is still asked for the text, and the path still matched, as written.
 
@@ -765,7 +789,7 @@ One process may call `runFiles` again before the first call ends, with another r
 - The parent writes every event and stamps its `origin`. Only `step.*` and `assertion.*` events come from the test file's process, and the parent checks their shape and judges every passed locator assertion.
 - Actions, navigations, observations, host checks and every outcome are the parent's own facts.
 - The `RunResult` that `runFiles` returns, and the events a reporter receives, come from the parent's memory. `result.json` and `events.jsonl` are copies, in a folder the test file's process can write. A host that must trust a run takes the result from `runFiles` and the events from its own reporter, and reads the run folder only for screenshots and logs.
-- Each navigation's `cause` is the parent's fact. A host can require that no `goto` opened the page its checks read.
+- Each navigation's `cause`, `document`, step and `location` are the parent's facts. A host can require that no `goto` opened the page its checks read.
 - The test file's process is not a sandbox. It runs as the same user, can read and write what that user can, and can reach the network. A host that runs code it did not write runs all of Retest inside isolation it controls, such as one container per run.
 - Screenshots are not redacted.
 
@@ -809,12 +833,13 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - `--headed`, and `headless: false` in a config, were never run.
 - Locators search the top-level document only: no shadow DOM, no frames. No `first()`, `nth()`, `filter()` or chained locators.
 - No popups, dialogs, uploads, downloads, network mocking, video or visual comparison. A JavaScript dialog fails the command as unsupported.
-- No parallel workers, `lock`, retries, watch mode, `skip`, `only`, custom fixtures or `test.extend`.
+- No `lock`, retries, watch mode, `skip`, `only`, custom fixtures or `test.extend`. Files run on workers; the tests of one file do not.
 - No `retest install` and no browser download. No HTML report.
 - No `toMeet`, `test.eval`, judges or agent session API.
 - Test files are loaded more than once: once to plan the run, and again for each visit that runs them. Top-level code runs each time.
 - Screenshots are not redacted. A secret the page shows appears in its screenshot.
-- A function source's value is hidden only from the moment a fill first reads it; page text read before that reached the test's process as it was.
+- A function source's value is hidden only from the moment its source gives it; page text read before that reached the test's process as it was.
+- Locators match the page's text as it shows it, not redacted. Retest refuses a locator that holds a whole secret value, but a locator that holds part of one, with the text beside it, can still match it.
 - A page that moves the keyboard focus into a frame of another site as the text arrives can receive the text there. Retest reports `outcome_unknown` and names the frame; it cannot stop typing inside a frame it is not attached to.
 - Page console messages are not recorded.
 - SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is removed when the next run starts. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.

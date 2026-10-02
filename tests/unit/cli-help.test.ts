@@ -62,13 +62,15 @@ describe('help', () => {
       '--reporter <name>',
       '--output <dir>',
       '--timeouts <list>',
+      '--workers <n>',
+      '--browsers <n>',
       '--headed',
       '--agent',
       '--no-agent',
     ]) {
       assert.ok(stdout.includes(option), option)
     }
-    for (const unbuilt of ['--watch', '--workers', '--retries', '--dry-run', '--repeat-each', 'github', 'junit', '--project']) {
+    for (const unbuilt of ['--watch', '--retries', '--dry-run', '--repeat-each', 'github', 'junit', '--project']) {
       assert.ok(!stdout.includes(unbuilt), unbuilt)
     }
     assert.match(stdout, /Add :line to a file/)

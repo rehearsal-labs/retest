@@ -1,4 +1,4 @@
-import type { CommandResult, PageCommand } from '../protocol/commands.ts'
+import type { ObserveAfter, CommandResult, PageCommand } from '../protocol/commands.ts'
 import type { ChildEvent } from '../protocol/events.ts'
 import type { Failure, SourceLocation } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
@@ -185,11 +185,11 @@ export class TestRun {
     return operation
   }
 
-  /** Reads an app's page once for an assertion. */
-  observe(app: string, locator: LocatorRecipe, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
+  /** Reads an app's page once for an assertion. With `after`, the page first waits for its next change, or `after.waitMs`. */
+  observe(app: string, locator: LocatorRecipe, timeoutMs: number, location: SourceLocation | undefined, after?: ObserveAfter): Promise<CommandResult> {
     const refusal = this.#refusal()
     if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
-    return this.#send(app, { kind: 'observe', locator }, timeoutMs, location)
+    return this.#send(app, { kind: 'observe', locator, ...(after === undefined ? {} : { after }) }, timeoutMs, location)
   }
 
   /** Runs a named step inside the test and resolves with its value. */

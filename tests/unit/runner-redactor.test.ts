@@ -4,7 +4,7 @@ import type { RunResult, TestResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { retestEventSchema } from '../../src/protocol/events.ts'
-import { pageTitleLimit } from '../../src/protocol/page-facts.ts'
+import { pageTitleLimit, titleReadLimit } from '../../src/protocol/page-facts.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 
@@ -105,7 +105,7 @@ describe('Redactor', () => {
     })
   })
 
-  test('redacts what an assertion expected and saw, and leaves its matcher and locator', () => {
+  test("redacts what an assertion expected and saw, and its locator's text, and leaves its matcher", () => {
     const redactor = taught({ password: 'hunter2' })
     const event: RetestEvent = {
       schemaVersion: 1,
@@ -128,13 +128,13 @@ describe('Redactor', () => {
     const redacted = redactor.redactFields(retestEventSchema, event)
     assert.equal(redacted.type === 'assertion.passed' ? redacted.testId : undefined, 'tests/a.retest.ts > shows hunter2')
     assert.deepEqual(redacted.type === 'assertion.passed' ? [redacted.locator, redacted.expected?.text, redacted.actual?.text] : [], [
-      { by: 'text', text: 'hunter2' },
+      { by: 'text', text: '{{password}}' },
       '{{password}}',
       '{{password}}!',
     ])
   })
 
-  test('redacts what a look observed and a host check saw and looked for, and leaves their locator and counts alone', () => {
+  test("redacts what a look observed, its locator's text, and what a host check saw and looked for, and leaves their counts alone", () => {
     const redactor = taught({ password: 'hunter2' })
     const stamp = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent' } as const
     const text = (value: string) => ({ text: value, truncated: false, length: value.length })
@@ -164,6 +164,7 @@ describe('Redactor', () => {
     const hidden = text('{{password}}')
     assert.deepEqual(redactor.redactFields(retestEventSchema, look), {
       ...look,
+      locator: { by: 'text', text: '{{password}}' },
       pageUrl: 'http://127.0.0.1:4173/{{password}}',
       observed: { count: 1, visible: true, text: { ...hidden, length: 7 }, value: { text: 'is {{password}}', truncated: false, length: 10 }, items: [{ text: { ...hidden, length: 7 }, visible: true }], itemsTruncated: false },
     })
@@ -174,8 +175,7 @@ describe('Redactor', () => {
     })
   })
 
-  // A host writes a text check's text itself, and may put a secret in it by mistake. Every other `text` Retest
-  // records, such as a locator's, is an identifier and stays as it is.
+  // A host writes a text check's text itself, and may put a secret in it by mistake.
   test("redacts a text host check's text wherever it is recorded: its events, run.started and the result", () => {
     const redactor = taught({ password: 'hunter2' })
     const stamp = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent' } as const
@@ -234,8 +234,6 @@ describe('Redactor', () => {
       result.files[0]?.tests[0]?.hostChecks?.map((entry) => entry.check),
       [address, hidden, hidden],
     )
-    const look: RetestEvent = { ...stamp, ...scope, type: 'action.completed', command: 'click', locator: { by: 'text', text: 'hunter2' }, durationMs: 1 }
-    assert.deepEqual(redactor.redactFields(retestEventSchema, look), look, "a locator's text is an identifier")
   })
 
   // A host holds the run's secrets and writes every field of a check, so a token in a path or a name is as likely
@@ -283,6 +281,41 @@ describe('Redactor', () => {
     assert.deepEqual(recorded.type === 'run.started' ? recorded.options.hostChecks : undefined, { 'tests/a.retest.ts': hidden })
     const named: RetestEvent = { ...stamp, type: 'test.started', ...scope, name: 'resets c0rr3ct-h0rse', file: 'tests/a.retest.ts', location: { file: 'tests/a.retest.ts', line: 1, column: 1 } }
     assert.deepEqual(redactor.redactFields(retestEventSchema, named), named, "a test's name is an identifier")
+  })
+
+  // A locator's text and name are matched against the page's own text, so a test could have copied a value into one.
+  test("redacts a locator's text and name wherever a locator is recorded, and leaves a test id and every other name alone", () => {
+    const redactor = taught({ password: 'hunter2' })
+    const stamp = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent' } as const
+    const scope = { testId: 'tests/a.retest.ts > hunter2', attemptId: 'a', session: 'page' }
+    const locators = [
+      [{ by: 'text', text: 'Signed in as hunter2' }, { by: 'text', text: 'Signed in as {{password}}' }],
+      [{ by: 'label', text: 'hunter2', exact: false }, { by: 'label', text: '{{password}}', exact: false }],
+      [{ by: 'role', role: 'button', name: 'Forget hunter2' }, { by: 'role', role: 'button', name: 'Forget {{password}}' }],
+      [{ by: 'testId', value: 'hunter2' }, { by: 'testId', value: 'hunter2' }],
+    ] as const
+    for (const [locator, hidden] of locators) {
+      const failed: RetestEvent = { ...stamp, ...scope, type: 'action.failed', command: 'click', locator, durationMs: 1, failure: { class: 'usage', message: 'refused' } }
+      const redacted = redactor.redactFields(retestEventSchema, failed)
+      assert.deepEqual(redacted.type === 'action.failed' ? redacted.locator : undefined, hidden)
+      const asserted: RetestEvent = { ...stamp, ...scope, type: 'assertion.failed', matcher: 'toBeVisible', locator, expected: null, actual: null, attempts: 1, durationMs: 1, failure: { class: 'check_failed', message: 'hidden' } }
+      const judged = redactor.redactFields(retestEventSchema, asserted)
+      assert.deepEqual(judged.type === 'assertion.failed' ? judged.locator : undefined, hidden)
+    }
+    const step: RetestEvent = { ...stamp, ...scope, type: 'step.started', stepId: 'step-1', name: 'types hunter2' }
+    assert.deepEqual(redactor.redactFields(retestEventSchema, step), step, "a step's name is an identifier")
+  })
+
+  test('says whether text holds a whole value it knows, as a locator compares text: whitespace read as one space, and in any case when not exact', () => {
+    const redactor = taught({ password: 'hunter2', phrase: 'correct  horse' })
+    assert.equal(redactor.holdsValue('Signed in as hunter2', true), true)
+    assert.equal(redactor.holdsValue('Signed in as HUNTER2', true), false, 'an exact text is compared case and all')
+    assert.equal(redactor.holdsValue('Signed in as HUNTER2', false), true)
+    assert.equal(redactor.holdsValue('my correct\n horse battery', true), true, 'whitespace is read as one space on both sides')
+    assert.equal(redactor.holdsValue('hunt', false), false, 'part of a value is not the value')
+    assert.equal(redactor.holdsValue('Signed in', false), false)
+    assert.equal(new Redactor().holdsValue('hunter2', false), false, 'nothing is held before a value is known')
+    assert.equal(taught({ blank: '    ' }).holdsValue('any text', false), false, 'a value of whitespace alone holds nothing to match')
   })
 
   test('redacts the page text an answer carries to the test process, and nothing else in it', () => {
@@ -485,6 +518,39 @@ describe('Redactor', () => {
     assert.equal(redacted, `${'a'.repeat(pageTitleLimit - 20)}{{password}}${'b'.repeat(8)}`)
     assert.equal(redacted.length, pageTitleLimit)
     assert.equal(redactor.redactTitle('Welcome back, hunt'), 'Welcome back, hunt', 'a short title ending in the start of a value is its own text')
+  })
+
+  // The browser hands a title over as the page has it. The parent hides each value in it before it cleans and cuts it,
+  // and again after, since cleaning joins the text around a control character.
+  test('cleans a title only once it is redacted, so a value with an edge space or a control character in it is hidden whole', () => {
+    const edged = taught({ password: 'pass word ' })
+    assert.equal(edged.redactTitle('  Signed in as pass word '), 'Signed in as {{password}}')
+    const tabbed = taught({ password: 'pass\tword' })
+    assert.equal(tabbed.redactTitle('Signed in as pass\tword'), 'Signed in as {{password}}')
+  })
+
+  test('hides a value that a control character in the page split, once cleaning joins it again', () => {
+    const redactor = taught({ password: 'hunter2' })
+    assert.equal(redactor.redactTitle('Signed in as hun\u0007ter2\u001b'), 'Signed in as {{password}}')
+  })
+
+  test('a title that cleans to nothing is none, and an event leaves it out', () => {
+    const redactor = new Redactor()
+    assert.equal(redactor.redactTitle(' \u0007 '), undefined)
+    const navigation: RetestEvent = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent', type: 'navigation', testId: 't', attemptId: 'a', url: 'http://127.0.0.1:4173/', title: ' \u0007 ', cause: 'page' }
+    const { title: _title, ...untitled } = navigation
+    assert.deepEqual(redactor.redactFields(retestEventSchema, navigation), untitled)
+    assert.deepEqual(redactor.redactCommandResult({ ok: true, kind: 'click', page: { url: 'http://127.0.0.1:4173/', title: '   ' } }), { ok: true, kind: 'click', page: { url: 'http://127.0.0.1:4173/' } })
+  })
+
+  // A page that repeats a long value in its title shrinks it to placeholders. A title as long as the browser hands
+  // over may have been cut there, inside a value, and that part is dropped rather than shown.
+  test('drops the start of a value at the end of a title the browser cut, however far redaction shrinks the rest', () => {
+    const value = `S${'e'.repeat(2047)}`
+    const redactor = taught({ s: value })
+    const handed = `${value.repeat(31)}${value.slice(0, 2047)}`
+    assert.equal(handed.length, titleReadLimit - 1)
+    assert.equal(redactor.redactTitle(handed), '{{s}}'.repeat(31))
   })
 
   test('cuts a long title even while it knows no secret, and leaves a value with nothing to change as it was', () => {

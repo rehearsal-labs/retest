@@ -40,9 +40,10 @@ export type HostCheckRecord =
 
 /**
  * What a check saw on its last look: the page's origin and path and its title, and for a text check whether the
- * text was there. The title is the page's own text, present only when the page has one.
+ * text was there, or `body: false` when the document had no body, so it had no visible text to read. The title is
+ * the page's own text, present only when the page has one.
  */
-export type HostCheckActual = { url?: string; title?: string; found?: boolean }
+export type HostCheckActual = { url?: string; title?: string; found?: boolean; body?: false }
 
 export type HostCheckStatus = 'passed' | 'failed' | 'not_run'
 
@@ -75,6 +76,7 @@ export const hostCheckActualSchema: Schema<HostCheckActual> = s.object({
   url: s.optional(s.string()),
   title: s.optional(s.string()),
   found: s.optional(s.boolean()),
+  body: s.optional(s.literal(false)),
 })
 
 export const hostCheckResultSchema: Schema<HostCheckResult> = s.object({

@@ -367,3 +367,11 @@ describe('run colour', () => {
     assert.equal(stdout.includes('\u001b['), false)
   })
 })
+
+describe('retest run --workers', () => {
+  test('rejects a worker count that is not a whole number from 1, before anything runs', async () => {
+    assert.match(await rejected([file, ...browser, '--workers', '0']), /--workers takes a whole number from 1, not 0\./)
+    assert.match(await rejected([file, ...browser, '--workers', 'two']), /--workers takes a whole number from 1, not two\./)
+    assert.match(await rejected([file, ...browser, '--workers', '1.5']), /not 1\.5\./)
+  })
+})

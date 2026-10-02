@@ -4,7 +4,7 @@ import { Deadline } from '../protocol/deadline.ts'
 export type TitleSource = {
   /** False while a read would not be answered in that document, as while the frame opens another one. */
   readonly readable: () => boolean
-  /** Reads the current document's title, cleaned, or undefined when it has none. */
+  /** Reads the current document's title as the page has it, or undefined when it has none. */
   readonly read: (deadline: Deadline) => Promise<string | undefined>
 }
 

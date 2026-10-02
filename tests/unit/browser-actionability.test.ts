@@ -121,7 +121,7 @@ test('each action sends the page what it needs, and a fill without origins sends
 
 const facts = { href: 'http://127.0.0.1:4173/tasks?page=2', title: ' Tasks ' }
 const ready: Readiness = { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page: facts }
-const readyTarget = { ok: true, kind: 'ready', point: { x: 10, y: 20 }, context: 7, token: 1, via: undefined, scale: 1, page: { url: 'http://127.0.0.1:4173/tasks', title: 'Tasks' } }
+const readyTarget = { ok: true, kind: 'ready', point: { x: 10, y: 20 }, context: 7, token: 1, via: undefined, scale: 1, page: { url: 'http://127.0.0.1:4173/tasks', title: ' Tasks ' } }
 const calls = (sent: unknown[]) => sent.filter((params) => isObject(params) && 'functionDeclaration' in params).length
 
 test('while the browser is opening another document, the page is not looked at, and the look resumes in the document that arrives', async () => {
@@ -224,7 +224,7 @@ test('an element ready for a key is ready with no point, since a key goes to the
 test('a control already as a check asks is settled at once, with the page it is on, and no guard', async () => {
   const intent: ActionIntent = { action: 'check', pointer: 'click', multiline: false }
   const target = await waitUntilActionable({ world: world({ status: 'unchanged', page: facts }), locator: byTestId, intent, deadline: new Deadline(1000), pendingNavigation: settled })
-  assert.deepEqual(target, { ok: true, kind: 'unchanged', page: { url: 'http://127.0.0.1:4173/tasks', title: 'Tasks' } })
+  assert.deepEqual(target, { ok: true, kind: 'unchanged', page: { url: 'http://127.0.0.1:4173/tasks', title: ' Tasks ' } })
 })
 
 test('check and uncheck refuse an element they cannot use, and name it', async () => {

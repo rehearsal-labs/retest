@@ -1,12 +1,22 @@
 import type { PageNavigation } from '../browser/contract.ts'
-import type { NavigationCause } from '../protocol/page-facts.ts'
+import type { SourceLocation } from '../protocol/failures.ts'
+import type { NavigationCause, NavigationDocument } from '../protocol/page-facts.ts'
 import { bounded } from './bounded.ts'
 
 /** A document an app's page committed: its origin and path, and its title once its navigation is written. */
 export type PageDocument = { readonly url: string; title?: string }
 
-/** A navigation ready to write: its app, its document, the step the test was in when it committed, and its cause. */
-export type NotedNavigation = { app: string; document: PageDocument; stepId: string | undefined; cause: NavigationCause }
+/**
+ * Where a navigation belongs in the test: the step of the command whose input or goto started it and where that
+ * command is in the test file, or, for one no command started, the step the test was in when it committed.
+ */
+export type NavigationStamp = { stepId?: string; location?: SourceLocation }
+
+/**
+ * A navigation ready to write: its app, its document, where it belongs in the test, what started it, and whether
+ * it opened a new document or moved within the one the frame held.
+ */
+export type NotedNavigation = { app: string; document: PageDocument; stamp: NavigationStamp; cause: NavigationCause; opened: NavigationDocument }
 
 type Entry = NotedNavigation & { written: boolean }
 
@@ -17,9 +27,9 @@ type Entry = NotedNavigation & { written: boolean }
 const titleWaitMs = 2000
 
 /**
- * The navigations of one test's pages. Each is noted at its commit, with the step the test was in then, and
- * written once its title settles, in the order its page committed them. A navigation still waiting when the test
- * ends is written then, with no title.
+ * The navigations of one test's pages. Each is noted at its commit, with where it belongs in the test, and written
+ * once its title settles, in the order its page committed them. A navigation still waiting when the test ends is
+ * written then, with no title.
  */
 export class PageNavigations {
   readonly #write: (navigation: NotedNavigation) => void
@@ -33,8 +43,8 @@ export class PageNavigations {
   }
 
   /** Notes a navigation as its page commits it, and returns its document, whose title comes once it is written. */
-  note(app: string, navigation: PageNavigation, stepId: string | undefined): PageDocument {
-    const entry: Entry = { app, document: { url: navigation.url }, stepId, cause: navigation.cause, written: false }
+  note(app: string, navigation: PageNavigation, stamp: NavigationStamp): PageDocument {
+    const entry: Entry = { app, document: { url: navigation.url }, stamp, cause: navigation.cause, opened: navigation.document, written: false }
     this.#waiting.add(entry)
     const title = bounded(navigation.title, titleWaitMs).then((read) => (read.status === 'done' ? read.value : undefined))
     const earlier = this.#written.get(app) ?? Promise.resolve()
@@ -67,7 +77,7 @@ export class PageNavigations {
     entry.written = true
     this.#waiting.delete(entry)
     if (title !== undefined) entry.document.title = title
-    const { app, document, stepId, cause } = entry
-    this.#write({ app, document, stepId, cause })
+    const { app, document, stamp, cause, opened } = entry
+    this.#write({ app, document, stamp, cause, opened })
   }
 }

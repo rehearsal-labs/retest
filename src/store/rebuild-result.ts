@@ -30,7 +30,8 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
     throw new RunFolderReadError(`${eventsFile} has no run.started event, so the run cannot be rebuilt.`)
   }
   const files = [...record.files.values()].map((file) => fileResult(file, last.elapsedMs))
-  const browsers = record.browsers.map(browserInfo)
+  // A target's further browsers are events of their own; the result lists each target once, by its first.
+  const browsers = record.browsers.filter((event) => event.instance === undefined).map(browserInfo)
   const [browser = null] = browsers
   return {
     schemaVersion: 1,

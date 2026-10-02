@@ -134,3 +134,74 @@ describe('BrowserPool', () => {
     assert.equal(after.ok, false)
   })
 })
+
+describe('a target spread over several browsers', () => {
+  test('each worker keeps to one browser, the first is told with how many there are, and the result lists the target once', async () => {
+    const { pool: browsers, started, launched } = pool({ logFile: (app, target, instance) => `/logs/${app}-${target}-${instance}.log` })
+    const web = appOf('web', stable)
+    browsers.spread(web, stable, 2)
+    const [zero, one, two] = await Promise.all([browsers.ensure(web, stable, 0), browsers.ensure(web, stable, 1), browsers.ensure(web, stable, 2)])
+    assert.ok(zero.ok && one.ok && two.ok)
+    assert.notEqual(zero.value.browser, one.value.browser)
+    assert.equal(two.value.browser, zero.value.browser, 'the third worker shares the first browser')
+    assert.deepEqual(launched.browsers.map((browser) => browser.launchOptions.logFile), ['/logs/web-stable-0.log', '/logs/web-stable-1.log'])
+    assert.deepEqual(started.map(({ instance, instances, pid }) => [instance, instances, pid]), [
+      [undefined, 2, launched.browsers[0]?.pid],
+      [2, undefined, launched.browsers[1]?.pid],
+    ])
+    assert.equal(browsers.started.length, 1)
+  })
+
+  test('warming launches every browser of the target, which a later test finds ready', async () => {
+    const { pool: browsers, launched } = pool()
+    const web = appOf('web', stable)
+    browsers.spread(web, stable, 3)
+    browsers.warm(web, stable)
+    const last = await browsers.ensure(web, stable, 2)
+    assert.ok(last.ok)
+    assert.equal(launched.browsers.length, 3)
+    await browsers.ensure(web, stable, 0)
+    await browsers.ensure(web, stable, 5)
+    assert.equal(launched.browsers.length, 3, 'nothing launches twice')
+  })
+
+  test('a lost browser keeps only its own workers from running; the others go on in theirs', async () => {
+    const { pool: browsers, launched, lost } = pool()
+    const web = appOf('web', stable)
+    browsers.spread(web, stable, 2)
+    await browsers.ensure(web, stable, 0)
+    await browsers.ensure(web, stable, 1)
+    launched.browsers[1]?.disconnect('The browser process exited.')
+    const onLost = await browsers.ensure(web, stable, 1)
+    const onOther = await browsers.ensure(web, stable, 0)
+    assert.deepEqual(onLost, { ok: false, failure: { class: 'session_lost', message: 'Not run: the browser was lost earlier in this run. The browser process exited.' } })
+    assert.ok(onOther.ok)
+    assert.deepEqual(lost, ['The browser process exited.'])
+    await browsers.close()
+    assert.deepEqual(launched.browsers.map((browser) => browser.closed), [true, true])
+  })
+
+  test('one browser is the default, and a count that is not a whole number from 1 is refused', async () => {
+    const { pool: browsers, started, launched } = pool()
+    const web = appOf('web', stable)
+    const [zero, one] = await Promise.all([browsers.ensure(web, stable, 0), browsers.ensure(web, stable, 1)])
+    assert.ok(zero.ok && one.ok)
+    assert.equal(zero.value.browser, one.value.browser)
+    assert.equal(launched.browsers.length, 1)
+    assert.deepEqual([started[0]?.instance, started[0]?.instances], [undefined, undefined])
+    assert.throws(() => browsers.spread(web, stable, 0), /A target runs in a whole number of browsers from 1, received 0\./)
+    assert.throws(() => browsers.spread(web, stable, 1.5), /received 1\.5\./)
+  })
+})
+
+describe('targets with spreads of their own', () => {
+  test('one target spread over two browsers leaves another in one, whichever worker asks', async () => {
+    const { pool: browsers, launched } = pool()
+    const web = appOf('web', stable, beta)
+    browsers.spread(web, stable, 2)
+    const stableOnes = await Promise.all([browsers.ensure(web, stable, 0), browsers.ensure(web, stable, 1)])
+    const betaOnes = await Promise.all([browsers.ensure(web, beta, 0), browsers.ensure(web, beta, 1)])
+    assert.ok(stableOnes.every((ready) => ready.ok) && betaOnes.every((ready) => ready.ok))
+    assert.deepEqual(launched.browsers.map((browser) => browser.executablePath), ['/fake/stable', '/fake/stable', '/fake/beta'])
+  })
+})

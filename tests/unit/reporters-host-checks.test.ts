@@ -193,7 +193,7 @@ describe('the proxy a browser started with', () => {
   test('the line names the server and the bypass rules', () => {
     assert.match(
       human(hostChecksPassRun(root)),
-      /\n {4}started web=chrome {2}Chrome 154\.0\.7195\.41 · proxy http:\/\/127\.0\.0\.1:8080 · bypass <-loopback>, \*\.internal\n/,
+      /\n {2}started web=chrome {2}Chrome 154\.0\.7195\.41 · proxy http:\/\/127\.0\.0\.1:8080 · bypass <-loopback>, \*\.internal\n/,
     )
   })
 

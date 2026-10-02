@@ -12,15 +12,19 @@ import { quoteText } from '../protocol/text.ts'
 import { readOrigin } from '../protocol/url.ts'
 import { bounded } from './bounded.ts'
 import { notRunHostChecks } from './host-checks.ts'
+import { isOurs } from './outcome.ts'
 import { abortGraceMs } from './running-test.ts'
 
-/** Every check's result, in order, and the test's failure: the first check that failed, the others in `also`. */
+/**
+ * Every check's result, in order, and the test's failure: a failure of ours if there is one, as when the browser
+ * was lost after a check had failed, and otherwise the first check that failed, with the others in `also`.
+ */
 export type CheckedPages = { results: HostCheckResult[]; failure?: Failure }
 
 type Read =
   | { status: 'read'; reading: PageReading }
   /** The page took longer than the look's time to answer; the check looks again while it has time. */
-  | { status: 'late'; failure: Failure }
+  | { status: 'late' }
   /** The page could not be read, as when it or its browser has gone; the check stops. */
   | { status: 'unread'; failure: Failure }
   | { status: 'stopped' }
@@ -32,8 +36,10 @@ const lookDelays = [0, 50, 100, 250, 500]
 
 /**
  * Runs a test's host checks, in order, against the pages its body left. A failed check does not stop the next;
- * a page that could not be read stops the checks after it, and so does an interrupted run, whose failure then
- * is the test's. Each check writes `host_check.passed` or `host_check.failed`, and the pages are only read.
+ * a page that could not be read stops the checks after it, and so does an interrupted run. The test's failure is
+ * one of ours when there is one, since then nobody can tell whether the app would have passed, and the checks that
+ * failed before it stay in `also`, in order. Each check writes `host_check.passed` or `host_check.failed`, and the
+ * pages are only read.
  *
  * @example const { results, failure } = await runHostChecks(context, pages, checks)
  */
@@ -44,7 +50,7 @@ export async function runHostChecks(context: PagesContext, pages: readonly AppPa
     const outcome = await runCheck(context, pages.find((page) => page.app === entry.app), entry)
     if (outcome.kind === 'stopped') {
       results.push(...notRunHostChecks(checks.slice(index)))
-      failures.unshift(outcome.failure)
+      failures.push(outcome.failure)
       break
     }
     results.push(outcome.result)
@@ -54,8 +60,8 @@ export async function runHostChecks(context: PagesContext, pages: readonly AppPa
       break
     }
   }
-  const [first, ...rest] = failures
-  return first === undefined ? { results } : { results, failure: withAlso(first, rest) }
+  const first = failures.find(isOurs) ?? failures[0]
+  return first === undefined ? { results } : { results, failure: withAlso(first, failures.filter((each) => each !== first)) }
 }
 
 // Looks until the check passes or its time runs out, and waits for any document the frame is opening.
@@ -66,7 +72,6 @@ async function runCheck(context: PagesContext, page: AppPage | undefined, { chec
   const queries: TextQuery[] = check.kind === 'text' ? [{ text: check.text, ignoreCase: check.ignoreCase === true }] : []
   let attempts = 0
   let last: PageReading | undefined
-  let late: Failure | undefined
   let unread: Failure | undefined
   for (;;) {
     const delay = smallestBudget(lookDelays[Math.min(attempts, lookDelays.length - 1)] ?? 0, deadline.remainingMs)
@@ -75,13 +80,13 @@ async function runCheck(context: PagesContext, page: AppPage | undefined, { chec
     attempts++
     if (read.status === 'stopped') return stopped(context)
     if (read.status === 'unread') unread = read.failure
-    if (read.status === 'late') late = read.failure
     if (read.status === 'read') last = read.reading
     if (unread !== undefined || passes(check, last) || deadline.expired) break
   }
   const looked = { attempts, timeoutMs }
-  const unanswered = last === undefined ? late : undefined
-  const problem = unread ?? (passes(check, last) ? undefined : (unanswered ?? checkFailure(check, app, last, looked)))
+  // A page that answered no read in the whole time could not be read, which says nothing about the app.
+  const lost = unread ?? (last === undefined ? failure('session_lost', `The page of ${app} did not answer a host check within ${timeoutMs} ms, so Retest could not read it.`) : undefined)
+  const problem = passes(check, last) ? undefined : (lost ?? checkFailure({ check, app, last, looked, redact: context.redact }))
   const record = hostCheckRecord(check)
   const fields = { testId: context.testId, attemptId: context.attemptId, session: app, check: record, actual: actualOf(check, last), ...looked, durationMs: elapsedMs(startedAt) }
   if (problem === undefined) {
@@ -89,7 +94,7 @@ async function runCheck(context: PagesContext, page: AppPage | undefined, { chec
     return { kind: 'done', result: { check: record, app, status: 'passed' }, stops: false }
   }
   context.emit({ type: 'host_check.failed', ...fields, failure: problem })
-  return { kind: 'done', result: { check: record, app, status: 'failed', failure: problem }, stops: unread !== undefined }
+  return { kind: 'done', result: { check: record, app, status: 'failed', failure: problem }, stops: lost !== undefined }
 }
 
 async function readOnce(context: PagesContext, page: AppPage | undefined, app: string, queries: readonly TextQuery[], deadline: Deadline): Promise<Read> {
@@ -100,10 +105,9 @@ async function readOnce(context: PagesContext, page: AppPage | undefined, app: s
   const read = await bounded(page.page.readPage(queries, timeoutMs), timeoutMs + abortGraceMs, context.stopped)
   if (read.status === 'stopped') return { status: 'stopped' }
   if (read.status === 'done') return { status: 'read', reading: read.value }
-  const late = failure('timeout', `The page of ${app} did not answer a host check within ${timeoutMs} ms.`)
-  if (read.status === 'timed_out') return { status: 'late', failure: late }
+  if (read.status === 'timed_out') return { status: 'late' }
   const problem = readFailure(read.error, app, context.connected(page.browser))
-  return problem.class === 'timeout' ? { status: 'late', failure: problem } : { status: 'unread', failure: problem }
+  return problem.class === 'timeout' ? { status: 'late' } : { status: 'unread', failure: problem }
 }
 
 // The browser says how a read failed; a page whose browser has gone, or an error with no account of itself, is lost.
@@ -114,34 +118,53 @@ function readFailure(error: unknown, app: string, connected: boolean): Failure {
   return failure('session_lost', `${where}: ${errorMessage(error)}`)
 }
 
-// A look taken while the frame was opening another document judges nothing.
+// A look taken while the frame was opening another document judges nothing, and nor does a text check's look at a
+// document with no body, which has no visible text.
 function passes(check: HostCheck, reading: PageReading | undefined): boolean {
   if (reading === undefined || reading.navigating) return false
   if (check.kind === 'address') return matchesAddress(reading.url, check)
+  if (reading.body === false) return false
   const found = reading.found[0] === true
   return check.absent === true ? !found : found
 }
 
-// What the last look saw: the page's address and title, and for a text check whether the text was there.
+// What the last look saw: the page's address and title, and for a text check whether the text was there, or that
+// the document had no body to read.
 function actualOf(check: HostCheck, last: PageReading | undefined): HostCheckActual {
   if (last === undefined) return {}
   const page = { ...(last.url === undefined ? {} : { url: last.url }), ...(last.title === undefined ? {} : { title: last.title }) }
-  return check.kind === 'text' ? { ...page, found: last.found[0] === true } : page
+  if (check.kind === 'address') return page
+  return last.body === false ? { ...page, body: false } : { ...page, found: last.found[0] === true }
 }
 
-function checkFailure(check: HostCheck, app: string, last: PageReading | undefined, looked: { attempts: number; timeoutMs: number }): Failure {
-  const named = check.name === undefined ? `The ${check.kind} check on ${app}` : `The host check ${quoteText(check.name)} on ${app}`
+type FailedCheck = {
+  check: HostCheck
+  app: string
+  last: PageReading | undefined
+  looked: { attempts: number; timeoutMs: number }
+  /** Hides every value the run has read. Each value is hidden in the whole text before it is quoted or cut. */
+  redact: (text: string) => string
+}
+
+function checkFailure({ check, app, last, looked, redact }: FailedCheck): Failure {
+  const named = check.name === undefined ? `The ${check.kind} check on ${app}` : `The host check ${quoteText(redact(check.name))} on ${app}`
   const opening = last?.navigating === true ? ' The page was still opening another document.' : ''
   const times = `Looked ${looked.attempts} ${looked.attempts === 1 ? 'time' : 'times'} in ${looked.timeoutMs} ms.`
-  const url = last?.url
+  const url = last?.url === undefined ? undefined : redact(last.url)
   if (check.kind === 'address') {
-    const expected = expectedAddress(check)
+    const expected = redact(expectedAddress(check))
     const message = `${named} failed: the page is on ${url ?? 'no web address'}, expected ${expected}.${opening} ${times}`
     return { class: 'host_check_failed', message, details: { expected: truncateText(expected), received: url === undefined ? null : truncateText(url), ...looked } }
   }
+  const text = redact(check.text)
   const ignoringCase = check.ignoreCase === true ? ', ignoring case' : ''
-  const saw = check.absent === true ? `the page shows ${quoteText(check.text)}${ignoringCase}, which it should not` : `the page does not show ${quoteText(check.text)}${ignoringCase}`
-  return { class: 'host_check_failed', message: `${named} failed: ${saw}.${opening} ${times}`, details: { expected: truncateText(check.text), ...looked } }
+  const saw =
+    last?.body === false
+      ? 'the page has no body, so Retest could not read its text'
+      : check.absent === true
+        ? `the page shows ${quoteText(text)}${ignoringCase}, which it should not`
+        : `the page does not show ${quoteText(text)}${ignoringCase}`
+  return { class: 'host_check_failed', message: `${named} failed: ${saw}.${opening} ${times}`, details: { expected: truncateText(text), ...looked } }
 }
 
 function expectedAddress(check: Extract<HostCheck, { kind: 'address' }>): string {

@@ -21,6 +21,7 @@ describe('package subpaths', () => {
       ['.', 'index'],
       ['./runner', 'runner/index'],
       ['./protocol', 'protocol/index'],
+      ['./playwright', 'playwright/index'],
     ] as const) {
       const conditions = exports[subpath]
       assert.ok(isPlainObject(conditions), subpath)

@@ -939,3 +939,28 @@ test('a scroll with no distance is usage, and sends nothing', async (t) => {
   assert.equal(failure.message, 'scroll() takes x and y in CSS pixels, one of them other than 0, received { x: 0, y: 0 }.')
   assert.equal((await observe(page, 'wheels-heard')).text, '')
 })
+
+// The page tells Retest when its document changes, so a look that waits for a change answers when the change
+// comes, not on a timer, and a look at a page that does not change answers when its wait runs out.
+test('an observe with after answers on the next change, or after waitMs when nothing changes', async (t) => {
+  const { page } = await taskPage(t, { mode: 'delayed', delayMs: 600 })
+  const first = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' } }, 2000)
+  assert.ok(first.ok && first.kind === 'observe' && first.changes !== undefined, JSON.stringify(first))
+  const quiet = await timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' }, after: { changes: first.changes, waitMs: 300 } }, 2000))
+  assert.ok(quiet.value.ok && quiet.value.kind === 'observe', JSON.stringify(quiet.value))
+  assert.ok(quiet.ms >= 290 && quiet.ms < 700, `a quiet page answered after ${quiet.ms} ms`)
+  assert.ok(quiet.value.waitedMs !== undefined && quiet.value.waitedMs >= 290, `waited ${quiet.value.waitedMs} ms`)
+  assert.equal(quiet.value.changes, first.changes)
+
+  assertOk(await fill(page, 'task-title', 'Release checklist'))
+  assertOk(await click(page, 'save-task'))
+  // The click showed "Saving…" at once; the server's answer, 600 ms later, is the change the next look waits for.
+  const saving = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' } }, 2000)
+  assert.ok(saving.ok && saving.kind === 'observe' && saving.changes !== undefined, JSON.stringify(saving))
+  assert.ok(saving.changes > first.changes, 'the click changed the document')
+  const saved = await timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' }, after: { changes: saving.changes, waitMs: 3000 } }, 5000))
+  assert.ok(saved.value.ok && saved.value.kind === 'observe', JSON.stringify(saved.value))
+  assert.equal(saved.value.observation.text, 'Release checklist')
+  assert.ok(saved.ms < 1500, `the saved text was seen only after ${saved.ms} ms`)
+  assert.ok(saved.value.waitedMs !== undefined && saved.value.waitedMs >= 300 && saved.value.waitedMs < 1500, `waited ${saved.value.waitedMs} ms`)
+})

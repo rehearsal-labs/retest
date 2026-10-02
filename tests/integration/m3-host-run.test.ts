@@ -141,13 +141,14 @@ describe('a host-style run', () => {
     const [result] = run.returned.files.flatMap((each) => each.tests)
     assert.deepEqual(result?.hostChecks?.map((entry) => entry.status), ['passed', 'passed', 'passed'])
 
-    // Each navigation says what opened it, and no goto opened the page the checks read: the app's own link did.
-    const navigations = eventsOf(run.events, 'navigation').map((event) => [event.url.slice(app.url.length), event.cause, event.title])
+    // Each navigation says what opened it, and no goto opened the page the checks read: the app's own link did. Each
+    // opened a document, and names the line of the command that started it: the goto, the click, Enter, the link.
+    const navigations = eventsOf(run.events, 'navigation').map((event) => [event.url.slice(app.url.length), event.cause, event.title, event.document, event.location?.line])
     assert.deepEqual(navigations, [
-      ['/code/sign-in', 'goto', 'Sign in with a code'],
-      ['/code/verify', 'action', 'Enter the code'],
-      ['/account', 'action', 'Account'],
-      ['/', 'action', 'Tasks'],
+      ['/code/sign-in', 'goto', 'Sign in with a code', 'new', 8],
+      ['/code/verify', 'action', 'Enter the code', 'new', 11],
+      ['/account', 'action', 'Account', 'new', 15],
+      ['/', 'action', 'Tasks', 'new', 18],
     ])
     const firstCheck = run.events.findIndex((event) => event.type === 'host_check.passed')
     const lastBefore = eventsOf(run.events.slice(0, firstCheck), 'navigation').at(-1)

@@ -3,7 +3,7 @@ import type { Emulation } from '../protocol/emulation.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { TextQuery } from '../protocol/host-check.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
-import type { NavigationCause } from '../protocol/page-facts.ts'
+import type { NavigationCause, NavigationDocument } from '../protocol/page-facts.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 
 export type { Emulation } from '../protocol/emulation.ts'
@@ -28,19 +28,28 @@ export type NewPageOptions = { baseUrl?: string; emulation?: Emulation; storageS
 
 /**
  * What `readPage` saw. `url` is the main frame's origin and path as of its latest commit, and `title` the
- * document's title, read by `readPageTitle`, when it has one. `navigating` is true while the frame is opening
- * another document. `found` answers each query in order.
+ * document's title as the page has it, when it has one; the parent redacts, cleans and cuts it. `navigating` is
+ * true while the frame is opening another document. `found` answers each query in order. `body` is false when the
+ * document has no body, such as an XML or SVG document, so it has no visible text to read and `found` says nothing.
  */
-export type PageReading = { url: string | undefined; title?: string | undefined; navigating: boolean; found: boolean[] }
+export type PageReading = { url: string | undefined; title?: string | undefined; navigating: boolean; found: boolean[]; body?: false }
 
 /**
  * A navigation of the main frame, told when it commits. `url` is its origin and path. `title` settles, and never
- * rejects, with the document's title read by `readPageTitle`, or undefined when it has none: once its
+ * rejects, with the document's title as the page has it, or undefined when it has none: once its
  * `DOMContentLoaded` fires, once the next command to the page begins, or one second after the commit, whichever
  * comes first, and at the next commit with the title it had then. A navigation within the document settles at
- * once, with the title as it stands. `cause` says what started it.
+ * once, with the title as it stands. `cause` says what started it, and `document` whether it committed a new
+ * document or moved to a new path within the one the frame held. `commandToken` is the token `execute` was given
+ * for the command whose input or `goto` started it, when one did, however late it commits.
  */
-export type PageNavigation = { url: string; title: Promise<string | undefined>; cause: NavigationCause }
+export type PageNavigation = {
+  url: string
+  title: Promise<string | undefined>
+  cause: NavigationCause
+  document: NavigationDocument
+  commandToken?: number
+}
 
 /**
  * A `fill` whose value is the text to type. The parent reads a secret, and checks the page's origin may take
@@ -63,8 +72,8 @@ export type ResolvedFill = { kind: 'fill'; locator: LocatorRecipe; value: string
 export type BrowserCommand = Exclude<PageCommand, { kind: 'fill' }> | ResolvedFill
 
 /**
- * How long `close` waits for a browser it had to kill. A killed process takes a moment to go, so this is the
- * one wait no budget sets: it stands however small the budget is.
+ * How long `close` waits for a browser's process group to go once it has been killed. A killed process takes a
+ * moment to go, so this is the one wait no budget sets: it stands however small the budget is.
  */
 export const closeGraceMs: number = 1000
 
@@ -83,9 +92,9 @@ export interface OwnedBrowser {
   /** Returns a function that removes the listener. */
   onDisconnect(listener: (reason: string) => void): () => void
   /**
-   * Closes the browser within `timeoutMs`. Whatever is left of its process group then is killed, and `close`
-   * waits up to `closeGraceMs` more for it to go. Resolves once the group is gone and the profile is removed.
-   * A second call waits for the first.
+   * Asks the browser to close and ends its process group at once, since a test browser has nothing to save and
+   * Chrome's own shutdown takes about half a second. `close` waits up to `closeGraceMs` for the group to go, within
+   * `timeoutMs`. Resolves once the group is gone and the profile is removed. A second call waits for the first.
    */
   close(timeoutMs: number): Promise<void>
 }
@@ -103,9 +112,11 @@ export interface OwnedPage {
    * counts as a timeout), and says whether input was sent. `tap` needs a page that emulates a touch screen. A
    * result that passed names the page the command went to in `page`, read in the same call that checked or read
    * the element, and after `load` for a `goto`. Before a command goes past its start, every navigation already
-   * told has its `title` settled.
+   * told has its `title` settled. A navigation the command's input or `goto` started carries `commandToken` back.
+   * An `observe` answers with `changes`, how many times the document has changed as the page counts it; one with
+   * `after` first waits for the count to pass `after.changes`, or for `after.waitMs`, and says how long in `waitedMs`.
    */
-  execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult>
+  execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult>
   screenshot(timeoutMs: number): Promise<Uint8Array>
   /**
    * Reads the context's cookies, and `localStorage` for each origin the page visited, within `timeoutMs`. What
@@ -115,7 +126,7 @@ export interface OwnedPage {
   /**
    * Reads the page's address, its title and whether its visible text holds each query, within `timeoutMs`. Sends
    * no input. The visible text is `document.body.innerText` of the top-level document, read by `pageTextHolds`,
-   * and never leaves the page: only the answers do.
+   * and never leaves the page: only the answers do, one for each query.
    */
   readPage(queries: readonly TextQuery[], timeoutMs: number): Promise<PageReading>
   /**

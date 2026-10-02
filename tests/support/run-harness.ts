@@ -39,7 +39,7 @@ export type HarnessOptions = {
   baseUrl?: string
   /** Sees each chunk of the test files' output as it arrives. */
   onOutput?: (chunk: ChildOutput) => void
-} & Pick<RunOptions, 'hostChecks' | 'selection' | 'testEnvironment'>
+} & Pick<RunOptions, 'hostChecks' | 'selection' | 'testEnvironment' | 'workers' | 'browsers'>
 
 export type RunRecord = {
   result: RunResult
@@ -75,6 +75,8 @@ export async function runSupportFiles(names: readonly string[], options: Harness
       timeouts: { ...quickTimeouts, ...options.timeouts },
       outputDir: folder,
       headless: true,
+      workers: options.workers ?? 1,
+      ...(options.browsers === undefined ? {} : { browsers: options.browsers }),
       signal: options.signal ?? new AbortController().signal,
       onOutput: (chunk) => {
         output.push(chunk)

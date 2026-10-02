@@ -8,7 +8,7 @@ import type {
   PageReading,
   TextQuery,
 } from '../../src/browser/contract.ts'
-import type { CommandResult, Observation } from '../../src/protocol/commands.ts'
+import type { ObserveAfter, CommandResult, Observation } from '../../src/protocol/commands.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { OptionChoiceRecord } from '../../src/protocol/option-choices.ts'
@@ -23,7 +23,6 @@ import { failureSchema } from '../../src/protocol/failures.ts'
 import { pageTextHolds } from '../../src/protocol/host-check.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
 import { describeOptionChoice } from '../../src/protocol/option-choices.ts'
-import { readPageTitle } from '../../src/protocol/page-facts.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { observationOf } from './observation.ts'
 
@@ -145,6 +144,10 @@ export class FakePage implements OwnedPage {
   readonly reads: TextQuery[][] = []
   /** Whether a read finds the frame opening another document. */
   navigating = false
+  /** Whether the document has a body to read text from, as an XML or SVG document does not. */
+  hasBody = true
+  /** The token the runner gave each command, in the order the commands arrived. */
+  readonly commandTokens: (number | undefined)[] = []
   /** The page's selects, by test id. */
   readonly selects: Map<string, FakeSelect> = new Map([
     ['country', { options: [option('Canada', 'ca'), option('France', 'fr'), option('Mexico', 'mx')], multiple: false, selected: ['ca'] }],
@@ -161,6 +164,9 @@ export class FakePage implements OwnedPage {
   readonly ticked: Ticked[] = []
   /** Every wheel a `scroll` turned, in order. */
   readonly scrolled: Scrolled[] = []
+  /** How many times the document changed, as the real page's observer would count: every command that took effect, and every move. */
+  changes = 0
+  readonly #changeWaiters = new Set<() => void>()
 
   constructor(browser: FakeBrowser, options: NewPageOptions) {
     this.#browser = browser
@@ -184,17 +190,43 @@ export class FakePage implements OwnedPage {
   }
 
   // A browser about to be lost settles no title first.
-  async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> {
+  async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult> {
     const options = this.#browser.options
     if (options.disconnect?.on !== command.kind) this.#settleTitles()
     this.#browser.commands.push(command)
+    this.commandTokens.push(commandToken)
     options.onCommand?.(command)
-    const result = await this.#run(command, timeoutMs, signal)
+    const result = await this.#run(command, timeoutMs, signal, commandToken)
+    if (result.ok && command.kind !== 'observe') this.changed()
     await options.holdAnswer?.(command)
     return result
   }
 
-  async #run(command: BrowserCommand, timeoutMs: number, signal: AbortSignal | undefined): Promise<CommandResult> {
+  /** The document changed, as a test changes `saved` by hand: every look waiting for a change is answered. */
+  changed(): void {
+    this.changes += 1
+    for (const wake of [...this.#changeWaiters]) wake()
+  }
+
+  async #awaitChange(after: ObserveAfter, timeoutMs: number, signal: AbortSignal | undefined): Promise<number> {
+    const waitMs = Math.min(after.waitMs, timeoutMs)
+    if (this.changes > after.changes || waitMs <= 0) return 0
+    const startedAt = Date.now()
+    await new Promise<void>((resolve) => {
+      const wake = (): void => {
+        this.#changeWaiters.delete(wake)
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', wake)
+        resolve()
+      }
+      const timer = setTimeout(wake, waitMs)
+      this.#changeWaiters.add(wake)
+      signal?.addEventListener('abort', wake, { once: true })
+    })
+    return Date.now() - startedAt
+  }
+
+  async #run(command: BrowserCommand, timeoutMs: number, signal: AbortSignal | undefined, commandToken: number | undefined): Promise<CommandResult> {
     const options = this.#browser.options
     if (signal?.aborted === true) return this.#stop(command, signal)
     if (options.hang === command.kind) {
@@ -204,7 +236,7 @@ export class FakePage implements OwnedPage {
     if (options.disconnect?.on === command.kind) return this.#lose(command, options.disconnect.stage, timeoutMs)
     switch (command.kind) {
       case 'goto':
-        return this.#goto(command.url)
+        return this.#goto(command.url, commandToken)
       case 'press':
         return this.#press(command, timeoutMs, signal)
       case 'select':
@@ -220,24 +252,29 @@ export class FakePage implements OwnedPage {
     if (testId === undefined || (command.kind === 'tap' && !touch)) {
       return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${describeCommand(command)}.` } }
     }
-    if (command.kind === 'observe') return { ok: true, kind: 'observe', observation: this.#observe(testId), ...this.#facts() }
+    if (command.kind === 'observe') {
+      const waitedMs = command.after === undefined ? 0 : await this.#awaitChange(command.after, timeoutMs, signal)
+      const waited = waitedMs > 0 ? { waitedMs } : {}
+      return { ok: true, kind: 'observe', observation: this.#observe(testId), changes: this.changes, ...waited, ...this.#facts() }
+    }
     const action = command.kind === 'fill' ? command : { kind: touch ? 'tap' : 'click', locator: command.locator } as const
     const missing = await this.#find(action, action.locator, timeoutMs, signal)
     if (missing !== undefined) return missing
     const facts = this.#facts()
     if (action.kind === 'fill') this.#fill(action)
-    else this.#click(testId)
+    else this.#click(testId, commandToken)
     return { ok: true, kind: action.kind, ...facts }
   }
 
   /**
    * The page moves by itself, as a redirect or a timer moves it, or, with `action`, as a link the test clicked
-   * does. The address moves at once; the title settles as `titleDelayMs` says.
+   * does, naming the token of the command whose input it was. The address moves at once; the title settles as
+   * `titleDelayMs` says.
    */
-  navigate(path: string, cause: NavigationCause = 'page'): void {
+  navigate(path: string, cause: NavigationCause = 'page', commandToken?: number): void {
     const url = URL.parse(path, this.url ?? this.baseUrl)
     if (url === null) throw new Error(`The fake page cannot open ${path}.`)
-    this.#commit(url, cause, false)
+    this.#commit(url, { cause, commandToken }, false)
   }
 
   async captureState(): Promise<StorageState> {
@@ -254,9 +291,10 @@ export class FakePage implements OwnedPage {
     const earlier = this.reads.push([...queries]) - 1
     await this.#browser.options.onRead?.(this, earlier)
     if (!this.#browser.connected) throw new BrowserError({ class: 'session_lost', message: 'The page lost its browser.' })
-    const text = this.visibleText
-    const title = readPageTitle(this.documentTitle)
-    return { url: this.url, ...(title === undefined ? {} : { title }), navigating: this.navigating, found: queries.map((query) => pageTextHolds(text, query)) }
+    const text = this.hasBody ? this.visibleText : ''
+    const title = this.#rawTitle()
+    const body = this.hasBody ? {} : { body: false as const }
+    return { url: this.url, ...(title === undefined ? {} : { title }), navigating: this.navigating, found: queries.map((query) => pageTextHolds(text, query)), ...body }
   }
 
   onNavigation(listener: (navigation: PageNavigation) => void): () => void {
@@ -271,29 +309,36 @@ export class FakePage implements OwnedPage {
     this.disposed = true
   }
 
-  #goto(url: string): CommandResult {
+  #goto(url: string, commandToken: number | undefined): CommandResult {
     const resolved = URL.parse(url, this.baseUrl)
     if (resolved === null) return { ok: false, failure: { class: 'usage', message: `Cannot open ${url}.` } }
-    const page = this.#commit(resolved, 'goto', true)
+    const page = this.#commit(resolved, { cause: 'goto', commandToken }, true)
     return { ok: true, kind: 'goto', url: page, ...this.#facts() }
   }
 
-  // A later commit settles the title of the one before, with the title it had then.
-  #commit(url: URL, cause: NavigationCause, settleAtOnce: boolean): string {
+  // A later commit settles the title of the one before, with the title it had then. The page hands over its title
+  // as it has it, and the parent cleans it.
+  #commit(url: URL, started: { cause: NavigationCause; commandToken: number | undefined }, settleAtOnce: boolean): string {
     this.#settleTitles()
     const address = `${url.origin}${url.pathname}`
     this.url = address
     this.documentTitle = this.#browser.options.titles?.[url.pathname] ?? ''
     const title = Promise.withResolvers<string | undefined>()
-    const settle = (): void => title.resolve(readPageTitle(this.documentTitle))
+    const settle = (): void => title.resolve(this.#rawTitle())
     const delay = this.#browser.options.titleDelayMs
     if (settleAtOnce || delay === undefined) settle()
     else {
       this.#unsettledTitles.push(settle)
       setTimeout(settle, delay).unref()
     }
-    for (const listener of this.#navigation) listener({ url: address, title: title.promise, cause })
+    const token = started.commandToken === undefined ? {} : { commandToken: started.commandToken }
+    for (const listener of this.#navigation) listener({ url: address, title: title.promise, cause: started.cause, document: 'new', ...token })
     return address
+  }
+
+  // The title as `document.title` reads it, and none when it is empty.
+  #rawTitle(): string | undefined {
+    return this.documentTitle === '' ? undefined : this.documentTitle
   }
 
   #settleTitles(): void {
@@ -305,7 +350,7 @@ export class FakePage implements OwnedPage {
   // The page as the command found it, before its input: its address, and its title when it has one.
   #facts(): { page?: PageFacts } {
     if (this.url === undefined) return {}
-    const title = readPageTitle(this.documentTitle)
+    const title = this.#rawTitle()
     return { page: title === undefined ? { url: this.url } : { url: this.url, title } }
   }
 
@@ -408,9 +453,9 @@ export class FakePage implements OwnedPage {
     return { ok: false, failure: { class: 'session_lost', message: `The page lost its browser before ${described} sent any input: ${reason}` } }
   }
 
-  #click(testId: string): void {
+  #click(testId: string, commandToken?: number): void {
     if (testId === 'tasks-link') {
-      this.navigate('/tasks', 'action')
+      this.navigate('/tasks', 'action', commandToken)
       return
     }
     if (testId === 'sign-in') {

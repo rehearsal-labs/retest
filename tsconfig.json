@@ -21,6 +21,6 @@
     "noUnusedParameters": true,
     "skipLibCheck": false
   },
-  "include": ["src", "tests", "fixtures", "examples", "scripts"],
+  "include": ["src", "tests", "fixtures", "examples", "scripts", "benchmarks"],
   "exclude": ["tests/types/fixtures", "examples/tasks"]
 }

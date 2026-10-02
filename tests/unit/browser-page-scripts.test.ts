@@ -17,6 +17,7 @@ import {
   writeStorageFunction,
 } from '../../src/browser/page-scripts.ts'
 import { pageTextHolds } from '../../src/protocol/host-check.ts'
+import { titleReadLimit } from '../../src/protocol/page-facts.ts'
 import { FakeEvent, FakeInput, fakePage } from './browser-fake-page.ts'
 
 const functions = [
@@ -296,10 +297,42 @@ test('the page reads its visible text for each query by the rule pageTextHolds a
   page.document.body = { innerText: text }
   page.document.title = 'Order placed'
   const found = [true, true, false, true, false, true, true, false]
-  assert.deepEqual(page.call(readPageFunction, queries), { found, title: 'Order placed' })
+  assert.deepEqual(page.call(readPageFunction, queries), { found, title: 'Order placed', body: true })
   assert.deepEqual(found, queries.map((query) => pageTextHolds(text, query)))
+})
+
+test('a document with no body is not read as empty text: it says it has none, and finds nothing', () => {
+  const page = fakePage()
   page.document.body = null
-  assert.deepEqual(page.call(readPageFunction, queries), { found: queries.map((query) => pageTextHolds('', query)), title: 'Order placed' })
+  page.document.title = 'Feed'
+  assert.deepEqual(page.call(readPageFunction, [{ text: 'missing', ignoreCase: false }, { text: '', ignoreCase: false }]), { found: [false, false], title: 'Feed', body: false })
+})
+
+// A page can set a title of any size. The page hands over a bounded one; the parent redacts it before it cleans or cuts it.
+test(`the page hands its title over as it has it, up to ${titleReadLimit} code units, never inside a surrogate pair`, () => {
+  const page = fakePage()
+  const titleOf = (answer: unknown): unknown => (typeof answer === 'object' && answer !== null && 'title' in answer ? answer.title : undefined)
+  page.document.title = 'x'.repeat(titleReadLimit + 10)
+  assert.equal(titleOf(page.call(readPageFunction, [])), 'x'.repeat(titleReadLimit))
+  assert.equal(titleOf(page.call(pageFactsFunction)), 'x'.repeat(titleReadLimit))
+  page.document.title = `${'x'.repeat(titleReadLimit - 1)}😀y`
+  assert.equal(titleOf(page.call(pageFactsFunction)), 'x'.repeat(titleReadLimit - 1))
+})
+
+test("an element is described with its attributes whole, so a value in them is hidden whole once the parent redacts the failure", async () => {
+  const page = fakePage()
+  const field = page.element('field')
+  const long = `dialog-${'t'.repeat(60)}`
+  const dialog = page.element(long)
+  const { verdict } = await pressReady(page, field)
+  page.document.activeElement = dialog
+  assert.equal(page.dispatch('keydown', dialog).stopped, true)
+  assert.deepEqual(await verdict, {
+    reached: [],
+    intercepted: { event: 'keydown', by: `<input data-testid="${long}">` },
+    landed: `<input data-testid="${long}">`,
+    leaving: null,
+  })
 })
 
 test('the page facts are its address and title as the page has them', () => {

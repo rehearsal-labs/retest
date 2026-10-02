@@ -27,14 +27,18 @@ export type ReadyTarget = { browser: OwnedBrowser; emulation?: Emulation; proxy?
 
 export type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
 
-/** A browser as an app target first used it. The info names no app or target in milestone 1's mode. */
-export type StartedTarget = { info: BrowserInfo; userAgent: string; pid: number }
+/**
+ * A browser as an app target first used it. The info names no app or target in milestone 1's mode. When a target's
+ * tests are spread over several browsers, the first says how many in `instances`, and each further one its number
+ * in `instance`, from 2.
+ */
+export type StartedTarget = { info: BrowserInfo; userAgent: string; pid: number; instance?: number; instances?: number }
 
 export type BrowserPoolOptions = {
   launch: LaunchBrowser
   findExecutable: FindExecutable
-  /** Where a browser writes its stderr, as an absolute path, from the app target that launched it. */
-  logFile: (app: string, target: string) => string
+  /** Where a browser writes its stderr, as an absolute path, from the app target that launched it and which of the target's browsers it is, from 0. */
+  logFile: (app: string, target: string, instance: number) => string
   /** False shows every browser; true leaves each target's own setting. */
   headless: boolean
   /** Whether events name each browser's app and target, as a run from a config does. */
@@ -54,16 +58,22 @@ type AppTarget = { ok: true; key: string; emulation?: Emulation } | { ok: false;
 
 /**
  * The run's browsers. Each distinct target, its executable with its headless setting and emulation, launches
- * once, the first time a test needs it, and app targets that are the same share it. A proxy belongs to each
- * page's browser context, so targets that differ only by proxy share a browser too. A browser that fails to
- * launch, or is lost, is not launched again: every later test that needs it does not run.
+ * once, the first time a test needs it or when the run warms it, and app targets that are the same share it. A
+ * proxy belongs to each page's browser context, so targets that differ only by proxy share a browser too. A
+ * browser that fails to launch, or is lost, is not launched again: every later test that needs it does not run.
+ * App targets are set up one after another, so two that share a browser never launch it twice. A target's tests
+ * can be spread over several browsers, each worker keeping to one: one browser serves every context it is given
+ * from a single process, which a run on many workers saturates.
  */
 export class BrowserPool {
   readonly #options: BrowserPoolOptions
   readonly #launched = new Map<string, Launched>()
-  readonly #appTargets = new Map<string, AppTarget>()
+  readonly #appTargets = new Map<string, Promise<AppTarget>>()
   readonly #started: StartedTarget[] = []
   readonly #releases: Promise<unknown>[] = []
+  // How many browsers each app target's tests are spread over; one where nothing was said.
+  readonly #sizes = new Map<string, number>()
+  #setups: Promise<unknown> = Promise.resolve()
   #closing: Promise<void> | undefined
 
   constructor(options: BrowserPoolOptions) {
@@ -80,10 +90,31 @@ export class BrowserPool {
     return this.#closing === undefined && [...this.#launched.values()].some((entry) => entry.kind === 'ready' && entry.browser === browser && browser.connected)
   }
 
-  async ensure(app: LoadedApp, target: LoadedTarget): Promise<Opened<ReadyTarget>> {
-    const id = JSON.stringify([app.name, target.name])
-    const known = this.#appTargets.get(id) ?? (await this.#first(app, target))
-    this.#appTargets.set(id, known)
+  /** Spreads an app target's tests over this many browsers. Said once for it, before it is warmed or asked for. */
+  spread(app: LoadedApp, target: LoadedTarget, browsers: number): void {
+    if (!Number.isInteger(browsers) || browsers < 1) throw new RangeError(`A target runs in a whole number of browsers from 1, received ${browsers}.`)
+    this.#sizes.set(JSON.stringify([app.name, target.name]), browsers)
+  }
+
+  #sizeOf(app: LoadedApp, target: LoadedTarget): number {
+    return this.#sizes.get(JSON.stringify([app.name, target.name])) ?? 1
+  }
+
+  /**
+   * Starts setting up an app target now, in every browser its tests are spread over, so they launch while the
+   * first test process boots, instead of when the first test asks. `ensure` later waits for the same setup.
+   */
+  warm(app: LoadedApp, target: LoadedTarget): void {
+    for (let instance = 0; instance < this.#sizeOf(app, target); instance += 1) {
+      this.#appTarget(app, target, instance).catch(() => {
+        // ensure reports the problem to the test that needs the target; nothing waits here.
+      })
+    }
+  }
+
+  /** The target's browser for a worker: each worker keeps to one of the browsers the target's tests are spread over. */
+  async ensure(app: LoadedApp, target: LoadedTarget, worker = 0): Promise<Opened<ReadyTarget>> {
+    const known = await this.#appTarget(app, target, worker % this.#sizeOf(app, target))
     if (!known.ok) return known
     const launched = this.#launched.get(known.key)
     if (this.#closing !== undefined) return { ok: false, failure: failure('setup_failed', 'The browser was closed.') }
@@ -106,17 +137,29 @@ export class BrowserPool {
     await bounded(Promise.all(this.#releases), cleanup)
   }
 
-  async #first(app: LoadedApp, target: LoadedTarget): Promise<AppTarget> {
+  // One setup at a time, in the order they were asked for, each remembered for every later ask.
+  #appTarget(app: LoadedApp, target: LoadedTarget, instance: number): Promise<AppTarget> {
+    const id = JSON.stringify([app.name, target.name, instance])
+    let known = this.#appTargets.get(id)
+    if (known === undefined) {
+      known = this.#setups.then(() => this.#first(app, target, instance))
+      this.#setups = known.catch(() => undefined)
+      this.#appTargets.set(id, known)
+    }
+    return known
+  }
+
+  async #first(app: LoadedApp, target: LoadedTarget, instance: number): Promise<AppTarget> {
     const found = await this.#options.findExecutable(target)
     if (!found.ok) return found
     const executablePath = found.path
     const headless = this.#options.headless && target.headless
-    const key = JSON.stringify([executablePath, headless, target.emulate ?? null])
-    const launched = this.#launched.get(key) ?? (await this.#launch(key, { executablePath, headless, logFile: this.#options.logFile(app.name, target.name) }))
+    const key = JSON.stringify([executablePath, headless, target.emulate ?? null, instance])
+    const launched = this.#launched.get(key) ?? (await this.#launch(key, { executablePath, headless, logFile: this.#options.logFile(app.name, target.name, instance) }))
     if (launched.kind !== 'ready') return { ok: false, failure: launched.failure }
     const { browser } = launched
     const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
-    this.#announce(app, target, browser, emulation)
+    this.#announce(app, target, browser, emulation, instance)
     return emulation === undefined ? { ok: true, key } : { ok: true, key, emulation }
   }
 
@@ -145,14 +188,17 @@ export class BrowserPool {
     this.#options.onLost(browser, reason)
   }
 
-  #announce(app: LoadedApp, target: LoadedTarget, browser: OwnedBrowser, emulation: Emulation | undefined): void {
+  // The run's result lists each app target once, so only its first browser joins `started`; every browser is told.
+  #announce(app: LoadedApp, target: LoadedTarget, browser: OwnedBrowser, emulation: Emulation | undefined, instance: number): void {
     const { product, version, userAgent, pid, executablePath } = browser
     const device = typeof target.emulate === 'string' ? { device: target.emulate } : {}
     const proxy = target.proxy === undefined ? {} : { proxy: recordedProxy(target.proxy) }
     const described: TargetInfo = { name: target.name, ...(emulation === undefined ? {} : { emulation }), ...device, ...proxy }
     const named = this.#options.named ? { app: app.name, target: described } : {}
-    const started: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid }
-    this.#started.push(started)
+    const size = this.#sizeOf(app, target)
+    const numbered = instance > 0 ? { instance: instance + 1 } : size > 1 ? { instances: size } : {}
+    const started: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid, ...numbered }
+    if (instance === 0) this.#started.push(started)
     this.#options.onStarted(started)
   }
 }

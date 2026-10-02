@@ -24,7 +24,17 @@ const errorClasses: ReadonlySet<FailureClass> = new Set<FailureClass>([
  */
 export function testStatus(failure: Failure | undefined, cleanupFailures: readonly Failure[] = []): 'passed' | 'failed' | 'error' {
   if (failure === undefined) return cleanupFailures.length === 0 ? 'passed' : 'error'
-  return errorClasses.has(failure.class) ? 'error' : 'failed'
+  return isOurs(failure) ? 'error' : 'failed'
+}
+
+/**
+ * Whether a failure is ours, or something the test could not decide, rather than the application failing a check.
+ * Such a failure makes a test `error`.
+ *
+ * @example isOurs({ class: 'session_lost', message: 'The browser was lost.' }) // true
+ */
+export function isOurs(failure: Failure): boolean {
+  return errorClasses.has(failure.class)
 }
 
 /** What the runner knows at the end of a run, beyond the results in each file. */
