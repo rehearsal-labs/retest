@@ -5,11 +5,13 @@ import type { Style } from '../../reporters/style.ts'
 import type { RunTargets } from '../../reporters/targets.ts'
 import type { Look, TimelineEntry } from './looks.ts'
 import { join } from 'node:path'
+import { describeConsole, describeNetwork } from '../../diagnostics/report.ts'
+import { describeEvaluation, evaluationDetails } from '../../evaluation/report.ts'
 import { describeLocator } from '../../protocol/locator.ts'
 import { secretPlaceholder } from '../../protocol/secret.ts'
 import { formatLocation } from '../../protocol/location.ts'
 import { actionNotes, describeWrittenAction, type ActionEvent } from '../../reporters/actions.ts'
-import { describePage, describeStateEvent, formatDuration, plural, printable, statusLabel, testTitle } from '../../reporters/format.ts'
+import { describeCleanup, describeLocks, describePage, describePreparation, describeSessions, describeSessionsReleased, describeStateEvent, formatDuration, plural, printable, statusLabel, testTitle } from '../../reporters/format.ts'
 import { describeHostCheck, hostCheckPage } from '../../reporters/host-checks.ts'
 import { visibleLength } from '../../reporters/style.ts'
 import { describeVariant } from '../../reporters/targets.ts'
@@ -36,7 +38,8 @@ export function renderTimeline(test: TestResult, events: TestEvent[], options: T
   const variant = label === undefined ? '' : `  ${style.cyan(label)}`
   const heading = `  ${style.bold(testTitle(test.file, test.name, test.describePath))}${variant}  ${style.dim(formatLocation(test.location))}`
   const hostChecks = test.hostChecks === undefined || test.hostChecks.length === 0 ? [] : [plural(test.hostChecks.length, 'host check')]
-  const facts = [statusLabel(test.status), formatDuration(test.durationMs), plural(test.assertionCount, 'check'), ...hostChecks]
+  // A skipped test never ran, so it has no time and no checks to show; the host checks keyed to it are still named.
+  const facts = test.status === 'skipped' ? [statusLabel(test.status), ...hostChecks] : [statusLabel(test.status), formatDuration(test.durationMs), plural(test.assertionCount, 'check'), ...hostChecks]
   const summary = `  ${facts.join(' · ')}`
   const start = events[0]?.elapsedMs ?? 0
   const stepNames = new Map<string, string>()
@@ -67,6 +70,8 @@ function isPageEvent(event: TestEvent): boolean {
     case 'observation':
     case 'host_check.passed':
     case 'host_check.failed':
+    case 'diagnostics.started':
+    case 'diagnostics.finished':
       return true
     default:
       return false
@@ -86,6 +91,16 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
   switch (event.type) {
     case 'test.started':
       return ['started']
+    case 'lock.acquired':
+      return [describeLocks(event)]
+    case 'session.reserved':
+      return [describeSessions(event)]
+    case 'session.released':
+      return [describeSessionsReleased(event)]
+    case 'preparation.finished':
+      return [describePreparation(event.preparation)]
+    case 'cleanup.finished':
+      return [describeCleanup(event.cleanup)]
     case 'step.started':
       return [`▸ ${event.name}`]
     case 'step.finished': {
@@ -116,11 +131,27 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       return [`screenshot ${join(options.runFolder, event.path)}`]
     case 'evidence.failed':
       return [style.yellow(`screenshot not saved: ${event.message}`)]
+    case 'evaluation.finished':
+      return describeEvaluationEvent(event, options)
+    case 'diagnostics.started':
+      return [style.dim('diagnostics capture started')]
+    case 'diagnostics.finished':
+      return [style.dim(`diagnostics ${describeConsole(event.diagnostics.console)} · ${describeNetwork(event.diagnostics.network)}`)]
     case 'test.finished': {
-      const duration = event.status === 'not_run' ? '' : `  ${style.dim(formatDuration(event.durationMs))}`
+      const duration = event.status === 'not_run' || event.status === 'skipped' ? '' : `  ${style.dim(formatDuration(event.durationMs))}`
       return [`${statusLabel(event.status).toLowerCase()}${duration}`]
     }
   }
+}
+
+// An AI check: its verdict, the judge and model that answered, then its criteria, what the judge said and its evidence.
+function describeEvaluationEvent(event: EventOfType<'evaluation.finished'>, options: TimelineOptions): Described {
+  const { style } = options
+  const { evaluation } = event
+  const mark = evaluation.verdict === 'pass' ? style.green('✓') : evaluation.mode === 'advisory' ? style.yellow('!') : style.red('✗')
+  const failed = evaluation.failure === undefined ? '' : `  ${style.red(evaluation.failure.class)}`
+  const details = evaluationDetails(evaluation, options.runFolder).map(({ label, value }) => `${label.toLowerCase()} ${value}`)
+  return [`${mark} AI check ${describeEvaluation(evaluation)}  ${style.dim(formatDuration(evaluation.durationMs))}${failed}`, ...details]
 }
 
 function describeAction(event: ActionEvent): string {

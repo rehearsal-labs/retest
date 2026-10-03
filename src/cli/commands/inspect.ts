@@ -2,6 +2,7 @@ import type { RetestEvent } from '../../protocol/events.ts'
 import type { TestResult } from '../../protocol/result.ts'
 import type { Variant } from '../../protocol/variant.ts'
 import type { RunFolder } from '../../store/read-run-folder.ts'
+import type { SessionDiagnostics } from '../inspect/diagnostics.ts'
 import type { CliDependencies, Command } from '../command.ts'
 import { resolve } from 'node:path'
 import { matchesTargets, variantKey } from '../../protocol/variant.ts'
@@ -16,11 +17,15 @@ import { readRunFolder, RunFolderReadError } from '../../store/read-run-folder.t
 import { readTargetPairs } from '../app-pairs.ts'
 import { flag, list, parseArguments, value } from '../arguments.ts'
 import { CliError, UsageError } from '../errors.ts'
+import { readTestDiagnostics, renderTestDiagnostics } from '../inspect/diagnostics.ts'
 import { renderTimeline } from '../inspect/test-timeline.ts'
 import { suggest } from '../suggest.ts'
 import { shouldUseColor } from '../terminal.ts'
 
-/** What `inspect --test <id> --json` prints: the test's result and its events, in order. */
+/**
+ * What `inspect --test <id> --json` prints: the test's result and its events, in order, and each session's diagnostics
+ * with the lines of its artifact, or why they could not be read.
+ */
 export type TestReport = {
   schemaVersion: 1
   runId: string
@@ -28,6 +33,7 @@ export type TestReport = {
   complete: boolean
   test: TestResult
   events: RetestEvent[]
+  diagnostics?: SessionDiagnostics[]
 }
 
 const listedTests = 10
@@ -62,7 +68,7 @@ export const inspectCommand: Command = {
     const json = parsed.flag('json')
     const targets = readTargets(parsed.list('target'))
     if (testId === undefined && targets !== undefined) throw new UsageError('--target picks a test\'s target, so it needs --test.')
-    if (testId !== undefined) writeTest({ folder, shown, testId, targets, json }, dependencies)
+    if (testId !== undefined) writeTest({ folder, shown, path: resolve(dependencies.cwd, shown), testId, targets, json }, dependencies)
     else if (json) dependencies.stdout.write(`${JSON.stringify(folder.result, null, 2)}\n`)
     else writeRun(folder, shown, dependencies)
     return 0
@@ -79,24 +85,26 @@ function readFolder(folder: string, shown: string): RunFolder {
   }
 }
 
-type TestRequest = { folder: RunFolder; shown: string; testId: string; targets: Variant | undefined; json: boolean }
+type TestRequest = { folder: RunFolder; shown: string; path: string; testId: string; targets: Variant | undefined; json: boolean }
 
 function writeTest(request: TestRequest, dependencies: CliDependencies): void {
   const { folder, shown, testId } = request
   const test = findTest(folder, testId, request.targets)
   const record = recordEvents(folder.events)
   const events = record.test(testId, test.variantKey)?.events ?? []
+  const diagnostics = readTestDiagnostics(request.path, test)
   const { stdout } = dependencies
   if (request.json) {
     const { runId, complete } = folder.result
-    const report: TestReport = { schemaVersion: 1, runId, complete, test, events }
+    const report: TestReport = { schemaVersion: 1, runId, complete, test, events, ...(diagnostics.length === 0 ? {} : { diagnostics }) }
     stdout.write(`${JSON.stringify(report, null, 2)}\n`)
     return
   }
   const style = createStyle(shouldUseColor(stdout, dependencies.env))
   const targets = runTargets(record, folder.result)
   stdout.write(`\n${renderTimeline(test, events, { style, runFolder: shown, targets })}`)
-  if (test.status === 'passed') return
+  stdout.write(renderTestDiagnostics(diagnostics, events, { style, runFolder: shown }))
+  if (test.status === 'passed' || test.status === 'skipped') return
   const card = testCard(test, { record, runFolder: shown, targets })
   stdout.write(`\n${renderCard(card, { style, runFolder: shown, rootDir: record.started?.rootDir })}`)
 }
