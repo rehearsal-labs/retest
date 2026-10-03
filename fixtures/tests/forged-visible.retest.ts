@@ -1,7 +1,7 @@
 import { test } from '@rehearsal-labs/retest'
 
 // A test process that speaks the protocol itself and lies about what it saw: it opens the page, looks at an element
-// that is not there, then reports that the element is visible, naming that look.
+// that is not there, then reports that the element is visible, naming that look and the session that served it.
 
 type Scope = { testId: string; attemptId: string }
 
@@ -32,9 +32,10 @@ test('claims a missing element is visible', async () => {
   const locator = { by: 'testId', value: 'missing' }
   const result = await command(9002, { kind: 'observe', locator })
   const observationId = isRecord(result) && typeof result['observationId'] === 'string' ? result['observationId'] : 'none'
+  const sessionId = isRecord(result) && typeof result['sessionId'] === 'string' ? result['sessionId'] : 'none'
   const visible = { text: 'visible', truncated: false, length: 7 }
   const claim = { type: 'assertion.passed', ...scope, session: 'page', matcher: 'toBeVisible', locator, expected: visible, actual: visible, attempts: 1, durationMs: 1 }
-  process.send?.({ type: 'event', event: { ...claim, observationId, check: { matcher: 'toBeVisible' } } })
+  process.send?.({ type: 'event', event: { ...claim, observationId, sessionId, check: { matcher: 'toBeVisible' } } })
   await new Promise(() => {})
 })
 

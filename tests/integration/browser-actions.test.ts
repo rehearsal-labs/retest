@@ -561,7 +561,8 @@ test('Tab moves the focus to the next field, and Shift+Tab moves it back, each h
   await observeUntil(page, 'focus', (seen) => seen.text === 'second')
   assertOk(await press(page, undefined, 'Shift+Tab'))
   await observeUntil(page, 'focus', (seen) => seen.text === 'first')
-  assert.equal((await observe(page, 'keys-heard')).text, 'Tab Tab:shift')
+  // Shift is held as a real key, as a person holds it, so the page hears it go down before the Tab it changes.
+  assert.equal((await observe(page, 'keys-heard')).text, 'Tab Shift:shift Tab:shift')
 })
 
 test('Space on a button presses it once', async (t) => {
@@ -729,16 +730,36 @@ async function choicesPage(t: TestContext) {
   return { app, page, facts: { url: `${app.url}/actions/choices`, title: 'Choices' } }
 }
 
-test('select chooses an option by its label or its value, and the page hears input then change, as script', async (t) => {
+test('select chooses an option by its label or its value with the keyboard, and the page hears trusted input then change', async (t) => {
   const { page, facts } = await choicesPage(t)
   assert.deepEqual(await select(page, 'country', 'Canada'), { ok: true, kind: 'select', changed: true, page: facts })
   assert.equal((await observe(page, 'country-shown')).text, 'ca')
   assert.deepEqual(await select(page, byLabel('Country'), { value: 'mx' }), { ok: true, kind: 'select', changed: true, page: facts })
   assert.equal((await observe(page, 'country-shown')).text, 'mx')
-  assert.equal((await observe(page, 'changes-heard')).text, 'input:country:false change:country:false input:country:false change:country:false')
+  assert.equal((await observe(page, 'changes-heard')).text, 'input:country:true change:country:true input:country:true change:country:true')
   // The option already chosen is left alone, and the page hears nothing.
   assert.deepEqual(await select(page, 'country', 'Mexico'), { ok: true, kind: 'select', changed: false, page: facts })
-  assert.equal((await observe(page, 'changes-heard')).text, 'input:country:false change:country:false input:country:false change:country:false')
+  assert.equal((await observe(page, 'changes-heard')).text, 'input:country:true change:country:true input:country:true change:country:true')
+})
+
+test('a select its own change takes off the page passes on what it held as the change arrived, and one whose change puts another option back fails', async (t) => {
+  const { site, page } = await customPage(
+    t,
+    `<select data-testid="plan"><option>Free</option><option>Team</option></select>
+    <select data-testid="size"><option>Small</option><option>Large</option></select><script>
+      document.querySelector('[data-testid="plan"]').addEventListener('change', (event) => event.target.remove())
+      const size = document.querySelector('[data-testid="size"]')
+      size.addEventListener('change', () => { size.value = 'Small' })
+    </script>`,
+  )
+  assert.deepEqual(await select(page, 'plan', 'Team'), { ok: true, kind: 'select', changed: true, page: { url: `${site.url}/` } })
+  assert.equal((await observe(page, 'plan')).count, 0)
+  // The guard read Large as the change arrived, and the page put Small back: the select holds Small, so it fails.
+  assert.deepEqual(failureOf(await select(page, 'size', 'Large', 400)), {
+    class: 'not_actionable',
+    message: `Could not select 'Large' in getByTestId('size'): Retest typed the keys that choose it, and the select holds "Small". Retest does not type again.`,
+    details: { check: 'selection', inputSent: true },
+  })
 })
 
 test('a list chooses exactly those options of a select multiple and clears the others; one option chooses just that one', async (t) => {

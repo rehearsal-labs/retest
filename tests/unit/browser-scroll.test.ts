@@ -10,7 +10,7 @@ const terms = { by: 'testId', value: 'terms' } as const
 
 // A page whose look is ready at `point` with the visual viewport at `scale`, and whose guard saw `verdict`.
 function wheelPage(point: { x: number; y: number }, scale: number, verdict: unknown = { reached: ['wheel'], intercepted: null, landed: '<div>', leaving: null }) {
-  const ready = { status: 'ready', point, token: 2, via: null, scale, page }
+  const ready = { status: 'ready', point, token: 2, via: null, scale, page, plan: null }
   return scriptedPage({
     call: (source) => {
       if (source === prepareFunction || source === armDocumentFunction) return value(ready)

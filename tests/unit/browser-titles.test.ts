@@ -7,7 +7,7 @@ import { observeFunction, pageFactsFunction } from '../../src/browser/page-scrip
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { functionsCalled, mainFrame, scriptedPage, value } from './browser-fixtures.ts'
 
-const observed = { count: 0, visible: null, text: null, value: null, items: [], itemsTruncated: false }
+const observed = { count: 0, visible: null, text: null, value: null, checked: null, enabled: null, items: [], itemsTruncated: false }
 
 type TitledPage = ReturnType<typeof scriptedPage> & {
   navigations: PageNavigation[]

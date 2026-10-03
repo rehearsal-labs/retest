@@ -1,4 +1,4 @@
-import type { ActionIntent, Check, DocumentAction, Readiness } from './element-queries.ts'
+import type { ActionIntent, Check, DocumentAction, Readiness, SelectPlan } from './element-queries.ts'
 import type { Point } from './input.ts'
 import type { InDocument, IsolatedWorld } from './isolated-world.ts'
 import type { Deadline } from '../protocol/deadline.ts'
@@ -6,7 +6,7 @@ import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { describeLocator } from '../protocol/locator.ts'
+import { describeEmptyStep, describeLocator, describeStep, locatorSteps } from '../protocol/locator.ts'
 import { describeOptionChoice } from '../protocol/option-choices.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
 import { CdpTimeoutError } from './cdp/errors.ts'
@@ -18,8 +18,8 @@ import { originAndPath } from './page-url.ts'
 /**
  * An element, or the document, that passed every check. `point` is where to act, or null for a key, which goes to
  * the focus. `context` is the document the look ran in, which holds the guard the look armed with `token`, or none
- * for a `select`. `via` is `'label'` when a hidden control is acted on through its label, `scale` the visual
- * viewport's, and `page` the page the look read.
+ * for a `select`'s look. `via` is `'label'` when a hidden control is acted on through its label, `scale` the visual
+ * viewport's, `page` the page the look read, and `plan` the keys that make a select's choice.
  */
 export type ReadyTarget = {
   point: Point | null
@@ -28,12 +28,16 @@ export type ReadyTarget = {
   via: 'label' | undefined
   scale: number
   page: PageFacts
+  plan: SelectPlan | null
 }
 
-/** Where to act, or a `check` or `select` already as asked, which needs no input, or why the action cannot go. */
+/**
+ * Where to act, or a `check` or `select` already as asked, which needs no input, in the document `context` names, or
+ * why the action cannot go.
+ */
 export type ActionTarget =
   | ({ ok: true; kind: 'ready' } & ReadyTarget)
-  | { ok: true; kind: 'unchanged'; page: PageFacts }
+  | { ok: true; kind: 'unchanged'; page: PageFacts; context: number }
   | { ok: false; failure: Failure }
 
 /** A navigation the browser has begun in the main frame. Its document replaces the current one when it commits. */
@@ -99,7 +103,7 @@ async function look({ world, locator, intent, deadline, pendingNavigation }: Act
   if (pending !== undefined) return { kind: 'unready', unready: { status: 'navigating', url: pending.url } }
   let seen: InDocument<Readiness>
   try {
-    seen = locator === undefined ? await armDocument(world, documentAction(intent), deadline) : await prepare(world, locator, intent, deadline)
+    seen = locator === undefined ? await armDocument(world, documentAction(intent), strokesOf(intent), deadline) : await prepare(world, locator, intent, deadline)
   } catch (error) {
     // The deadline ran out during a look, so the previous look is the latest answer there is.
     if (last !== undefined && error instanceof CdpTimeoutError) return { kind: 'settled', target: failed(unready(last, locator, intent, deadline)) }
@@ -113,9 +117,7 @@ function lookedAt({ value: readiness, context }: InDocument<Readiness>, locator:
     case 'ready':
       return { kind: 'settled', target: readyTarget(readiness, context) }
     case 'unchanged':
-      return { kind: 'settled', target: { ok: true, kind: 'unchanged', page: pageFactsOf(readiness.page) } }
-    case 'selected':
-      throw new Error("Retest's page script made a selection while it only looked")
+      return { kind: 'settled', target: { ok: true, kind: 'unchanged', page: pageFactsOf(readiness.page), context } }
     case 'missing':
     case 'blocked':
       return { kind: 'unready', unready: readiness }
@@ -129,13 +131,19 @@ function lookedAt({ value: readiness, context }: InDocument<Readiness>, locator:
  * a disabled one.
  */
 function settledFailure(
-  readiness: Extract<Readiness, { status: 'ambiguous' | 'unsupported' | 'refused' | 'option' }>,
+  readiness: Extract<Readiness, { status: 'ambiguous' | 'unsupported' | 'refused' | 'option' | 'invalid' | 'shadow' | 'unreachable' }>,
   locator: LocatorRecipe,
   intent: ActionIntent,
 ): Look {
   switch (readiness.status) {
     case 'ambiguous':
       return { kind: 'settled', target: failed(ambiguous(readiness.count, locator, intent)) }
+    case 'invalid':
+      return { kind: 'settled', target: failed(invalidSelector(readiness, locator, intent)) }
+    case 'shadow':
+      return { kind: 'settled', target: failed(shadowRefused(readiness.host, locator, intent)) }
+    case 'unreachable':
+      return { kind: 'settled', target: failed(unreachable(readiness.element, locator, intent)) }
     case 'unsupported':
       return { kind: 'settled', target: failed(unsupported(readiness, locator, intent)) }
     case 'refused':
@@ -149,8 +157,8 @@ function settledFailure(
 }
 
 function readyTarget(readiness: Extract<Readiness, { status: 'ready' }>, context: number): ActionTarget {
-  const { point, token, via, scale, page } = readiness
-  return { ok: true, kind: 'ready', point, context, token, via: via ?? undefined, scale, page: pageFactsOf(page) }
+  const { point, token, via, scale, page, plan } = readiness
+  return { ok: true, kind: 'ready', point, context, token, via: via ?? undefined, scale, page: pageFactsOf(page), plan }
 }
 
 // Only an action on an element can meet an element that does not suit it.
@@ -162,6 +170,46 @@ function elementOf(locator: LocatorRecipe | undefined): LocatorRecipe {
 function documentAction({ action }: ActionIntent): DocumentAction {
   if (action === 'press' || action === 'scroll') return action
   throw new Error(`Retest cannot ${action} without an element`)
+}
+
+// A key holds its modifiers and is pressed, each released once; the wheel turns once.
+function strokesOf(intent: ActionIntent): number {
+  return intent.action === 'press' ? intent.strokes : 1
+}
+
+/**
+ * The failure for a CSS selector the page could not read. It fails at once: the selector is wrong in every document.
+ *
+ * @example invalidSelector({ step: 0, message: "'::nope' is not a valid selector." }, { by: 'css', selector: '::nope' }, { action: 'click', multiline: false })
+ */
+export function invalidSelector({ step, message }: { step: number; message: string }, locator: LocatorRecipe, intent: ActionIntent | undefined): Failure {
+  const named = locatorSteps(locator)[step]
+  const selector = named === undefined ? describeLocator(locator) : describeStep(named, locator.dialect)
+  const action = intent === undefined ? `read ${describeLocator(locator)}` : describeAction(intent, locator)
+  return { class: 'usage', message: `Could not ${action}: the page cannot read the CSS selector in ${selector}. ${message}`, details: { selector } }
+}
+
+/**
+ * The failure for a locator by Playwright's rules on a document that holds an open shadow root. Playwright looks inside
+ * one, and Retest does not, so it fails at once rather than find less than Playwright would.
+ *
+ * @example shadowRefused('<todo-list>', { by: 'role', role: 'button', dialect: 'playwright' }, undefined).class // 'unsupported'
+ */
+export function shadowRefused(host: string, locator: LocatorRecipe, intent: ActionIntent | undefined): Failure {
+  const action = intent === undefined ? `read ${describeLocator(locator)}` : describeAction(intent, locator)
+  return {
+    class: 'unsupported',
+    message: `Could not ${action}: the page holds an open shadow root, in ${host}. Playwright looks inside shadow roots and Retest does not, so Retest refuses the lookup rather than find less than Playwright would.`,
+    details: { host },
+  }
+}
+
+function unreachable(element: string, locator: LocatorRecipe, intent: ActionIntent): Failure {
+  return {
+    class: 'unsupported',
+    message: `Could not ${describeAction(intent, locator)}: it is ${element}, and no key a person can press there reaches what was asked, such as an option with no label to type or a hidden option. Retest typed nothing.`,
+    details: { element },
+  }
 }
 
 function failed(failure: Failure): ActionTarget {
@@ -226,8 +274,10 @@ function unready(last: Unready, locator: LocatorRecipe | undefined, intent: Acti
   const action = describeAction(intent, locator)
   const waitedMs = deadline.budgetMs
   switch (last.status) {
-    case 'missing':
-      return { class: 'not_found', message: `Could not ${action}: no element matched within ${waitedMs} ms.`, details: { waitedMs } }
+    case 'missing': {
+      const step = locator === undefined || last.empty === null ? undefined : describeEmptyStep(locator, last.empty)
+      return { class: 'not_found', message: `Could not ${action}: no element matched within ${waitedMs} ms.${step === undefined ? '' : ` ${step}`}`, details: { waitedMs } }
+    }
     case 'navigating': {
       const opening = describeAddress(last.url)
       return {

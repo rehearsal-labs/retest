@@ -60,7 +60,7 @@ test('failures name the action and the locator as the test wrote them', async ()
     ambiguous.message,
     "Could not tap getByRole('button', { name: 'Save', exact: false }): it matches 2 elements, and a locator must match exactly one. Retest did not tap any of them.",
   )
-  const missing = await failureFor({ status: 'missing' }, { by: 'text', text: 'Welcome' }, { action: 'click', multiline: false }, 50)
+  const missing = await failureFor({ status: 'missing', empty: null }, { by: 'text', text: 'Welcome' }, { action: 'click', multiline: false }, 50)
   assert.deepEqual(missing, { class: 'not_found', message: "Could not click getByText('Welcome'): no element matched within 50 ms.", details: { waitedMs: 50 } })
 })
 
@@ -107,7 +107,13 @@ test('each action sends the page what it needs, and a fill without origins sends
     [{ action: 'fill', multiline: true }, { action: 'fill', multiline: true, origins: null }],
     [{ action: 'check', pointer: 'click', multiline: false }, { action: 'check', checked: true, pointer: 'click' }],
     [{ action: 'uncheck', pointer: 'tap', multiline: false }, { action: 'check', checked: false, pointer: 'tap' }],
-    [{ action: 'select', choices: [{ label: 'Red' }], multiple: false, multiline: false }, { action: 'select', choices: [{ label: 'Red' }], multiple: false, apply: false }],
+    [{ action: 'select', choices: [{ label: 'Red' }], multiple: false, multiline: false }, { action: 'select', choices: [{ label: 'Red' }], multiple: false }],
+    [
+      { action: 'select', choices: [{ label: 'Red' }], multiple: false, multiline: false, typing: { strokes: 2 } },
+      { action: 'select', choices: [{ label: 'Red' }], multiple: false, typing: true, strokes: 2 },
+    ],
+    [{ action: 'press', key: 'Control+A', strokes: 2, multiline: false }, { action: 'press', strokes: 2 }],
+    [{ action: 'hover', multiline: false }, { action: 'hover' }],
     [{ action: 'scroll', multiline: false }, { action: 'scroll' }],
   ]
   for (const [intent, sentIntent] of cases) {
@@ -120,8 +126,18 @@ test('each action sends the page what it needs, and a fill without origins sends
 })
 
 const facts = { href: 'http://127.0.0.1:4173/tasks?page=2', title: ' Tasks ' }
-const ready: Readiness = { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page: facts }
-const readyTarget = { ok: true, kind: 'ready', point: { x: 10, y: 20 }, context: 7, token: 1, via: undefined, scale: 1, page: { url: 'http://127.0.0.1:4173/tasks', title: ' Tasks ' } }
+const ready: Readiness = { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page: facts, plan: null }
+const readyTarget = {
+  ok: true,
+  kind: 'ready',
+  point: { x: 10, y: 20 },
+  context: 7,
+  token: 1,
+  via: undefined,
+  scale: 1,
+  page: { url: 'http://127.0.0.1:4173/tasks', title: ' Tasks ' },
+  plan: null,
+}
 const calls = (sent: unknown[]) => sent.filter((params) => isObject(params) && 'functionDeclaration' in params).length
 
 test('while the browser is opening another document, the page is not looked at, and the look resumes in the document that arrives', async () => {
@@ -163,13 +179,13 @@ test("a key for the page's keyboard looks at no element: it waits out a navigati
   let polls = 0
   const pendingNavigation = () => (++polls <= 2 ? { url: 'http://127.0.0.1:4173/next' } : undefined)
   const keyboard = answering({ ...ready, point: null, token: 3 }, sent)
-  const intent: ActionIntent = { action: 'press', key: 'Enter', multiline: false }
+  const intent: ActionIntent = { action: 'press', key: 'Control+Enter', strokes: 2, multiline: false }
   const target = await waitUntilActionable({ world: keyboard, locator: undefined, intent, deadline: new Deadline(1000), pendingNavigation })
   assert.deepEqual(target, { ...readyTarget, point: null, token: 3 })
   const [call] = sent.filter((params) => isObject(params) && 'functionDeclaration' in params)
   assert.ok(isObject(call))
-  assert.match(String(call['functionDeclaration']), /^function armDocument\(action\)/)
-  assert.deepEqual(call['arguments'], [{ value: 'press' }])
+  assert.match(String(call['functionDeclaration']), /^function armDocument\(action, strokes\)/)
+  assert.deepEqual(call['arguments'], [{ value: 'press' }, { value: 2 }])
 })
 
 test('a wheel for the page arms the document as a key does, at the point and scale the page gives', async () => {
@@ -179,12 +195,12 @@ test('a wheel for the page arms the document as a key does, at the point and sca
   assert.deepEqual(target, { ...readyTarget, point: { x: 400, y: 300 }, token: 5, scale: 0.5 })
   const [call] = sent.filter((params) => isObject(params) && 'functionDeclaration' in params)
   assert.ok(isObject(call))
-  assert.deepEqual(call['arguments'], [{ value: 'scroll' }])
+  assert.deepEqual(call['arguments'], [{ value: 'scroll' }, { value: 1 }])
 })
 
 test("a key for the page's keyboard whose page never stops navigating fails naming the key and the address", async () => {
   const pendingNavigation = () => ({ url: 'http://127.0.0.1:4173/next?code=1234' })
-  const intent: ActionIntent = { action: 'press', key: 'Enter', multiline: false }
+  const intent: ActionIntent = { action: 'press', key: 'Enter', strokes: 1, multiline: false }
   const target = await waitUntilActionable({ world: world(ready), locator: undefined, intent, deadline: new Deadline(100), pendingNavigation })
   assert.deepEqual(target, {
     ok: false,
@@ -198,7 +214,7 @@ test("a key for the page's keyboard whose page never stops navigating fails nami
 
 test('a press on an element sends its checks to the page and names the key in every failure', async () => {
   const sent: unknown[] = []
-  const intent: ActionIntent = { action: 'press', key: 'Shift+Tab', multiline: false }
+  const intent: ActionIntent = { action: 'press', key: 'Shift+Tab', strokes: 2, multiline: false }
   const ambiguous = await failureFor({ status: 'ambiguous', count: 3 }, password, intent, 1000, sent)
   assert.equal(
     ambiguous.message,
@@ -206,7 +222,7 @@ test('a press on an element sends its checks to the page and names the key in ev
   )
   const [call] = sent.filter((params) => isObject(params) && 'functionDeclaration' in params)
   assert.ok(isObject(call) && Array.isArray(call['arguments']))
-  assert.deepEqual(call['arguments'][0], { value: { action: 'press' } })
+  assert.deepEqual(call['arguments'][0], { value: { action: 'press', strokes: 2 } })
   const unfocused = await failureFor({ status: 'blocked', check: 'focused', detail: null }, byTestId, intent, 50)
   assert.deepEqual(unfocused, {
     class: 'not_actionable',
@@ -216,7 +232,7 @@ test('a press on an element sends its checks to the page and names the key in ev
 })
 
 test('an element ready for a key is ready with no point, since a key goes to the focus', async () => {
-  const intent: ActionIntent = { action: 'press', key: 'a', multiline: false }
+  const intent: ActionIntent = { action: 'press', key: 'a', strokes: 1, multiline: false }
   const target = await waitUntilActionable({ world: world({ ...ready, point: null, token: 4 }), locator: byTestId, intent, deadline: new Deadline(1000), pendingNavigation: settled })
   assert.deepEqual(target, { ...readyTarget, point: null, token: 4 })
 })
@@ -224,7 +240,7 @@ test('an element ready for a key is ready with no point, since a key goes to the
 test('a control already as a check asks is settled at once, with the page it is on, and no guard', async () => {
   const intent: ActionIntent = { action: 'check', pointer: 'click', multiline: false }
   const target = await waitUntilActionable({ world: world({ status: 'unchanged', page: facts }), locator: byTestId, intent, deadline: new Deadline(1000), pendingNavigation: settled })
-  assert.deepEqual(target, { ok: true, kind: 'unchanged', page: { url: 'http://127.0.0.1:4173/tasks', title: ' Tasks ' } })
+  assert.deepEqual(target, { ok: true, kind: 'unchanged', page: { url: 'http://127.0.0.1:4173/tasks', title: ' Tasks ' }, context: 7 })
 })
 
 test('check and uncheck refuse an element they cannot use, and name it', async () => {
@@ -244,15 +260,58 @@ test('check and uncheck refuse an element they cannot use, and name it', async (
 
 test('a scroll names the element, or the page, in its failures', async () => {
   const scroll: ActionIntent = { action: 'scroll', multiline: false }
-  assert.equal((await failureFor({ status: 'missing' }, byTestId, scroll, 30)).message, "Could not scroll getByTestId('password'): no element matched within 30 ms.")
+  assert.equal((await failureFor({ status: 'missing', empty: null }, byTestId, scroll, 30)).message, "Could not scroll getByTestId('password'): no element matched within 30 ms.")
   const pendingNavigation = () => ({ url: 'http://127.0.0.1:4173/next?code=1234' })
   const target = await waitUntilActionable({ world: world(ready), locator: undefined, intent: scroll, deadline: new Deadline(30), pendingNavigation })
   assert.ok(!target.ok)
   assert.match(target.failure.message, /^Could not scroll the page within 30 ms: the page was still opening http:\/\/127\.0\.0\.1:4173\/next, and Retest does not scroll in a document about to be replaced\.$/)
 })
 
-test('a look that says it made a selection is an error of Retest, since a look only looks', async () => {
+test('a select ready to choose carries the keys the page planned for it', async () => {
   const intent: ActionIntent = { action: 'select', choices: [{ label: 'Red' }], multiple: false, multiline: false }
-  const looking = waitUntilActionable({ world: world({ status: 'selected', page: facts }), locator: byTestId, intent, deadline: new Deadline(1000), pendingNavigation: settled })
-  await assert.rejects(looking, /made a selection while it only looked/)
+  const plan = { quietMs: 0, keys: [{ key: 'r', toggle: false }] }
+  const target = await waitUntilActionable({ world: world({ ...ready, token: null, plan }), locator: byTestId, intent, deadline: new Deadline(1000), pendingNavigation: settled })
+  assert.deepEqual(target, { ...readyTarget, token: null, plan })
 })
+
+test('a select whose options no key reaches fails at once as unsupported, and types nothing', async () => {
+  const intent: ActionIntent = { action: 'select', choices: [{ value: 'blank' }], multiple: false, multiline: false }
+  const { failure, ms } = await timedFailure({ status: 'unreachable', element: '<select id="size">' }, byTestId, intent)
+  assert.deepEqual(failure, {
+    class: 'unsupported',
+    message: `Could not select { value: 'blank' } in getByTestId('password'): it is <select id="size">, and no key a person can press there reaches what was asked, such as an option with no label to type or a hidden option. Retest typed nothing.`,
+    details: { element: '<select id="size">' },
+  })
+  assert.ok(ms < 500, `refused at once, in ${ms} ms`)
+})
+
+test('a CSS selector the page cannot read fails at once as usage, naming the step that holds it', async () => {
+  const scoped: LocatorRecipe = { by: 'role', role: 'button', within: [{ by: 'css', selector: 'li:nope' }] }
+  const { failure, ms } = await timedFailure({ status: 'invalid', step: 0, message: "'li:nope' is not a valid selector." }, scoped, { action: 'click', multiline: false })
+  assert.deepEqual(failure, {
+    class: 'usage',
+    message: "Could not click locator('li:nope').getByRole('button'): the page cannot read the CSS selector in locator('li:nope'). 'li:nope' is not a valid selector.",
+    details: { selector: "locator('li:nope')" },
+  })
+  assert.ok(ms < 500, `refused at once, in ${ms} ms`)
+})
+
+test('a scoped locator that matches nothing says which step kept nothing, and a pick that kept none says so', async () => {
+  const scoped: LocatorRecipe = { by: 'role', role: 'button', name: 'Delete', within: [{ by: 'testId', value: 'tasks' }, { by: 'role', role: 'listitem', pick: 5 }] }
+  const click: ActionIntent = { action: 'click', multiline: false }
+  const outer = await failureFor({ status: 'missing', empty: { step: 0, matched: 0 } }, scoped, click, 30)
+  assert.equal(
+    outer.message,
+    "Could not click getByTestId('tasks').getByRole('listitem').nth(5).getByRole('button', { name: 'Delete' }): no element matched within 30 ms. getByTestId('tasks') matched no element.",
+  )
+  const picked = await failureFor({ status: 'missing', empty: { step: 1, matched: 3 } }, scoped, click, 30)
+  assert.match(picked.message, / no element matched within 30 ms\. getByTestId\('tasks'\)\.getByRole\('listitem'\) matched 3 elements, and nth\(5\) keeps none of them\.$/)
+  const last = await failureFor({ status: 'missing', empty: { step: 2, matched: 0 } }, scoped, click, 30)
+  assert.match(last.message, /: no element matched within 30 ms\.$/, 'the last step that matched nothing is the whole locator, which the message names already')
+})
+
+async function timedFailure(readiness: Readiness, locator: LocatorRecipe, intent: ActionIntent) {
+  const startedAt = performance.now()
+  const failure = await failureFor(readiness, locator, intent, 5000)
+  return { failure, ms: performance.now() - startedAt }
+}

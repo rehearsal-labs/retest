@@ -44,12 +44,12 @@ test('refuses what the actions do not take', async ({ page }) => {
   await country.select({ label: 'Canada' }) // type-error TS2353 'label' does not exist in type
   await country.select({ value: 3 }) // type-error TS2345 Type 'number' is not assignable to type 'string'
   await country.select(['Red', 3]) // type-error TS2322 Type 'number' is not assignable to type 'OptionChoice'
-  await country.select() // type-error TS2554 Expected 1 arguments, but got 0.
-  await country.select('Red', 'Blue') // type-error TS2554 Expected 1 arguments, but got 2.
-  await country.check(true) // type-error TS2554 Expected 0 arguments, but got 1.
-  await country.uncheck('Newsletter') // type-error TS2554 Expected 0 arguments, but got 1.
-  await page.getByTestId('terms').scroll() // type-error TS2554 Expected 1 arguments, but got 0.
-  await page.scroll() // type-error TS2554 Expected 1 arguments, but got 0.
+  await country.select() // type-error TS2554 Expected 1-2 arguments, but got 0.
+  await country.select('Red', 'Blue') // type-error TS2559 Type '"Blue"' has no properties in common with type 'CallOptions'.
+  await country.check(true) // type-error TS2559 Type 'true' has no properties in common with type 'CallOptions'.
+  await country.uncheck('Newsletter') // type-error TS2559 Type '"Newsletter"' has no properties in common with type 'CallOptions'.
+  await page.getByTestId('terms').scroll() // type-error TS2554 Expected 1-2 arguments, but got 0.
+  await page.scroll() // type-error TS2554 Expected 1-2 arguments, but got 0.
   await page.scroll(600) // type-error TS2559 Type '600' has no properties in common with type 'ScrollDelta'.
   await page.scroll({ y: '600' }) // type-error TS2322 Type 'string' is not assignable to type 'number'
   await page.scroll({ top: 600 }) // type-error TS2353 'top' does not exist in type 'ScrollDelta'

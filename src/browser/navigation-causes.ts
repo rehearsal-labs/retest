@@ -41,8 +41,9 @@ export class NavigationCauses {
   }
 
   /**
-   * Runs `work`, which opens an address for the `goto` `commandToken` names. A navigation it starts that the page
-   * did not request is the goto's.
+   * Runs `work`, which opens an address for the `goto` `commandToken` names, or reloads the page or moves through its
+   * history for a `reload`, `goBack` or `goForward`. A navigation it starts that the page did not request is that
+   * command's, cause `goto`.
    */
   opening<T>(commandToken: number | undefined, work: () => Promise<T>): Promise<T> {
     return during(this.#opening, { commandToken }, work)
@@ -81,9 +82,12 @@ export class NavigationCauses {
     this.#requested = undefined
   }
 
-  /** The page moved to a new path within its document, which `goto` never does, since a goto opens a document. */
+  /**
+   * The page moved to a new path within its document: the command's while `goBack` or `goForward` moves through the
+   * history, which `goto` never does, since a goto to a new path opens a document.
+   */
   movedWithinDocument(): NavigationStart {
-    return startOf('action', this.#delivering) ?? { cause: 'page' }
+    return startOf('goto', this.#opening) ?? startOf('action', this.#delivering) ?? { cause: 'page' }
   }
 
   #unannounced(): NavigationStart {

@@ -1,4 +1,4 @@
-import type { ActionIntent, Pointer } from './element-queries.ts'
+import type { ActionIntent, Pointer, Selection } from './element-queries.ts'
 import type { IsolatedWorld } from './isolated-world.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
@@ -7,6 +7,7 @@ import { describeLocator } from '../protocol/locator.ts'
 import { s } from '../protocol/schema.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
 import { shorten } from '../protocol/text.ts'
+import { describeAction, pageSelectionSchema, selectionOf } from './element-queries.ts'
 import { isGoneContext } from './isolated-world.ts'
 import { originRefusal } from './origin-refusal.ts'
 import { disarmFunction, strayFunction, verdictFunction } from './page-scripts.ts'
@@ -25,6 +26,10 @@ const guardedEvents = [
   'input',
   'keyup',
   'wheel',
+  'pointerover',
+  'pointermove',
+  'mouseover',
+  'mousemove',
 ] as const
 
 export type GuardedEvent = (typeof guardedEvents)[number]
@@ -37,11 +42,12 @@ export type Guard = { context: number; token: number }
  * the first one another element took, which the guard stopped, and `landed` the element at the press point, or
  * the one with the keyboard focus, when the guard was done. `leaving` is the origin a fill bound to origins saw
  * the page set off to open before the text arrived; the guard cancelled that navigation and stopped the typing.
- * `replaced` means the page moved to a new document before the guard was done, and `stopped` that the new
+ * `selection`, for a key typed to a select, is what the select held when its own input or change event arrived, or
+ * when the key was released if neither did. `replaced` means the page moved to a new document before the guard was done, and `stopped` that the new
  * document's own guard stopped typing that arrived there, meant for the document it replaced.
  */
 export type GuardVerdict =
-  | { kind: 'seen'; reached: GuardedEvent[]; intercepted: Interception | null; landed: string | null; leaving: string | null }
+  | { kind: 'seen'; reached: GuardedEvent[]; intercepted: Interception | null; landed: string | null; leaving: string | null; selection?: Selection }
   | { kind: 'replaced' }
   | { kind: 'stopped'; event: GuardedEvent; by: string; origin: string }
 
@@ -49,16 +55,17 @@ type Interception = { event: GuardedEvent; by: string }
 
 type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
 
-/** An action the guard watches: every one but `select`, whose input is Retest's own script. */
-export type GuardedIntent = Exclude<ActionIntent, { action: 'select' }>
+/** An action the guard watches: every one, a `select` through each key it types. */
+export type GuardedIntent = ActionIntent
 
-// The events that start each input: a press, a touch, a key, text, or the wheel.
-const firstEvents: Record<Pointer | 'fill' | 'press' | 'scroll', GuardedEvent[]> = {
+// The events that start each input: a press, a touch, a key, text, the wheel, or the mouse arriving.
+const firstEvents: Record<Pointer | 'fill' | 'press' | 'scroll' | 'hover', GuardedEvent[]> = {
   click: ['pointerdown'],
   tap: ['pointerdown', 'touchstart'],
   fill: ['keydown', 'beforeinput'],
   press: ['keydown'],
   scroll: ['wheel'],
+  hover: ['pointerover', 'pointermove'],
 }
 
 // Which part of a pointer's input each guarded event belongs to. A tap's own events all go to the element it
@@ -80,6 +87,7 @@ const seenSchema = s.object({
   intercepted: s.nullable(s.object({ event: eventSchema, by: s.string() })),
   landed: s.nullable(s.string()),
   leaving: s.nullable(s.string()),
+  selection: s.optional(pageSelectionSchema),
 })
 
 const straySchema = s.nullable(s.object({ event: eventSchema, by: s.string(), origin: s.string() }))
@@ -104,7 +112,10 @@ export async function guardInput(
   await input()
   await disarmGuard(world, guard, deadline)
   const answer = await verdict
-  if (answer.ok) return { kind: 'seen', ...answer.value }
+  if (answer.ok) {
+    const { selection, ...seen } = answer.value
+    return selection === undefined ? { kind: 'seen', ...seen } : { kind: 'seen', ...seen, selection: selectionOf(selection) }
+  }
   if (!isGoneContext(answer.error)) throw answer.error
   const stray = await world.call(strayFunction, [], straySchema, deadline)
   return stray === null ? { kind: 'replaced' } : { kind: 'stopped', ...stray }
@@ -136,6 +147,10 @@ export function guardFailure(verdict: GuardVerdict, intent: GuardedIntent, locat
   switch (intent.action) {
     case 'press':
       return keyFailure(verdict, intent.key, locator)
+    case 'select':
+      return selectKeyFailure(verdict, intent, elementOf(locator))
+    case 'hover':
+      return hoverFailure(verdict, elementOf(locator))
     case 'scroll':
       return wheelFailure(verdict, locator)
     case 'fill':
@@ -240,6 +255,65 @@ export function keyFailure(verdict: GuardVerdict, key: string, locator: LocatorR
   return {
     class: 'outcome_unknown',
     message: `Retest pressed ${pressed}, but the key never reached ${destination}, and the keyboard focus is on ${landed ?? 'no element'}. Retest cannot tell what received the key.`,
+    details: { focus: landed },
+  }
+}
+
+/**
+ * The failure for the mouse moved to the centre of an element, or undefined when its first event there reached the
+ * element. An over or move event another element took was stopped before the page's listeners heard it, but the
+ * browser's own hover styles may already show on that element. Input that never reached the element's document may
+ * have gone anywhere.
+ *
+ * @example hoverFailure({ kind: 'replaced' }, { by: 'testId', value: 'menu' })
+ */
+export function hoverFailure(verdict: GuardVerdict, locator: LocatorRecipe): Failure | undefined {
+  const target = describeLocator(locator)
+  if (verdict.kind !== 'seen') return movedAway('hover', target)
+  const { reached, intercepted, landed } = verdict
+  if (intercepted !== null) {
+    return {
+      class: 'not_actionable',
+      message: `Could not hover ${target}: another element, ${intercepted.by}, was at its centre when the mouse arrived. Retest stopped the mouse events before the page's listeners heard them.`,
+      details: { check: 'hit-target', interceptedBy: intercepted.by, event: intercepted.event },
+    }
+  }
+  if (reached.some((event) => firstEvents.hover.includes(event))) return undefined
+  return {
+    class: 'outcome_unknown',
+    message: `Retest moved the mouse to the centre of ${target}, but it never reached the element's document, and ${landed ?? 'no element'} is at that point. Retest cannot tell what received it.`,
+    details: { landed },
+  }
+}
+
+/**
+ * The failure for one key a `select` typed into its element, or undefined when its keydown reached the element. As
+ * for a press, the rest of the keystroke belongs to the page, a keydown another element took was stopped before the
+ * page heard it, and a key whose document was replaced, or that never reached it, may have done anything.
+ *
+ * @example selectKeyFailure({ kind: 'replaced' }, { action: 'select', choices: [{ label: 'Canada' }], multiple: false, multiline: false }, locator)
+ */
+export function selectKeyFailure(verdict: GuardVerdict, intent: Extract<ActionIntent, { action: 'select' }>, locator: LocatorRecipe): Failure | undefined {
+  const action = describeAction(intent, locator)
+  if (verdict.kind !== 'seen') {
+    return {
+      class: 'outcome_unknown',
+      message: `The page moved to a new document while Retest typed to ${action}, so Retest cannot tell what the select chose.`,
+      details: { reason: 'the page moved to a new document' },
+    }
+  }
+  const { reached, intercepted, landed } = verdict
+  if (intercepted !== null) {
+    return {
+      class: 'not_actionable',
+      message: `Could not ${action}: the keyboard focus moved to another element, ${intercepted.by}, before a key arrived. Retest stopped the key before the page received it.`,
+      details: { check: 'focused', focus: intercepted.by, event: intercepted.event },
+    }
+  }
+  if (reached.some((event) => firstEvents.press.includes(event))) return undefined
+  return {
+    class: 'outcome_unknown',
+    message: `Retest typed to ${action}, but the key never reached the element's document, and the keyboard focus is on ${landed ?? 'no element'}. Retest cannot tell what received it.`,
     details: { focus: landed },
   }
 }

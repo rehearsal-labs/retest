@@ -1,7 +1,7 @@
 import type { TextQuery } from '../../src/protocol/host-check.ts'
 import type { FakeElement, FakePage } from './browser-fake-page.ts'
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { describe, test } from 'node:test'
 import {
   armDocumentFunction,
   checkedFunction,
@@ -12,13 +12,14 @@ import {
   prepareFunction,
   readPageFunction,
   readStorageFunction,
+  selectionFunction,
   strayFunction,
   verdictFunction,
   writeStorageFunction,
 } from '../../src/browser/page-scripts.ts'
 import { pageTextHolds } from '../../src/protocol/host-check.ts'
 import { titleReadLimit } from '../../src/protocol/page-facts.ts'
-import { FakeEvent, FakeInput, fakePage } from './browser-fake-page.ts'
+import { FakeEvent, FakeInput, fakePage, oneElement } from './browser-fake-page.ts'
 
 const functions = [
   ['observe', observeFunction, 'function observe(limit, query, ...elements)'],
@@ -26,7 +27,8 @@ const functions = [
   ['verdict', verdictFunction, 'function verdict(token'],
   ['disarm', disarmFunction, 'function disarm(token'],
   ['stray', strayFunction, 'function stray()'],
-  ['armDocument', armDocumentFunction, 'function armDocument(action)'],
+  ['armDocument', armDocumentFunction, 'function armDocument(action, strokes)'],
+  ['selection', selectionFunction, 'function selection(choices, query, ...elements)'],
   ['checked', checkedFunction, 'function checked(query, ...elements)'],
   ['readPageFacts', pageFactsFunction, 'function readPageFacts()'],
   ['readPage', readPageFunction, 'function readPage(queries)'],
@@ -47,13 +49,12 @@ test('the guard script is one self-contained script that installs the guard when
   assert.match(guardScript, /^\(\(\) => \{[\s\S]*installGuard\(\)\n\}\)\(\)$/)
 })
 
-test('the page scripts never read values from their own source, and only a select is chosen by script', () => {
+test('the page scripts never read values from their own source, and choose nothing by script, a select included', () => {
   for (const [name, source] of [...functions, ['guard', guardScript]]) {
     assert.doesNotMatch(source, /\$\{/, 'nothing is interpolated into the page source')
     assert.doesNotMatch(source, /\b(eval|Function)\(/)
     assert.doesNotMatch(source, /\.click\(\)|\.value\s*=[^=]|\.checked\s*=[^=]/, 'input goes through the browser, never through script')
-    // A select's list is drawn outside the page, where input cannot reach it (fact F3).
-    if (name !== 'prepare') assert.doesNotMatch(source, /\.selected\s*=[^=]|dispatchEvent/)
+    assert.doesNotMatch(source, /\.selected\s*=[^=]|\.selectedIndex\s*=[^=]|dispatchEvent/, `${name}: a select is chosen with the keyboard`)
   }
 })
 
@@ -61,8 +62,8 @@ const facts = { href: 'http://app.test/start?token=1', title: 'Fake page' }
 
 // Readies a press on the element, and asks for the guard's verdict, which is still to come.
 async function pressReady(page: FakePage, element: FakeElement): Promise<{ verdict: unknown }> {
-  const readiness = await page.call(prepareFunction, { action: 'press' }, { by: 'elements' }, element)
-  assert.deepEqual(readiness, { status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts })
+  const readiness = await page.call(prepareFunction, { action: 'press' }, oneElement, element)
+  assert.deepEqual(readiness, { status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts, plan: null })
   assert.equal(page.document.activeElement, element, 'Retest focused the element')
   return { verdict: page.call(verdictFunction, 1) }
 }
@@ -103,10 +104,10 @@ test('a key is not armed for an element that is disabled or cannot keep the focu
   const page = fakePage()
   const disabled = page.element('disabled')
   disabled.disabled = true
-  assert.deepEqual(await page.call(prepareFunction, { action: 'press' }, { by: 'elements' }, disabled), { status: 'blocked', check: 'enabled', detail: null })
+  assert.deepEqual(await page.call(prepareFunction, { action: 'press' }, oneElement, disabled), { status: 'blocked', check: 'enabled', detail: null })
   const plain = page.element('plain')
   plain.focusable = false
-  assert.deepEqual(await page.call(prepareFunction, { action: 'press' }, { by: 'elements' }, plain), { status: 'blocked', check: 'focused', detail: null })
+  assert.deepEqual(await page.call(prepareFunction, { action: 'press' }, oneElement, plain), { status: 'blocked', check: 'focused', detail: null })
   assert.equal(page.dispatch('keydown', plain).stopped, true, 'nothing is armed, so a key is stray')
 })
 
@@ -114,7 +115,7 @@ test("a key for the page's keyboard reaches the document wherever the focus is i
   const page = fakePage()
   const field = page.element('field')
   page.document.activeElement = field
-  assert.deepEqual(page.call(armDocumentFunction, 'press'), { status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts })
+  assert.deepEqual(page.call(armDocumentFunction, 'press'), { status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts, plan: null })
   const verdict = page.call(verdictFunction, 1)
   assert.equal(page.dispatch('keydown', field).stopped, false)
   assert.deepEqual(await verdict, { reached: ['keydown'], intercepted: null, landed: '<input data-testid="field">', leaving: null })
@@ -138,11 +139,12 @@ test('the wheel is listened for only while a scroll is armed, and a wheel that r
   const page = fakePage()
   assert.equal(page.listening('wheel'), 0, 'no wheel listener slows the page before a scroll')
   assert.equal(page.listening('click'), 1)
+  assert.equal(page.listening('pointerover'), 1, "the mouse's arrival is heard from the start of the document, before the page can listen")
   const box = page.element('terms')
   page.document.atPoint = box
   page.visualViewport.scale = 0.5
-  const readiness = await page.call(prepareFunction, { action: 'scroll' }, { by: 'elements' }, box)
-  assert.deepEqual(readiness, { status: 'ready', point: { x: 50, y: 10 }, token: 1, via: null, scale: 0.5, page: facts })
+  const readiness = await page.call(prepareFunction, { action: 'scroll' }, oneElement, box)
+  assert.deepEqual(readiness, { status: 'ready', point: { x: 50, y: 10 }, token: 1, via: null, scale: 0.5, page: facts, plan: null })
   assert.equal(page.listening('wheel'), 1, 'armed')
   const verdict = page.call(verdictFunction, 1)
   assert.equal(page.dispatch('wheel', box).stopped, false)
@@ -155,7 +157,7 @@ test('a wheel another element takes is stopped, and a scroll disarmed without on
   const box = page.element('terms')
   const cover = page.element('cover')
   page.document.atPoint = box
-  await page.call(prepareFunction, { action: 'scroll' }, { by: 'elements' }, box)
+  await page.call(prepareFunction, { action: 'scroll' }, oneElement, box)
   const verdict = page.call(verdictFunction, 1)
   assert.equal(page.dispatch('wheel', cover).stopped, true)
   assert.deepEqual(await verdict, { reached: [], intercepted: { event: 'wheel', by: '<input data-testid="cover">' }, landed: '<input data-testid="terms">', leaving: null })
@@ -171,7 +173,7 @@ test('a wheel for the page is turned at the centre of the viewport, and any elem
   const anywhere = page.element('anywhere')
   page.document.atPoint = anywhere
   const readiness = page.call(armDocumentFunction, 'scroll')
-  assert.deepEqual(readiness, { status: 'ready', point: { x: 400, y: 300 }, token: 1, via: null, scale: 1, page: facts })
+  assert.deepEqual(readiness, { status: 'ready', point: { x: 400, y: 300 }, token: 1, via: null, scale: 1, page: facts, plan: null })
   const verdict = page.call(verdictFunction, 1)
   assert.equal(page.dispatch('wheel', anywhere).stopped, false)
   assert.deepEqual(await verdict, { reached: ['wheel'], intercepted: null, landed: '<input data-testid="anywhere">', leaving: null })
@@ -198,8 +200,8 @@ test('a hidden checkbox is checked through its one visible label, and the guard 
   const inside = page.element('slider')
   inside.parent = own
   page.document.atPoint = inside
-  const readiness = await page.call(prepareFunction, check, { by: 'elements' }, box)
-  assert.deepEqual(readiness, { status: 'ready', point: { x: 50, y: 10 }, token: 1, via: 'label', scale: 1, page: facts })
+  const readiness = await page.call(prepareFunction, check, oneElement, box)
+  assert.deepEqual(readiness, { status: 'ready', point: { x: 50, y: 10 }, token: 1, via: 'label', scale: 1, page: facts, plan: null })
   const verdict = page.call(verdictFunction, 1)
   for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) assert.equal(page.dispatch(type, inside).stopped, false, type)
   assert.deepEqual(await verdict, {
@@ -216,26 +218,26 @@ test('a hidden checkbox without exactly one visible label of its own is not visi
   const page = fakePage()
   const box = checkbox(page)
   box.visible = false
-  assert.deepEqual(await page.call(prepareFunction, check, { by: 'elements' }, box), { status: 'blocked', check: 'visible', detail: null })
+  assert.deepEqual(await page.call(prepareFunction, check, oneElement, box), { status: 'blocked', check: 'visible', detail: null })
   label(page, box, 'first')
   label(page, box, 'second')
-  assert.deepEqual(await page.call(prepareFunction, check, { by: 'elements' }, box), { status: 'blocked', check: 'visible', detail: null })
+  assert.deepEqual(await page.call(prepareFunction, check, oneElement, box), { status: 'blocked', check: 'visible', detail: null })
   const single = checkbox(page, 'checkbox', 'single')
   single.visible = false
   single.disabled = true
   page.document.atPoint = label(page, single, 'single-label')
-  assert.deepEqual(await page.call(prepareFunction, check, { by: 'elements' }, single), { status: 'blocked', check: 'enabled', detail: null })
+  assert.deepEqual(await page.call(prepareFunction, check, oneElement, single), { status: 'blocked', check: 'enabled', detail: null })
 })
 
 test('a control already in the state asked for is unchanged, and nothing is armed for it', async () => {
   const page = fakePage()
   const box = checkbox(page)
   box.checked = true
-  assert.deepEqual(await page.call(prepareFunction, check, { by: 'elements' }, box), { status: 'unchanged', page: facts })
+  assert.deepEqual(await page.call(prepareFunction, check, oneElement, box), { status: 'unchanged', page: facts })
   const role = page.element('role')
   role.setAttribute('role', 'switch')
   role.setAttribute('aria-checked', 'false')
-  assert.deepEqual(await page.call(prepareFunction, uncheck, { by: 'elements' }, role), { status: 'unchanged', page: facts })
+  assert.deepEqual(await page.call(prepareFunction, uncheck, oneElement, role), { status: 'unchanged', page: facts })
   assert.equal(page.call(disarmFunction, 1), false, 'no arming was made')
 })
 
@@ -245,40 +247,40 @@ test('a role says what can be checked, by its first word, and aria-checked="mixe
   mixed.setAttribute('role', 'checkbox')
   mixed.setAttribute('aria-checked', 'mixed')
   page.document.atPoint = mixed
-  assert.deepEqual(await page.call(prepareFunction, check, { by: 'elements' }, mixed), { status: 'ready', point: { x: 50, y: 10 }, token: 1, via: null, scale: 1, page: facts })
-  assert.equal(page.call(checkedFunction, { by: 'elements' }, mixed), false)
+  assert.deepEqual(await page.call(prepareFunction, check, oneElement, mixed), { status: 'ready', point: { x: 50, y: 10 }, token: 1, via: null, scale: 1, page: facts, plan: null })
+  assert.equal(page.call(checkedFunction, oneElement, mixed), false)
   mixed.setAttribute('aria-checked', 'true')
-  assert.equal(page.call(checkedFunction, { by: 'elements' }, mixed), true)
+  assert.equal(page.call(checkedFunction, oneElement, mixed), true)
   for (const role of ['menuitemcheckbox', 'menuitemradio', 'radio switch']) {
     const element = page.element(role)
     element.setAttribute('role', role)
     element.setAttribute('aria-checked', 'true')
-    assert.equal(page.call(checkedFunction, { by: 'elements' }, element), true, role)
+    assert.equal(page.call(checkedFunction, oneElement, element), true, role)
   }
   const second = page.element('second-word')
   second.setAttribute('role', 'button checkbox')
-  assert.deepEqual(await page.call(prepareFunction, check, { by: 'elements' }, second), {
+  assert.deepEqual(await page.call(prepareFunction, check, oneElement, second), {
     status: 'unsupported',
     reason: 'checkable',
     element: '<input data-testid="second-word">',
   })
-  assert.equal(page.call(checkedFunction, { by: 'elements' }, second), null)
+  assert.equal(page.call(checkedFunction, oneElement, second), null)
 })
 
 test('uncheck refuses a radio button, native or by role, and check refuses what cannot be checked', async () => {
   const page = fakePage()
   const radio = checkbox(page, 'radio', 'red')
   radio.checked = true
-  assert.deepEqual(await page.call(prepareFunction, uncheck, { by: 'elements' }, radio), { status: 'unsupported', reason: 'radio', element: '<input data-testid="red">' })
+  assert.deepEqual(await page.call(prepareFunction, uncheck, oneElement, radio), { status: 'unsupported', reason: 'radio', element: '<input data-testid="red">' })
   const menuRadio = page.element('menu-radio')
   menuRadio.setAttribute('role', 'menuitemradio')
-  assert.deepEqual(await page.call(prepareFunction, uncheck, { by: 'elements' }, menuRadio), {
+  assert.deepEqual(await page.call(prepareFunction, uncheck, oneElement, menuRadio), {
     status: 'unsupported',
     reason: 'radio',
     element: '<input data-testid="menu-radio">',
   })
   const text = checkbox(page, 'text', 'name')
-  assert.deepEqual(await page.call(prepareFunction, check, { by: 'elements' }, text), { status: 'unsupported', reason: 'checkable', element: '<input data-testid="name">' })
+  assert.deepEqual(await page.call(prepareFunction, check, oneElement, text), { status: 'unsupported', reason: 'checkable', element: '<input data-testid="name">' })
 })
 
 test('the page reads its visible text for each query by the rule pageTextHolds applies, and its title', () => {
@@ -340,3 +342,65 @@ test('the page facts are its address and title as the page has them', () => {
   page.document.title = ' Raw\ttitle '
   assert.deepEqual(page.call(pageFactsFunction), { href: 'http://app.test/start?token=1', title: ' Raw\ttitle ' })
 })
+
+describe('a chain of steps', () => {
+  // Three elements a step after the first finds inside a list it kept, and one outside it.
+  function list(page: FakePage) {
+    const outer = page.element('list')
+    const first = page.element('first')
+    const second = page.element('second')
+    const outside = page.element('outside')
+    first.parent = outer
+    second.parent = outer
+    return { outer, first, second, outside }
+  }
+
+  const steps = (inner: Record<string, unknown> = {}) => ({
+    steps: [
+      { by: 'elements', from: 0, count: 1, pick: null },
+      { by: 'elements', from: 1, count: 3, pick: null, ...inner },
+    ],
+  })
+
+  test('a step finds only what lies inside the elements the step before kept, never those elements themselves', async () => {
+    const page = fakePage()
+    const { outer, first, second, outside } = list(page)
+    assert.deepEqual(await page.call(prepareFunction, { action: 'press', strokes: 1 }, steps(), outer, first, second, outside), { status: 'ambiguous', count: 2 })
+    assert.deepEqual(await page.call(prepareFunction, { action: 'press', strokes: 1 }, steps(), outer, outer, outside, outside), { status: 'missing', empty: null })
+  })
+
+  test('first, last and an index keep one match by position, counted from the end when negative, and an index past them keeps none', async () => {
+    const page = fakePage()
+    const { outer, first, second, outside } = list(page)
+    const ready = (pick: unknown) => page.call(prepareFunction, { action: 'press', strokes: 1 }, steps({ pick }), outer, first, second, outside)
+    for (const [pick, chosen] of [['first', first], ['last', second], [0, first], [1, second], [-1, second], [-2, first]] as const) {
+      const readiness = await ready(pick)
+      assert.equal(isRecord(readiness) ? readiness['status'] : undefined, 'ready', String(pick))
+      assert.equal(page.document.activeElement, chosen, String(pick))
+    }
+    assert.deepEqual(await ready(2), { status: 'missing', empty: { step: 1, matched: 2 } })
+    assert.deepEqual(await ready(-3), { status: 'missing', empty: { step: 1, matched: 2 } })
+  })
+
+  test('the first step that keeps nothing is named, with how many it matched before its pick, unless the count of none says it', async () => {
+    const page = fakePage()
+    const { first } = list(page)
+    const query = { steps: [{ by: 'elements', from: 0, count: 1, pick: 3 }, { by: 'elements', from: 1, count: 0, pick: null }] }
+    assert.deepEqual(await page.call(prepareFunction, { action: 'press', strokes: 1 }, query, first), { status: 'missing', empty: { step: 0, matched: 1 } })
+    const outerEmpty = { steps: [{ by: 'elements', from: 0, count: 0, pick: null }, { by: 'elements', from: 0, count: 0, pick: null }] }
+    assert.deepEqual(await page.call(prepareFunction, { action: 'press', strokes: 1 }, outerEmpty), { status: 'missing', empty: { step: 0, matched: 0 } })
+    const alone = { steps: [{ by: 'elements', from: 0, count: 0, pick: null }] }
+    assert.deepEqual(await page.call(prepareFunction, { action: 'press', strokes: 1 }, alone), { status: 'missing', empty: null })
+    const emptyStepOf = async (query: unknown) => {
+      const observed = await page.call(observeFunction, 5, query)
+      const observation = isRecord(observed) ? observed['observation'] : undefined
+      return isRecord(observation) ? observation['emptyStep'] : 'no observation'
+    }
+    assert.deepEqual(await emptyStepOf(outerEmpty), { step: 0, matched: 0 })
+    assert.equal(await emptyStepOf(alone), undefined)
+  })
+})
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}

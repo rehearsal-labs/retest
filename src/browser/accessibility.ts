@@ -1,13 +1,14 @@
 import type { WorldArgument, WorldScope } from './isolated-world.ts'
 import type { AriaRole } from '../protocol/aria-role.ts'
 import type { Deadline } from '../protocol/deadline.ts'
+import type { TextMatch } from '../protocol/locator.ts'
 import { s } from '../protocol/schema.ts'
 import { CdpProtocolError } from './cdp/errors.ts'
 import { request, sendOptions } from './cdp-results.ts'
 import { matchesText } from './text-match.ts'
 
 /** Which elements to ask Chrome's accessibility tree for: any of `roles`, with an accessible name that matches, if given. */
-export type RoleQuery = { roles: readonly string[]; name?: string; exact: boolean }
+export type RoleQuery = { roles: readonly string[]; name?: TextMatch; exact: boolean }
 
 /** The roles of the form controls a label names. */
 export const labelledRoles: readonly AriaRole[] = [

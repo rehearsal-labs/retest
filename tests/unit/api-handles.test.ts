@@ -156,10 +156,29 @@ describe('locators', () => {
   const misuses: [string, 'page' | 'locator', string, unknown[], string][] = [
     ['an unknown role', 'page', 'getByRole', ['buton'], "getByRole() takes an ARIA role such as 'button', received 'buton'."],
     ['an unknown role option', 'page', 'getByRole', ['button', { nam: 'Save' }], "getByRole() options take name and exact, received { nam: 'Save' }."],
-    ['a name that is not text', 'page', 'getByRole', ['button', { name: 3 }], 'getByRole() takes name as a string, received 3.'],
+    ['a name that is not text', 'page', 'getByRole', ['button', { name: 3 }], 'getByRole() takes name as a string or a RegExp, received 3.'],
     ['an exact that is not a boolean', 'page', 'getByText', ['Saved', { exact: 'yes' }], "getByText() takes exact as true or false, received 'yes'."],
-    ['text of only spaces', 'page', 'getByText', ['  '], "getByText() takes the text to find, received '  '."],
-    ['a label that is not text', 'page', 'getByLabel', [3], 'getByLabel() takes the text to find, received 3.'],
+    ['text of only spaces', 'page', 'getByText', ['  '], "getByText() takes the text to find, or a RegExp, received '  '."],
+    ['a label that is not text', 'page', 'getByLabel', [3], 'getByLabel() takes the text to find, or a RegExp, received 3.'],
+    ['a placeholder of only spaces', 'locator', 'getByPlaceholder', [' '], "getByPlaceholder() takes the text to find, or a RegExp, received ' '."],
+    ['exact beside a RegExp name', 'page', 'getByRole', ['button', { name: /save/i, exact: true }], 'getByRole() takes exact only with text. A RegExp says itself how it matches, so leave exact out.'],
+    ['exact beside a RegExp text', 'locator', 'getByText', [/saved/, { exact: false }], 'getByText() takes exact only with text. A RegExp says itself how it matches, so leave exact out.'],
+    [
+      'an XPath selector',
+      'page',
+      'locator',
+      ['//button'],
+      'locator() takes a CSS selector, received "//button". XPath and Playwright\'s selector engines, such as text= or >>, are not supported.',
+    ],
+    [
+      'a selector engine',
+      'locator',
+      'locator',
+      ['text=Save'],
+      'locator() takes a CSS selector, received "text=Save". XPath and Playwright\'s selector engines, such as text= or >>, are not supported.',
+    ],
+    ['an empty selector', 'page', 'locator', [''], 'locator() takes a CSS selector, received an empty one.'],
+    ['an index that is not whole', 'locator', 'nth', [1.5], 'nth() takes a whole number, counted from 0 and from the end when negative, received 1.5.'],
     ['a goto without a URL', 'page', 'goto', [7], 'goto() takes a URL string, received 7.'],
     ['a fill that is not text', 'locator', 'fill', [42], 'fill() takes a string, received 42.'],
   ]
@@ -173,6 +192,69 @@ describe('locators', () => {
       assert.deepEqual(commands, [])
     })
   }
+
+  test('a locator chosen once refuses to choose again, and sends nothing', async () => {
+    const { runPage, commands } = inProcessRun(file, page)
+    const verdict = await runPage(({ page: handle }) => handle.getByRole('listitem').first().nth(2).click())
+    assert.equal(verdict.failure?.class, 'usage')
+    assert.equal(verdict.failure?.message, "nth() chooses from a locator's matches, and this locator has chosen one already. Find inside it, or choose once.")
+    assert.deepEqual(commands, [])
+  })
+
+  test('finders on a locator look inside it, and first, last and nth keep one match, in the recipe sent', async () => {
+    const { runPage, commands } = inProcessRun(file, page)
+    const verdict = await runPage(async ({ page: handle }) => {
+      const list = handle.getByTestId('tasks')
+      await list.getByRole('listitem').nth(-1).getByRole('button', { name: /delete/i }).click()
+      await handle.locator('.task').first().hover()
+      await list.getByPlaceholder('Filter', { exact: false }).fill('release')
+      await handle.getByText(/^Saved \d+$/).last().click()
+      await list.locator('li').getByLabel('Done').getByTestId('box').check()
+      expect(1).toBe(1)
+    })
+    assert.equal(verdict.status, 'passed')
+    const tasks = { by: 'testId', value: 'tasks' }
+    assert.deepEqual(
+      commands.map((command) => ('locator' in command ? [command.kind, command.locator] : [command.kind])),
+      [
+        ['click', { by: 'role', role: 'button', name: { pattern: 'delete', flags: 'i' }, within: [tasks, { by: 'role', role: 'listitem', pick: -1 }] }],
+        ['hover', { by: 'css', selector: '.task', pick: 'first' }],
+        ['fill', { by: 'placeholder', text: 'Filter', exact: false, within: [tasks] }],
+        ['click', { by: 'text', text: { pattern: '^Saved \\d+$', flags: '' }, pick: 'last' }],
+        ['check', { by: 'testId', value: 'box', within: [tasks, { by: 'css', selector: 'li' }, { by: 'label', text: 'Done' }] }],
+      ],
+    )
+  })
+
+  test('reload, goBack and goForward are actions with the navigation budget', async () => {
+    const { runPage, sent } = inProcessRun(file, page)
+    const verdict = await runPage(async ({ page: handle }) => {
+      await handle.reload()
+      await handle.goBack()
+      await handle.goForward()
+      expect(1).toBe(1)
+    })
+    assert.equal(verdict.status, 'passed')
+    assert.deepEqual(sent.map(({ command }) => command.kind), ['reload', 'goBack', 'goForward'])
+  })
+
+  test('url and title read the page once each, and title waits for a document on its way', async () => {
+    let looks = 0
+    const reading: Responder = (command) => {
+      if (command.kind !== 'observePage') return undefined
+      looks += 1
+      return { ok: true, kind: 'observePage', observation: { url: 'http://127.0.0.1:4173/tasks', title: looks < 3 ? null : 'Tasks' } }
+    }
+    const { runPage } = inProcessRun(file, reading)
+    let read: [string, string] = ['', '']
+    const verdict = await runPage(async ({ page: handle }) => {
+      read = [await handle.url(), await handle.title()]
+      expect(1).toBe(1)
+    })
+    assert.equal(verdict.status, 'passed')
+    assert.deepEqual(read, ['http://127.0.0.1:4173/tasks', 'Tasks'])
+    assert.equal(looks, 3, 'url looked once, and title looked again while the page was opening another document')
+  })
 
   test('a page that has no touch screen refuses tap, and the test fails with its answer', async () => {
     const refusing: Responder = (command) =>

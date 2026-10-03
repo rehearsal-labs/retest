@@ -11,9 +11,13 @@ const file = 'tests/unit/assertions-observation-id.test.ts'
 
 type Assertion = Extract<ChildEvent, { type: 'assertion.passed' | 'assertion.failed' }>
 
+// The session the parent names with every look it serves this attempt.
+const session = 'attempt1:page'
+
 /**
- * A page that serves each look as the parent does, with an id counted per attempt: the saved task reads
- * "Saving…" until `ready` looks have been taken. `withoutId` says which looks, counted from 1, come without one.
+ * A page that serves each look as the parent does, with an id counted per attempt and the session that served it:
+ * the saved task reads "Saving…" until `ready` looks have been taken. `withoutId` says which looks, counted from 1,
+ * come without either.
  */
 function servedPage(ready: number, withoutId: (look: number) => boolean = () => false): Responder {
   let looks = 0
@@ -22,7 +26,7 @@ function servedPage(ready: number, withoutId: (look: number) => boolean = () => 
     looks++
     const text = looks > ready ? 'Release checklist' : 'Saving…'
     const observation = observationOf([{ text, visible: true }])
-    return withoutId(looks) ? { ok: true, kind: 'observe', observation } : { ok: true, kind: 'observe', observation, observationId: `o${looks}` }
+    return withoutId(looks) ? { ok: true, kind: 'observe', observation } : { ok: true, kind: 'observe', observation, observationId: `o${looks}`, sessionId: session }
   }
 }
 
@@ -38,6 +42,7 @@ describe('the look a locator assertion rests on', () => {
     const [passed] = assertions(events())
     assert.equal(passed?.type, 'assertion.passed')
     assert.equal(passed.observationId, 'o3')
+    assert.equal(passed.sessionId, session, 'with the session that served it')
     assert.deepEqual(passed.check, { matcher: 'toHaveText', text: 'Release checklist' })
     assert.equal('judgedBy' in passed, false, 'who judged a pass is the parent to say')
   })
@@ -49,6 +54,7 @@ describe('the look a locator assertion rests on', () => {
     const [failed] = assertions(events())
     assert.equal(failed?.type, 'assertion.failed')
     assert.equal(failed.observationId, `o${failed.attempts}`)
+    assert.equal(failed.sessionId, session)
     assert.deepEqual(failed.actual, truncateText('Saving…'))
     assert.deepEqual(failed.check, { matcher: 'toHaveText', text: 'Release checklist' })
   })
@@ -110,7 +116,7 @@ describe('the look a locator assertion rests on', () => {
     assert.equal(verdict.status, 'passed')
     const [passed] = assertions(events())
     assert.equal(passed?.attempts, 2)
-    assert.equal(passed !== undefined && 'observationId' in passed, false)
+    assert.equal(passed !== undefined && ('observationId' in passed || 'sessionId' in passed), false)
     assert.deepEqual(passed?.check, { matcher: 'toHaveText', text: 'Release checklist' })
   })
 
@@ -119,13 +125,13 @@ describe('the look a locator assertion rests on', () => {
     const losing: Responder = () => {
       looks++
       if (looks > 1) return { ok: false, failure: { class: 'session_lost', message: 'The browser is gone.' } }
-      return { ok: true, kind: 'observe', observation: observationOf([]), observationId: 'o1' }
+      return { ok: true, kind: 'observe', observation: observationOf([]), observationId: 'o1', sessionId: session }
     }
     const { runPage, events } = inProcessRun(file, losing)
     const verdict = await runPage(({ page }) => expect(page.getByTestId('saved-task')).toBeVisible())
     assert.equal(verdict.failure?.class, 'session_lost')
     const [failed] = assertions(events())
-    assert.equal(failed?.observationId, 'o1')
+    assert.deepEqual([failed?.observationId, failed?.sessionId], ['o1', session])
     assert.equal(failed?.actual, null)
     assert.deepEqual(failed?.check, { matcher: 'toBeVisible' })
   })

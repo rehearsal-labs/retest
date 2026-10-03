@@ -1,7 +1,7 @@
 import { expect, test } from '@rehearsal-labs/retest'
 
 // select, check and uncheck on the task app's choices page, which shows every change it hears, whether each was
-// trusted, and every click on a checkable control.
+// trusted, and every click on a checkable control. A select is chosen with the keyboard, so its changes are trusted.
 
 test('chooses by label, by value and from a list, and waits for an option that arrives late', async ({ page }) => {
   await page.goto('/actions/choices')
@@ -17,8 +17,14 @@ test('chooses by label, by value and from a list, and waits for an option that a
   await page.getByRole('button', { name: 'Add Peru' }).click()
   await page.getByLabel('Country').select('Peru')
   await expect(page.getByTestId('country-shown')).toHaveText('pe')
+  // The keyboard chooses: one change for each option typed to, and one for each option of the list toggled.
   await expect(page.getByTestId('changes-heard')).toHaveText(
-    'input:country:false change:country:false input:country:false change:country:false input:toppings:false change:toppings:false input:toppings:false change:toppings:false input:country:false change:country:false',
+    [
+      'input:country:true change:country:true input:country:true change:country:true',
+      'input:toppings:true change:toppings:true input:toppings:true change:toppings:true input:toppings:true change:toppings:true',
+      'input:toppings:true change:toppings:true input:toppings:true change:toppings:true input:toppings:true change:toppings:true',
+      'input:country:true change:country:true',
+    ].join(' '),
   )
 })
 

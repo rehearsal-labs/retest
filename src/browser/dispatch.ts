@@ -1,4 +1,5 @@
 import type { CdpSession } from './cdp/session.ts'
+import type { InputDispatch } from './contract.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import {
   CdpAbortedError,
@@ -16,10 +17,19 @@ import { neverRan } from './isolated-world.ts'
  * after it, nobody can tell whether the action happened, and it is never sent again.
  */
 export class Dispatch {
-  #sent = false
+  #input: InputDispatch = 'not_sent'
 
+  /** True once the command's effect may have reached the page: its input is `sent` or `unknown`. */
   get sent(): boolean {
-    return this.#sent
+    return this.#input !== 'not_sent'
+  }
+
+  /**
+   * How far the command's input got: `sent` once the browser answered every input that went, and `unknown` once one
+   * went without an answer, which no later answer undoes.
+   */
+  get input(): InputDispatch {
+    return this.#input
   }
 
   /**
@@ -29,10 +39,10 @@ export class Dispatch {
   async send(session: CdpSession, method: string, params: object, deadline: Deadline): Promise<unknown> {
     try {
       const result = await session.send(method, params, sendOptions(deadline))
-      this.#sent = true
+      this.#answered()
       return result
     } catch (error) {
-      if (mayHaveArrived(error)) this.#sent = true
+      if (mayHaveArrived(error)) this.#input = 'unknown'
       throw error
     }
   }
@@ -48,12 +58,17 @@ export class Dispatch {
     const attempt = new Dispatch()
     try {
       const answer = await send(attempt)
-      if (happened(answer)) this.#sent = true
+      if (happened(answer)) this.#answered()
       return answer
     } catch (error) {
-      if (attempt.sent) this.#sent = true
+      // The call may have acted before its answer was lost, or before an answer that could not be read.
+      if (attempt.sent) this.#input = 'unknown'
       throw error
     }
+  }
+
+  #answered(): void {
+    if (this.#input === 'not_sent') this.#input = 'sent'
   }
 }
 

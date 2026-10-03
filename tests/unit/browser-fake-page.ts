@@ -5,8 +5,17 @@ import { guardScript } from '../../src/browser/page-scripts.ts'
 // whose listeners the guard adds and removes, and events that record whether the guard stopped them. Retest's page
 // functions are compiled against it, so they run here as they would in the page, without a browser.
 
+let created = 0
+
 export class FakeNode {
+  static readonly DOCUMENT_POSITION_FOLLOWING = 4
   parent: FakeNode | null = null
+  // Nodes are in document order as they were made.
+  readonly #order = ++created
+
+  compareDocumentPosition(other: FakeNode): number {
+    return other.#order > this.#order ? FakeNode.DOCUMENT_POSITION_FOLLOWING : 2
+  }
 
   contains(node: unknown): boolean {
     for (let current = node; current instanceof FakeNode; current = current.parent) if (current === this) return true
@@ -91,6 +100,10 @@ export class FakeOption extends FakeElement {
     return this.#selected
   }
 
+  get index(): number {
+    return this.select?.options.indexOf(this) ?? 0
+  }
+
   // A single select keeps one option chosen, as the browser's does.
   set selected(value: boolean) {
     if (value && this.select?.multiple === false) for (const other of this.select.options) other.#selected = false
@@ -115,6 +128,10 @@ export class FakeSelect extends FakeElement {
 
   get selectedOptions(): FakeOption[] {
     return this.options.filter((option) => option.selected)
+  }
+
+  get selectedIndex(): number {
+    return this.options.findIndex((option) => option.selected)
   }
 
   dispatchEvent(event: { type: string; bubbles: boolean; composed: boolean }): boolean {
@@ -169,6 +186,9 @@ export class FakeWheelEvent extends FakeEvent {}
 
 type Listener = (event: FakeEvent) => void
 
+/** The query a page function takes for the one element passed after it, found already, as role and label pass theirs. */
+export const oneElement = { steps: [{ by: 'elements', from: 0, count: 1, pick: null }] } as const
+
 /** A fake page and the ways a test drives it. */
 export type FakePage = {
   readonly document: FakeDocument
@@ -179,12 +199,15 @@ export type FakePage = {
   element(testId: string): FakeElement
   /** How many listeners the window has for `type`. */
   listening(type: string): number
+  /** Starts a navigation as the page's own script would, through the listeners of the page's `navigation`. */
+  navigate(url: string, sameDocument: boolean): FakeEvent
   readonly visualViewport: { offsetLeft: number; offsetTop: number; width: number; height: number; scale: number }
 }
 
 /** A new document, which runs Retest's guard script before anything else, as every document the page opens does. */
 export function fakePage(): FakePage {
   const listeners = new Map<string, Set<Listener>>()
+  const navigateListeners: ((event: FakeEvent & { destination: { url: string; sameDocument: boolean } }) => void)[] = []
   const document = new FakeDocument()
   const window = {
     addEventListener: (type: string, listener: Listener) => {
@@ -196,7 +219,7 @@ export function fakePage(): FakePage {
   }
   const scope = {
     window,
-    navigation: { addEventListener: () => {} },
+    navigation: { addEventListener: (_type: string, listener: (typeof navigateListeners)[number]) => void navigateListeners.push(listener) },
     document,
     Node: FakeNode,
     Element: FakeElement,
@@ -226,7 +249,12 @@ export function fakePage(): FakePage {
   }
   const element = (testId: string) => new FakeElement(document, 'input', { 'data-testid': testId })
   const listening = (type: string) => listeners.get(type)?.size ?? 0
-  return { document, call, dispatch, element, listening, visualViewport: scope.visualViewport }
+  const navigate = (url: string, sameDocument: boolean): FakeEvent => {
+    const event = Object.assign(new FakeEvent('navigate'), { destination: { url, sameDocument } })
+    for (const listener of navigateListeners) listener(event)
+    return event
+  }
+  return { document, call, dispatch, element, listening, navigate, visualViewport: scope.visualViewport }
 }
 
 function eventClass(type: string): typeof FakeEvent {

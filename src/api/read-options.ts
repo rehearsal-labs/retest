@@ -4,15 +4,15 @@ import { listWords } from '../shared/list-words.ts'
 import { formatValue } from './format-value.ts'
 
 /** What a test declares for itself or takes from its blocks. */
-export type Declared = Pick<RegisteredTest, 'apps' | 'tags' | 'state'>
+export type Declared = Pick<RegisteredTest, 'apps' | 'tags' | 'state' | 'locks'>
 
 export type OptionsKind = 'test' | 'test.describe' | 'test.setup'
 
 export type ReadOptions = { readonly declared: Declared; readonly timeout?: number } | { readonly problem: string }
 
 const optionNames: Readonly<Record<OptionsKind, readonly string[]>> = {
-  test: ['apps', 'tags', 'state', 'timeout'],
-  'test.describe': ['apps', 'tags', 'state'],
+  test: ['apps', 'tags', 'state', 'locks', 'timeout'],
+  'test.describe': ['apps', 'tags', 'state', 'locks'],
   'test.setup': ['apps', 'timeout'],
 }
 
@@ -47,6 +47,7 @@ export function readOptions(kind: OptionsKind, options: unknown): ReadOptions {
 function readDeclared(kind: OptionsKind, key: string, value: unknown): Declared | string {
   if (key === 'apps') return readApps(kind, value)
   if (key === 'state') return readState(value)
+  if (key === 'locks') return isNameList(value) ? { locks: [...new Set(value)] } : `locks lists names, such as locks: ['inbox'], received ${formatValue(value)}.`
   return isNameList(value) ? { tags: [...new Set(value)] } : `tags lists names, such as tags: ['smoke'], received ${formatValue(value)}.`
 }
 

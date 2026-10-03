@@ -226,7 +226,7 @@ test('a disarm the page does not answer fails the action with that timeout', asy
 })
 
 const search = { by: 'label', text: 'Search' } as const
-const press: ActionIntent = { action: 'press', key: 'Enter', multiline: false }
+const press: ActionIntent = { action: 'press', key: 'Enter', strokes: 1, multiline: false }
 
 test('a key whose keydown reached the element succeeds, whatever the rest of the keystroke did, and even when the page cancelled it', () => {
   assert.equal(keyFailure(seen({ reached: ['keydown'], landed: '<input id="next">' }), 'Enter', search), undefined)
@@ -290,4 +290,30 @@ test('a check or uncheck is judged as the click or tap that made it, and named b
     message: "The page moved to a new document while Retest tried to uncheck getByTestId('save'), so Retest cannot tell whether the uncheck took effect.",
     details: { reason: 'the page moved to a new document' },
   })
+})
+
+test('a hover whose move reached the element succeeds; one another element took is stopped and named; one that never arrived is unknown', () => {
+  const menu = { by: 'testId', value: 'menu' } as const
+  const hover: ActionIntent = { action: 'hover', multiline: false }
+  assert.equal(guardFailure(seen({ reached: ['pointerover', 'pointermove', 'mouseover', 'mousemove'] }), hover, menu), undefined)
+  assert.equal(guardFailure(seen({ reached: ['pointermove', 'mousemove'] }), hover, menu), undefined, 'a pointer already over the element only moves')
+  assert.deepEqual(guardFailure(seen({ intercepted: { event: 'pointerover', by: '<div class="cover">' } }), hover, menu), {
+    class: 'not_actionable',
+    message: `Could not hover getByTestId('menu'): another element, <div class="cover">, was at its centre when the mouse arrived. Retest stopped the mouse events before the page's listeners heard them.`,
+    details: { check: 'hit-target', interceptedBy: '<div class="cover">', event: 'pointerover' },
+  })
+  assert.equal(guardFailure(seen({ landed: '<iframe>' }), hover, menu)?.class, 'outcome_unknown')
+  assert.equal(guardFailure({ kind: 'replaced' }, hover, menu)?.class, 'outcome_unknown')
+})
+
+test("a select's key that the focus did not take is stopped and names the select's choice", () => {
+  const country = { by: 'label', text: 'Country' } as const
+  const typing: ActionIntent = { action: 'select', choices: [{ label: 'Canada' }], multiple: false, multiline: false, typing: { strokes: 1 } }
+  assert.equal(guardFailure(seen({ reached: ['keydown', 'keypress', 'keyup'] }), typing, country), undefined)
+  assert.deepEqual(guardFailure(seen({ intercepted: { event: 'keydown', by: '<input id="next">' } }), typing, country), {
+    class: 'not_actionable',
+    message: "Could not select 'Canada' in getByLabel('Country'): the keyboard focus moved to another element, <input id=\"next\">, before a key arrived. Retest stopped the key before the page received it.",
+    details: { check: 'focused', focus: '<input id="next">', event: 'keydown' },
+  })
+  assert.match(guardFailure({ kind: 'replaced' }, typing, country)?.message ?? '', /^The page moved to a new document while Retest typed to select 'Canada' in getByLabel\('Country'\), so Retest cannot tell what the select chose\.$/)
 })

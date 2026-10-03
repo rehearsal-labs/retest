@@ -1,18 +1,19 @@
-import type { LocatorTarget } from '../api/app-page.ts'
+import type { LocatorTarget, PageTarget } from '../api/app-page.ts'
 import type { Scope } from '../api/context.ts'
-import type { Locator } from '../api/page.ts'
+import type { Locator, NativeLocator, Page } from '../api/page.ts'
 import type { RetestTypeError } from '../config/register.ts'
-import type { LocatorCheckRecord } from '../protocol/locator-checks.ts'
+import type { ExpectedText, LocatorCheckRecord, PageCheckRecord } from '../protocol/locator-checks.ts'
 import type { ValueCheck } from './value-checks.ts'
-import { locatorTarget } from '../api/app-page.ts'
+import { locatorTarget, pageTarget } from '../api/app-page.ts'
 import { requireScope } from '../api/context.ts'
 import { formatValue } from '../api/format-value.ts'
 import { misuse } from '../api/misuse.ts'
 import { isThenable } from '../api/operation.ts'
 import { Secret } from '../api/secret.ts'
-import { describeLocator } from '../protocol/locator.ts'
+import { describeLocator, textPatternOf } from '../protocol/locator.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { pollLocator } from './poll-locator.ts'
+import { pollPage } from './poll-page.ts'
 import { pollValue } from './poll-value.ts'
 import { assertValue } from './value.ts'
 import { containCheck, equalCheck, matchCheck, sameCheck } from './value-checks.ts'
@@ -25,53 +26,145 @@ const misplaced = {
   toMatch: 'toMatch is for values. Use toHaveText on a locator.',
   toBeVisible: 'toBeVisible is for locators. Use toBe on a value.',
   toBeHidden: 'toBeHidden is for locators. Use toBe on a value.',
+  toBeChecked: 'toBeChecked is for locators. Use toBe on a value.',
+  toBeEnabled: 'toBeEnabled is for locators. Use toBe on a value.',
+  toBeDisabled: 'toBeDisabled is for locators. Use toBe on a value.',
   toHaveText: 'toHaveText is for locators. Use toBe on a value.',
+  toContainText: 'toContainText is for locators. Use toContain on a value.',
   toHaveCount: 'toHaveCount is for locators. Use toBe on a value.',
   toHaveValue: 'toHaveValue is for locators. Use toBe on a value.',
+  toHaveURL: 'toHaveURL is for a page. Use toBe on a value.',
+  toHaveTitle: 'toHaveTitle is for a page. Use toBe on a value.',
+  not: '.not is for locator and page matchers. Write the value matcher that says what you expect.',
+  twice: '.not is written once.',
 } as const
 
 type Misplaced = typeof misplaced
 
-/** Matchers for a locator. They look at the page again until they pass or time runs out, so await them. */
-export interface LocatorAssertions {
+/**
+ * A matcher's own options: `timeout`, in milliseconds, shortens the assertion budget for that call and never
+ * lengthens it.
+ */
+export type AssertionOptions = { readonly timeout?: number | undefined }
+
+/** A locator's matchers, as they are and after `.not`. Each looks at the page again until it passes or time runs out. */
+export interface LocatorMatchers {
   /**
-   * Waits until exactly one element matches and it is visible.
+   * Waits until exactly one element matches and it is visible. Negated, it passes once that one element is hidden,
+   * or nothing matches.
    *
    * @example await expect(page.getByTestId('saved-task')).toBeVisible()
    */
-  toBeVisible(): Promise<void>
+  toBeVisible(options?: AssertionOptions): Promise<void>
   /**
-   * Waits until no element matches, or none that matches is visible.
+   * Waits until no element matches, or none that matches is visible. Negated, it passes once a match is visible.
    *
    * @example await expect(page.getByRole('dialog')).toBeHidden()
    */
-  toBeHidden(): Promise<void>
+  toBeHidden(options?: AssertionOptions): Promise<void>
   /**
-   * Waits until exactly one element matches and its whole text equals `expected`, or, given a list, until the
-   * matches have exactly those texts in order. Both ends are trimmed and each run of spaces or line breaks
-   * reads as one space; nothing else is loosened.
+   * Waits until exactly one element matches, it is a checkbox, a radio button or has a checkable role, and it is
+   * checked. Negated, it passes once that element is unchecked.
+   *
+   * @example await expect(page.getByLabel('I agree')).toBeChecked()
+   */
+  toBeChecked(options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until exactly one element matches and it is enabled.
+   *
+   * @example await expect(page.getByRole('button', { name: 'Save' })).toBeEnabled()
+   */
+  toBeEnabled(options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until exactly one element matches and it is disabled: a native control that is disabled, on its own or in
+   * a disabled fieldset, or one whose nearest `aria-disabled`, on it or an ancestor, is true.
+   *
+   * @example await expect(page.getByRole('button', { name: 'Save' })).toBeDisabled()
+   */
+  toBeDisabled(options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until exactly one element matches and its whole text equals `expected`, or matches a `RegExp`, or, given a
+   * list, until the matches have exactly those texts in order. Both ends are trimmed and each run of spaces or line
+   * breaks reads as one space; nothing else is loosened.
    *
    * @example
    * await expect(page.getByTestId('saved-task')).toHaveText('Release checklist')
-   * await expect(page.getByRole('listitem')).toHaveText(['One', 'Two'])
+   * await expect(page.getByRole('listitem')).toHaveText(['One', /^Two/])
    */
-  toHaveText(expected: string | readonly string[]): Promise<void>
+  toHaveText(expected: string | RegExp | readonly (string | RegExp)[], options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until exactly one element matches and its text holds `expected`, case-sensitive, or matches a `RegExp`.
+   *
+   * @example await expect(page.getByRole('status')).toContainText('saved')
+   */
+  toContainText(expected: string | RegExp, options?: AssertionOptions): Promise<void>
   /**
    * Waits until exactly `count` elements match, visible or not.
    *
    * @example await expect(page.getByRole('listitem')).toHaveCount(2)
    */
-  toHaveCount(count: number): Promise<void>
+  toHaveCount(count: number, options?: AssertionOptions): Promise<void>
   /**
-   * Waits until exactly one field matches and its value is exactly `value`.
+   * Waits until exactly one field matches and its value is exactly `value`, or matches a `RegExp`.
    *
    * @example await expect(page.getByLabel('Title')).toHaveValue('Release checklist')
    */
-  toHaveValue(value: string): Promise<void>
+  toHaveValue(value: string | RegExp, options?: AssertionOptions): Promise<void>
   readonly toBe: RetestTypeError<Misplaced['toBe']>
   readonly toEqual: RetestTypeError<Misplaced['toEqual']>
   readonly toContain: RetestTypeError<Misplaced['toContain']>
   readonly toMatch: RetestTypeError<Misplaced['toMatch']>
+}
+
+/** Matchers for a locator. They look at the page again until they pass or time runs out, so await them. */
+export interface LocatorAssertions extends LocatorMatchers {
+  /**
+   * The same matchers, each passing only on a look that shows the opposite. A missing element passes only
+   * `.not.toBeVisible()`, `.not.toHaveCount()` and `.not.toHaveText([...])`.
+   *
+   * @example await expect(page.getByRole('dialog')).not.toBeVisible()
+   */
+  readonly not: NegatedLocatorAssertions
+}
+
+/** A locator's matchers after `.not`. */
+export interface NegatedLocatorAssertions extends LocatorMatchers {
+  readonly not: RetestTypeError<Misplaced['twice']>
+}
+
+/** A page's matchers, as they are and after `.not`. Each looks at the page again until it passes or time runs out. */
+export interface PageMatchers {
+  /**
+   * Waits until the page's whole address, query and fragment included, equals `url`, or matches a `RegExp` anywhere.
+   * A relative URL resolves against the app's base URL.
+   *
+   * @example await expect(page).toHaveURL('/tasks?filter=open')
+   */
+  toHaveURL(url: string | RegExp, options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until the page's title equals `title`, or matches a `RegExp`, with both ends trimmed and each run of spaces
+   * read as one.
+   *
+   * @example await expect(page).toHaveTitle('Tasks')
+   */
+  toHaveTitle(title: string | RegExp, options?: AssertionOptions): Promise<void>
+  readonly toBe: RetestTypeError<Misplaced['toBe']>
+  readonly toEqual: RetestTypeError<Misplaced['toEqual']>
+}
+
+/** Matchers for an app's page. They look again until they pass or time runs out, so await them. */
+export interface PageAssertions extends PageMatchers {
+  /**
+   * The same matchers, each passing only on a look that shows the opposite.
+   *
+   * @example await expect(page).not.toHaveURL('/login')
+   */
+  readonly not: NegatedPageAssertions
+}
+
+/** A page's matchers after `.not`. */
+export interface NegatedPageAssertions extends PageMatchers {
+  readonly not: RetestTypeError<Misplaced['twice']>
 }
 
 /** Matchers that compare a value. `Result` is `void` for `expect`, and a promise for `expect.poll`. */
@@ -112,9 +205,16 @@ export interface ValueMatchers<Actual, Result> {
 export interface ValueAssertions<Actual> extends ValueMatchers<Actual, void> {
   readonly toBeVisible: RetestTypeError<Misplaced['toBeVisible']>
   readonly toBeHidden: RetestTypeError<Misplaced['toBeHidden']>
+  readonly toBeChecked: RetestTypeError<Misplaced['toBeChecked']>
+  readonly toBeEnabled: RetestTypeError<Misplaced['toBeEnabled']>
+  readonly toBeDisabled: RetestTypeError<Misplaced['toBeDisabled']>
   readonly toHaveText: RetestTypeError<Misplaced['toHaveText']>
+  readonly toContainText: RetestTypeError<Misplaced['toContainText']>
   readonly toHaveCount: RetestTypeError<Misplaced['toHaveCount']>
   readonly toHaveValue: RetestTypeError<Misplaced['toHaveValue']>
+  readonly toHaveURL: RetestTypeError<Misplaced['toHaveURL']>
+  readonly toHaveTitle: RetestTypeError<Misplaced['toHaveTitle']>
+  readonly not: RetestTypeError<Misplaced['not']>
 }
 
 /** Matchers for `expect.poll`. Each calls the function again until its value passes, so await them. */
@@ -126,8 +226,10 @@ type IsAny<T> = 0 extends 1 & T ? true : false
 export type Assertions<Actual> =
   IsAny<Actual> extends true
     ? RetestTypeError<'expect() received a value typed any. Write expect<T>(value) with its type.'>
-    : [Actual] extends [Locator]
+    : [Actual] extends [Locator | NativeLocator]
       ? LocatorAssertions
+      : [Actual] extends [Page]
+        ? PageAssertions
       : [Actual] extends [PromiseLike<unknown>]
         ? RetestTypeError<'Await the promise before expect().'>
         : [Actual] extends [Secret]
@@ -202,46 +304,76 @@ export const expect: Expect = Object.assign(check, { soft, poll })
 function expectation(actual: unknown, soft: boolean): unknown {
   const scope = requireScope(soft ? 'expect.soft()' : 'expect()')
   const target = locatorTarget(actual)
-  if (target !== undefined) return new LocatorExpectation(scope, target, soft)
+  if (target !== undefined) return new LocatorExpectation(scope, target, { soft, negated: false })
+  const page = pageTarget(actual)
+  if (page !== undefined) return new PageExpectation(scope, page, { soft, negated: false })
   if (isThenable(actual)) throw misuse('Await the promise before expect().', scope.run)
   if (actual instanceof Secret) throw misuse('A secret cannot be compared or printed.', scope.run)
   return new ValueExpectation(scope, actual, soft)
 }
 
+/** How an expectation reports: soft lets the test go on, and negated passes only on the opposite. */
+type Sense = { readonly soft: boolean; readonly negated: boolean }
+
 class LocatorExpectation {
   readonly #scope: Scope
   readonly #target: LocatorTarget
-  readonly #soft: boolean
+  readonly #sense: Sense
 
-  constructor(scope: Scope, target: LocatorTarget, soft: boolean) {
+  constructor(scope: Scope, target: LocatorTarget, sense: Sense) {
     this.#scope = scope
     this.#target = target
-    this.#soft = soft
+    this.#sense = sense
   }
 
-  toBeVisible(): Promise<void> {
-    return this.#assert({ matcher: 'toBeVisible' })
+  get not(): LocatorExpectation {
+    if (this.#sense.negated) throw misuse(misplaced.twice, this.#scope.run)
+    return new LocatorExpectation(this.#scope, this.#target, { ...this.#sense, negated: true })
   }
 
-  toBeHidden(): Promise<void> {
-    return this.#assert({ matcher: 'toBeHidden' })
+  toBeVisible(options?: unknown): Promise<void> {
+    return this.#assert({ matcher: 'toBeVisible' }, options)
   }
 
-  toHaveText(expected: unknown): Promise<void> {
-    if (typeof expected === 'string') return this.#assert({ matcher: 'toHaveText', text: expected })
+  toBeHidden(options?: unknown): Promise<void> {
+    return this.#assert({ matcher: 'toBeHidden' }, options)
+  }
+
+  toBeChecked(options?: unknown): Promise<void> {
+    return this.#assert({ matcher: 'toBeChecked' }, options)
+  }
+
+  toBeEnabled(options?: unknown): Promise<void> {
+    return this.#assert({ matcher: 'toBeEnabled' }, options)
+  }
+
+  toBeDisabled(options?: unknown): Promise<void> {
+    return this.#assert({ matcher: 'toBeDisabled' }, options)
+  }
+
+  toHaveText(expected: unknown, options?: unknown): Promise<void> {
+    if (typeof expected === 'string') return this.#assert({ matcher: 'toHaveText', text: expected }, options)
+    if (expected instanceof RegExp) return this.#assert({ matcher: 'toHaveText', pattern: textPatternOf(expected) }, options)
     // A copy, so the list the event sends is the one the assertion compared, whatever the test does to its own.
-    if (isTextList(expected)) return this.#assert({ matcher: 'toHaveText', texts: [...expected] })
-    throw misuse(`toHaveText() takes the expected text as a string, or a list of texts, received ${formatValue(expected)}.`, this.#scope.run)
+    if (isTextList(expected)) return this.#assert({ matcher: 'toHaveText', texts: expected.map(expectedText) }, options)
+    throw misuse(`toHaveText() takes the expected text as a string or a RegExp, or a list of them, received ${formatValue(expected)}.`, this.#scope.run)
   }
 
-  toHaveCount(count: unknown): Promise<void> {
-    if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) return this.#assert({ matcher: 'toHaveCount', count })
+  toContainText(expected: unknown, options?: unknown): Promise<void> {
+    if (typeof expected === 'string') return this.#assert({ matcher: 'toContainText', text: expected }, options)
+    if (expected instanceof RegExp) return this.#assert({ matcher: 'toContainText', pattern: textPatternOf(expected) }, options)
+    throw misuse(`toContainText() takes the text to look for as a string or a RegExp, received ${formatValue(expected)}.`, this.#scope.run)
+  }
+
+  toHaveCount(count: unknown, options?: unknown): Promise<void> {
+    if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) return this.#assert({ matcher: 'toHaveCount', count }, options)
     throw misuse(`toHaveCount() takes a whole number of elements, received ${formatValue(count)}.`, this.#scope.run)
   }
 
-  toHaveValue(value: unknown): Promise<void> {
-    if (typeof value === 'string') return this.#assert({ matcher: 'toHaveValue', value })
-    throw misuse(`toHaveValue() takes the expected value as a string, received ${formatValue(value)}.`, this.#scope.run)
+  toHaveValue(value: unknown, options?: unknown): Promise<void> {
+    if (typeof value === 'string') return this.#assert({ matcher: 'toHaveValue', value }, options)
+    if (value instanceof RegExp) return this.#assert({ matcher: 'toHaveValue', pattern: textPatternOf(value) }, options)
+    throw misuse(`toHaveValue() takes the expected value as a string or a RegExp, received ${formatValue(value)}.`, this.#scope.run)
   }
 
   toBe(): never {
@@ -260,14 +392,67 @@ class LocatorExpectation {
     throw misuse(misplaced.toMatch, this.#scope.run)
   }
 
-  #assert(record: LocatorCheckRecord): Promise<void> {
+  #assert(matched: LocatorCheckRecord, options: unknown): Promise<void> {
     const { run, stepId } = this.#scope
     const { app, recipe } = this.#target
+    const { soft, negated } = this.#sense
     const location = run.location()
     if (this.#target.run !== run) throw misuse('This locator belongs to another test. Find it again with its page.', run)
-    const label = `${this.#soft ? 'expect.soft' : 'expect'}(${describeLocator(recipe)}).${record.matcher}()`
-    const soft = this.#soft
-    return run.assertion(label, location, () => pollLocator({ run, stepId, app, recipe, record, location, soft }), app)
+    const timeoutMs = readAssertionOptions(matched.matcher, options, this.#scope)
+    const record: LocatorCheckRecord = negated ? { ...matched, not: true } : matched
+    const label = `${soft ? 'expect.soft' : 'expect'}(${describeLocator(recipe)})${negated ? '.not' : ''}.${matched.matcher}()`
+    return run.assertion(label, location, () => pollLocator({ run, stepId, app, recipe, record, location, soft, timeoutMs }), app)
+  }
+}
+
+class PageExpectation {
+  readonly #scope: Scope
+  readonly #target: PageTarget
+  readonly #sense: Sense
+
+  constructor(scope: Scope, target: PageTarget, sense: Sense) {
+    this.#scope = scope
+    this.#target = target
+    this.#sense = sense
+  }
+
+  get not(): PageExpectation {
+    if (this.#sense.negated) throw misuse(misplaced.twice, this.#scope.run)
+    return new PageExpectation(this.#scope, this.#target, { ...this.#sense, negated: true })
+  }
+
+  toHaveURL(url: unknown, options?: unknown): Promise<void> {
+    if (url instanceof RegExp) return this.#assert({ matcher: 'toHaveURL', pattern: textPatternOf(url) }, options)
+    if (typeof url !== 'string' || url.trim() === '') {
+      throw misuse(`toHaveURL() takes the address as a string, such as '/tasks', or a RegExp, received ${formatValue(url)}.`, this.#scope.run)
+    }
+    return this.#assert({ matcher: 'toHaveURL', url }, options)
+  }
+
+  toHaveTitle(title: unknown, options?: unknown): Promise<void> {
+    if (typeof title === 'string') return this.#assert({ matcher: 'toHaveTitle', title }, options)
+    if (title instanceof RegExp) return this.#assert({ matcher: 'toHaveTitle', pattern: textPatternOf(title) }, options)
+    throw misuse(`toHaveTitle() takes the title as a string or a RegExp, received ${formatValue(title)}.`, this.#scope.run)
+  }
+
+  toBe(): never {
+    throw misuse(misplaced.toBe, this.#scope.run)
+  }
+
+  toEqual(): never {
+    throw misuse(misplaced.toEqual, this.#scope.run)
+  }
+
+  #assert(matched: PageCheckRecord, options: unknown): Promise<void> {
+    const { run, stepId } = this.#scope
+    const { app } = this.#target
+    const { soft, negated } = this.#sense
+    const location = run.location()
+    if (this.#target.run !== run) throw misuse('This page belongs to another test. Use the page this test was given.', run)
+    const timeoutMs = readAssertionOptions(matched.matcher, options, this.#scope)
+    const record: PageCheckRecord = negated ? { ...matched, not: true } : matched
+    const label = `${soft ? 'expect.soft' : 'expect'}(page)${negated ? '.not' : ''}.${matched.matcher}()`
+    return run.assertion(label, location, () => pollPage({ run, stepId, app, record, location, soft, timeoutMs }), app)
   }
 }
 
@@ -315,8 +500,24 @@ class ValueExpectation {
     throw misuse(misplaced.toBeHidden, this.#scope.run)
   }
 
+  toBeChecked(): never {
+    throw misuse(misplaced.toBeChecked, this.#scope.run)
+  }
+
+  toBeEnabled(): never {
+    throw misuse(misplaced.toBeEnabled, this.#scope.run)
+  }
+
+  toBeDisabled(): never {
+    throw misuse(misplaced.toBeDisabled, this.#scope.run)
+  }
+
   toHaveText(): never {
     throw misuse(misplaced.toHaveText, this.#scope.run)
+  }
+
+  toContainText(): never {
+    throw misuse(misplaced.toContainText, this.#scope.run)
   }
 
   toHaveCount(): never {
@@ -325,6 +526,18 @@ class ValueExpectation {
 
   toHaveValue(): never {
     throw misuse(misplaced.toHaveValue, this.#scope.run)
+  }
+
+  toHaveURL(): never {
+    throw misuse(misplaced.toHaveURL, this.#scope.run)
+  }
+
+  toHaveTitle(): never {
+    throw misuse(misplaced.toHaveTitle, this.#scope.run)
+  }
+
+  get not(): never {
+    throw misuse(misplaced.not, this.#scope.run)
   }
 
   #assert(check: ValueCheck): void {
@@ -401,6 +614,26 @@ function isReader(value: unknown): value is () => unknown {
   return typeof value === 'function'
 }
 
-function isTextList(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+function isTextList(value: unknown): value is readonly (string | RegExp)[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string' || item instanceof RegExp)
+}
+
+function expectedText(item: string | RegExp): ExpectedText {
+  return typeof item === 'string' ? item : textPatternOf(item)
+}
+
+/**
+ * Reads a locator or page matcher's options: none, or `{ timeout }` in whole milliseconds. The timeout is returned
+ * as given; the poll cuts it to the assertion budget.
+ */
+function readAssertionOptions(matcher: string, options: unknown, scope: Scope): number | undefined {
+  if (options === undefined) return undefined
+  const shape = `${matcher}() takes options such as { timeout: 2000 }, in milliseconds, received ${formatValue(options)}.`
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) throw misuse(shape, scope.run)
+  const given = Object.entries(options).filter(([, value]) => value !== undefined)
+  if (given.some(([key]) => key !== 'timeout')) throw misuse(`${shape} Its only option is timeout.`, scope.run)
+  const timeout = 'timeout' in options ? options.timeout : undefined
+  if (timeout === undefined) return undefined
+  if (isWholeMilliseconds(timeout, 1)) return timeout
+  throw misuse(`The timeout option of ${matcher}() must be a whole number of milliseconds from 1 to ${maxTimeout}, received ${formatValue(timeout)}.`, scope.run)
 }

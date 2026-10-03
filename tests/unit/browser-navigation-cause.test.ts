@@ -3,11 +3,11 @@ import type { ScriptedPage } from './browser-fixtures.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { NavigationCauses } from '../../src/browser/navigation-causes.ts'
-import { disarmFunction, pageFactsFunction, prepareFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { disarmFunction, pageFactsFunction, prepareFunction, selectionFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { isRecord, mainFrame, scriptedPage, value } from './browser-fixtures.ts'
 
 const facts = { href: 'http://app.test/start', title: 'Start' }
-const ready = { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page: facts }
+const ready = { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page: facts, plan: null }
 const button = { by: 'testId', value: 'go' } as const
 
 type Hooks = {
@@ -15,7 +15,7 @@ type Hooks = {
   duringInput?: () => void
   /** Runs while the guard's disarm is being answered, after the input answered. */
   duringDisarm?: () => void
-  /** Runs while the select call that applies is being answered. */
+  /** Runs while the key a select types is being answered. */
   duringSelect?: () => void
 }
 
@@ -26,15 +26,16 @@ function causePage(hooks: Hooks = {}): CausePage {
     scriptedPage({
       input: (method, params) => {
         if (method === 'Input.dispatchMouseEvent' && isRecord(params) && params['type'] === 'mouseReleased') hooks.duringInput?.()
+        if (method === 'Input.dispatchKeyEvent' && isRecord(params) && params['type'] === 'keyUp') hooks.duringSelect?.()
         return Promise.resolve({})
       },
       call: (source, params) => {
         if (source === prepareFunction) {
-          if (!applying(params)) return value(ready)
-          hooks.duringSelect?.()
-          return value({ status: 'selected', page: facts })
+          if (!selecting(params)) return value(ready)
+          return value(typing(params) ? ready : { ...ready, token: null, plan: { quietMs: 0, keys: [{ key: 'b', toggle: false }] } })
         }
-        if (source === verdictFunction) return value({ reached: ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'], intercepted: null, landed: '<a>', leaving: null })
+        if (source === selectionFunction) return value({ status: 'selected', selected: ['B'], page: facts })
+        if (source === verdictFunction) return value({ reached: ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'keydown', 'keyup'], intercepted: null, landed: '<a>', leaving: null })
         if (source === disarmFunction) {
           hooks.duringDisarm?.()
           return value(true)
@@ -66,9 +67,17 @@ function causePage(hooks: Hooks = {}): CausePage {
   return page
 }
 
-function applying(params: Record<string, unknown>): boolean {
+function intentOf(params: Record<string, unknown>): Record<string, unknown> {
   const [intent] = Array.isArray(params['arguments']) ? params['arguments'] : []
-  return isRecord(intent) && isRecord(intent['value']) && intent['value']['apply'] === true
+  return isRecord(intent) && isRecord(intent['value']) ? intent['value'] : {}
+}
+
+function selecting(params: Record<string, unknown>): boolean {
+  return intentOf(params)['action'] === 'select'
+}
+
+function typing(params: Record<string, unknown>): boolean {
+  return intentOf(params)['typing'] === true
 }
 
 function causes(page: CausePage): string[] {
@@ -114,7 +123,7 @@ test('a new path within the document is the action while it is delivered, and th
   assert.deepEqual(causes(page), ['/pushed action', '/later page'])
 })
 
-test('a change listener that navigates during the select call makes the navigation the action', async () => {
+test('a change listener that navigates while a select types makes the navigation the action', async () => {
   const page = causePage({ duringSelect: () => page.requestFor(next) })
   const result = await page.page.execute({ kind: 'select', locator: button, choices: [{ label: 'B' }] }, 1000)
   assert.ok(result.ok, JSON.stringify(result))
@@ -152,6 +161,8 @@ test('a navigation nothing announced is the goto while one opens, and the page o
   assert.equal((await causes.opening(undefined, async () => causes.committed('X2'))).cause, 'goto')
   assert.equal((await causes.delivering(undefined, async () => causes.movedWithinDocument())).cause, 'action')
   assert.equal(causes.movedWithinDocument().cause, 'page')
+  // goBack and goForward open through the history, which can move within the document.
+  assert.deepEqual(await causes.opening(5, async () => causes.movedWithinDocument()), { cause: 'goto', commandToken: 5 })
 })
 
 test('a navigation says whether it opened a new document or moved within the one the frame held', async () => {

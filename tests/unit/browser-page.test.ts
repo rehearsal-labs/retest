@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { BrowserError } from '../../src/browser/browser-error.ts'
-import { disarmFunction, prepareFunction, readPageFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { disarmFunction, pageLookFunction, prepareFunction, readPageFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { functionsCalled, isRecord, mainFrame, never, scriptedPage, value } from './browser-fixtures.ts'
 
 // A page over a scripted session: `call` answers each call into Retest's world by its function.
@@ -13,7 +13,7 @@ const facts = { href: 'http://app.test/start?token=1', title: 'Start' }
 
 test('a press readies its element, then sends the key down and up as real key events while the guard watches', async () => {
   const { page, sent } = pageAnswering((functionDeclaration) => {
-    if (functionDeclaration === prepareFunction) return value({ status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts })
+    if (functionDeclaration === prepareFunction) return value({ status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts, plan: null })
     if (functionDeclaration === verdictFunction) return value({ reached: ['keydown'], intercepted: null, landed: '<input>', leaving: null })
     if (functionDeclaration === disarmFunction) return value(true)
     return Promise.reject(new Error('unexpected call'))
@@ -25,18 +25,57 @@ test('a press readies its element, then sends the key down and up as real key ev
     [
       'Runtime.callFunctionOn',
       'Runtime.callFunctionOn',
+      { type: 'rawKeyDown', key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16, modifiers: 8, location: 1 },
       { type: 'rawKeyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 },
       { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 },
+      { type: 'keyUp', key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16, modifiers: 0, location: 1 },
       'Runtime.callFunctionOn',
     ],
   )
   assert.deepEqual(functionsCalled(sent), [prepareFunction, verdictFunction, disarmFunction])
+  const [prepared] = sent.filter(({ method }) => method === 'Runtime.callFunctionOn')
+  assert.ok(isRecord(prepared?.params) && Array.isArray(prepared.params['arguments']))
+  assert.deepEqual(prepared.params['arguments'][0], { value: { action: 'press', strokes: 2 } }, 'the guard waits for both keys to come up')
 })
 
-test('the page refuses a key it cannot send before it sends anything, as unsupported or as usage', async () => {
+test('a hover readies its element, then moves the mouse to its centre while the guard watches, and presses nothing', async () => {
+  const { page, sent } = pageAnswering((functionDeclaration) => {
+    if (functionDeclaration === prepareFunction) return value({ status: 'ready', point: { x: 30, y: 40 }, token: 1, via: null, scale: 1, page: facts, plan: null })
+    if (functionDeclaration === verdictFunction) return value({ reached: ['pointerover', 'pointermove', 'mouseover', 'mousemove'], intercepted: null, landed: '<button>', leaving: null })
+    if (functionDeclaration === disarmFunction) return value(true)
+    return Promise.reject(new Error('unexpected call'))
+  })
+  const result = await page.execute({ kind: 'hover', locator: { by: 'testId', value: 'menu' } }, 1000)
+  assert.deepEqual(result, { ok: true, kind: 'hover', page: { url: 'http://app.test/start', title: 'Start' } })
+  assert.deepEqual(sent.filter(({ method }) => method.startsWith('Input.')).map(({ params }) => params), [{ type: 'mouseMoved', x: 30, y: 40 }])
+  const [prepared] = sent.filter(({ method }) => method === 'Runtime.callFunctionOn')
+  assert.ok(isRecord(prepared?.params) && Array.isArray(prepared.params['arguments']))
+  assert.deepEqual(prepared.params['arguments'][0], { value: { action: 'hover' } })
+})
+
+test('a look at the page answers its whole address and title as the page has them, the base URL, and a title unknown while another document is on its way', async () => {
+  const looks = [
+    value({ url: 'http://app.test/start?tab=2#top', title: ' Tasks ', cut: [] }),
+    value({ url: 'http://app.test/start', title: 'Report', cut: ['title'] }),
+  ]
+  let looked = 0
+  const answer = (functionDeclaration: unknown) => (functionDeclaration === pageLookFunction ? (looks[looked++] ?? Promise.reject(new Error('one look too many'))) : Promise.reject(new Error('unexpected')))
+  const { page, startNavigating } = pageAnswering(answer)
+  const look = await page.execute({ kind: 'observePage' }, 1000)
+  assert.ok(look.ok && look.kind === 'observePage', JSON.stringify(look))
+  assert.deepEqual([look.observation, look.baseUrl, look.page], [{ url: 'http://app.test/start?tab=2#top', title: ' Tasks ' }, 'http://app.test/', { url: 'http://app.test/start', title: ' Tasks ' }])
+  const cut = await page.execute({ kind: 'observePage' }, 1000)
+  assert.deepEqual(cut.ok && cut.kind === 'observePage' ? cut.observation : undefined, { url: 'http://app.test/start', title: 'Report', cut: ['title'] })
+  startNavigating()
+  const opening = await page.execute({ kind: 'observePage' }, 1000)
+  assert.ok(opening.ok && opening.kind === 'observePage')
+  assert.deepEqual(opening.observation, { url: 'http://app.test/start?token=1#top', title: null }, 'the address the frame holds, whole')
+})
+
+test('the page refuses a key it cannot send before it sends anything, as usage', async () => {
   const { page, sent } = pageAnswering(() => Promise.reject(new Error('nothing should reach the page')))
-  const modifier = await page.execute({ kind: 'press', key: 'Control+a' }, 1000)
-  assert.ok(!modifier.ok && modifier.failure.class === 'unsupported', JSON.stringify(modifier))
+  const modifier = await page.execute({ kind: 'press', key: 'Ctrl+a' }, 1000)
+  assert.ok(!modifier.ok && modifier.failure.class === 'usage', JSON.stringify(modifier))
   const unknown = await page.execute({ kind: 'press', locator: { by: 'testId', value: 'query' }, key: 'Entr' }, 1000)
   assert.ok(!unknown.ok && unknown.failure.class === 'usage', JSON.stringify(unknown))
   assert.deepEqual(sent, [])

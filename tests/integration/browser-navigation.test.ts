@@ -1,6 +1,8 @@
 import type { TestContext } from 'node:test'
 import type { OwnedPage, PageNavigation } from '../../src/browser/contract.ts'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
+import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
 import { titleReadLimit } from '../../src/protocol/page-facts.ts'
@@ -335,4 +337,100 @@ test("a select whose change listener opens another page passes, and the navigati
     { path: '/', cause: 'goto', title: 'Pick' },
     { path: '/chosen', cause: 'action', title: 'Chosen' },
   ])
+})
+
+// Chile takes two keys from Choose: C lands on Canada, whose change opens the next page, and H would land on Chile.
+const countryPage = `<!doctype html><title>Pick</title><select data-testid="country"><option>Choose</option><option>Canada</option><option>Chile</option></select><script>
+  const select = document.querySelector('[data-testid="country"]')
+  select.addEventListener('change', () => { location.href = '/next?country=' + select.value })
+</script>`
+
+const leftAfterOneKey = {
+  class: 'not_actionable',
+  message: `Could not select 'Chile' in getByTestId('country'): the page began to open another document after Retest typed 1 of the 2 keys that choose it, and the select held "Canada" as the last of them arrived. Retest typed no more.`,
+  details: { check: 'selection', inputSent: true },
+}
+
+test('a select whose first key opens another page types no more, and never into the select of the same test id the next page holds', async (t) => {
+  const site = await servePages(t, {
+    '/': countryPage,
+    '/next?country=Canada': `<!doctype html><title>Next</title><select data-testid="country"><option>Choose</option><option>Haiti</option><option>Honduras</option></select><p data-testid="heard">nothing</p><script>
+      const select = document.querySelector('[data-testid="country"]')
+      select.addEventListener('change', () => { document.querySelector('[data-testid="heard"]').textContent = select.value })
+    </script>`,
+  })
+  const page = await openPage(t, browser(), site.url)
+  assertOk(await goto(page, '/'))
+  assert.deepEqual(failureOf(await select(page, 'country', 'Chile')), leftAfterOneKey)
+  await observeUntil(page, 'heard', (seen) => seen.count === 1)
+  assert.equal((await observe(page, 'heard')).text, 'nothing')
+  assert.equal((await observe(page, 'country')).value, 'Choose')
+})
+
+test('a select whose first key opens a page with no select fails at once, saying its key went, and never waits for the select there', async (t) => {
+  const site = await servePages(t, {
+    '/': countryPage,
+    '/next?country=Canada': '<!doctype html><title>Next</title><p data-testid="next">Next</p>',
+  })
+  const page = await openPage(t, browser(), site.url)
+  assertOk(await goto(page, '/'))
+  const { value, ms } = await timed(select(page, 'country', 'Chile', 5000))
+  assert.deepEqual(failureOf(value), leftAfterOneKey)
+  assert.ok(ms < 2500, `stopped once the page set off, after ${ms} ms of a 5000 ms budget`)
+  await observeUntil(page, 'next', (seen) => seen.count === 1)
+})
+
+// Each /flip address answers its first request with a page and every later one with 204, no content, which the browser
+// gives up without opening a document. Nothing is kept in any cache.
+async function serveFlips(t: TestContext): Promise<string> {
+  const loads = new Map<string, number>()
+  const server = createServer((request, response) => {
+    const path = request.url ?? '/'
+    const count = (loads.get(path) ?? 0) + 1
+    loads.set(path, count)
+    if (path.startsWith('/flip') && count > 1) {
+      response.writeHead(204, { 'cache-control': 'no-store' })
+      response.end()
+      return
+    }
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+    response.end(`<!doctype html><title>Page</title><p data-testid="here">${path}</p>`)
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  const address = server.address()
+  assert.ok(address !== null && typeof address === 'object')
+  return `http://127.0.0.1:${address.port}`
+}
+
+test('reload, goBack and goForward onto a response with no content fail at once, naming the navigation the browser gave up, with the request sent', async (t) => {
+  const url = await serveFlips(t)
+  const page = await openPage(t, browser(), url)
+  const gaveUp = (verb: string, stayed: string) => ({
+    class: 'not_actionable',
+    message: `Could not ${verb} ${url}/flip: the browser sent the request and gave the navigation up without opening a document, as it does for a response with no content or a download. The page stayed on ${url}${stayed}.`,
+    details: { url: `${url}/flip`, inputSent: true },
+  })
+  assertOk(await goto(page, '/flip?for=reload'))
+  const reloaded = await timed(page.execute({ kind: 'reload' }, 5000))
+  assert.deepEqual(failureOf(reloaded.value), gaveUp('reload', '/flip'))
+  assert.ok(reloaded.ms < 2500, `failed after ${reloaded.ms} ms of a 5000 ms budget`)
+  assert.equal((await observe(page, 'here')).text, '/flip?for=reload', 'the page that stayed is still there')
+
+  assertOk(await goto(page, '/flip?for=back'))
+  assertOk(await goto(page, '/other'))
+  const back = await timed(page.execute({ kind: 'goBack' }, 5000))
+  assert.deepEqual(failureOf(back.value), gaveUp('go back to', '/other'))
+  assert.ok(back.ms < 2500, `failed after ${back.ms} ms`)
+
+  assertOk(await goto(page, '/flip?for=forward'))
+  assertOk(await page.execute({ kind: 'goBack' }, 5000))
+  await observeUntil(page, 'here', (seen) => seen.text === '/other')
+  const forward = await timed(page.execute({ kind: 'goForward' }, 5000))
+  assert.deepEqual(failureOf(forward.value), gaveUp('go forward to', '/other'))
+  assert.ok(forward.ms < 2500, `failed after ${forward.ms} ms`)
 })

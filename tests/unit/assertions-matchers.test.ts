@@ -131,10 +131,11 @@ describe('locator matchers in a test', () => {
   })
 
   const misuses: [string, string, unknown, string][] = [
-    ['toHaveText with a number', 'toHaveText', 3, 'toHaveText() takes the expected text as a string, or a list of texts, received 3.'],
+    ['toHaveText with a number', 'toHaveText', 3, 'toHaveText() takes the expected text as a string or a RegExp, or a list of them, received 3.'],
+    ['toContainText with a list', 'toContainText', ['x'], "toContainText() takes the text to look for as a string or a RegExp, received [ 'x' ]."],
     ['toHaveCount with text', 'toHaveCount', '2', "toHaveCount() takes a whole number of elements, received '2'."],
     ['toHaveCount below zero', 'toHaveCount', -1, 'toHaveCount() takes a whole number of elements, received -1.'],
-    ['toHaveValue with a number', 'toHaveValue', 3, 'toHaveValue() takes the expected value as a string, received 3.'],
+    ['toHaveValue with a number', 'toHaveValue', 3, 'toHaveValue() takes the expected value as a string or a RegExp, received 3.'],
     ['toEqual on a locator', 'toEqual', [], 'toEqual is for values. Use toHaveText on a locator.'],
     ['toContain on a locator', 'toContain', 'x', 'toContain is for values. Use toHaveText on a locator.'],
     ['toMatch on a locator', 'toMatch', /x/, 'toMatch is for values. Use toHaveText on a locator.'],

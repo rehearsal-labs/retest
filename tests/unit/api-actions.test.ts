@@ -40,6 +40,27 @@ describe('press', () => {
     )
   })
 
+  test('a shortcut with modifiers is sent as the test wrote it, on a locator and on the keyboard', async () => {
+    const { runPage, sent } = inProcessRun(file, page)
+    const verdict = await runPage(async ({ page: handle }) => {
+      await handle.getByLabel('Search').press('Control+A')
+      await handle.keyboard.press('Meta+Shift+Z')
+      await handle.keyboard.press('ControlOrMeta+Enter')
+      await handle.keyboard.press('Alt++')
+      expect(1).toBe(1)
+    })
+    assert.equal(verdict.status, 'passed')
+    assert.deepEqual(
+      sent.map(({ command }) => command),
+      [
+        { kind: 'press', locator: search, key: 'Control+A' },
+        { kind: 'press', key: 'Meta+Shift+Z' },
+        { kind: 'press', key: 'ControlOrMeta+Enter' },
+        { kind: 'press', key: 'Alt++' },
+      ],
+    )
+  })
+
   test("each app's keyboard sends to that app", async () => {
     const { runTest, sent } = inProcessRun(file, page, { apps: ['owner', 'member'] })
     const verdict = await runTest({
@@ -63,15 +84,16 @@ describe('press', () => {
       'an unknown name',
       'Entr',
       'usage',
-      'press() takes a named key (Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp or PageDown), Shift+ and a named key, such as Shift+Tab, or one character, such as a, 7 or é, received "Entr".',
+      'press() takes a named key (Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp or PageDown), one character, such as a, 7 or é, or modifiers and a key, such as Control+A, Shift+Tab or Meta+Shift+Z, received "Entr".',
     ],
+    ['an unknown modifier', 'Ctrl+a', 'usage', 'press() takes the modifiers Shift, Control, Alt, Meta or ControlOrMeta before a key, received "Ctrl+a".'],
+    ['a modifier twice', 'Control+Control+a', 'usage', 'press() takes each modifier once, received "Control+Control+a".'],
     [
-      'a Control shortcut',
-      'Control+a',
-      'unsupported',
-      `press() does not send Control, Alt or Meta, received "Control+a". An editing shortcut needs the platform's own command, and the platforms differ.`,
+      'Shift with a character',
+      'Shift+a',
+      'usage',
+      'Shift+ goes with a named key, or with Control, Alt or Meta, received "Shift+a". For an uppercase letter, press the letter itself, such as A.',
     ],
-    ['Shift with a character', 'Shift+a', 'usage', 'Shift+ goes only with a named key, received "Shift+a". For an uppercase letter, press the letter itself, such as A.'],
     ['a space', ' ', 'usage', /^press\(\) takes a named key .* received " "\.$/],
     ['no key', '', 'usage', /^press\(\) takes a named key .* received ""\.$/],
     ['a key that is not text', 13, 'usage', "press() takes a key as text, such as 'Enter', received 13."],

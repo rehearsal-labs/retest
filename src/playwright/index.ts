@@ -3,6 +3,6 @@
 export type { Locator, Page } from '../api/page.ts'
 export { defineConfig, devices } from './config.ts'
 export { expect } from './expect.ts'
-export type { PlaywrightExpect, PlaywrightMatchers } from './expect.ts'
+export type { PlaywrightExpect, PlaywrightMatcherOptions, PlaywrightMatchers } from './expect.ts'
 export { test } from './test.ts'
 export type { PlaywrightFixtures, PlaywrightTest } from './test.ts'

@@ -35,9 +35,9 @@ describe('the events of a press', () => {
   test('a key the parent does not accept is refused before the page sees it, as usage or unsupported', async () => {
     const run = await scriptedTest()
     const misspelt = await run.command(1, { kind: 'press', locator: { by: 'testId', value: 'task-title' }, key: 'Entr' })
-    const shortcut = await run.command(2, { kind: 'press', key: 'Control+a' })
+    const shortcut = await run.command(2, { kind: 'press', key: 'Ctrl+a' })
     await run.finish()
-    assert.deepEqual([misspelt.ok ? undefined : misspelt.failure.class, shortcut.ok ? undefined : shortcut.failure.class], ['usage', 'unsupported'])
+    assert.deepEqual([misspelt.ok ? undefined : misspelt.failure.class, shortcut.ok ? undefined : shortcut.failure.class], ['usage', 'usage'])
     assert.match(misspelt.ok ? '' : misspelt.failure.message, /press\(\) takes a named key/)
     assert.deepEqual(run.page.pressed, [])
     assert.ok(!run.page.browser.commands.some((command) => command.kind === 'press'), 'no press reached the page')
@@ -46,7 +46,7 @@ describe('the events of a press', () => {
       failed.map((event) => [event.type, event.key, 'locator' in event]),
       [
         ['action.failed', 'Entr', true],
-        ['action.failed', 'Control+a', false],
+        ['action.failed', 'Ctrl+a', false],
       ],
     )
   })
@@ -65,7 +65,7 @@ const toppings: LocatorRecipe = { by: 'testId', value: 'toppings' }
 const rememberMe: LocatorRecipe = { by: 'testId', value: 'remember-me' }
 
 describe('the events of a select', () => {
-  test('records the options as the test named them, that the choice changed, and that a script made it', async () => {
+  test('records the options as the test named them and that the choice changed, and never says a script made it', async () => {
     const run = await scriptedTest()
     await run.command(1, { kind: 'goto', url: '/' })
     const answer = await run.command(2, { kind: 'select', locator: country, choices: [{ label: 'France' }] })
@@ -76,7 +76,7 @@ describe('the events of a select', () => {
     assert.equal(selected?.type, 'action.completed')
     assert.deepEqual(
       [selected?.command, selected?.locator, selected?.choices, selected?.changed, selected?.input, selected?.pageUrl],
-      ['select', country, [{ label: 'France' }], true, 'script', 'http://127.0.0.1:4173/'],
+      ['select', country, [{ label: 'France' }], true, undefined, 'http://127.0.0.1:4173/'],
     )
     assert.ok(selected !== undefined && !('multiple' in selected), 'one option on its own is no list')
   })
@@ -91,9 +91,9 @@ describe('the events of a select', () => {
     assert.deepEqual(
       actions(run.events).map((event) => [event.choices, event.multiple, event.changed, event.input]),
       [
-        [[{ label: 'Cheese' }, { value: 'basil' }], true, true, 'script'],
-        [[{ value: 'olives' }], true, true, 'script'],
-        [[{ value: 'ca' }], undefined, false, 'script'],
+        [[{ label: 'Cheese' }, { value: 'basil' }], true, true, undefined],
+        [[{ value: 'olives' }], true, true, undefined],
+        [[{ value: 'ca' }], undefined, false, undefined],
       ],
     )
   })

@@ -32,14 +32,65 @@ test('each named key sends its key, code and virtual key code, as a raw key down
     const [keyName, code, windowsVirtualKeyCode, text] = expected[name]
     const base = { key: keyName, code, windowsVirtualKeyCode, modifiers: 0 }
     const typed = text === undefined ? { type: 'rawKeyDown' } : { type: 'keyDown', text, unmodifiedText: text }
-    assert.deepEqual(keyStroke(key(name), 'linux'), { down: { ...typed, ...base }, up: { type: 'keyUp', ...base } }, name)
+    assert.deepEqual(keyStroke(key(name), 'linux'), { held: [], down: { ...typed, ...base }, up: { type: 'keyUp', ...base }, released: [] }, name)
   }
 })
 
-test('Shift and a named key hold Shift for the press and the release', () => {
-  const { down, up } = keyStroke(key('Shift+Tab'), 'linux')
+test('Shift and a named key press Shift first, hold it for the key, and release it last', () => {
+  const { held, down, up, released } = keyStroke(key('Shift+Tab'), 'linux')
+  assert.deepEqual(held, [{ type: 'rawKeyDown', key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16, modifiers: 8, location: 1 }])
   assert.deepEqual(down, { type: 'rawKeyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 })
   assert.deepEqual(up, { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 })
+  assert.deepEqual(released, [{ type: 'keyUp', key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16, modifiers: 0, location: 1 }])
+})
+
+test('a shortcut presses each modifier in the order written, types nothing, and releases them in reverse', () => {
+  const { held, down, up, released } = keyStroke(key('Control+Alt+Delete'), 'linux')
+  assert.deepEqual(
+    held.map(({ type, key: name, modifiers }) => [type, name, modifiers]),
+    [
+      ['rawKeyDown', 'Control', 2],
+      ['rawKeyDown', 'Alt', 3],
+    ],
+  )
+  assert.deepEqual(down, { type: 'rawKeyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46, modifiers: 3 })
+  assert.equal(up.modifiers, 3)
+  assert.deepEqual(
+    released.map(({ type, key: name, modifiers }) => [type, name, modifiers]),
+    [
+      ['keyUp', 'Alt', 2],
+      ['keyUp', 'Control', 0],
+    ],
+  )
+  const select = keyStroke(key('Control+a'), 'linux').down
+  assert.deepEqual(select, { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 }, 'a shortcut sends no text')
+  assert.deepEqual(keyStroke(key('Control+Shift+t'), 'linux').down, { type: 'rawKeyDown', key: 'T', code: 'KeyT', windowsVirtualKeyCode: 84, modifiers: 10 })
+})
+
+test('ControlOrMeta is Meta on macOS and Control elsewhere', () => {
+  assert.deepEqual(keyStroke(key('ControlOrMeta+a'), 'darwin').held.map((event) => event.key), ['Meta'])
+  assert.equal(keyStroke(key('ControlOrMeta+a'), 'darwin').down.modifiers, 4)
+  assert.deepEqual(keyStroke(key('ControlOrMeta+a'), 'linux').held.map((event) => event.key), ['Control'])
+})
+
+test("on macOS a shortcut in Retest's table carries the editing command macOS binds to it, and others carry none", () => {
+  const cases = [
+    ['Meta+a', 'selectAll'],
+    ['Meta+Z', 'undo'],
+    ['Meta+Shift+z', 'redo'],
+    ['Shift+Meta+z', 'redo'],
+    ['Meta+ArrowLeft', 'moveToBeginningOfLine'],
+    ['Meta+Shift+ArrowRight', 'moveToEndOfLineAndModifySelection'],
+    ['Alt+ArrowLeft', 'moveWordLeft'],
+    ['Alt+Shift+ArrowRight', 'moveWordRightAndModifySelection'],
+    ['Alt+Backspace', 'deleteWordBackward'],
+    ['Meta+Backspace', 'deleteToBeginningOfLine'],
+  ] as const
+  for (const [text, command] of cases) {
+    assert.deepEqual(keyStroke(key(text), 'darwin').down.commands, [command], text)
+    assert.equal(keyStroke(key(text), 'linux').down.commands, undefined, `${text} on Linux`)
+  }
+  for (const text of ['Control+a', 'Meta+k', 'Alt+Enter', 'Control+ArrowLeft']) assert.equal(keyStroke(key(text), 'darwin').down.commands, undefined, text)
 })
 
 test('a character is typed with the US key a person presses for it, and Shift where that key needs it', () => {
@@ -60,7 +111,7 @@ test('a character is typed with the US key a person presses for it, and Shift wh
     const base = { key: character, code, windowsVirtualKeyCode, modifiers }
     assert.deepEqual(
       keyStroke(key(character), 'linux'),
-      { down: { type: 'keyDown', ...base, text: character, unmodifiedText: character }, up: { type: 'keyUp', ...base } },
+      { held: [], down: { type: 'keyDown', ...base, text: character, unmodifiedText: character }, up: { type: 'keyUp', ...base }, released: [] },
       character,
     )
   }

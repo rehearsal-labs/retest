@@ -2,15 +2,14 @@ import type { CdpSession } from './cdp/session.ts'
 import type { Dispatch } from './dispatch.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Key } from '../protocol/keys.ts'
-import { sendOptions } from './cdp-results.ts'
 import { keyStroke } from './keys.ts'
 
 /** A point in the viewport, in CSS pixels. */
 export type Point = { x: number; y: number }
 
-/** Moves the mouse to the point, then presses and releases the left button there. */
+/** Moves the mouse to the point, then presses and releases the left button there. The move is input too: it can set off hover handlers. */
 export async function clickAt(session: CdpSession, point: Point, deadline: Deadline, dispatch: Dispatch): Promise<void> {
-  await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }, sendOptions(deadline))
+  await dispatch.send(session, 'Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }, deadline)
   const press = { ...point, button: 'left', clickCount: 1 }
   await dispatch.send(session, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...press, buttons: 1 }, deadline)
   await dispatch.send(session, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...press, buttons: 0 }, deadline)
@@ -28,14 +27,25 @@ export async function replaceSelection(session: CdpSession, value: string, deadl
     await dispatch.send(session, 'Input.insertText', { text: value }, deadline)
     return
   }
-  await pressKey(session, { kind: 'named', name: 'Delete', shift: false }, deadline, dispatch)
+  await pressKey(session, { kind: 'named', name: 'Delete', held: [] }, deadline, dispatch)
 }
 
-/** Presses and releases a key, which goes to whatever holds the keyboard focus. */
-export async function pressKey(session: CdpSession, key: Key, deadline: Deadline, dispatch: Dispatch): Promise<void> {
-  const { down, up } = keyStroke(key)
-  await dispatch.send(session, 'Input.dispatchKeyEvent', down, deadline)
-  await dispatch.send(session, 'Input.dispatchKeyEvent', up, deadline)
+/**
+ * Presses and releases a key, which goes to whatever holds the keyboard focus: the modifiers it is pressed with go
+ * down first and come up last. `at`, in seconds since the epoch, stamps the events a millisecond apart, so the page
+ * reads them as typed together however long each took to send, as a select's type-ahead needs.
+ */
+export async function pressKey(session: CdpSession, key: Key, deadline: Deadline, dispatch: Dispatch, at?: number): Promise<void> {
+  const { held, down, up, released } = keyStroke(key)
+  for (const [index, event] of [...held, down, up, ...released].entries()) {
+    const stamped = at === undefined ? event : { ...event, timestamp: at + index / 1000 }
+    await dispatch.send(session, 'Input.dispatchKeyEvent', stamped, deadline)
+  }
+}
+
+/** Moves the mouse to the point, as a person's hand on the mouse does before anything else. */
+export async function moveTo(session: CdpSession, point: Point, deadline: Deadline, dispatch: Dispatch): Promise<void> {
+  await dispatch.send(session, 'Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }, deadline)
 }
 
 /**

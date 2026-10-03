@@ -1,4 +1,5 @@
 import type { Page } from '../api/page.ts'
+import { withPlaywrightRules } from '../api/app-page.ts'
 import { declareDescribe, declareHook, declareTest } from '../api/declare.ts'
 import { test as retestTest } from '../api/test.ts'
 import { guard, notYet } from './not-yet.ts'
@@ -21,8 +22,9 @@ export interface PlaywrightTest {
 }
 
 /**
- * Playwright hands a test its fixtures; Retest hands it a context with `page`. Any other fixture a test takes,
- * such as `context`, `browser` or `request`, fails by name when the test reads it.
+ * Playwright hands a test its fixtures; Retest hands it a context with `page`, whose locators find by Playwright's
+ * rules where Retest can follow them. Any other fixture a test takes, such as `context`, `browser` or `request`, fails
+ * by name when the test reads it.
  *
  * @example fixturesOf(context).browser // throws: The browser fixture is not supported yet …
  */
@@ -39,7 +41,7 @@ export function fixturesOf(context: unknown): unknown {
         if (!(property in context)) throw notYet(`The ${property} fixture`)
         const value: unknown = Reflect.get(context, property, context)
         if (property !== 'page' || typeof value !== 'object' || value === null) return value
-        page ??= guard(value, 'page')
+        page ??= guard(withPlaywrightRules(value), 'page')
         return page
       },
       has: (_fixtures, property) => property in context,
@@ -74,7 +76,8 @@ function afterEach(body: unknown, ...extra: unknown[]): void {
   declareHook('afterEach', withFixtures(body), extra)
 }
 
-function step<T>(title: string, body: () => T | Promise<T>): Promise<T> {
+function step<T>(title: string, body: () => T | Promise<T>, ...rest: unknown[]): Promise<T> {
+  if (rest.length > 0) throw notYet('test.step(title, body, options)')
   return retestTest.step(title, body)
 }
 

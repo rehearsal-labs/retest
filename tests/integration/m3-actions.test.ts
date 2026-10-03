@@ -29,24 +29,25 @@ function afterwards(run: FinishedRun, name: string): [string | undefined, string
     .map((event) => [event.locator?.by === 'testId' ? event.locator.value : undefined, event.actual?.text])
 }
 
-test('select chooses by label, by value and from a list, as script; check and uncheck click once, through a label when the control is hidden; failures send nothing the page hears', async (t) => {
+test('select chooses by label, by value and from a list with the keyboard; check and uncheck click once, through a label when the control is hidden; failures send nothing the page hears', async (t) => {
   const app = await openApp(t)
   const run = await runRetest(t, { files: [scenario('choices')], baseUrl: app.url })
   assertStdoutIsEvents(run)
   assert.equal(run.exit.code, 1, run.stderr)
 
   // select: by label, by value, again with nothing to change, a list for a select multiple, a list of one, and an
-  // option that arrived late. The page heard input then change for each, none of them trusted.
+  // option that arrived late. The page heard the browser's own input and change for each, trusted, and no event says
+  // a script set anything.
   assert.equal(testNamed(run, chooses).status, 'passed')
   const country = { by: 'label', text: 'Country' }
   const toppings = { by: 'label', text: 'Toppings' }
   assert.deepEqual(actionsOf(run, chooses, ['select']), [
-    { command: 'select', locator: country, choices: [{ label: 'Canada' }], changed: true, input: 'script' },
-    { command: 'select', locator: country, choices: [{ value: 'mx' }], changed: true, input: 'script' },
-    { command: 'select', locator: country, choices: [{ label: 'Mexico' }], changed: false, input: 'script' },
-    { command: 'select', locator: toppings, choices: [{ label: 'Basil' }, { value: 'olives' }], multiple: true, changed: true, input: 'script' },
-    { command: 'select', locator: toppings, choices: [{ label: 'Garlic' }], multiple: true, changed: true, input: 'script' },
-    { command: 'select', locator: country, choices: [{ label: 'Peru' }], changed: true, input: 'script' },
+    { command: 'select', locator: country, choices: [{ label: 'Canada' }], changed: true },
+    { command: 'select', locator: country, choices: [{ value: 'mx' }], changed: true },
+    { command: 'select', locator: country, choices: [{ label: 'Mexico' }], changed: false },
+    { command: 'select', locator: toppings, choices: [{ label: 'Basil' }, { value: 'olives' }], multiple: true, changed: true },
+    { command: 'select', locator: toppings, choices: [{ label: 'Garlic' }], multiple: true, changed: true },
+    { command: 'select', locator: country, choices: [{ label: 'Peru' }], changed: true },
   ])
   const late = eventsOf(run.events, 'action.completed').find((event) => isDeepStrictEqual(event.choices, [{ label: 'Peru' }]))
   assert.ok((late?.durationMs ?? 0) >= 150, `the select waited for Peru, which arrives 300 ms after the click: ${late?.durationMs} ms`)
@@ -116,14 +117,15 @@ test('select chooses by label, by value and from a list, as script; check and un
   const timeline = await runCli(t, ['inspect', run.output, '--test', testNamed(run, chooses).testId], { env: { NO_COLOR: '1' } })
   assert.equal(timeline.exit.code, 0, timeline.stderr)
   for (const line of [
-    "getByLabel('Country').select('Canada'), set by script",
-    "getByLabel('Country').select({ value: 'mx' }), set by script",
+    "getByLabel('Country').select('Canada')",
+    "getByLabel('Country').select({ value: 'mx' })",
     "getByLabel('Country').select('Mexico'), already selected, sent nothing",
-    "getByLabel('Toppings').select(['Basil', { value: 'olives' }]), set by script",
-    "getByLabel('Toppings').select(['Garlic']), set by script",
+    "getByLabel('Toppings').select(['Basil', { value: 'olives' }])",
+    "getByLabel('Toppings').select(['Garlic'])",
   ]) {
     assert.ok(timeline.stdout.includes(line), `inspect shows ${line}:\n${timeline.stdout}`)
   }
+  assert.ok(!timeline.stdout.includes('set by script'), `nothing is set by script:\n${timeline.stdout}`)
   const ticked = await runCli(t, ['inspect', run.output, '--test', testNamed(run, ticks).testId], { env: { NO_COLOR: '1' } })
   assert.ok(ticked.stdout.includes("getByLabel('Newsletter').check(), clicked its label"), ticked.stdout)
   assert.ok(ticked.stdout.includes("getByTestId('agree').check(), already checked, sent nothing"), ticked.stdout)

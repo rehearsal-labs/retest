@@ -1,13 +1,17 @@
+import type { Look } from './look-until.ts'
 import type { TestRun } from '../api/test-run.ts'
-import type { Observation, ObserveAfter } from '../protocol/commands.ts'
+import type { Observation } from '../protocol/commands.ts'
 import type { Failure, SourceLocation, TruncatedText } from '../protocol/failures.ts'
 import type { LocatorCheck, LocatorCheckRecord } from '../protocol/locator-checks.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
-import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
-import { failure, truncateText, withLocation } from '../protocol/failures.ts'
+import { elapsedMs } from '../protocol/deadline.ts'
+import { failure, truncateText } from '../protocol/failures.ts'
 import { locatorCheck } from '../protocol/locator-checks.ts'
-import { describeLocator } from '../protocol/locator.ts'
+import { describeEmptyStep, describeLocator } from '../protocol/locator.ts'
+import { lookUntil } from './look-until.ts'
 import { reportAssertion } from './report.ts'
+
+export { lookFloorMs, pollDelay } from './look-until.ts'
 
 export type PollOptions = {
   run: TestRun
@@ -19,65 +23,29 @@ export type PollOptions = {
   location: SourceLocation | undefined
   /** From `expect.soft`: a check that does not pass is recorded, and the test goes on. */
   soft: boolean
+  /** The matcher's own `timeout`, which may shorten the assertion budget and never lengthens it. */
+  timeoutMs?: number | undefined
 }
-
-// Without a change, looks come quickly at first, then settle at twice a second.
-const pollDelays = [0, 50, 100, 250, 500]
-
-/** The longest a look waits for the page to change before it looks anyway, counting from 0 for the first look. */
-export function pollDelay(attempt: number): number {
-  return pollDelays[Math.min(attempt, pollDelays.length - 1)] ?? 0
-}
-
-/** The least time between two looks at a page that keeps changing, so a page in constant motion is not read on every frame. */
-export const lookFloorMs: number = 50
 
 /**
- * Looks at an app's page until the check passes or the assertion's time runs out. It only ever reads the
- * page: it never repeats the action that came before it. A page that counts its changes is asked to answer the
- * next look as soon as it has changed again, at most `lookFloorMs` after the last look and at the latest after the
- * poll delay; a page that does not count them is looked at on the poll delays alone. The last look happens at the
- * deadline. The event names the look its `actual` came from, by the id the parent served it with, and carries the
- * check whole, so the parent can judge that look again.
+ * Looks at an app's page until the check passes or the assertion's time runs out, as `lookUntil` looks. The event
+ * names the look its `actual` came from, by the id and the session the parent served it with, and carries the check
+ * whole, so the parent can judge that look again.
  */
 export async function pollLocator(options: PollOptions): Promise<void> {
   const { run, app, recipe, record, location } = options
   const check = locatorCheck(record)
-  const timeoutMs = run.assertionBudget()
-  const { now, sleep } = run.time
-  const startedAt = now()
-  const deadline = new Deadline(timeoutMs, { startedAt, clock: now })
-  let attempts = 0
-  let last: Observation | undefined
-  let lastId: string | undefined
-  let lastChanges: number | undefined
-  let lastLookAt = startedAt
-  let stopped: Failure | undefined
-  for (;;) {
-    const delay = smallestBudget(pollDelay(attempts), deadline.remainingMs)
-    let after: ObserveAfter | undefined
-    if (lastChanges === undefined) {
-      if (delay > 0) await sleep(delay)
-    } else {
-      const pause = Math.min(Math.max(0, lookFloorMs - elapsedMs(lastLookAt, now)), delay)
-      if (pause > 0) await sleep(pause)
-      after = { changes: lastChanges, waitMs: delay - pause }
-    }
-    const result = await run.observe(app, recipe, deadline.commandTimeoutMs, location, after)
-    lastLookAt = now()
-    attempts++
-    if (result.ok && result.kind === 'observe') {
-      last = result.observation
-      lastId = result.observationId
-      lastChanges = result.changes
-      if (check.passes(last)) break
-    } else if (!result.ok && !(result.failure.class === 'timeout' && deadline.expired && last !== undefined)) {
-      // A look that fails for any reason other than reaching this assertion's own deadline ends it.
-      stopped = withLocation(result.failure, location)
-      break
-    }
-    if (deadline.expired) break
-  }
+  const timeoutMs = assertionTime(run, options.timeoutMs)
+  const looked = await lookUntil<Observation>({
+    run,
+    timeoutMs,
+    location,
+    look: (lookMs, after) => run.observe(app, recipe, lookMs, location, after),
+    read: (result) => (result.kind === 'observe' ? lookOf(result.observation, result) : undefined),
+    passes: check.passes,
+  })
+  const { stopped, attempts } = looked
+  const last = looked.last?.observation
   const passed = stopped === undefined && last !== undefined && check.passes(last)
   const fields = {
     testId: run.testId,
@@ -91,15 +59,41 @@ export async function pollLocator(options: PollOptions): Promise<void> {
     ...(check.comparison === undefined ? {} : { comparison: check.comparison }),
     attempts,
     timeoutMs,
-    durationMs: elapsedMs(startedAt, now),
+    durationMs: elapsedMs(looked.startedAt, run.time.now),
     ...(location === undefined ? {} : { location }),
-    ...(lastId === undefined ? {} : { observationId: lastId }),
+    ...lookReference(looked.last),
     check: record,
   }
   if (passed) return reportAssertion(run, fields, undefined, false)
   // Only the check's own verdict is softened; a page that could not be read stops the test as usual.
   if (stopped !== undefined) return reportAssertion(run, fields, stopped, false)
   reportAssertion(run, fields, lookedTooLong({ check, recipe, last, attempts, timeoutMs, location }), options.soft)
+}
+
+/**
+ * How long an assertion may look: the assertion budget, or its own `timeout` when that is shorter, within what the
+ * test has left.
+ *
+ * @example assertionTime(run, 2000) // 2000 when the assertion budget is 5000
+ */
+export function assertionTime(run: TestRun, ownMs: number | undefined): number {
+  return run.assertionBudget(ownMs === undefined ? undefined : Math.min(ownMs, run.timeouts.assertion))
+}
+
+/** What a passed look's answer carries besides what it saw. */
+type Served = { observationId?: string; sessionId?: string; changes?: number }
+
+/** A look as `lookUntil` keeps it, from what the parent answered. */
+export function lookOf<Observed>(observation: Observed, served: Served): Look<Observed> {
+  return { observation, observationId: served.observationId, sessionId: served.sessionId, changes: served.changes }
+}
+
+/** The id and the session of the look an assertion rested on, as its event names them. */
+export function lookReference(look: Look<unknown> | undefined): { observationId?: string; sessionId?: string } {
+  const id = look?.observationId
+  if (id === undefined) return {}
+  const session = look?.sessionId
+  return session === undefined ? { observationId: id } : { observationId: id, sessionId: session }
 }
 
 type Unmet = {
@@ -122,7 +116,8 @@ function lookedTooLong({ check, recipe, last, attempts, timeoutMs, location }: U
     ...(check.comparison === undefined ? {} : { comparison: check.comparison }),
   }
   if (last === undefined || (check.single && last.count === 0)) {
-    return { ...failure('not_found', `${locator} matched no element. ${looked}`, location), details }
+    const step = last?.emptyStep === undefined ? undefined : describeEmptyStep(recipe, last.emptyStep)
+    return { ...failure('not_found', `${locator} matched no element.${step === undefined ? '' : ` ${step}`} ${looked}`, location), details }
   }
   if (check.single && last.count > 1) {
     const message = `${locator} matched ${last.count} elements, and ${check.matcher} needs exactly one. ${looked}`

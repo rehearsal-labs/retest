@@ -20,7 +20,7 @@ test('moves the focus with Tab and back with Shift+Tab', async ({ page }) => {
   await expect(page.getByTestId('focus')).toHaveText('second')
   await page.keyboard.press('Shift+Tab')
   await expect(page.getByTestId('focus')).toHaveText('first')
-  await expect(page.getByTestId('keys-heard')).toHaveText('Tab Tab:shift')
+  await expect(page.getByTestId('keys-heard')).toHaveText('Tab Shift:shift Tab:shift')
 })
 
 test.describe('a field whose focus a notice takes', (test) => {

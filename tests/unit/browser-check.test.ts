@@ -15,7 +15,7 @@ type Script = { readiness?: unknown; states?: (boolean | null)[]; reached?: stri
 // then the last one again.
 function checkPage({ readiness, states = [true], reached = clicked }: Script, touch = false) {
   let read = 0
-  const ready = readiness ?? { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page }
+  const ready = readiness ?? { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page, plan: null }
   const emulation = touch ? { emulation: { viewport: { width: 400, height: 800 }, deviceScaleFactor: 2, touch: true, isMobile: true } } : {}
   return scriptedPage({
     ...emulation,
@@ -51,7 +51,7 @@ test('a control is clicked once, and passes once it reads as asked', async () =>
 })
 
 test('a hidden control clicked through its label says so', async () => {
-  const readiness = { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: 'label', scale: 1, page }
+  const readiness = { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: 'label', scale: 1, page, plan: null }
   const { page: owned } = checkPage({ readiness, states: [false] })
   assert.deepEqual(await owned.execute({ kind: 'uncheck', locator: agree }, 1000), { ok: true, kind: 'uncheck', changed: true, via: 'label', page: facts })
 })
@@ -67,7 +67,7 @@ test('a control that took the click and stayed as it was fails after one click, 
     },
   })
   assert.equal(pointerInput(sent).filter((params) => JSON.stringify(params).includes('mousePressed')).length, 1)
-  const label = checkPage({ readiness: { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: 'label', scale: 1, page }, states: [null] })
+  const label = checkPage({ readiness: { status: 'ready', point: { x: 10, y: 20 }, token: 1, via: 'label', scale: 1, page, plan: null }, states: [null] })
   const failure = await label.page.execute({ kind: 'uncheck', locator: agree }, 100)
   assert.ok(!failure.ok)
   assert.equal(
@@ -91,7 +91,7 @@ test('a click another element took fails the check by its name, and its state is
   const { page: owned, sent } = scriptedPage({
     other: () => Promise.resolve({}),
     call: (source) => {
-      if (source === prepareFunction) return value({ status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page })
+      if (source === prepareFunction) return value({ status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page, plan: null })
       if (source === verdictFunction) return value({ reached: [], intercepted: { event: 'pointerdown', by: '<div class="cookie-banner">' }, landed: '<div>', leaving: null })
       if (source === disarmFunction) return value(true)
       return Promise.reject(new Error('unexpected call'))
