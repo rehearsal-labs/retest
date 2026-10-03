@@ -17,6 +17,9 @@ import { readOptions } from './read-options.ts'
 // Declarations run while a file loads. Each checks what a JavaScript caller passed, since types do not reach
 // it, and records what is wrong as a collection problem, so the file fails collection and nothing in it runs.
 
+/** How `.skip` or `.only` marked a declaration, or neither. */
+export type Mark = 'skip' | 'only' | undefined
+
 type Callable = (...args: unknown[]) => unknown
 type Call = { readonly name: string; readonly options: unknown; readonly fn: Callable; readonly location: SourceLocation }
 type Settings = { readonly declared: Declared; readonly timeout?: number }
@@ -26,15 +29,17 @@ type NewTest = Settings & {
   readonly body: RuntimeBody
   readonly setup?: true
   readonly row?: RegisteredTest['row']
+  readonly mark?: Mark
 }
 
-/** `test(name, options?, fn)`: a test in the block that is open. */
-export function declareTest(name: unknown, rest: readonly unknown[]): void {
-  const { collection, location } = declaring('test()')
-  const call = readCall(collection, { call: 'test', what: 'A test needs a name' }, name, rest, location)
+/** `test(name, options?, fn)`, `test.skip(...)` and `test.only(...)`: a test in the block that is open. */
+export function declareTest(name: unknown, rest: readonly unknown[], mark?: Mark): void {
+  const called = mark === undefined ? 'test' : `test.${mark}`
+  const { collection, location } = declaring(`${called}()`)
+  const call = readCall(collection, { call: called, what: 'A test needs a name' }, name, rest, location)
   const settings = call && settingsOf(collection, 'test', call)
   if (!call || !settings) return
-  addTest(collection, { ...settings, name: call.name, location: call.location, body: call.fn })
+  addTest(collection, { ...settings, name: call.name, location: call.location, body: call.fn, mark })
 }
 
 /** `test.setup(state, options?, fn)`: a test that signs in with one app and saves the state it is named after. */
@@ -49,16 +54,21 @@ export function declareSetup(state: unknown, rest: readonly unknown[]): void {
   addTest(collection, { ...settings, name: call.name, location: call.location, body: call.fn, setup: true })
 }
 
-/** `test.describe(name, options?, fn)`: runs `fn` at once with a new block open, and hands it `test`. */
-export function declareDescribe(name: unknown, rest: readonly unknown[], test: unknown): void {
-  const { collection, location } = declaring('test.describe()')
-  const call = readCall(collection, { call: 'test.describe', what: 'test.describe() needs a name' }, name, rest, location)
+/**
+ * `test.describe(name, options?, fn)`, and `.skip` or `.only` on it: runs `fn` at once with a new block open, and
+ * hands it `test`. Every test inside a skipped block is skipped; a block marked only singles out its tests.
+ */
+export function declareDescribe(name: unknown, rest: readonly unknown[], test: unknown, mark?: Mark): void {
+  const called = mark === undefined ? 'test.describe' : `test.describe.${mark}`
+  const { collection, location } = declaring(`${called}()`)
+  const call = readCall(collection, { call: called, what: `${called}() needs a name` }, name, rest, location)
   const settings = call && settingsOf(collection, 'test.describe', call)
   if (!call || !settings) return
-  const block = describeBlock(collection.block, { name: call.name, location: call.location }, settings.declared)
+  const describe = { name: call.name, location: call.location, ...(mark === 'only' ? { only: true as const } : {}) }
+  const block = describeBlock(collection.block, { describe, declared: settings.declared, skip: mark === 'skip' })
   const returned = collection.within(block, () => call.fn(test))
   if (isThenable(returned)) {
-    const message = `test.describe() runs its function once, while the file loads, and does not wait for it. Remove async from the function on line ${call.location.line}.`
+    const message = `${called}() runs its function once, while the file loads, and does not wait for it. Remove async from the function on line ${call.location.line}.`
     problem(collection, message, call.location)
   }
 }
@@ -141,6 +151,8 @@ function addTest(collection: Collection, test: NewTest): void {
     ...declared,
     ...(test.setup === undefined ? {} : { setup: test.setup }),
     ...(test.row === undefined ? {} : { row: test.row }),
+    ...(test.mark === 'skip' || block.skipped ? { skip: true as const } : {}),
+    ...(test.mark === 'only' ? { only: true as const } : {}),
   }
   collection.add(registered, test.body, block)
 }

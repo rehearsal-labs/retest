@@ -1,6 +1,6 @@
 import type { LaunchOptions, OwnedBrowser } from '../browser/contract.ts'
 import type { ResolvedExecutable } from '../browser/executables.ts'
-import type { LoadedTarget } from '../config/loaded.ts'
+import type { LoadedChromiumTarget } from '../config/loaded.ts'
 import type { ConfigResult } from '../config/validate.ts'
 import type { ExitCode } from '../protocol/events.ts'
 import type { RunResult } from '../protocol/result.ts'
@@ -17,8 +17,8 @@ export type CliDependencies = {
   collectFiles: (options: CollectOptions) => Promise<CollectResult>
   /** Imports a config file and validates it. `path` is absolute. */
   loadConfig: (path: string) => Promise<ConfigResult>
-  /** Where a target's browser is installed, or why it was not found. */
-  resolveExecutable: (target: LoadedTarget) => ResolvedExecutable
+  /** Where a Chromium target's browser is installed, or why it was not found. */
+  resolveExecutable: (target: LoadedChromiumTarget) => ResolvedExecutable
   launchBrowser: (options: LaunchOptions, timeoutMs: number) => Promise<OwnedBrowser>
   /** Whether any HTTP answer comes from `url` within `timeoutMs`. */
   probeReady: (url: string, timeoutMs: number) => Promise<boolean>

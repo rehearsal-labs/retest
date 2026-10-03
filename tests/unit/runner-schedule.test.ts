@@ -63,6 +63,6 @@ describe('scheduleRun', () => {
   })
 
   test('nothing selected leaves no visit', () => {
-    assert.deepEqual(scheduleRun(plan, { grep: 'nothing like it' }, true), { visits: [], selected: 0 })
+    assert.deepEqual(scheduleRun(plan, { grep: 'nothing like it' }, true), { visits: [], selected: 0, skipped: [] })
   })
 })

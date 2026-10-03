@@ -1,7 +1,7 @@
 import { expect, test } from '@rehearsal-labs/retest'
 
 // Runs once on each target of desktop: Google Chrome, then the Chromium that RETEST_CHROMIUM points to.
-test('saves a task in each desktop browser', { apps: ['desktop'], tags: ['browsers'] }, async ({ desktop }) => {
+test('saves a task in each desktop browser', { apps: ['desktop'], tags: ['browsers'], locks: ['saves'] }, async ({ desktop }) => {
   await desktop.goto('/')
   await desktop.getByLabel('Title').fill('Release checklist')
   await desktop.getByRole('button', { name: 'Save' }).click()

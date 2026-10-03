@@ -23,12 +23,14 @@ const config = defineConfig({
   secrets: { password: env('TASK_APP_PASSWORD') },
   tags: ['smoke', 'roles', 'browsers', 'phone'],
   states: ['signed-in'],
+  // Shared state outside the page. Tests that hold the same lock never run at the same time.
+  locks: ['saves'],
   timeouts: { action: 5000, assertion: 5000, test: 30_000 },
 })
 
 export default config
 
-// Lets every test file see the app names, secrets, tags and states above.
+// Lets every test file see the app names, secrets, tags, states and locks above.
 declare module '@rehearsal-labs/retest' {
   interface Register {
     config: typeof config

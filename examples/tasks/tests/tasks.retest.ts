@@ -2,17 +2,15 @@ import { expect, test } from '@rehearsal-labs/retest'
 
 const baseUrl = process.env['TASK_APP_URL'] ?? 'http://127.0.0.1:4173'
 
-// A title no other test saves, so the server's count of it is this test's alone while other files run beside it.
-const countedTitle = 'Counted once'
-
-// What the task app's server has counted for that title, read from its API rather than from the page.
+// Every save the task app's server has counted, read from its API rather than from the page. Tests in other files
+// save too while this file runs, so every test that saves holds the lock saves, and none saves while one counts.
 async function savedTasks(): Promise<number> {
-  const response = await fetch(new URL(`/api/submissions?title=${encodeURIComponent(countedTitle)}`, baseUrl))
+  const response = await fetch(new URL('/api/submissions', baseUrl))
   const body: unknown = await response.json()
   return typeof body === 'object' && body !== null && 'count' in body && typeof body.count === 'number' ? body.count : -1
 }
 
-test.describe('tasks', { tags: ['smoke'] }, (test) => {
+test.describe('tasks', { tags: ['smoke'], locks: ['saves'] }, (test) => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/')
     await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
@@ -31,7 +29,7 @@ test.describe('tasks', { tags: ['smoke'] }, (test) => {
 
   test('the server counts one save for one click', async ({ page }) => {
     const before = await savedTasks()
-    await page.getByLabel('Title').fill(countedTitle)
+    await page.getByLabel('Title').fill('Release checklist')
     await page.getByRole('button', { name: 'Save' }).click()
     // The function only reads, so looking again never saves again.
     await expect.poll(savedTasks, { timeout: 5000 }).toBe(before + 1)

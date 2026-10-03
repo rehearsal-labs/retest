@@ -1,5 +1,5 @@
 import type { CollectedTest } from '../protocol/events.ts'
-import type { Failure } from '../protocol/failures.ts'
+import type { Failure, FailureClass } from '../protocol/failures.ts'
 import type { DescribeBlock, RegisteredTest } from '../protocol/messages.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { RunConfig } from './run-config.ts'
@@ -42,7 +42,8 @@ export type Setups = ReadonlyMap<string, { test: PlannedTest; usable: boolean }>
 
 export type Plan = { files: PlannedFile[]; setups: Setups }
 
-type Checked = { test: PlannedTest; problems: string[] }
+/** A test and what is wrong with it: `usage` holds what the test asked for that the config does not allow. */
+type Checked = { test: PlannedTest; problems: string[]; usage: string[] }
 type CheckedFile = { file: string; tests: Checked[]; borrowed: boolean }
 
 /**
@@ -91,6 +92,9 @@ export function collectedTest(test: PlannedTest, config: RunConfig): CollectedTe
     ...(registered.setup === true ? { setup: true } : {}),
     ...(config.variants && test.variants.length > 0 ? { variants: test.variants } : {}),
     ...(test.setupFor === undefined ? {} : { setupFor: test.setupFor }),
+    ...(registered.skip === true ? { skip: true } : {}),
+    ...(registered.only === true || (registered.describes ?? []).some((block) => block.only === true) ? { only: true } : {}),
+    ...(registered.locks === undefined || registered.locks.length === 0 ? {} : { locks: registered.locks }),
   }
 }
 
@@ -137,7 +141,19 @@ function checkTest(file: string, registered: RegisteredTest, config: RunConfig, 
   if (!planned.ok) problems.push(planned.message)
   const variants = planned.ok ? planned.variants : []
   const id = testId(file, testTitle(registered.name, describePath))
-  return { test: { file, testId: id, registered, describePath, apps, states, variants, ...(setupFor === undefined ? {} : { setupFor }) }, problems }
+  const usage = lockProblems(registered.locks ?? [], config.locks)
+  return { test: { file, testId: id, registered, describePath, apps, states, variants, ...(setupFor === undefined ? {} : { setupFor }) }, problems, usage }
+}
+
+// A run from a config holds only the locks it declares, so a misspelt name cannot leave two tests unguarded.
+// Milestone 1's mode has no config to declare them in, so any name holds.
+function lockProblems(locks: readonly string[], declared: readonly string[] | undefined): string[] {
+  if (declared === undefined) return []
+  return locks.flatMap((lock) => {
+    if (declared.includes(lock)) return []
+    if (declared.length === 0) return [`It holds the lock ${JSON.stringify(lock)}, and the config declares no locks. Add locks: [${JSON.stringify(lock)}] to the config.`]
+    return [`It holds the lock ${JSON.stringify(lock)}, which the config does not declare. The config's locks are ${listed(declared)}.`]
+  })
 }
 
 function testApps(registered: RegisteredTest, config: RunConfig, problems: string[]): string[] {
@@ -227,9 +243,10 @@ function fileProblem(tests: readonly Checked[]): Failure | undefined {
   return first === undefined ? undefined : withAlso(first, rest)
 }
 
-function testProblems({ test, problems }: Checked): Failure[] {
+function testProblems({ test, problems, usage }: Checked): Failure[] {
   const title = JSON.stringify(testTitle(test.registered.name, test.describePath))
-  return problems.map((problem) => failure('collection_failed', `${title}: ${problem}`, test.registered.location))
+  const located = (kind: FailureClass, problem: string): Failure => failure(kind, `${title}: ${problem}`, test.registered.location)
+  return [...problems.map((problem) => located('collection_failed', problem)), ...usage.map((problem) => located('usage', problem))]
 }
 
 function duplicateProblems(tests: readonly Checked[]): Failure[] {

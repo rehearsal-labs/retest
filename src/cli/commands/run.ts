@@ -21,6 +21,7 @@ import { isCodingAgent } from '../agent-detection.ts'
 import { flag, list, parseArguments, value, type ParsedArguments } from '../arguments.ts'
 import { configBaseUrls, singleBaseUrl } from '../base-urls.ts'
 import { defaultConfigFile, findConfig } from '../config-file.ts'
+import { isContinuousIntegration, onlyInContinuousIntegration } from '../continuous-integration.ts'
 import { CliError, UsageError } from '../errors.ts'
 import { statIfPresent } from '../file-system.ts'
 import { readTestScope, selectionArguments, selectionOptions } from '../selection.ts'
@@ -61,6 +62,7 @@ const options = {
     description: `How many browsers each target's tests are spread over, each worker keeping to one.\nDefault: one for every three workers, ${defaultBrowsers(defaultWorkers())} here`,
   }),
   playwright: flag('Run Playwright test files: @playwright/test resolves to Retest,\nas far as its compatibility goes. With no files, every .spec file under this folder'),
+  'allow-only': flag('Run the tests marked only even when CI is set, which otherwise refuses them'),
   headed: flag('Show every browser window'),
   agent: flag('Print the short report for coding agents'),
   'no-agent': flag('Print the report for people, even when a coding agent is detected'),
@@ -77,6 +79,7 @@ export const runCommand: Command = {
     'Without a config, --browser runs the named files in one browser.',
     'The run folder keeps events.jsonl, result.json, logs and screenshots.',
     'When a coding agent is detected, the short agent report is printed unless you pick --reporter or --no-agent.',
+    'test.only keeps only the tests it marks, and the report warns. When CI is set, a run with test.only fails before any test runs, unless --allow-only is given.',
   ].join('\n'),
   options,
   notes:
@@ -134,6 +137,7 @@ async function planRun(parsed: Parsed, dependencies: CliDependencies): Promise<R
   })
   const workers = readCount('--workers', parsed.value('workers'))
   const browsers = readCount('--browsers', parsed.value('browsers'))
+  const forbidOnly = isContinuousIntegration(dependencies.env) && !parsed.flag('allow-only') ? onlyInContinuousIntegration : undefined
   const runFolder = parsed.value('output') ?? defaultRunFolder(new Date())
   const outputDir = resolve(cwd, runFolder)
   checkRunFolder(runFolder, outputDir)
@@ -150,6 +154,7 @@ async function planRun(parsed: Parsed, dependencies: CliDependencies): Promise<R
     ...(workers === undefined ? {} : { workers }),
     ...(browsers === undefined ? {} : { browsers }),
     ...(playwright ? { playwright: true as const } : {}),
+    ...(forbidOnly === undefined ? {} : { forbidOnly }),
     signal: dependencies.signal,
   }
   return { options: runOptions, reporter, runFolder }

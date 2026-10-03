@@ -86,7 +86,7 @@ test('handed test', () => expect(handed).toBe(true))`)
 
   check('rejects options it does not take and a missing function', async () => {
     const timeout = collectionFailure(await collectSource(`test.describe('slow', { timeout: 5000 }, () => {})`))
-    assert.equal(timeout.message, 'Unknown test.describe option "timeout". test.describe() options are apps, tags and state.')
+    assert.equal(timeout.message, 'Unknown test.describe option "timeout". test.describe() options are apps, tags, state and locks.')
     const noFunction = collectionFailure(await collectSource(`test.describe('empty', { tags: ['smoke'] })`))
     assert.equal(noFunction.message, 'test.describe("empty") takes a name, optional options and a function: test.describe(name, options?, fn).')
   })
@@ -215,7 +215,7 @@ test.setup('guest', () => {})`)
 
 describe('test options', () => {
   const cases: [string, string][] = [
-    [`test('x', { retries: 2 }, () => {})`, 'Unknown test option "retries". Test options are apps, tags, state and timeout.'],
+    [`test('x', { retries: 2 }, () => {})`, 'Unknown test option "retries". Test options are apps, tags, state, locks and timeout.'],
     [`test('x', { apps: 'web' }, () => {})`, "apps lists each app once, such as apps: ['owner', 'member'], received 'web'."],
     [`test('x', { apps: [] }, () => {})`, "apps lists each app once, such as apps: ['owner', 'member'], received []."],
     [`test('x', { apps: ['web', 'web'] }, () => {})`, "apps lists each app once, such as apps: ['owner', 'member'], received [ 'web', 'web' ]."],

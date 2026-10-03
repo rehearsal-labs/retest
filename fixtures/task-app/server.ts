@@ -5,16 +5,21 @@ import { text } from 'node:stream/consumers'
 import { ACTIONS_PAGE, renderSubmittedPage } from './actions-page.ts'
 import { CHOICES_PAGE, TOGGLE_PATH } from './choices-page.ts'
 import { CODE_PAGE, CODE_SIGN_IN_PAGE, CodeSignIns, renderRefusal } from './code-sign-in.ts'
+import { diagnosticsRoutes } from './diagnostics-routes.ts'
 import { renderDevicePage } from './device-page.ts'
+import { holderRoutes } from './holders.ts'
 import { KEY_DOWN_PATH, KEYS_PAGE } from './keys-page.ts'
 import { LOCATORS_PAGE } from './locators-page.ts'
+import { lookupRoutes } from './lookup-routes.ts'
 import { MODES, type Mode, type TaskAppMode } from './modes.ts'
 import { renderPage } from './page.ts'
 import { PROXY_CHECK_FRAME, PROXY_CHECK_PAGE, PROXY_CHECK_PATH, PROXY_CHECK_WORKER } from './proxy-page.ts'
 import { MORE_PATH, SCROLL_PAGE } from './scroll-page.ts'
+import { sharedRecords, type SharedRecord } from './shared-records.ts'
 import { SERVICE_WORKER, SERVICE_WORKER_PAGE } from './service-worker.ts'
 import { renderAccountPage, Sessions, SIGN_IN_PAGE } from './sign-in.ts'
 import { GREETING_PAGE, NEXT_TITLE_PAGE, REDIRECTING_PAGE, renderTitledPage, TITLES_PAGE } from './titles-page.ts'
+import { workflowRoutes } from './workflow-routes.ts'
 
 export type TaskAppOptions = {
   mode?: TaskAppMode
@@ -47,6 +52,8 @@ export type TaskApp = {
   keyDowns(): number
   /** Every one-time code the app sent, oldest first. */
   sentCodes(): readonly string[]
+  /** Every shared record, in the order they were made. */
+  sharedRecords(): readonly SharedRecord[]
   close(): Promise<void>
 }
 
@@ -64,6 +71,7 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
   const page = renderPage(mode.page ?? {})
   const timers = new Set<NodeJS.Timeout>()
   const sessions = new Sessions()
+  const shared = sharedRecords(sessions)
   const codeSignIns = new CodeSignIns(options.outbox)
   let submissions = 0
   // Saves by the title received, so a test can count its own while other tests save theirs.
@@ -252,6 +260,11 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
         response.write('<!doctype html><title>Loading</title><p>Loading')
       },
     ],
+    ...holderRoutes(),
+    ...shared.routes,
+    ...lookupRoutes(),
+    ...workflowRoutes(),
+    ...diagnosticsRoutes(),
   ])
 
   const server = createServer((request, response) => {
@@ -291,6 +304,7 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     loads: () => loads,
     keyDowns: () => keyDowns,
     sentCodes: () => codeSignIns.sent(),
+    sharedRecords: () => shared.all(),
     close: () => (closing ??= stop()),
   }
 }

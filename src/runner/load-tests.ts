@@ -4,7 +4,8 @@ import type { TestFileProcess } from './test-file-process.ts'
 import { failure } from '../protocol/failures.ts'
 import { describeExit } from '../shared/process-exit.ts'
 
-export type Loaded = { ok: true; tests: RegisteredTest[] } | { ok: false; failure: Failure }
+/** `modules` names every project module the process loaded with the file, by its path from the root, when it said. */
+export type Loaded = { ok: true; tests: RegisteredTest[]; modules?: string[] } | { ok: false; failure: Failure }
 
 export type LoadOptions = {
   file: string
@@ -34,7 +35,7 @@ export function loadTests(child: TestFileProcess, options: LoadOptions): Promise
       return failed(`The process for ${file} sent a message Retest could not read: ${event.problem}`)
     }
     const { message } = event
-    if (message.type === 'collected') return resolve({ ok: true, tests: message.tests })
+    if (message.type === 'collected') return resolve({ ok: true, tests: message.tests, ...(message.modules === undefined ? {} : { modules: message.modules }) })
     if (message.type === 'collection-failed') return resolve({ ok: false, failure: message.failure })
     void child.kill()
     failed(`The process for ${file} sent ${message.type} while loading its file.`)

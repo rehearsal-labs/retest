@@ -7,6 +7,7 @@ export type RequestHeaders = { userAgent: string | undefined; clientHints: strin
 const SCRIPT = `
 const show = (testId, value) => { document.querySelector('[data-testid="' + testId + '"]').textContent = String(value) }
 show('width', innerWidth)
+show('height', innerHeight)
 show('pixel-ratio', devicePixelRatio)
 show('touch', 'ontouchstart' in window)
 show('user-agent', navigator.userAgent)
@@ -35,6 +36,7 @@ export function renderDevicePage(headers: RequestHeaders): string {
 <main>
 <h1>Device</h1>
 <p>Width: <span data-testid="width"></span></p>
+<p>Height: <span data-testid="height"></span></p>
 <p>Pixel ratio: <span data-testid="pixel-ratio"></span></p>
 <p>Touch screen: <span data-testid="touch"></span></p>
 <p>User agent: <span data-testid="user-agent"></span></p>

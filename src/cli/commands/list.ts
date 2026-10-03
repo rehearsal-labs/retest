@@ -83,14 +83,17 @@ function renderList(collected: CollectResult, style: Style): string {
 
 function shownName(test: CollectedTest, style: Style): string {
   const title = titleWithin(test.name, test.describePath)
-  if (test.setup !== true) return title
+  const marks = [...(test.skip === true ? ['skip'] : []), ...(test.only === true ? ['only'] : [])]
+  const marked = marks.length === 0 ? title : `${title} ${style.dim(`(${marks.join(', ')})`)}`
+  if (test.setup !== true) return marked
   const setupFor = test.setupFor === undefined ? '' : ` for ${listWords(test.setupFor, 'and')}`
-  return `${title} ${style.dim(`(setup${setupFor})`)}`
+  return `${marked} ${style.dim(`(setup${setupFor})`)}`
 }
 
 function testFacts(test: CollectedTest, style: Style): string[] {
   const facts: [string, string[] | undefined][] = [
     ['tags', test.tags],
+    ['locks', test.locks],
     ['apps', test.apps],
     ['targets', test.variants?.map((variant) => variantKey(variant))],
   ]

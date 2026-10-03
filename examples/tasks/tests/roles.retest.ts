@@ -7,7 +7,7 @@ test('each role has a session of its own', { apps: ['web', 'admin'], state: { we
   await expect(admin.getByTestId('account')).toHaveText('Signed out')
 })
 
-test('a task one role saves stays in its own browser', { apps: ['web', 'admin'], tags: ['roles'] }, async ({ web, admin }) => {
+test('a task one role saves stays in its own browser', { apps: ['web', 'admin'], tags: ['roles'], locks: ['saves'] }, async ({ web, admin }) => {
   await web.goto('/')
   await web.getByLabel('Title').fill('Release checklist')
   await web.getByRole('button', { name: 'Save' }).click()

@@ -1,5 +1,6 @@
 import type { Variant } from '../protocol/variant.ts'
 import type { Selection } from './contract.ts'
+import type { Focus } from './focus.ts'
 import type { Plan, PlannedTest } from './plan.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { testSelected, variantSelected } from './selection.ts'
@@ -10,8 +11,11 @@ export type Attempt = { test: PlannedTest; targets: Variant }
 /** Attempts that run one after another in one process for their file. */
 export type Visit = { file: string; attempts: Attempt[] }
 
-/** The visits in order, and how many attempts the selection chose, before setups were added. */
-export type Schedule = { visits: Visit[]; selected: number }
+/**
+ * The visits in order, how many attempts the selection chose, before setups were added, and the chosen attempts of
+ * skipped tests, which no visit runs.
+ */
+export type Schedule = { visits: Visit[]; selected: number; skipped: Attempt[] }
 
 type Placed = Attempt & { position: readonly number[] }
 
@@ -20,15 +24,16 @@ type Placed = Attempt & { position: readonly number[] }
  * setups that start from its state, once per target; then the rest, file by file in the order given, each
  * test's runs together. Consecutive attempts in one file share a visit. A borrowed file's setups run only for
  * the attempts that need them. `variants` false leaves milestone 1's attempts without a variant, so `lastFailed`
- * matches them by test id.
+ * matches them by test id. With a `focus`, only the tests it keeps are chosen. A skipped test's attempts are chosen
+ * but left out of the visits, and need no setup.
  *
  * @example scheduleRun(plan, { grep: 'saves' }, true).visits
  */
-export function scheduleRun(plan: Plan, selection: Selection, variants: boolean): Schedule {
+export function scheduleRun(plan: Plan, selection: Selection, variants: boolean, focus?: Focus): Schedule {
   const chosen = plan.files.flatMap((file, fileIndex) => {
     if (!file.ok || file.borrowed === true) return []
     return file.tests.flatMap((test, testIndex) => {
-      if (!testSelected(test, selection)) return []
+      if (!testSelected(test, selection) || focus?.keeps(test) === false) return []
       return test.variants.flatMap((targets, variantIndex) => {
         const kept = variantSelected(test.testId, variants ? targets : undefined, selection)
         return kept ? [{ test, targets, position: [fileIndex, testIndex, variantIndex] }] : []
@@ -45,12 +50,15 @@ export function scheduleRun(plan: Plan, selection: Selection, variants: boolean)
       need(known)
     }
   }
-  for (const attempt of chosen) {
+  const skipped = chosen.filter((attempt) => attempt.test.registered.skip === true)
+  const running = chosen.filter((attempt) => attempt.test.registered.skip !== true)
+  for (const attempt of running) {
     if (attempt.test.registered.setup === true) setups.set(attemptKey(attempt), attempt)
     need(attempt)
   }
-  const rest = chosen.filter((attempt) => attempt.test.registered.setup !== true)
-  return { visits: intoVisits([...inDependencyOrder([...setups.values()], plan), ...rest]), selected: chosen.length }
+  const rest = running.filter((attempt) => attempt.test.registered.setup !== true)
+  const visits = intoVisits([...inDependencyOrder([...setups.values()], plan), ...rest])
+  return { visits, selected: chosen.length, skipped: skipped.map(({ test, targets }) => ({ test, targets })) }
 }
 
 /** The visits in two phases: those that run setups, which come first one after another, and those that run tests. */

@@ -1,4 +1,5 @@
 import type { Failure } from '../protocol/failures.ts'
+import type { Narrowed } from '../protocol/result.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { FileLine, Selection, TagExpression } from './contract.ts'
 import type { PlannedTest } from './plan.ts'
@@ -48,9 +49,9 @@ export function selectionProblem(selection: Selection, files: readonly string[],
   return failure('usage', [first, ...rest].join(' '))
 }
 
-/** Why a selection kept no test, naming each filter it applied. */
-export function emptySelectionFailure(selection: Selection): Failure {
-  return failure('usage', `No test matches ${describeSelection(selection)}.`)
+/** Why a selection kept no test, naming each filter it applied, and `test.only` when it narrowed the run first. */
+export function emptySelectionFailure(selection: Selection, narrowed?: Narrowed): Failure {
+  return failure('usage', `No test matches ${describeSelection(selection, narrowed)}.`)
 }
 
 /**
@@ -133,8 +134,8 @@ function grouped(expression: TagExpression, parent: 'and' | 'or' | 'not'): strin
   return precedence[expression.kind] < precedence[parent] ? `(${text})` : text
 }
 
-function describeSelection(selection: Selection): string {
-  const parts: string[] = []
+function describeSelection(selection: Selection, narrowed: Narrowed | undefined): string {
+  const parts: string[] = narrowed === undefined ? [] : ['test.only']
   const { grep, tags, locations, lastFailed, targets } = selection
   if (grep !== undefined) parts.push(`--grep ${typeof grep === 'string' ? JSON.stringify(grep) : String(grep)}`)
   if (tags !== undefined) parts.push(`--tag ${JSON.stringify(describeTags(tags))}`)

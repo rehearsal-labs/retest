@@ -1,4 +1,5 @@
 import type { ObserveAfter, CommandResult, PageCommand } from '../protocol/commands.ts'
+import type { EvaluationAnswer, EvaluationCall } from '../protocol/evaluation.ts'
 import type { ChildEvent } from '../protocol/events.ts'
 import type { Failure, SourceLocation } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
@@ -11,6 +12,7 @@ import { describeCommand } from '../protocol/commands.ts'
 import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
 import { failure, withAlso, withLocation } from '../protocol/failures.ts'
 import { formatLine } from '../protocol/location.ts'
+import { readCallOptions } from './call-options.ts'
 import { CommandLanes } from './command-lanes.ts'
 import { callInScope, currentScope, type Scope } from './context.ts'
 import { failureFrom, fromEarlierTest, RetestError } from './failure.ts'
@@ -41,11 +43,16 @@ export type TestRunOptions = {
 /** How a test ended, as the child reports it. */
 export type Verdict = { status: 'passed' | 'failed'; failure?: Failure; assertionCount: number; durationMs: number }
 
-type ActionCommand = Exclude<PageCommand, { kind: 'observe' }>
+type ActionCommand = Exclude<PageCommand, { kind: 'observe' | 'observePage' }>
 type Progress = { readonly observed: boolean; readonly settled: boolean }
-type Tracked = Work & { kind: 'action' | 'assertion' | 'step'; operation: Progress }
+type Tracked = Work & { kind: 'action' | 'assertion' | 'read' | 'step'; operation: Progress }
 type Ending = { kind: 'returned' } | { kind: 'threw'; error: unknown } | { kind: 'aborted' }
 type HookKind = 'beforeEach' | 'afterEach'
+/** A command's budget, where the test sent it from, and the time the call gave itself, when it gave one. */
+type Sending = { readonly timeoutMs: number; readonly location: SourceLocation | undefined; readonly callTimeoutMs?: number }
+
+// Commands that open a document, which the navigation budget times; the parent applies the same rule.
+const navigationKinds: ReadonlySet<string> = new Set(['goto', 'reload', 'goBack', 'goForward'])
 
 const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
@@ -65,6 +72,7 @@ export class TestRun {
   readonly #deadline: Deadline
   readonly #failures: Failure[] = []
   readonly #answers = new Map<number, (result: CommandResult) => void>()
+  readonly #evaluations = new Map<number, (answer: EvaluationAnswer) => void>()
   readonly #lanes = new CommandLanes()
   readonly #aborted = Promise.withResolvers<void>()
   // Work created since the last function the test ran returned; each function answers for its own.
@@ -82,6 +90,11 @@ export class TestRun {
     this.time = options.time ?? hostTime
     this.#startedAt = this.time.now()
     this.#deadline = new Deadline(options.timeouts.test, { startedAt: this.#startedAt, clock: this.time.now })
+  }
+
+  /** The apps the parent opened for the test, in order: its declared apps, or its default app. */
+  get apps(): readonly string[] {
+    return this.#options.apps
   }
 
   /** Where the test code that called into Retest sits. */
@@ -143,6 +156,27 @@ export class TestRun {
     answer(result)
   }
 
+  /**
+   * Asks the parent to run an AI check. The parent captures the evidence, calls the judge and records the verdict
+   * itself; the answer only tells the test how it went. Ids share the command counter, so an answer meant for an
+   * earlier test never reaches a later one.
+   */
+  requestEvaluation(call: EvaluationCall, location: SourceLocation | undefined): Promise<EvaluationAnswer> {
+    const id = this.#options.nextCommandId()
+    const stepId = currentScope()?.stepId
+    const { promise, resolve } = Promise.withResolvers<EvaluationAnswer>()
+    this.#evaluations.set(id, resolve)
+    this.#options.send({ type: 'evaluate', id, call, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) })
+    return promise
+  }
+
+  resolveEvaluation(id: number, answer: EvaluationAnswer): void {
+    const resolve = this.#evaluations.get(id)
+    if (resolve === undefined) return
+    this.#evaluations.delete(id)
+    resolve(answer)
+  }
+
   emit(event: ChildEvent): void {
     if (this.#state !== 'finished') this.#options.send({ type: 'event', event })
   }
@@ -156,18 +190,29 @@ export class TestRun {
     return smallestBudget(ownMs, this.#deadline.commandTimeoutMs)
   }
 
-  /** Starts an action on an app at once. It fails straight away if anything else is running on that app. */
-  action(app: string, command: ActionCommand, location: SourceLocation | undefined): Operation<void> {
+  /**
+   * Starts an action on an app at once. It fails straight away if anything else is running on that app. `options`
+   * are what the test passed the action, such as `{ timeout: 2000 }`, which may shorten its budget and never
+   * lengthen it.
+   */
+  action(app: string, command: ActionCommand, location: SourceLocation | undefined, options?: unknown): Operation<void> {
     const work = { label: describeCommand(command), location }
     const operation = this.#track<void>('action', work)
+    const read = readCallOptions(command.kind, options)
+    if (!read.ok) {
+      operation.reject(this.#refusal() ?? this.fail(failure('usage', read.problem, location)))
+      return operation
+    }
     const refusal = this.#refusal() ?? this.#whileReading(work) ?? this.#clash(app, work, 'action')
     if (refusal !== undefined) {
       operation.reject(refusal)
       return operation
     }
     this.#lanes.startAction(app, work)
-    const budget = command.kind === 'goto' ? this.timeouts.navigation : this.timeouts.action
-    void this.#send(app, command, budget, location).then((result) => {
+    const budget = navigationKinds.has(command.kind) ? this.timeouts.navigation : this.timeouts.action
+    const own = read.timeoutMs === undefined ? {} : { callTimeoutMs: read.timeoutMs }
+    const timeoutMs = read.timeoutMs === undefined ? budget : smallestBudget(read.timeoutMs, budget)
+    void this.#send(app, command, { timeoutMs, location, ...own }).then((result) => {
       this.#lanes.endAction(app, work)
       if (result.ok) operation.resolve()
       else operation.reject(this.fail(withLocation(result.failure, location)))
@@ -179,7 +224,7 @@ export class TestRun {
    * An assertion that starts only when test code awaits it. One that looks at an app's page waits for no
    * action there; one that reads a value (`app` undefined) touches no page.
    */
-  assertion(label: string, location: SourceLocation | undefined, check: () => Promise<void>, app?: string): Operation<void> {
+  assertion(label: string, location: SourceLocation | undefined, check: () => Promise<void>, app?: string | readonly string[]): Operation<void> {
     const work = { label, location }
     const operation: Operation<void> = this.#track('assertion', work, () => this.#startAssertion(operation, work, check, app))
     return operation
@@ -189,7 +234,41 @@ export class TestRun {
   observe(app: string, locator: LocatorRecipe, timeoutMs: number, location: SourceLocation | undefined, after?: ObserveAfter): Promise<CommandResult> {
     const refusal = this.#refusal()
     if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
-    return this.#send(app, { kind: 'observe', locator, ...(after === undefined ? {} : { after }) }, timeoutMs, location)
+    return this.#send(app, { kind: 'observe', locator, ...(after === undefined ? {} : { after }) }, { timeoutMs, location })
+  }
+
+  /** Reads an app's page once for an assertion: its address and title. With `after`, the page first waits for its next change. */
+  observePage(app: string, timeoutMs: number, location: SourceLocation | undefined, after?: ObserveAfter): Promise<CommandResult> {
+    const refusal = this.#refusal()
+    if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
+    return this.#send(app, { kind: 'observePage', ...(after === undefined ? {} : { after }) }, { timeoutMs, location })
+  }
+
+  /**
+   * Reads an app's page outside an assertion, as `page.url()` does: it starts at once, waits for no action, and fails
+   * straight away if an action is running on that app. It only reads, so it may run inside the function
+   * `expect.poll` calls.
+   */
+  read<T>(app: string, label: string, location: SourceLocation | undefined, read: () => Promise<T>): Operation<T> {
+    const work = { label, location }
+    const operation = this.#track<T>('read', work)
+    const refusal = this.#refusal() ?? this.#clash(app, work, 'look')
+    if (refusal !== undefined) {
+      operation.reject(refusal)
+      return operation
+    }
+    this.#lanes.startLook(app, work)
+    read().then(
+      (value) => {
+        this.#lanes.endLook(app, work)
+        operation.resolve(value)
+      },
+      (error: unknown) => {
+        this.#lanes.endLook(app, work)
+        operation.reject(error)
+      },
+    )
+    return operation
   }
 
   /** Runs a named step inside the test and resolves with its value. */
@@ -281,26 +360,29 @@ export class TestRun {
     else this.emit({ type: 'step.finished', ...scope, status: 'failed', failure: problem })
   }
 
-  #startAssertion(operation: Operation<void>, work: Work, check: () => Promise<void>, app: string | undefined): void {
-    const refusal = this.#refusal() ?? (app === undefined ? undefined : this.#clash(app, work, 'look'))
+  // A check that looks at several apps, as an AI check over screenshots of each does, holds the look lane of every one.
+  #startAssertion(operation: Operation<void>, work: Work, check: () => Promise<void>, app: string | readonly string[] | undefined): void {
+    const apps = app === undefined ? [] : typeof app === 'string' ? [app] : app
+    const refusal = this.#refusal() ?? apps.map((each) => this.#clash(each, work, 'look')).find((clash) => clash !== undefined)
     if (refusal !== undefined) return operation.reject(refusal)
-    if (app !== undefined) this.#lanes.startLook(app, work)
+    for (const each of apps) this.#lanes.startLook(each, work)
     check().then(
       () => {
-        if (app !== undefined) this.#lanes.endLook(app, work)
+        for (const each of apps) this.#lanes.endLook(each, work)
         operation.resolve()
       },
       (error: unknown) => {
-        if (app !== undefined) this.#lanes.endLook(app, work)
+        for (const each of apps) this.#lanes.endLook(each, work)
         operation.reject(error)
       },
     )
   }
 
-  #send(app: string, command: PageCommand, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
+  #send(app: string, command: PageCommand, sending: Sending): Promise<CommandResult> {
     const id = this.#options.nextCommandId()
     const stepId = currentScope()?.stepId
     const { promise, resolve } = Promise.withResolvers<CommandResult>()
+    const { timeoutMs, location, callTimeoutMs } = sending
     this.#answers.set(id, resolve)
     this.#options.send({
       type: 'command',
@@ -310,6 +392,7 @@ export class TestRun {
       timeoutMs,
       ...(location === undefined ? {} : { location }),
       ...(stepId === undefined ? {} : { stepId }),
+      ...(callTimeoutMs === undefined ? {} : { callTimeoutMs }),
     })
     return promise
   }
