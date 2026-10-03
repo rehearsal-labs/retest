@@ -1,6 +1,6 @@
 import type { Packed } from './cli-harness.ts'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -198,8 +198,8 @@ describe('milestone 2 package: init and a registered consumer', () => {
     assert.ok(typeof manifest === 'object' && manifest !== null && 'exports' in manifest)
     const { exports } = manifest
     assert.ok(typeof exports === 'object' && exports !== null)
-    assert.deepEqual(Object.keys(exports), ['.', './runner', './protocol', './playwright', './package.json'])
-    for (const subpath of ['.', './runner', './protocol', './playwright']) {
+    assert.deepEqual(Object.keys(exports), ['.', './runner', './protocol', './playwright', './evaluation/ai-sdk', './package.json'])
+    for (const subpath of ['.', './runner', './protocol', './playwright', './evaluation/ai-sdk']) {
       const entries: unknown = Reflect.get(exports, subpath)
       assert.ok(typeof entries === 'object' && entries !== null, subpath)
       assert.deepEqual(Object.keys(entries), ['retest-source', 'types', 'default'], subpath)
@@ -212,12 +212,30 @@ describe('milestone 2 package: init and a registered consumer', () => {
     await mkdir(empty)
     const init = await runProgram(join(tools, 'node_modules/.bin/retest'), ['init', '--yes'], empty, { ...process.env, NO_COLOR: '1' })
     assertSucceeded(init, 'retest init --yes')
-    assert.deepEqual(Object.keys(snapshot(empty)), ['.gitignore', 'package.json', 'retest.config.ts', 'tests/example.retest.ts', 'tsconfig.retest.json'])
+    assert.deepEqual(Object.keys(snapshot(empty)), ['.gitignore', 'package.json', 'retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json'])
     const written: unknown = JSON.parse(readFileSync(join(empty, 'package.json'), 'utf8'))
     assert.deepEqual(written, {
       private: true,
       type: 'module',
-      scripts: { 'test:e2e': 'retest run', 'typecheck:e2e': 'tsc --noEmit -p tsconfig.retest.json' },
+      scripts: { 'test:e2e': 'retest run', 'typecheck:e2e': 'tsc -p tests/tsconfig.json' },
+    })
+    // The options that let tsc pass what Retest loads and refuse what it does not; with no tsconfig of the project's own,
+    // there is nothing to extend.
+    assert.deepEqual(JSON.parse(readFileSync(join(empty, 'tests/tsconfig.json'), 'utf8')), {
+      compilerOptions: {
+        target: 'es2024',
+        module: 'esnext',
+        moduleResolution: 'bundler',
+        types: ['node'],
+        strict: true,
+        noEmit: true,
+        allowImportingTsExtensions: true,
+        verbatimModuleSyntax: true,
+        erasableSyntaxOnly: false,
+        noUncheckedIndexedAccess: true,
+        skipLibCheck: true,
+      },
+      include: ['../retest.config.ts', '**/*'],
     })
     assert.equal(readFileSync(join(empty, '.gitignore'), 'utf8'), '.retest/\n')
     assert.match(readFileSync(join(empty, 'retest.config.ts'), 'utf8'), /declare module '@rehearsal-labs\/retest' \{\n {2}interface Register \{\n {4}config: typeof config/)
@@ -230,7 +248,7 @@ describe('milestone 2 package: init and a registered consumer', () => {
     const bin = join(initialized, 'node_modules/.bin/retest')
     const first = await runProgram(bin, ['init', '--yes', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
     assertSucceeded(first, 'retest init --yes --ci github')
-    for (const path of ['retest.config.ts', 'tests/example.retest.ts', 'tsconfig.retest.json', '.github/workflows/retest.yml', '.gitignore']) {
+    for (const path of ['retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json', '.github/workflows/retest.yml', '.gitignore']) {
       assert.match(first.stdout, new RegExp(`created +${path.replaceAll('.', '\\.')}`), `init created ${path}:\n${first.stdout}`)
     }
     assert.match(first.stdout, /updated +package\.json +scripts: "test:e2e", "typecheck:e2e"/)
@@ -247,12 +265,18 @@ describe('milestone 2 package: init and a registered consumer', () => {
     assert.equal(second.stdout.match(/left as is/g)?.length, 6, second.stdout)
 
     for (const [name, compiler] of Object.entries(compilers)) {
-      assertSucceeded(await typecheck(compiler, initialized, 'tsconfig.retest.json'), `${name} on the project init wrote`)
+      assertSucceeded(await typecheck(compiler, initialized, 'tests/tsconfig.json'), `${name} on the project init wrote`)
     }
     const run = await runRetest(t, { files: [], cwd: initialized, browser: false, command: [bin], baseUrl: app.url })
     assert.equal(run.exit.code, 0, run.stderr)
     assertStdoutIsEvents(run)
     assert.equal(testNamed(run, 'shows the home page').status, 'passed')
+
+    // The loader reads the tsconfig init wrote for the tests: an import a test file cannot find names it.
+    await writeFiles(initialized, { 'tests/governed.retest.ts': `import { test } from '${packageName}'\nimport { gone } from './gone'\n\ntest('never loads', async () => {\n  gone()\n})\n` })
+    const listed = await runProgram(bin, ['list', 'tests/governed.retest.ts'], initialized, { ...process.env, NO_COLOR: '1' })
+    assert.equal(listed.code, 2, listed.stdout)
+    assert.ok(listed.stderr.includes(`Imports from that file follow ${join(realpathSync(initialized), 'tests/tsconfig.json')}.`), listed.stderr)
   })
 
   test('a consumer with a registered config type-checks on TypeScript 6 and 7, and each mistake gives its message', async () => {

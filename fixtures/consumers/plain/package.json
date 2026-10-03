@@ -1,0 +1,5 @@
+{
+  "name": "retest-consumer-plain",
+  "private": true,
+  "type": "module"
+}

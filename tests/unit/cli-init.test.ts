@@ -54,7 +54,7 @@ describe('init in a new project', () => {
         '',
         '  created  retest.config.ts',
         '  created  tests/example.retest.ts',
-        '  created  tsconfig.retest.json',
+        '  created  tests/tsconfig.json',
         '  created  package.json   scripts: "test:e2e", "typecheck:e2e"',
         '  created  .gitignore     .retest/',
         '',
@@ -70,7 +70,7 @@ describe('init in a new project', () => {
       'package.json',
       'retest.config.ts',
       'tests/example.retest.ts',
-      'tsconfig.retest.json',
+      'tests/tsconfig.json',
     ])
   })
 
@@ -115,30 +115,49 @@ describe('init in a new project', () => {
     )
   })
 
-  test('the tsconfig sets the flags that reject what Node cannot run', async () => {
+  test("the tests' tsconfig accepts what Retest loads and refuses what it does not, and the type check uses it", async () => {
     const project = temporaryFolder()
     await init(project, ['--yes'])
-    assert.deepEqual(JSON.parse(read(project, 'tsconfig.retest.json')), {
+    assert.deepEqual(JSON.parse(read(project, 'tests/tsconfig.json')), {
       compilerOptions: {
         target: 'es2024',
-        module: 'nodenext',
+        module: 'esnext',
+        moduleResolution: 'bundler',
         types: ['node'],
         strict: true,
         noEmit: true,
-        erasableSyntaxOnly: true,
+        allowImportingTsExtensions: true,
         verbatimModuleSyntax: true,
-        rewriteRelativeImportExtensions: true,
+        erasableSyntaxOnly: false,
         noUncheckedIndexedAccess: true,
         skipLibCheck: true,
       },
-      include: ['retest.config.ts', '**/*.retest.ts'],
+      include: ['../retest.config.ts', '**/*'],
     })
     assert.deepEqual(JSON.parse(read(project, 'package.json')), {
       private: true,
       type: 'module',
-      scripts: { 'test:e2e': 'retest run', 'typecheck:e2e': 'tsc --noEmit -p tsconfig.retest.json' },
+      scripts: { 'test:e2e': 'retest run', 'typecheck:e2e': 'tsc -p tests/tsconfig.json' },
     })
     assert.equal(read(project, '.gitignore'), '.retest/\n')
+  })
+
+  test("the tests' tsconfig extends the project's own, and sets back what would let tsc pass JSX", async () => {
+    const project = temporaryFolder()
+    writeFileSync(join(project, 'tsconfig.json'), '{ "compilerOptions": { "jsx": "react-jsx", "paths": { "@app/*": ["./src/*"] } } }\n')
+    await init(project, ['--yes'])
+    const written: unknown = JSON.parse(read(project, 'tests/tsconfig.json'))
+    assert.ok(typeof written === 'object' && written !== null && 'compilerOptions' in written)
+    assert.deepEqual({ ...written, compilerOptions: undefined }, { extends: '../tsconfig.json', compilerOptions: undefined, files: [], include: ['../retest.config.ts', '**/*'] })
+    const options = written.compilerOptions
+    assert.ok(typeof options === 'object' && options !== null)
+    assert.deepEqual(Object.entries(options).filter(([name]) => ['jsx', 'rootDir', 'composite', 'erasableSyntaxOnly', 'moduleResolution'].includes(name)), [
+      ['moduleResolution', 'bundler'],
+      ['erasableSyntaxOnly', false],
+      ['jsx', null],
+      ['rootDir', null],
+      ['composite', false],
+    ])
   })
 
   test('running it again changes nothing and says so', async () => {
@@ -156,7 +175,7 @@ describe('init in a new project', () => {
         '',
         '  left as is  retest.config.ts',
         '  left as is  tests/example.retest.ts',
-        '  left as is  tsconfig.retest.json',
+        '  left as is  tests/tsconfig.json',
         '  left as is  .github/workflows/retest.yml',
         '  left as is  package.json   scripts: "test:e2e", "typecheck:e2e"',
         '  left as is  .gitignore     .retest/',
@@ -344,11 +363,11 @@ describe('init beside existing files', () => {
     const { stdout } = await init(project, ['--yes'])
     assert.equal(
       read(project, 'package.json'),
-      '{\n    "name": "shop",\n    "scripts": {\n        "test:e2e": "playwright test",\n        "typecheck:e2e": "tsc --noEmit -p tsconfig.retest.json"\n    },\n    "devDependencies": {\n        "typescript": "6.0.3"\n    }\n}\n',
+      '{\n    "name": "shop",\n    "scripts": {\n        "test:e2e": "playwright test",\n        "typecheck:e2e": "tsc -p tests/tsconfig.json"\n    },\n    "devDependencies": {\n        "typescript": "6.0.3"\n    }\n}\n',
     )
     assert.match(stdout, /\n {2}updated {5}package\.json {3}scripts: "typecheck:e2e"\n {2}left as is {2}package\.json {3}scripts: "test:e2e"\n/)
     assert.match(stdout, /\n {4}npm i -D @rehearsal-labs\/retest @types\/node\n/)
-    assert.match(stdout, /\n\n {2}Add "type": "module" to package\.json, so the type check reads the tests as ES modules\.\n\n {2}Next\n/)
+    assert.match(stdout, /\n\n {2}Add "type": "module" to package\.json, so Node reads the tests as ES modules without guessing\.\n\n {2}Next\n/)
   })
 
   test('appends .retest/ to a .gitignore without a final newline, and leaves one that has it', async () => {

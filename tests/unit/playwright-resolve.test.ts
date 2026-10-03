@@ -1,9 +1,10 @@
 import type { ResolveFnOutput, ResolveHookContext } from 'node:module'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { playwrightResolver, playwrightSpecifiers } from '../../src/runner/playwright-resolve.ts'
+import { playwrightSpecifiers, projectResolver } from '../../src/loader/resolve.ts'
 
-const own = 'file:///opt/retest/dist/runner/playwright-resolve.js'
+const own = 'file:///opt/retest/dist/loader/project.js'
+const ownFolderUrl = 'file:///opt/retest/dist/'
 const compatibility = '@rehearsal-labs/retest/playwright'
 const context: ResolveHookContext = { conditions: ['node', 'import'], importAttributes: {}, parentURL: 'file:///work/tests/tasks.spec.ts' }
 
@@ -18,9 +19,9 @@ function resolving(known: readonly string[], code = 'ERR_MODULE_NOT_FOUND') {
   return { asked, next }
 }
 
-describe('playwrightResolver', () => {
+describe("the project resolver's Playwright mapping and imports without an extension", () => {
   test("Playwright's specifiers resolve to Retest's own subpath, as a module of this copy imports it", () => {
-    const hook = playwrightResolver(compatibility, own)
+    const hook = projectResolver({ ownUrl: own, ownFolderUrl, playwright: compatibility })
     const { asked, next } = resolving([compatibility, 'node:fs'])
     assert.deepEqual([...playwrightSpecifiers], ['@playwright/test', 'playwright/test'])
     for (const specifier of playwrightSpecifiers) assert.equal(hook(specifier, context, next).url, `file:///resolved/${compatibility}`)
@@ -33,7 +34,7 @@ describe('playwrightResolver', () => {
   })
 
   test('a relative import without its extension resolves to the file, then to the folder index, in that order', () => {
-    const hook = playwrightResolver(compatibility, own)
+    const hook = projectResolver({ ownUrl: own, ownFolderUrl, playwright: compatibility })
     const file = resolving(['./helper.ts'])
     assert.equal(hook('./helper', context, file.next).url, 'file:///resolved/./helper.ts')
     assert.deepEqual(file.asked.map(([specifier]) => specifier), ['./helper', './helper.ts'])
@@ -43,7 +44,7 @@ describe('playwrightResolver', () => {
   })
 
   test('an import that names its file is asked for once, and one nothing answers fails as it first did', () => {
-    const hook = playwrightResolver(compatibility, own)
+    const hook = projectResolver({ ownUrl: own, ownFolderUrl, playwright: compatibility })
     const named = resolving(['./helper.ts'])
     hook('./helper.ts', context, named.next)
     assert.equal(named.asked.length, 1)
@@ -53,7 +54,7 @@ describe('playwrightResolver', () => {
   })
 
   test('a package that is not there, and an error that is not about a missing file, are not retried', () => {
-    const hook = playwrightResolver(compatibility, own)
+    const hook = projectResolver({ ownUrl: own, ownFolderUrl, playwright: compatibility })
     const bare = resolving([])
     assert.throws(() => hook('left-pad', context, bare.next), /Cannot find module left-pad/)
     assert.equal(bare.asked.length, 1)

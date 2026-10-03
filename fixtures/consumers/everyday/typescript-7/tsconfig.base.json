@@ -1,0 +1,18 @@
+{
+  // The same project for TypeScript 7, which removed baseUrl: paths are read from this file's folder once it replaces
+  // the project's tsconfig.base.json.
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@support/*": ["./support/*"],
+    },
+  },
+}

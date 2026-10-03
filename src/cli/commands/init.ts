@@ -1,4 +1,4 @@
-import type { LoadedTarget } from '../../config/loaded.ts'
+import type { LoadedChromiumTarget } from '../../config/loaded.ts'
 import type { CliDependencies, Command } from '../command.ts'
 import type { AnswerDefaults, AnswerFlags } from '../init/answers.ts'
 import type { PackageManager } from '../init/package-manager.ts'
@@ -17,7 +17,7 @@ import { gatherAnswers, readApp } from '../init/answers.ts'
 import { detectPackageManager } from '../init/package-manager.ts'
 import { addScripts, createFile, ignoreRunFolders, readPackageJson } from '../init/project-files.ts'
 import { renderInitReport } from '../init/report.ts'
-import { configSource, exampleTestFile, exampleTestSource, tsconfigSource, workflowFile, workflowSource } from '../init/templates.ts'
+import { configSource, exampleTestFile, exampleTestSource, testTsconfigFile, testTsconfigSource, workflowFile, workflowSource } from '../init/templates.ts'
 import { shouldUseColor } from '../terminal.ts'
 
 const options = {
@@ -33,7 +33,7 @@ export const initCommand: Command = {
   usage: '[options]',
   summary: 'Write a config, an example test and a tsconfig',
   description: [
-    `Writes ${defaultConfigFile}, ${exampleTestFile} and tsconfig.retest.json, adds the test:e2e and typecheck:e2e`,
+    `Writes ${defaultConfigFile}, ${exampleTestFile} and ${testTsconfigFile}, adds the test:e2e and typecheck:e2e`,
     'scripts to package.json, and adds .retest/ to .gitignore. A file that is already there is left as is.',
     'It asks questions only at a terminal where no coding agent is detected; each question has a flag.',
     'It installs nothing, and prints the install command.',
@@ -56,7 +56,7 @@ export const initCommand: Command = {
     const changes = [
       config,
       createFile(cwd, exampleTestFile, exampleTestSource),
-      createFile(cwd, 'tsconfig.retest.json', tsconfigSource),
+      createFile(cwd, testTsconfigFile, testTsconfigSource(projectTsconfig(cwd))),
       ...(parsed.value('ci') === 'github' ? [workflowChange(createFile(cwd, workflowFile, workflowSource), manager)] : []),
       ...addScripts(cwd, packageJson),
       ignoreRunFolders(cwd),
@@ -65,6 +65,11 @@ export const initCommand: Command = {
     stdout.write(renderInitReport({ changes, unused, answers, packageJson, manager, style }))
     return 0
   },
+}
+
+// The project's own tsconfig, as the tests' tsconfig extends it from the test folder.
+function projectTsconfig(cwd: string): string | undefined {
+  return statIfPresent(join(cwd, 'tsconfig.json'))?.isFile() === true ? '../tsconfig.json' : undefined
 }
 
 type AskContext = { packageJson: PackageJson | undefined; manager: PackageManager; dependencies: CliDependencies }
@@ -96,7 +101,7 @@ function stopped(dependencies: CliDependencies): 2 | 130 | 143 {
 
 // The first browser installed where Retest looks, so the example runs as written.
 function foundBrowser(dependencies: CliDependencies): Pick<AnswerDefaults, 'browser' | 'browserPath'> {
-  const candidates: LoadedTarget[] = [
+  const candidates: LoadedChromiumTarget[] = [
     { name: 'chrome', browser: 'chrome', channel: 'stable', headless: true },
     { name: 'edge', browser: 'edge', channel: 'stable', headless: true },
     { name: 'chromium', browser: 'chromium', headless: true },

@@ -3,9 +3,10 @@ import type { Failure } from '../protocol/failures.ts'
 import type { ChildMessage, ParentMessage } from '../protocol/messages.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
 import { fork } from 'node:child_process'
-import { playwrightArgument } from './playwright-resolve.ts'
 import { extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { testProcessFlags } from '../loader/node.ts'
+import { playwrightArgument } from '../loader/resolve.ts'
 import { childMessageSchema } from '../protocol/messages.ts'
 import { parse } from '../protocol/schema.ts'
 
@@ -41,6 +42,11 @@ const childEntry = fileURLToPath(new URL(`./child${extname(fileURLToPath(import.
 const liveChildren = new Set<ChildProcess>()
 let exitHookInstalled = false
 
+// How long after the process has exited its output is still read before its pipes are let go. A process a test
+// started with the test file's own stdio, such as a server, holds the pipes open after the test file has gone, and
+// `close` never comes while it does; nothing of the test file's own arrives that late.
+const outputGraceMs = 1000
+
 /**
  * The process one test file runs in. The parent owns it: it is killed when the run gives up on it, and,
  * as a last resort, when the parent process exits.
@@ -58,7 +64,16 @@ export class TestFileProcess {
     const closed = Promise.withResolvers<ProcessExit>()
     this.#closed = closed.promise
     child.on('message', (raw: unknown) => this.#receive(raw))
-    child.on('exit', (code, signal) => this.#ended({ code, signal }))
+    child.on('exit', (code, signal) => {
+      this.#ended({ code, signal })
+      const timer = setTimeout(() => {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        closed.resolve(this.#exit ?? { code, signal })
+      }, outputGraceMs)
+      timer.unref()
+      void closed.promise.then(() => clearTimeout(timer))
+    })
     // A process that never started emits only `error`.
     child.on('error', () => {
       if (child.pid === undefined) this.#ended({ code: null, signal: null })
@@ -71,14 +86,14 @@ export class TestFileProcess {
   }
 
   /**
-   * Starts a process for one test file, with the same export conditions as this one, and this process's
-   * environment unless `environment` replaces it.
+   * Starts a process for one test file, with the same export conditions as this one, Node's TypeScript transformer
+   * and source maps, and this process's environment unless `environment` replaces it.
    */
   static spawn(options: SpawnOptions = {}): TestFileProcess {
     const output = options.onOutput
     const hidden = new Set(options.hiddenVariables)
     const child = fork(childEntry, options.playwright === true ? [playwrightArgument] : [], {
-      execArgv: conditionArguments(process.execArgv),
+      execArgv: [...conditionArguments(process.execArgv), ...testProcessFlags],
       env: Object.fromEntries(Object.entries(options.environment ?? process.env).filter(([name]) => !hidden.has(name))),
       serialization: 'json',
       stdio: output === undefined ? ['ignore', 'ignore', 'ignore', 'ipc'] : ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -147,6 +162,8 @@ export class TestFileProcess {
     this.send({ type: 'close' })
     let forced = false
     const timer = setTimeout(() => {
+      // A process that has exited and is only being read out needs no kill, and was not forced.
+      if (!this.alive) return
       forced = true
       void this.kill()
     }, graceMs)

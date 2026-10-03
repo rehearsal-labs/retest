@@ -50,13 +50,15 @@
     "provenance": true
   },
   "scripts": {
-    "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node scripts/write-schemas.ts",
-    "typecheck": "tsc -p tsconfig.json && node_modules/typescript-7/bin/tsc -p tsconfig.json && tsc -p examples/tasks/tsconfig.json",
+    "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && node_modules/typescript/bin/tsc -p tsconfig.build.json && node scripts/write-schemas.ts",
+    "typecheck": "node_modules/typescript/bin/tsc -p tsconfig.json && node_modules/typescript-7/bin/tsc -p tsconfig.json && node_modules/typescript/bin/tsc -p examples/tasks/tsconfig.json",
+    "typecheck:proofs": "node_modules/typescript/bin/tsc -p proofs/firefox/tsconfig.json && node_modules/typescript-7/bin/tsc -p proofs/firefox/tsconfig.json && node_modules/typescript/bin/tsc -p proofs/webkit/tsconfig.json && node_modules/typescript-7/bin/tsc -p proofs/webkit/tsconfig.json && node_modules/typescript/bin/tsc -p proofs/native/tsconfig.json && node_modules/typescript-7/bin/tsc -p proofs/native/tsconfig.json && node_modules/typescript/bin/tsc -p proofs/media/tsconfig.json && node_modules/typescript-7/bin/tsc -p proofs/media/tsconfig.json",
     "test:unit": "node --conditions=retest-source --test \"tests/unit/**/*.test.ts\"",
     "test:types": "node tests/types/run.ts",
     "test:integration": "node --conditions=retest-source --test --test-concurrency=1 \"tests/integration/**/*.test.ts\"",
     "test": "npm run test:unit && npm run test:types && npm run test:integration",
-    "bench": "node benchmarks/run.ts"
+    "bench": "node benchmarks/run.ts",
+    "proof:webkit": "node --conditions=retest-source proofs/webkit/run.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.0",

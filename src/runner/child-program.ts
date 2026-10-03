@@ -1,15 +1,17 @@
 import type { Failure } from '../protocol/failures.ts'
 import type { ChildMessage, ParentMessage } from '../protocol/messages.ts'
+import { resolve } from 'node:path'
 import { inspect } from 'node:util'
 import { currentScope } from '../api/context.ts'
 import { failureFrom, fromEarlierTest } from '../api/failure.ts'
 import { collectFile, findTest, reportCollectionProblem, sourceRoot } from '../api/registry.ts'
 import { TestRun } from '../api/test-run.ts'
+import { explainLoadFailure, loadedModules, useProject, withSentence } from '../loader/project.ts'
+import { playwrightArgument } from '../loader/resolve.ts'
 import { failure } from '../protocol/failures.ts'
 import { parentMessageSchema } from '../protocol/messages.ts'
 import { parse } from '../protocol/schema.ts'
 import { resolveOwnPackage } from './own-package.ts'
-import { playwrightArgument, resolvePlaywright } from './playwright-resolve.ts'
 
 // The process a test file runs in. It has no browser: page commands go to the parent, one message at a time.
 
@@ -28,7 +30,7 @@ if (process.send === undefined) {
 // Before any test file loads, so each one imports the copy of Retest that runs it, wherever the file is.
 const packageName = resolveOwnPackage()
 // The parent says when the run is of Playwright test files; their imports then resolve to this copy's own subpath.
-if (process.argv.includes(playwrightArgument)) resolvePlaywright(packageName)
+const playwright = process.argv.includes(playwrightArgument) ? { playwright: `${packageName}/playwright` } : {}
 
 process.on('message', (raw: unknown) => {
   const parsed = parse(parentMessageSchema, raw)
@@ -48,6 +50,8 @@ function receive(message: ParentMessage): void {
       return void run(message)
     case 'command-result':
       return current?.resolveCommand(message.id, message.result)
+    case 'evaluation-result':
+      return current?.resolveEvaluation(message.id, message.answer)
     case 'abort':
       return current?.abort()
     case 'close':
@@ -63,9 +67,20 @@ function closeAfterQueuedWork(): void {
   })
 }
 
+// The project's hooks go on before the file loads: the root directory, where its tsconfig is looked for, comes with
+// the request.
 async function collect(file: string, rootDir: string): Promise<void> {
+  const project = useProject({ folder: rootDir, entry: resolve(rootDir, file), ...playwright })
+  if (!project.ok) return send({ type: 'collection-failed', failure: project.failure })
   const collected = await collectFile(file, rootDir)
-  send(collected.ok ? { type: 'collected', tests: collected.tests } : { type: 'collection-failed', failure: collected.failure })
+  send(collected.ok ? { type: 'collected', tests: collected.tests, modules: loadedPaths() } : { type: 'collection-failed', failure: explained(collected.failure) })
+}
+
+// A failure to load with no location of its own, such as a compile error, gains what the project's code says about it.
+function explained(problem: Failure): Failure {
+  if (problem.location !== undefined) return problem
+  const explanation = explainLoadFailure(problem.message)
+  return explanation === undefined ? problem : { ...problem, message: withSentence(problem.message, explanation) }
 }
 
 async function run({ testId, attemptId, timeouts, apps }: RunMessage): Promise<void> {
@@ -89,7 +104,13 @@ async function run({ testId, attemptId, timeouts, apps }: RunMessage): Promise<v
   current = testRun
   const verdict = await testRun.execute(found.test)
   if (current === testRun) current = undefined
-  send({ type: 'test-finished', testId, attemptId, ...verdict })
+  // A module the test imported while it ran belongs to the bundle it ran, so the list goes with the verdict.
+  send({ type: 'test-finished', testId, attemptId, ...verdict, modules: loadedPaths() })
+}
+
+// The parent hashes each module from disk itself, so the process names them and nothing more.
+function loadedPaths(): string[] {
+  return loadedModules().map((module) => module.path)
 }
 
 // Rejections and exceptions nobody handled belong to the running test, or to the file while it loads.

@@ -1,0 +1,20 @@
+{
+  // Read through extends: the aliases below reach the tests from here.
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    // TypeScript 6 warns that baseUrl is going away, and TypeScript 7 removed it. Retest reads paths with or without it.
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "@support/*": ["support/*"],
+    },
+  },
+}

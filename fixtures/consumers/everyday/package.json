@@ -1,0 +1,5 @@
+{
+  "name": "retest-consumer-everyday",
+  "private": true,
+  "type": "module"
+}

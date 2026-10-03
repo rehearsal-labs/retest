@@ -1,0 +1,5 @@
+{
+  "name": "retest-consumer-unsupported",
+  "private": true,
+  "type": "module"
+}

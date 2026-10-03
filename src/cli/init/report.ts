@@ -61,7 +61,7 @@ function reportNotes(report: InitReport): string[] {
     notes.push(`${defaultConfigFile} is left as is, so ${listWords(unused, 'and')} ${unused.length === 1 ? 'was' : 'were'} not used.`)
   }
   if (packageJson !== undefined && packageJson.data['type'] !== 'module') {
-    notes.push('Add "type": "module" to package.json, so the type check reads the tests as ES modules.')
+    notes.push('Add "type": "module" to package.json, so Node reads the tests as ES modules without guessing.')
   }
   if (answers?.browser === 'chromium') {
     notes.push("Set RETEST_CHROMIUM to the browser's path, here and in CI: chromium() runs the browser it points to.")

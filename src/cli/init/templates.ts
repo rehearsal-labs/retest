@@ -7,10 +7,13 @@ export const packageName = '@rehearsal-labs/retest'
 
 export const exampleTestFile = 'tests/example.retest.ts'
 
+/** The tsconfig `init` writes beside the tests. Retest reads its `paths` when it loads them, and `tsc` checks them with it. */
+export const testTsconfigFile = 'tests/tsconfig.json'
+
 /** The scripts `init` adds to package.json. The type check uses the tsconfig it writes. */
 export const packageScripts: Readonly<Record<string, string>> = {
   'test:e2e': 'retest run',
-  'typecheck:e2e': 'tsc --noEmit -p tsconfig.retest.json',
+  'typecheck:e2e': `tsc -p ${testTsconfigFile}`,
 }
 
 const identifier = /^[A-Za-z_$][\w$]*$/
@@ -63,26 +66,36 @@ export const exampleTestSource: string = [
   '',
 ].join('\n')
 
-/** The flags that make `tsc` reject what Node's type stripping cannot run. */
-export const tsconfigSource: string = `${JSON.stringify(
-  {
-    compilerOptions: {
-      target: 'es2024',
-      module: 'nodenext',
-      types: ['node'],
-      strict: true,
-      noEmit: true,
-      erasableSyntaxOnly: true,
-      verbatimModuleSyntax: true,
-      rewriteRelativeImportExtensions: true,
-      noUncheckedIndexedAccess: true,
-      skipLibCheck: true,
-    },
-    include: ['retest.config.ts', '**/*.retest.ts'],
-  },
-  null,
-  2,
-)}\n`
+/**
+ * The tests' tsconfig, whose options accept what Retest loads and refuse what it does not: ES modules, imports with or
+ * without their extension or by the `.js` of a `.ts` file, enums, namespaces and parameter properties, and `import
+ * type` for every type; no JSX and no `import x = require()`. Given the project's own tsconfig, as a path from the test
+ * folder, it extends it, keeping its `paths` and strictness, and sets back what would let `tsc` pass what Retest
+ * refuses, such as `jsx`.
+ *
+ * @example testTsconfigSource('../tsconfig.json') // '{\n  "extends": "../tsconfig.json", ...'
+ */
+export function testTsconfigSource(projectTsconfig?: string): string {
+  const reset = projectTsconfig === undefined ? {} : { jsx: null, rootDir: null, composite: false }
+  const compilerOptions = {
+    target: 'es2024',
+    module: 'esnext',
+    moduleResolution: 'bundler',
+    types: ['node'],
+    strict: true,
+    noEmit: true,
+    allowImportingTsExtensions: true,
+    verbatimModuleSyntax: true,
+    erasableSyntaxOnly: false,
+    noUncheckedIndexedAccess: true,
+    skipLibCheck: true,
+    ...reset,
+  }
+  // The project's own files and include list stay its own; this one checks the tests and the config.
+  const files = projectTsconfig === undefined ? {} : { files: [] }
+  const extended = projectTsconfig === undefined ? {} : { extends: projectTsconfig }
+  return `${JSON.stringify({ ...extended, compilerOptions, ...files, include: ['../retest.config.ts', '**/*'] }, null, 2)}\n`
+}
 
 export const workflowFile = '.github/workflows/retest.yml'
 

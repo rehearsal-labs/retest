@@ -86,7 +86,7 @@ describe('the test process resolves Retest to the copy that runs it', () => {
 describe('exportedSpecifiers', () => {
   test("names this package and each subpath its exports allow, and nothing else", () => {
     const manifest: unknown = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'))
-    assert.deepEqual(exportedSpecifiers(manifest), new Set([name, `${name}/runner`, `${name}/protocol`, `${name}/playwright`, `${name}/package.json`]))
+    assert.deepEqual(exportedSpecifiers(manifest), new Set([name, `${name}/runner`, `${name}/protocol`, `${name}/playwright`, `${name}/evaluation/ai-sdk`, `${name}/package.json`]))
   })
 
   test('an exports map of conditions alone exports the name only, and a manifest without a name or exports is refused', () => {
