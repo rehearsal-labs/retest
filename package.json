@@ -40,6 +40,11 @@
       "types": "./dist/playwright/index.d.ts",
       "default": "./dist/playwright/index.js"
     },
+    "./evaluation/ai-sdk": {
+      "retest-source": "./src/evaluation/ai-sdk.ts",
+      "types": "./dist/evaluation/ai-sdk.d.ts",
+      "default": "./dist/evaluation/ai-sdk.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -59,6 +64,22 @@
     "test": "npm run test:unit && npm run test:types && npm run test:integration",
     "bench": "node benchmarks/run.ts",
     "proof:webkit": "node --conditions=retest-source proofs/webkit/run.ts"
+  },
+  "peerDependencies": {
+    "@ai-sdk/anthropic": "^4.0.71",
+    "@ai-sdk/openai": "^4.0.83",
+    "ai": "^7.0.127"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/anthropic": {
+      "optional": true
+    },
+    "@ai-sdk/openai": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "24.19.0",
