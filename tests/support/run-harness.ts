@@ -93,10 +93,13 @@ export async function runSupportFiles(names: readonly string[], options: Harness
 }
 
 /** The options a harness passes on to the run as they are, each only when given. */
-export function runOptions(options: Pick<RunOptions, 'hostChecks' | 'selection' | 'testEnvironment'>): Pick<RunOptions, 'hostChecks' | 'selection' | 'testEnvironment'> {
-  const { hostChecks, selection, testEnvironment } = options
+export function runOptions(
+  options: Pick<RunOptions, 'hostChecks' | 'hostEvaluations' | 'selection' | 'testEnvironment'>,
+): Pick<RunOptions, 'hostChecks' | 'hostEvaluations' | 'selection' | 'testEnvironment'> {
+  const { hostChecks, hostEvaluations, selection, testEnvironment } = options
   return {
     ...(hostChecks === undefined ? {} : { hostChecks }),
+    ...(hostEvaluations === undefined ? {} : { hostEvaluations }),
     ...(selection === undefined ? {} : { selection }),
     ...(testEnvironment === undefined ? {} : { testEnvironment }),
   }

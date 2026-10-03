@@ -192,6 +192,51 @@ const parentEvents: EventBody[] = [
   },
   { type: 'collection.failed', file: 'broken.retest.ts', failure: { class: 'collection_failed', message: 'Unexpected token.' } },
   { type: 'file.failed', file: 'examples/task.retest.ts', failure: { class: 'test_error', message: 'examples/task.retest.ts threw an error while no test was running: Error: late' } },
+  { type: 'run.narrowed', only: [location], kept: 1, collected: 4 },
+  { type: 'lock.acquired', ...scope, ...variant, locks: ['inbox', 'account'], waitedMs: 2100, heldBy: ['tests/archive.retest.ts > archives a task'] },
+  { type: 'session.reserved', ...scope, ...variant, owner: 'agent-1', sessions: 2, waitedMs: 350, active: { owner: 2, host: 3 }, limits: { perOwner: 4, host: 8 } },
+  { type: 'session.released', ...scope, ...variant, owner: 'agent-1', sessions: 2, after: 'browser_closed' },
+  {
+    type: 'test.started',
+    ...scope,
+    ...variant,
+    name: 'shares a record',
+    file: 'tests/records.retest.ts',
+    location,
+    execution: {
+      bundle: { sha256: 'b'.repeat(64), modules: [{ path: 'tests/records.retest.ts', sha256: 'c'.repeat(64) }] },
+      configuration: {
+        sha256: 'd'.repeat(64),
+        settings: {
+          apps: { web: { target: 'beta', kind: 'web', browser: 'chrome', channel: 'beta', headless: true, proxy: { server: 'http://127.0.0.1:8080/', bypass: [] } } },
+          timeouts: defaultTimeouts,
+          locks: ['records'],
+          environment: ['MODE'],
+          diagnostics: { capture: true, policy: { strict: { runtimeErrors: true } }, limits: { consoleEntries: 1000 } },
+          evaluation: {
+            judges: [{ name: 'visual', adapter: 'file', module: 'judges/visual.ts', moduleSha256: 'a'.repeat(64), accepts: ['images'], credentials: [{ name: 'apiKey', source: 'env', variable: 'JUDGE_KEY' }], optionsSha256: 'b'.repeat(64) }],
+            timeoutMs: 30000,
+            limits: { callsPerTest: 5 },
+            promptVersion: 'retest-judge-1',
+          },
+        },
+      },
+      secretReferences: [{ name: 'password', source: 'env', variable: 'TASK_PASSWORD', origins: [] }],
+      runtime: { retest: '0.0.0', node: 'v24.12.0', platform: 'darwin-arm64' },
+      sessions: [{ app: 'web', sessionId: 'attempt-1:web', engine: 'chromium', product: 'Chrome', version: '154.0.8037.92' }],
+      owner: 'agent-1',
+      appBuilds: { web: 'a1b2c3' },
+      requirement: { version: 'records-v1', sha256: 'e'.repeat(64), checks: [{ id: 'record-shown', kind: 'page', sha256: 'f'.repeat(64) }] },
+      startingState: [{ app: 'web', browserStorage: 'saved', state: 'signed-in', backendData: 'prepared' }],
+      unavailable: ['app-build:mobile'],
+    },
+  },
+  {
+    type: 'preparation.finished',
+    ...scope,
+    preparation: { key: 'tests/records.retest.ts', apps: ['web'], backendData: 'prepared', outcome: 'prepared', recipe: 'shared-records@2', seed: 42, receipt: 'op-7', metadata: { accounts: 2, reset: true }, durationMs: 120 },
+  },
+  { type: 'cleanup.finished', ...scope, cleanup: { key: 'tests/records.retest.ts', outcome: 'failed', reason: 'it threw: the service did not answer', durationMs: 30 } },
   { type: 'test.started', ...scope, name: 'saves a task', file: 'examples/task.retest.ts', location },
   { type: 'test.started', ...scope, ...variant, name: 'archives a task', file: 'tests/archive.retest.ts', location, describePath: ['archive'], setup: true },
   { type: 'state.saved', ...scope, ...variant, state: 'signed-in', app: 'web', target: 'beta' },
@@ -319,6 +364,54 @@ const parentEvents: EventBody[] = [
   { type: 'evidence.captured', ...scope, kind: 'screenshot', path: 'artifacts/saves-a-task-failure.png', reason: 'failure' },
   { type: 'evidence.failed', ...scope, kind: 'screenshot', reason: 'failure', message: 'The browser closed.' },
   {
+    type: 'diagnostics.started',
+    ...scope,
+    session: 'web',
+    sessionId: 'attempt-1:web',
+    scope: {
+      engine: 'chromium',
+      source: 'page_target',
+      console: { covered: ['top_level_document', 'same_process_frames', 'dedicated_workers'], notCovered: ['out_of_process_frames', 'shared_workers', 'service_workers'] },
+      network: { covered: ['top_level_document', 'same_process_frames'], notCovered: ['out_of_process_frames', 'dedicated_workers', 'shared_workers', 'service_workers'] },
+    },
+    limits: { consoleEntries: 1000, consoleBytes: 1048576, requests: 1000, networkBytes: 2097152, textLength: 4096, stackFrames: 20 },
+    startedAt: '2026-10-03T00:00:00.000Z',
+    policy: { strict: { runtimeErrors: true, allow: ['/favicon.ico'] }, requireComplete: true },
+  },
+  {
+    type: 'diagnostics.finished',
+    ...scope,
+    session: 'web',
+    sessionId: 'attempt-1:web',
+    diagnostics: {
+      app: 'web',
+      sessionId: 'attempt-1:web',
+      path: 'diagnostics/saves-a-task-attempt-1-web.jsonl',
+      startedAt: '2026-10-03T00:00:00.000Z',
+      endedAt: '2026-10-03T00:00:01.000Z',
+      console: { state: 'complete', entries: 3, errors: 1, warnings: 0, runtimeErrors: 1, handledLater: 0, dropped: 0, truncated: 0, bytes: 900 },
+      network: { state: 'partial', reason: '2 requests over the attempt\'s limits were dropped', requests: 5, httpErrors: 1, transportFailures: 1, canceled: 0, pending: 1, outOfScope: 0, dropped: 2, truncated: 0, bytes: 3000 },
+    },
+  },
+  {
+    type: 'evaluation.finished',
+    ...scope,
+    evaluation: {
+      checkId: 'evaluation-1',
+      source: 'test',
+      mode: 'required',
+      judge: 'visual',
+      verdict: 'fail',
+      criteria: [{ id: 'saved', requirement: 'The banner says the task was saved.', verdict: 'fail', citations: ['e1'] }],
+      criteriaSha256: 'c'.repeat(64),
+      evidence: [{ id: 'e1', kind: 'screenshot', app: 'page', sessionId: 'attempt-1:page', attemptId: 'attempt-1', capturedAt: '2026-10-03T00:00:00.000Z', path: 'artifacts/check.png', sha256: 'd'.repeat(64), bytes: 2048, width: 1280, height: 720 }],
+      justification: 'The banner reads "Could not save".',
+      evaluator: { provider: 'anthropic', model: 'claude-sonnet-5', evaluatorVersion: 'retest-ai-sdk/1', promptVersion: 'retest-judge-1', latencyMs: 812 },
+      failure: { class: 'evaluation_failed', message: 'The AI check evaluation-1 failed: the judge found "saved" not met.' },
+      durationMs: 900,
+    },
+  },
+  {
     type: 'test.finished',
     ...scope,
     status: 'failed',
@@ -326,6 +419,16 @@ const parentEvents: EventBody[] = [
     assertionCount: 1,
     failure,
     cleanupFailures: [{ class: 'cleanup_failed', message: 'The context did not close.' }],
+  },
+  {
+    type: 'test.finished',
+    ...scope,
+    status: 'failed',
+    durationMs: 900,
+    assertionCount: 2,
+    failure: { class: 'host_check_failed', message: 'The host check "record-shown" on web failed.', details: { checkId: 'record-shown' } },
+    ending: { kind: 'required_check_failed', checkId: 'record-shown', notRun: ['record-reads-well'] },
+    bundle: { sha256: 'a'.repeat(64), modules: [{ path: 'tests/helpers/late.ts', sha256: 'c'.repeat(64) }] },
   },
   {
     type: 'run.finished',
@@ -421,8 +524,11 @@ describe('events', () => {
     assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), value: 'Release checklist' }), [
       { path: '$.value', message: 'unknown key' },
     ])
-    assert.deepEqual(issues(retestEventSchema, { ...sample('action.failed'), locator: { by: 'css', value: 'button' } }), [
-      { path: '$.locator.by', message: 'expected one of "testId", "role", "label", "text", received "css"' },
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.failed'), locator: { by: 'xpath', value: '//button' } }), [
+      { path: '$.locator.by', message: 'expected one of "testId", "role", "label", "text", "placeholder", "css", received "xpath"' },
+    ])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.failed'), locator: { by: 'css', selector: 'li', within: [{ by: 'css', selector: 'ul', within: [] }] } }), [
+      { path: '$.locator.within[0].within', message: 'unknown key' },
     ])
     assert.deepEqual(issues(retestEventSchema, { ...sample('navigation'), origin: 'browser' }), [
       { path: '$.origin', message: 'expected one of "parent", "child", received "browser"' },
@@ -442,8 +548,11 @@ describe('events', () => {
     assert.deepEqual(issues(retestEventSchema, { ...sample('app.started'), pid: 0 }), [
       { path: '$.pid', message: 'expected integer >= 1, received 0' },
     ])
-    assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), command: 'hover' }), [
-      { path: '$.command', message: 'expected one of "goto", "fill", "click", "tap", "press", "select", "check", "uncheck", "scroll", received "hover"' },
+    assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), command: 'drag' }), [
+      {
+        path: '$.command',
+        message: 'expected one of "goto", "reload", "goBack", "goForward", "fill", "click", "tap", "hover", "press", "select", "check", "uncheck", "scroll", received "drag"',
+      },
     ])
     assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), input: 'keyboard', via: 'control', touch: false }), [
       { path: '$.input', message: 'expected "script", received "keyboard"' },
@@ -621,12 +730,17 @@ describe('commands', () => {
   })
 
   test('malformed commands and results are rejected', () => {
-    assert.deepEqual(issues(pageCommandSchema, { kind: 'hover', locator }), [
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'drag', locator }), [
       {
         path: '$.kind',
-        message: 'expected one of "goto", "fill", "click", "tap", "press", "select", "check", "uncheck", "scroll", "observe", received "hover"',
+        message:
+          'expected one of "goto", "reload", "goBack", "goForward", "fill", "click", "tap", "hover", "press", "select", "check", "uncheck", "scroll", "observe", "observePage", received "drag"',
       },
     ])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'reload', url: '/' }), [{ path: '$.url', message: 'unknown key' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'observePage', locator }), [{ path: '$.locator', message: 'unknown key' }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'goBack' }), [{ path: '$.url', message: 'missing required key' }])
+    assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'observePage', observation: { url: null } }).map((issue) => issue.path), ['$.observation.title'])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'select', locator, choices: 'Canada' }), [{ path: '$.choices', message: 'expected array, received "Canada"' }])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'select', locator, choices: [{ label: 'Canada', value: 'ca' }] }).map((issue) => issue.path), [
       '$.choices[0].value',

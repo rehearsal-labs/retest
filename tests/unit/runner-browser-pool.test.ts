@@ -133,6 +133,34 @@ describe('BrowserPool', () => {
     const after = await browsers.ensure(appOf('web', stable), stable)
     assert.equal(after.ok, false)
   })
+
+  test('a setup queued or in flight when the pool closes launches nothing the close leaves behind', async () => {
+    const gate = Promise.withResolvers<void>()
+    const fake = fakeLauncher()
+    const launches: string[] = []
+    const { pool: browsers, started } = pool({
+      launch: async (options, timeoutMs) => {
+        launches.push(options.executablePath)
+        if (options.executablePath === '/fake/beta') await gate.promise
+        return fake.launch(options, timeoutMs)
+      },
+    })
+    const web = appOf('web', stable, beta, phone)
+    const first = await browsers.ensure(web, stable)
+    assert.ok(first.ok)
+    // The second launch is in flight and the third queued behind it when the pool closes.
+    const second = browsers.ensure(web, beta)
+    const third = browsers.ensure(web, phone)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const closing = browsers.close()
+    gate.resolve()
+    const [beta2, phone3] = await Promise.all([second, third])
+    await closing
+    assert.deepEqual([beta2.ok, phone3.ok], [false, false], 'neither target is handed a browser')
+    assert.deepEqual(launches, ['/fake/stable', '/fake/beta'], 'the queued launch never starts')
+    assert.deepEqual(fake.browsers.map((browser) => [browser.executablePath, browser.closed]), [['/fake/stable', true], ['/fake/beta', true]], 'the launch in flight is closed with the rest')
+    assert.deepEqual(started.map(({ info }) => info.target?.name), ['stable'], 'nothing is announced after the close')
+  })
 })
 
 describe('a target spread over several browsers', () => {

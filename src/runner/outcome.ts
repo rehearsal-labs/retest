@@ -1,4 +1,4 @@
-import type { Counts, ExitCode, RunStatus } from '../protocol/events.ts'
+import type { Counts, ExitCode, RunStatus, TestStatus } from '../protocol/events.ts'
 import type { Failure, FailureClass } from '../protocol/failures.ts'
 import type { FileResult } from '../protocol/result.ts'
 import type { StopReason, StopSignal } from './contract.ts'
@@ -14,16 +14,18 @@ const errorClasses: ReadonlySet<FailureClass> = new Set<FailureClass>([
   'unsupported',
   'interrupted',
   'reporting_failed',
+  'evaluation_error',
 ])
 
 /**
  * The status of a test that ran. A cleanup failure alone makes it `error`; with another failure, that
- * failure decides.
+ * failure decides. A required AI check its judge could not decide makes it `inconclusive`.
  *
  * @example testStatus({ class: 'timeout', message: 'The test ran longer than its 3000 ms budget.' }) // 'failed'
  */
-export function testStatus(failure: Failure | undefined, cleanupFailures: readonly Failure[] = []): 'passed' | 'failed' | 'error' {
+export function testStatus(failure: Failure | undefined, cleanupFailures: readonly Failure[] = []): 'passed' | 'failed' | 'error' | 'inconclusive' {
   if (failure === undefined) return cleanupFailures.length === 0 ? 'passed' : 'error'
+  if (failure.class === 'evaluation_inconclusive') return 'inconclusive'
   return isOurs(failure) ? 'error' : 'failed'
 }
 
@@ -45,6 +47,11 @@ export type RunFacts = {
   runFailures: readonly Failure[]
   /** Events, the result, a test file's output or a reporter that could not take the run's output, in order. */
   outputFailures: readonly Failure[]
+  /**
+   * Checks the host required that were never made, because test code skipped the test they belong to. Test code
+   * cannot waive a host's check, so any of them keeps the run from passing.
+   */
+  hostFailures?: readonly Failure[]
   files: readonly FileResult[]
 }
 
@@ -53,7 +60,7 @@ export type RunOutcome = { status: RunStatus; exitCode: ExitCode; complete: bool
 
 /**
  * Decides the run's status and exit code, in this order: 130 or 143 when interrupted, 130 for a `Failure` its
- * caller stopped it with; 2 when nothing trustworthy came out; 1 when a test failed its checks; 2 when anything
+ * caller stopped it with; 2 when nothing trustworthy came out, a host's check among it; 1 when a test failed its checks; 2 when anything
  * else did not finish cleanly, including a file whose process failed outside its tests; otherwise 0.
  *
  * @example runOutcome({ stoppedBy: undefined, runFailures: [], outputFailures: [], files }).exitCode
@@ -66,13 +73,22 @@ export function runOutcome(facts: RunFacts): RunOutcome {
   return problem === undefined ? outcome : { ...outcome, failure: problem }
 }
 
+/** How many tests ended each way. `skipped` is counted only when a test was skipped. */
 export function countTests(files: readonly FileResult[]): Counts {
   const counts: Counts = { passed: 0, failed: 0, error: 0, notRun: 0, inconclusive: 0 }
-  for (const test of files.flatMap((file) => file.tests)) {
-    if (test.status === 'not_run') counts.notRun++
-    else counts[test.status]++
-  }
+  for (const test of files.flatMap((file) => file.tests)) addToCounts(counts, test.status)
   return counts
+}
+
+/**
+ * Counts one more test that ended with `status`.
+ *
+ * @example addToCounts(counts, 'skipped') // counts.skipped is 1 more, or 1
+ */
+export function addToCounts(counts: Counts, status: TestStatus): void {
+  if (status === 'not_run') counts.notRun++
+  else if (status === 'skipped') counts.skipped = (counts.skipped ?? 0) + 1
+  else counts[status]++
 }
 
 /**
@@ -118,7 +134,7 @@ export function interruptedExitCode(signal: AbortSignal): 130 | 143 {
 
 function decideExitCode(facts: RunFacts, counts: Counts): ExitCode {
   if (facts.stoppedBy !== undefined) return stoppedExitCode(facts.stoppedBy)
-  if (testsRan(counts) === 0 || facts.outputFailures.length > 0 || facts.runFailures.length > 0) return 2
+  if (testsRan(counts) === 0 || facts.outputFailures.length > 0 || facts.runFailures.length > 0 || (facts.hostFailures?.length ?? 0) > 0) return 2
   if (counts.failed > 0) return 1
   if (counts.error > 0 || counts.notRun > 0 || counts.inconclusive > 0 || hasUnfinishedWork(facts.files)) return 2
   return 0
@@ -129,7 +145,7 @@ function decideExitCode(facts: RunFacts, counts: Counts): ExitCode {
 function runFailure(facts: RunFacts, counts: Counts): Failure | undefined {
   const { stoppedBy } = facts
   const stopped = stoppedBy === undefined || typeof stoppedBy === 'string' ? [] : [stoppedBy]
-  const [first, ...rest] = [...stopped, ...facts.runFailures, ...facts.outputFailures, ...processFailures(facts.files)]
+  const [first, ...rest] = [...stopped, ...facts.runFailures, ...(facts.hostFailures ?? []), ...facts.outputFailures, ...processFailures(facts.files)]
   if (first !== undefined) return withAlso(first, rest)
   if (facts.stoppedBy !== undefined || testsRan(counts) > 0) return undefined
   return whyNothingRan(facts.files)
@@ -140,10 +156,13 @@ function processFailures(files: readonly FileResult[]): Failure[] {
 }
 
 // The first reason in run order: a file that could not be collected, or a test kept from running, such
-// as by a browser that did not start.
+// as by a browser that did not start. Skipped tests have no failure: the run checked nothing because of them.
 function whyNothingRan(files: readonly FileResult[]): Failure {
   const reasons = files.flatMap((file) => [file.failure, ...file.tests.map((test) => test.failure)])
-  return reasons.find((reason) => reason !== undefined) ?? failure('usage', 'No test files were selected, so no test ran.')
+  const reason = reasons.find((found) => found !== undefined)
+  if (reason !== undefined) return reason
+  const skipped = files.some((file) => file.tests.some((test) => test.status === 'skipped'))
+  return failure('usage', skipped ? 'Every selected test is skipped, so no test ran.' : 'No test files were selected, so no test ran.')
 }
 
 function testsRan(counts: Counts): number {
@@ -169,11 +188,10 @@ function runStatus(exitCode: ExitCode): RunStatus {
   }
 }
 
-// Complete means every selected test reached a verdict of its own, every file ended cleanly and every
-// output was kept.
+// Complete means every selected test reached a verdict of its own, or was skipped as its file declared, every file
+// ended cleanly and every output was kept.
 function isComplete(facts: RunFacts): boolean {
-  if (facts.stoppedBy !== undefined || facts.outputFailures.length > 0 || facts.runFailures.length > 0) return false
-  return facts.files.every(
-    (file) => file.failure === undefined && file.tests.every((test) => test.status === 'passed' || test.status === 'failed'),
-  )
+  if (facts.stoppedBy !== undefined || facts.outputFailures.length > 0 || facts.runFailures.length > 0 || (facts.hostFailures?.length ?? 0) > 0) return false
+  const settled: readonly TestStatus[] = ['passed', 'failed', 'skipped']
+  return facts.files.every((file) => file.failure === undefined && file.tests.every((test) => settled.includes(test.status)))
 }

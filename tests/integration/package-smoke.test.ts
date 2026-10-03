@@ -90,9 +90,16 @@ describe('package smoke test', () => {
     assert.deepEqual(installed, ['@rehearsal-labs'])
     const manifest: unknown = JSON.parse(await readFile(join(consumer, 'node_modules', packageName, 'package.json'), 'utf8'))
     assert.ok(typeof manifest === 'object' && manifest !== null)
-    for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+    for (const key of ['dependencies', 'optionalDependencies']) {
       assert.equal(Object.hasOwn(manifest, key), false, `the package declares no ${key}`)
     }
+    // The AI SDK adapter's packages are peers a project installs only to use that adapter: each is optional, so
+    // installing Retest installs none of them, as the listing above shows.
+    const peers: unknown = Reflect.get(manifest, 'peerDependencies')
+    const meta: unknown = Reflect.get(manifest, 'peerDependenciesMeta')
+    assert.ok(typeof peers === 'object' && peers !== null && typeof meta === 'object' && meta !== null)
+    assert.deepEqual(Object.keys(peers).sort(), ['@ai-sdk/anthropic', '@ai-sdk/openai', 'ai'])
+    for (const name of Object.keys(peers)) assert.deepEqual(Reflect.get(meta, name), { optional: true }, `${name} is an optional peer`)
   })
 
   for (const [name, compiler] of Object.entries(compilers)) {

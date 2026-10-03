@@ -61,7 +61,8 @@ describe('a run stopped with a Failure as its reason', async () => {
     const { human, agent } = reports(record)
     assert.match(human, /\n {2}✗ tests\/support\/files\/slow-click\.retest\.ts › clicks something that never answers {2}\d+ ms\n\n {4}Interrupted\n {4}The host stopped the run: its budget ran out\.\n/)
     assert.match(human, /\n {2}Run failed\n {4}Interrupted\n {4}The host stopped the run: its budget ran out\.\n/)
-    assert.match(human, /\n {2}Exit {4}130 · interrupted, incomplete\n/)
+    // The fake browser collects no diagnostics, so the summary's Diagnostics row sets the label column's width.
+    assert.match(human, /\n {2}Exit {9}130 · interrupted, incomplete\n/)
     assert.match(agent, /^retest: 1 error, 4 not run \(5\) in [^,]+, exit 130, interrupted, incomplete\nrun failed: interrupted The host stopped the run: its budget ran out\.\n/)
     assert.match(agent, /\nerror tests\/support\/files\/slow-click\.retest\.ts:5 clicks something that never answers\n {2}interrupted The host stopped the run: its budget ran out\.\n/)
   })

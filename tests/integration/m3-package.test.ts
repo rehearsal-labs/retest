@@ -136,7 +136,7 @@ const mistakes = `import { test } from '${packageName}'
 
 test('presses keys Retest does not send', async ({ page }) => {
   await page.getByLabel('Search').press('Entr')
-  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Ctrl+a')
 })
 
 test('chooses a number, and scrolls by nothing', async ({ page }) => {
@@ -206,10 +206,10 @@ describe('milestone 3 package: wave 1', () => {
       assert.notEqual(failed.code, 0, `${name} accepted the mistakes`)
       const errors = failed.stdout.split('\n').filter((line) => line.includes('error TS'))
       assert.equal(errors.length, 4, `${name}:\n${failed.stdout}`)
-      assert.match(errors[0] ?? '', /mistakes\.ts\(4,\d+\): error TS2345: .*RetestTypeError<"press\(\) takes a named key such as Enter or ArrowDown, Shift\+ and a named key, or one character\.">/)
-      assert.match(errors[1] ?? '', /mistakes\.ts\(5,\d+\): error TS2345: .*RetestTypeError<"press\(\) does not send Control, Alt or Meta\. An editing shortcut needs the platform's own command\.">/)
+      assert.match(errors[0] ?? '', /mistakes\.ts\(4,\d+\): error TS2345: .*RetestTypeError<"press\(\) takes a named key such as Enter or ArrowDown, one character, or modifiers and a key, such as Control\+A\.">/)
+      assert.match(errors[1] ?? '', /mistakes\.ts\(5,\d+\): error TS2345: .*RetestTypeError<"press\(\) takes the modifiers Shift, Control, Alt, Meta or ControlOrMeta before a key\.">/)
       assert.match(errors[2] ?? '', /mistakes\.ts\(9,\d+\): error TS2345: Argument of type 'number' is not assignable to parameter of type '(OptionChoice \| readonly OptionChoice\[\]|readonly OptionChoice\[\] \| OptionChoice)'\./)
-      assert.match(errors[3] ?? '', /mistakes\.ts\(10,\d+\): error TS2554: Expected 1 arguments, but got 0\./)
+      assert.match(errors[3] ?? '', /mistakes\.ts\(10,\d+\): error TS2554: Expected 1-2 arguments, but got 0\./)
     }
     const ran = await runProgram(process.execPath, ['names.ts'], folder)
     assertSucceeded(ran, 'node names.ts')
@@ -236,8 +236,8 @@ describe('milestone 3 package: wave 1', () => {
     assert.deepEqual(
       completed.filter((event) => ['select', 'check', 'uncheck', 'scroll'].includes(event.command)).map((event) => [event.command, event.input ?? event.via ?? event.scroll?.y ?? null]),
       [
-        ['select', 'script'],
-        ['select', 'script'],
+        ['select', null],
+        ['select', null],
         ['check', null],
         ['check', 'label'],
         ['check', null],

@@ -531,7 +531,8 @@ describe('a file process that fails outside its tests', () => {
     assert.match(agent.text, new RegExp(`^error ${file(name).replaceAll('.', '\\.')}:5 failed outside its tests\n  test_error ${file(name).replaceAll('.', '\\.')} threw an error`, 'm'))
     assert.match(human.text, /\n {4}✓ leaves a timer behind .*\n {2}✗ tests\/support\/files\/late-error\.retest\.ts {2}failed outside its tests\n/)
     assert.match(human.text, /✗ tests\/support\/files\/late-error\.retest\.ts {2}failed outside its tests\n\n {4}Test error\n/)
-    assert.match(human.text, /\n {2}Files {3}1 file failed outside its tests\n/)
+    // The fake browser collects no diagnostics, so the summary's Diagnostics row sets the label column's width.
+    assert.match(human.text, /\n {2}Files {8}1 file failed outside its tests\n/)
     const thrown = record.result.files[0]?.failure
     assert.ok(thrown !== undefined)
     assert.deepEqual(readRunFolder(record.folder, 'run').result.files[0]?.failure, thrown)

@@ -28,6 +28,8 @@ export type AppServerOptions = {
   redactor?: Redactor
   /** Stops waiting for the server, and stops the server, when aborted. */
   signal?: AbortSignal
+  /** Environment variables the server must not see, such as the ones AI judges' credentials are read from. */
+  hiddenVariables?: readonly string[]
 }
 
 /**
@@ -113,10 +115,12 @@ type Launched = {
   fail(problem: Failure): Promise<never>
 }
 
-async function launch({ name, start, logFile, redactor }: AppServerOptions): Promise<Launched> {
+async function launch({ name, start, logFile, redactor, hiddenVariables }: AppServerOptions): Promise<Launched> {
   const folder = checkFolder(name, start.cwd)
   mkdirSync(dirname(logFile), { recursive: true })
-  const child = spawn(start.command, { shell: true, cwd: folder, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const hidden = new Set(hiddenVariables)
+  const env = Object.fromEntries(Object.entries(process.env).filter(([variable]) => !hidden.has(variable)))
+  const child = spawn(start.command, { shell: true, cwd: folder, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
   const { pid } = child
   if (pid === undefined) {
     const [error] = await once(child, 'error')

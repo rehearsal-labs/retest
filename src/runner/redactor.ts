@@ -1,9 +1,12 @@
-import type { CommandResult, Observation } from '../protocol/commands.ts'
+import type { CommandResult, Observation, PageObservation } from '../protocol/commands.ts'
 import type { Failure, FailureDetail } from '../protocol/failures.ts'
 import type { LocatorCheckRecord } from '../protocol/locator-checks.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
 import type { Schema } from '../protocol/schema.ts'
+import { isNavigationKind } from '../protocol/commands.ts'
+import { evaluationTextKeys, isEvaluationPart } from '../protocol/evaluation.ts'
 import { hostCheckRecordSchema } from '../protocol/host-check.ts'
+import { mapLocatorCheckText } from '../protocol/locator-checks.ts'
 import { locatorRecipeSchema } from '../protocol/locator.ts'
 import { cleanTitle, recordedTitle, titleReadLimit } from '../protocol/page-facts.ts'
 import { isPlainObject, parse } from '../protocol/schema.ts'
@@ -17,14 +20,19 @@ type Known = { value: string; placeholder: string }
 // and saw, what a look observed, every address, since a page puts what it was given into its path or query, what a
 // host writes into a check, and the text a locator matches, under `writtenKeys`. Page titles are free text too,
 // under `titleKeys`. Identifiers Retest makes itself (ids, names, test ids, variants, file paths) are never rewritten.
-const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls'])
+// A config's lock names are written by a person too, and travel with every attempt that holds them.
+const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls', 'locks'])
 
 // A host writes a check's text, name and path itself, and holds the run's secrets, so each is free text wherever
 // a check is recorded. The page is still asked for the text, and the path still matched, as written. A locator's
-// text and name are matched against the page's own text, so a test could have copied a value into one.
+// text, name and CSS selector are matched against the page's own text and attributes, so a test could have copied a
+// value into one. Each step a locator is scoped to is a recipe of its own.
 const writtenKeys: readonly { keys: ReadonlySet<string>; holds: (record: Record<string, unknown>) => boolean }[] = [
   { keys: new Set(['text', 'name', 'path']), holds: (record) => parse(hostCheckRecordSchema, record).ok },
-  { keys: new Set(['text', 'name']), holds: (record) => parse(locatorRecipeSchema, record).ok },
+  { keys: new Set(['text', 'name', 'selector']), holds: (record) => parse(locatorRecipeSchema, record).ok },
+  // An AI check's criteria, context and evidence text come from a test or a host, and its justification, reasons and
+  // model names from a provider: each may hold a value.
+  { keys: evaluationTextKeys, holds: isEvaluationPart },
 ]
 
 // A page's title reaches the parent as the page has it, and is cleaned and cut only once it is redacted.
@@ -111,8 +119,12 @@ export class Redactor {
   redactCommandResult(result: CommandResult): CommandResult {
     if (!result.ok) return { ok: false, failure: this.redactFailure(result.failure) }
     const page = result.page === undefined ? {} : { page: this.#redactPage(result.page) }
+    if (result.kind === 'observePage') {
+      const base = result.baseUrl === undefined ? {} : { baseUrl: this.redact(result.baseUrl) }
+      return { ...result, observation: this.redactPageLook(result.observation), ...base, ...page }
+    }
     if (result.kind === 'observe') return { ...result, observation: this.redactObservation(result.observation), ...page }
-    return result.kind === 'goto' ? { ...result, url: this.redact(result.url), ...page } : { ...result, ...page }
+    return isNavigationKind(result.kind) && 'url' in result ? { ...result, url: this.redact(result.url), ...page } : { ...result, ...page }
   }
 
   /**
@@ -136,9 +148,7 @@ export class Redactor {
    * @example redactor.redactCheck({ matcher: 'toHaveText', text: 'Hi hunter2' }) // { matcher: 'toHaveText', text: 'Hi {{password}}' }
    */
   redactCheck(check: LocatorCheckRecord): LocatorCheckRecord {
-    if ('text' in check) return { ...check, text: this.redact(check.text) }
-    if ('texts' in check) return { ...check, texts: check.texts.map((text) => this.redact(text)) }
-    return 'value' in check ? { ...check, value: this.redact(check.value) } : check
+    return mapLocatorCheckText(check, (text) => this.redact(text))
   }
 
   /** An observation with the page text in it redacted, as the test process receives one. */
@@ -206,6 +216,26 @@ export class Redactor {
     })
     if (entries.every(([key, item]) => item === value[key])) return value
     return Object.fromEntries(entries.filter(([key, item]) => !(titleKeys.has(key) && item === undefined)))
+  }
+
+  /**
+   * A look at the page as the parent judges it and the test process receives it: its whole address and title with
+   * every value in them redacted, and the title cleaned as every title is but not cut, so a check compares all the page
+   * showed. A part the page held more of than Retest read keeps back a tail that may begin a value. `hidden` names each
+   * part that holds a placeholder, where a negation cannot tell what the page showed.
+   *
+   * @example redactor.redactPageLook({ url: 'https://app.test/reset?token=hunter2', title: 'Reset' }).hidden // ['url']
+   */
+  redactPageLook({ url, title, cut = [] }: PageObservation): PageObservation {
+    const address = url === null ? null : this.scan(url, cut.includes('url')).text
+    const cleaned = title === null ? undefined : cleanTitle(this.scan(title, cut.includes('title')).text)
+    const shown = title === null ? null : cleaned === undefined ? '' : this.redact(cleaned)
+    const hidden = [...(address !== null && this.#holdsPlaceholder(address) ? ['url' as const] : []), ...(shown !== null && this.#holdsPlaceholder(shown) ? ['title' as const] : [])]
+    return { url: address, title: shown, ...(cut.length === 0 ? {} : { cut }), ...(hidden.length === 0 ? {} : { hidden }) }
+  }
+
+  #holdsPlaceholder(text: string): boolean {
+    return [...this.#placeholders].some((placeholder) => text.includes(placeholder))
   }
 
   #redactPage({ url, title }: PageFacts): PageFacts {

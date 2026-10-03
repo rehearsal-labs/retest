@@ -77,6 +77,8 @@ function summary(card: FailureCard, style: Style): string[] {
   for (const check of card.alsoFailedChecks) lines.push('', ...hostCheckLines(check, style))
   if (card.notRunChecks.length > 0) lines.push('')
   for (const { check, app } of card.notRunChecks) lines.push(field('Not run', `host check ${describeHostCheck(check, app)}`))
+  if (card.evaluations.length > 0) lines.push('')
+  for (const { label, value } of card.evaluations) lines.push(field(label, value))
   return lines
 }
 
@@ -159,6 +161,7 @@ function frame(rootDir: string, location: SourceLocation, style: Style): string[
 function closing(card: FailureCard, options: HumanCardOptions): string[] {
   const lines = card.screenshots.map((path) => field('Screenshot', path))
   for (const problem of card.evidenceProblems) lines.push(field('Screenshot', `not saved: ${problem}`))
+  for (const { label, value } of card.diagnostics ?? []) lines.push(field(label, value))
   for (const failure of card.cleanupFailures) {
     lines.push(field(options.style.red(failureLabel(failure.class)), messageLines(failure.message).join('\n')))
   }

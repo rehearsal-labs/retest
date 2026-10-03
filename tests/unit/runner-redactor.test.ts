@@ -1,5 +1,6 @@
 import type { CommandResult } from '../../src/protocol/commands.ts'
 import type { RetestEvent } from '../../src/protocol/events.ts'
+import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { RunResult, TestResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
@@ -323,13 +324,27 @@ describe('Redactor', () => {
     const observed: CommandResult = {
       ok: true,
       kind: 'observe',
-      observation: { count: 2, visible: null, text: null, value: null, items: [{ text: 'hunter2', visible: true }, { text: 'plain', visible: false }], itemsTruncated: false },
+      observation: {
+        count: 2,
+        visible: null,
+        text: null,
+        value: null,
+        checked: null,
+        enabled: null,
+        items: [{ text: 'hunter2', visible: true }, { text: 'plain', visible: false }],
+        itemsTruncated: false,
+      },
     }
+    assert.ok(observed.ok && observed.kind === 'observe')
     assert.deepEqual(redactor.redactCommandResult(observed), {
       ...observed,
       observation: { ...observed.observation, items: [{ text: '{{password}}', visible: true }, { text: 'plain', visible: false }] },
     })
-    const single: CommandResult = { ok: true, kind: 'observe', observation: { count: 1, visible: true, text: 'is hunter2', value: 'hunter2', items: [], itemsTruncated: false } }
+    const single: CommandResult = {
+      ok: true,
+      kind: 'observe',
+      observation: { count: 1, visible: true, text: 'is hunter2', value: 'hunter2', checked: null, enabled: true, items: [], itemsTruncated: false },
+    }
     const redacted = redactor.redactCommandResult(single)
     assert.deepEqual(redacted.ok && redacted.kind === 'observe' ? [redacted.observation.text, redacted.observation.value] : [], ['is {{password}}', '{{password}}'])
     const moved: CommandResult = { ok: true, kind: 'goto', url: 'http://127.0.0.1/echo/hunter2' }
@@ -483,16 +498,62 @@ describe('Redactor', () => {
       { ok: true, kind: 'click', page },
       { ok: true, kind: 'select', changed: true, page },
       { ok: true, kind: 'check', changed: false, via: 'label', page },
-      { ok: true, kind: 'observe', observation: { count: 0, visible: null, text: null, value: null, items: [], itemsTruncated: false }, page },
+      { ok: true, kind: 'observe', observation: { count: 0, visible: null, text: null, value: null, checked: null, enabled: null, items: [], itemsTruncated: false }, page },
+      { ok: true, kind: 'reload', url: page.url, page },
+      { ok: true, kind: 'hover', page },
     ]
     for (const result of results) {
       const redacted = redactor.redactCommandResult(result)
-      assert.deepEqual(redacted, { ...result, ...(result.ok && result.kind === 'goto' ? { url: shown.url } : {}), page: shown })
+      assert.deepEqual(redacted, { ...result, ...(result.ok && (result.kind === 'goto' || result.kind === 'reload') ? { url: shown.url } : {}), page: shown })
     }
     assert.deepEqual(redactor.redactCommandResult({ ok: true, kind: 'scroll', page: { url: 'http://127.0.0.1:4173/' } }), {
       ok: true,
       kind: 'scroll',
       page: { url: 'http://127.0.0.1:4173/' },
+    })
+  })
+
+  test('a look at the page has its address, title and base URL redacted, and a title that cleans to nothing reads as empty', () => {
+    const redactor = taught({ password: 'hunter2' })
+    const look: CommandResult = {
+      ok: true,
+      kind: 'observePage',
+      observation: { url: 'http://127.0.0.1:4173/hunter2', title: '  Hi hunter2 ' },
+      baseUrl: 'http://127.0.0.1:4173/hunter2/',
+      page: { url: 'http://127.0.0.1:4173/hunter2', title: '  Hi hunter2 ' },
+    }
+    assert.deepEqual(redactor.redactCommandResult(look), {
+      ok: true,
+      kind: 'observePage',
+      observation: { url: 'http://127.0.0.1:4173/{{password}}', title: 'Hi {{password}}', hidden: ['url', 'title'] },
+      baseUrl: 'http://127.0.0.1:4173/{{password}}/',
+      page: { url: 'http://127.0.0.1:4173/{{password}}', title: 'Hi {{password}}' },
+    })
+    const blank = redactor.redactCommandResult({ ok: true, kind: 'observePage', observation: { url: null, title: '\u0007 ' } })
+    assert.deepEqual(blank.ok && blank.kind === 'observePage' ? blank.observation : undefined, { url: null, title: '' })
+    const unread = redactor.redactCommandResult({ ok: true, kind: 'observePage', observation: { url: 'http://127.0.0.1:4173/', title: null } })
+    assert.deepEqual(unread.ok && unread.kind === 'observePage' ? unread.observation.title : undefined, null, 'a title not read stays unread')
+  })
+
+  test("a locator's CSS selector and pattern are free text in every step, and a test id is not", () => {
+    const redactor = taught({ password: 'hunter2' })
+    const locator: LocatorRecipe = {
+      by: 'css',
+      selector: 'input[value="hunter2"]',
+      within: [
+        { by: 'role', role: 'dialog', name: { pattern: 'for hunter2', flags: 'i' } },
+        { by: 'testId', value: 'hunter2' },
+      ],
+    }
+    const event: RetestEvent = { schemaVersion: 1, runId: 'run', sequence: 0, time: '', elapsedMs: 0, origin: 'parent', type: 'action.completed', testId: 't', attemptId: 'a', command: 'click', locator, durationMs: 1 }
+    const redacted = redactor.redactFields(retestEventSchema, event)
+    assert.deepEqual(redacted.type === 'action.completed' ? redacted.locator : undefined, {
+      by: 'css',
+      selector: 'input[value="{{password}}"]',
+      within: [
+        { by: 'role', role: 'dialog', name: { pattern: 'for {{password}}', flags: 'i' } },
+        { by: 'testId', value: 'hunter2' },
+      ],
     })
   })
 
@@ -574,6 +635,28 @@ describe('Redactor', () => {
     assert.equal(new Redactor().redactFields(runResultSchema, result), result)
     const failure = { class: 'timeout' as const, message: 'slow' }
     assert.equal(new Redactor().redactFailure(failure), failure)
+  })
+})
+
+describe('a look at the page', () => {
+  test('is redacted whole and its title cleaned but not cut, and each part with a placeholder is named hidden', () => {
+    const redactor = new Redactor()
+    redactor.learn('token', 'tok-5512')
+    const long = 'Report '.repeat(100)
+    assert.deepEqual(redactor.redactPageLook({ url: 'https://app.test/reset?token=tok-5512#top', title: ` ${long}\u0007 ` }), {
+      url: 'https://app.test/reset?token={{token}}#top',
+      title: long.trim(),
+      hidden: ['url'],
+    })
+    assert.deepEqual(redactor.redactPageLook({ url: null, title: null }), { url: null, title: null })
+    assert.deepEqual(redactor.redactPageLook({ url: 'https://app.test/', title: '\u0007' }), { url: 'https://app.test/', title: '' })
+  })
+
+  test('a part the page held more of keeps back a tail that may begin a value, and stays named cut', () => {
+    const redactor = new Redactor()
+    redactor.learn('token', 'tok-5512')
+    const look = redactor.redactPageLook({ url: 'https://app.test/?a=tok-55', title: 'Hi tok-5', cut: ['url', 'title'] })
+    assert.deepEqual(look, { url: 'https://app.test/?a=', title: 'Hi', cut: ['url', 'title'] })
   })
 })
 

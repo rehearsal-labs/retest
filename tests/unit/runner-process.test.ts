@@ -92,6 +92,24 @@ describe('TestFileProcess', () => {
     assert.equal(child.killed, true)
   })
 
+  test('closes a bounded time after it exits, though a process it started still holds its output pipes', async () => {
+    const file = supportFile('grandchild.retest.ts')
+    const output: string[] = []
+    const child = TestFileProcess.spawn({ onOutput: (_stream, text) => output.push(text) })
+    assert.equal((await loadTests(child, { file, rootDir, timeoutMs: 5000 })).ok, true)
+    const pid = Number(/grandchild pid (\d+)/.exec(output.join(''))?.[1])
+    assert.ok(Number.isInteger(pid) && isRunning(pid), 'the test file started a process of its own')
+    try {
+      const startedAt = Date.now()
+      const closed = await child.close(1000)
+      assert.deepEqual(closed, { exit: { code: 0, signal: null }, forced: false })
+      assert.ok(Date.now() - startedAt < 2500, `closed in ${Date.now() - startedAt} ms while the grandchild still ran`)
+      assert.equal(isRunning(pid), true, 'the grandchild is not Retest\'s to end')
+    } finally {
+      process.kill(pid, 'SIGKILL')
+    }
+  })
+
   test('an abort or an answer with no test running changes nothing', async () => {
     const output: string[] = []
     const child = TestFileProcess.spawn({ onOutput: (_stream, text) => output.push(text) })

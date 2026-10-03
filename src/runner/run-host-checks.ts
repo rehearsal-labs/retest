@@ -37,9 +37,9 @@ const lookDelays = [0, 50, 100, 250, 500]
 /**
  * Runs a test's host checks, in order, against the pages its body left. A failed check does not stop the next;
  * a page that could not be read stops the checks after it, and so does an interrupted run. The test's failure is
- * one of ours when there is one, since then nobody can tell whether the app would have passed, and the checks that
- * failed before it stay in `also`, in order. Each check writes `host_check.passed` or `host_check.failed`, and the
- * pages are only read.
+ * the first check that failed on the app, and one of ours only when no check did, since a page lost after a failed
+ * check does not undo what that check read; the other failures stay in `also`, in order. Each check writes
+ * `host_check.passed` or `host_check.failed`, and the pages are only read.
  *
  * @example const { results, failure } = await runHostChecks(context, pages, checks)
  */
@@ -60,7 +60,9 @@ export async function runHostChecks(context: PagesContext, pages: readonly AppPa
       break
     }
   }
-  const first = failures.find(isOurs) ?? failures[0]
+  // The application failing comes first, as for the AI checks: a check that read the page and found it wrong is the
+  // test's failure, and a page lost after it does not replace it. One of ours leads only when no check failed on the app.
+  const first = failures.find((each) => !isOurs(each)) ?? failures[0]
   return first === undefined ? { results } : { results, failure: withAlso(first, failures.filter((each) => each !== first)) }
 }
 
@@ -146,15 +148,19 @@ type FailedCheck = {
   redact: (text: string) => string
 }
 
+// A check with an id carries it in its failure's details, so a caller can tell which required check failed without
+// reading the message.
 function checkFailure({ check, app, last, looked, redact }: FailedCheck): Failure {
-  const named = check.name === undefined ? `The ${check.kind} check on ${app}` : `The host check ${quoteText(redact(check.name))} on ${app}`
+  const label = check.name === undefined ? check.id : redact(check.name)
+  const named = label === undefined ? `The ${check.kind} check on ${app}` : `The host check ${quoteText(label)} on ${app}`
+  const identified = check.id === undefined ? {} : { checkId: check.id }
   const opening = last?.navigating === true ? ' The page was still opening another document.' : ''
   const times = `Looked ${looked.attempts} ${looked.attempts === 1 ? 'time' : 'times'} in ${looked.timeoutMs} ms.`
   const url = last?.url === undefined ? undefined : redact(last.url)
   if (check.kind === 'address') {
     const expected = redact(expectedAddress(check))
     const message = `${named} failed: the page is on ${url ?? 'no web address'}, expected ${expected}.${opening} ${times}`
-    return { class: 'host_check_failed', message, details: { expected: truncateText(expected), received: url === undefined ? null : truncateText(url), ...looked } }
+    return { class: 'host_check_failed', message, details: { ...identified, expected: truncateText(expected), received: url === undefined ? null : truncateText(url), ...looked } }
   }
   const text = redact(check.text)
   const ignoringCase = check.ignoreCase === true ? ', ignoring case' : ''
@@ -164,7 +170,7 @@ function checkFailure({ check, app, last, looked, redact }: FailedCheck): Failur
       : check.absent === true
         ? `the page shows ${quoteText(text)}${ignoringCase}, which it should not`
         : `the page does not show ${quoteText(text)}${ignoringCase}`
-  return { class: 'host_check_failed', message: `${named} failed: ${saw}.${opening} ${times}`, details: { expected: truncateText(text), ...looked } }
+  return { class: 'host_check_failed', message: `${named} failed: ${saw}.${opening} ${times}`, details: { ...identified, expected: truncateText(text), ...looked } }
 }
 
 function expectedAddress(check: Extract<HostCheck, { kind: 'address' }>): string {

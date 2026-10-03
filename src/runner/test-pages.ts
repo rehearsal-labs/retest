@@ -1,5 +1,6 @@
-import type { NewPageOptions, OwnedBrowser, OwnedPage } from '../browser/contract.ts'
+import type { NewPageOptions, OwnedBrowser, OwnedPage, SessionIdentity } from '../browser/contract.ts'
 import type { EventBody } from '../protocol/events.ts'
+import type { EvidenceReference } from '../protocol/evidence.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { Evidence } from '../protocol/result.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
@@ -10,8 +11,11 @@ import { failureScreenshotFile, stateFile } from '../protocol/run-folder.ts'
 import { bounded } from './bounded.ts'
 import { abortGraceMs } from './running-test.ts'
 
-/** One app's page in a test, the browser it belongs to, and whether it emulates a touch screen. */
-export type AppPage = { app: string; page: OwnedPage; browser: OwnedBrowser; touch: boolean }
+/**
+ * One app's page in a test, the browser it belongs to, whether it emulates a touch screen, and the session it is:
+ * its id, the run, test, attempt and app that hold it, and the browser it runs on.
+ */
+export type AppPage = { app: string; page: OwnedPage; browser: OwnedBrowser; touch: boolean; session: SessionIdentity }
 
 /** What the pages of a test need from the run. */
 export type PagesContext = {
@@ -94,11 +98,13 @@ export async function disposePages(context: PagesContext, pages: readonly AppPag
   return failures
 }
 
-async function screenshot(context: PagesContext, { app, page, browser }: AppPage): Promise<Evidence[]> {
+// The screenshot's event and its entry in the result name the session that took it, and when it came back.
+async function screenshot(context: PagesContext, { app, page, browser, session }: AppPage): Promise<Evidence[]> {
   if (context.interruption() !== undefined) return []
   const { testId, attemptId, named } = context
+  const { sessionId } = session
   const cleanup = context.timeouts.cleanup
-  const scope = { testId, attemptId, session: app, kind: 'screenshot', reason: 'failure' } as const
+  const scope = { testId, attemptId, session: app, kind: 'screenshot', reason: 'failure', sessionId } as const
   const unavailable = (message: string): Evidence[] => {
     context.emit({ type: 'evidence.failed', ...scope, message })
     return []
@@ -108,12 +114,24 @@ async function screenshot(context: PagesContext, { app, page, browser }: AppPage
   if (shot.status === 'stopped') return []
   if (shot.status === 'timed_out') return unavailable(`Taking a screenshot took longer than ${cleanup} ms.`)
   if (shot.status === 'failed') return unavailable(`Retest could not take a screenshot: ${errorMessage(shot.error)}`)
+  const capturedAt = new Date().toISOString()
   const path = named ? failureScreenshotFile(testId, attemptId, app) : failureScreenshotFile(testId, attemptId)
   try {
     context.store.writeArtifact(path, shot.value)
   } catch (error) {
     return unavailable(`Retest could not save the screenshot: ${errorMessage(error)}`)
   }
-  context.emit({ type: 'evidence.captured', ...scope, path })
-  return [named ? { kind: 'screenshot', path, app } : { kind: 'screenshot', path }]
+  const reference: EvidenceReference = { kind: 'screenshot', path, app, sessionId, testId, attemptId, capturedAt }
+  context.emit(capturedEvent(reference))
+  return [resultEvidence(reference, named)]
+}
+
+// The app is the event's `session`, as on every event about an app.
+function capturedEvent({ kind, path, app, sessionId, testId, attemptId, capturedAt }: EvidenceReference): EventBody {
+  return { type: 'evidence.captured', testId, attemptId, session: app, kind, path, reason: 'failure', sessionId, capturedAt }
+}
+
+// Only a run from a config names the app a screenshot shows.
+function resultEvidence({ kind, path, app, sessionId, attemptId, capturedAt }: EvidenceReference, named: boolean): Evidence {
+  return { kind, path, ...(named ? { app } : {}), sessionId, attemptId, capturedAt }
 }

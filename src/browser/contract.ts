@@ -1,3 +1,4 @@
+import type { DiagnosticCollection, DiagnosticSink } from '../diagnostics/observations.ts'
 import type { CommandResult, PageCommand } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { Failure } from '../protocol/failures.ts'
@@ -9,7 +10,112 @@ import type { StorageState } from '../protocol/storage-state.ts'
 export type { Emulation } from '../protocol/emulation.ts'
 export type { TextQuery } from '../protocol/host-check.ts'
 
-export type LaunchOptions = { executablePath: string; logFile: string; headless: boolean }
+// The session and capability contract. A runtime is what sessions open in: a browser process for the web, later a
+// simulator or a desktop app. A session is one app's page or window in one attempt. The runner acquires a target's
+// runtime from the driver its kind needs, opens a session for each app before the test's first action, sends each
+// session bounded commands, and keeps what it observes. `OwnedBrowser` and `OwnedPage` are the web runtime and
+// session as the runner holds them; `WebRuntime` and `WebSession` add what every driver states. Only Chromium has a
+// driver: the native capabilities below are types that nothing implements yet.
+
+/** The kinds of target a session runs on. Only `web` has a driver, and only for the Chromium engine. */
+export type TargetKind = 'web' | 'ios-simulator' | 'macos'
+
+/** The native kinds of target: an app on an iOS simulator, and an app on the Mac Retest runs on. */
+export type NativeKind = Exclude<TargetKind, 'web'>
+
+/** The engines a web target runs on. Chromium, Chrome and Edge are all the `chromium` engine. */
+export type WebEngine = 'chromium' | 'firefox' | 'webkit'
+
+/**
+ * The drivers a target can need: one for each web engine and one for each native kind. Only `chromium` exists. The
+ * runner asks the driver a target needs for its runtime, and no other: a target whose driver does not exist fails
+ * setup by name, and no driver stands in for another.
+ */
+export type DriverName = WebEngine | NativeKind
+
+/**
+ * What a web session runs on, as its driver read it: the engine, the product and version the browser itself
+ * reported, the absolute path of the executable that was started, and the ids of the processes it owns. A Chromium
+ * browser owns one process, which is also its process group.
+ */
+export type WebRuntimeIdentity = {
+  readonly kind: 'web'
+  readonly engine: WebEngine
+  readonly product: string
+  readonly version: string
+  readonly executablePath: string
+  readonly processIds: readonly number[]
+}
+
+/**
+ * What a native session runs on: the app's bundle id and version as its bundle states them, the absolute path of
+ * the app that was installed or launched, the processes it owns, and for an iOS simulator, its device and runtime
+ * as the simulator names them. No driver reports one yet.
+ */
+export type NativeRuntimeIdentity =
+  | {
+      readonly kind: 'ios-simulator'
+      readonly bundleId: string
+      readonly appVersion?: string
+      readonly appPath: string
+      readonly device: string
+      readonly runtime: string
+      readonly processIds: readonly number[]
+    }
+  | { readonly kind: 'macos'; readonly bundleId: string; readonly appVersion?: string; readonly appPath: string; readonly processIds: readonly number[] }
+
+export type RuntimeIdentity = WebRuntimeIdentity | NativeRuntimeIdentity
+
+/**
+ * Who holds a session: the run, and the test, attempt and app within it. An attempt gives each of its apps a session
+ * of its own, so an attempt and an app name one session.
+ */
+export type SessionOwner = { readonly runId: string; readonly testId: string; readonly attemptId: string; readonly app: string }
+
+/**
+ * A session's identity: its id, which every observation it serves and every piece of evidence it captures carries,
+ * who holds it, and what it runs on.
+ */
+export type SessionIdentity = { readonly sessionId: string; readonly owner: SessionOwner; readonly runtime: RuntimeIdentity }
+
+/**
+ * How far a command's input got. Every event a command sends to act is input, a click's mouse move among them, since
+ * a move can set off hover handlers. `not_sent`: no input event went. It does not mean nothing changed: before any
+ * input, on every look while an action waits for its element, the readiness look may have focused the element (for
+ * `fill` and `press`), selected a field's text (for `fill`) or scrolled the element into view (for every action but
+ * `press`), and the page's focus, blur and scroll handlers run on those. A driver author or a replay host must not
+ * read `not_sent` as an untouched page. `sent`: the target confirmed each input that went, so it may have acted.
+ * `unknown`: an input went and no confirmation came back: the connection was lost, the time ran out, or the browser
+ * answered it with an error. Chrome's error answer does not prove the event was not dispatched, so it counts as
+ * unknown, as the failure beside it says Retest cannot tell; an earlier event the target confirmed does not make it
+ * sent. Input that may have gone is never sent again. Stopping a command sends nothing more and never takes back
+ * input that went.
+ */
+export type InputDispatch = 'not_sent' | 'sent' | 'unknown'
+
+/**
+ * A command's answer, and how far its input got. A command whose session was lost after its input went answers
+ * `outcome_unknown`, with `input` `sent` or `unknown`; the runner keeps that answer and the last document it saw the
+ * page commit, and takes no screenshot of a session that is gone.
+ */
+export type DispatchedCommand = { readonly result: CommandResult; readonly input: InputDispatch }
+
+/**
+ * The session and generation an observation belongs to. A generation is one document of a web page, or one launch
+ * of a native app. A reference to what an observation saw is good only in the session that served it: the parent
+ * hands the test process each look's id with its session, and refuses an assertion that sends back another session,
+ * as one replaying a look an earlier attempt served would. To act, a reference is good only while its generation is
+ * current. Chromium keeps that rule inside the page: each action's element is readied and guarded in
+ * the document's own execution context, input readied in a document that has gone is never sent, and the element is
+ * looked for again in the document that replaced it. Chromium does not report its generation.
+ */
+export type ObservationScope = { readonly sessionId: string; readonly generation: number }
+
+/**
+ * How to launch a browser. `hiddenVariables` are environment variables its process must not see, such as the ones AI
+ * judges' credentials are read from; the browser inherits every other variable of this process.
+ */
+export type LaunchOptions = { executablePath: string; logFile: string; headless: boolean; hiddenVariables?: readonly string[] }
 
 /**
  * A browser context's proxy: Chrome's proxy server, `scheme://host:port`, and its bypass rules. Loopback
@@ -77,6 +183,76 @@ export type BrowserCommand = Exclude<PageCommand, { kind: 'fill' }> | ResolvedFi
  */
 export const closeGraceMs: number = 1000
 
+/**
+ * What sessions open in, whatever the kind of target. It tells of its loss once, to every listener, even one that
+ * arrives after it. A loss ends each session in it: a command whose input may have gone answers `outcome_unknown`,
+ * and one that sent nothing `session_lost`. `close` is finite, and a failure to close is reported beside the
+ * failure that ended the test, never in its place.
+ */
+export interface SessionRuntime {
+  readonly identity: RuntimeIdentity
+  readonly connected: boolean
+  /** Returns a function that removes the listener. */
+  onDisconnect(listener: (reason: string) => void): () => void
+  /** Ends the runtime and everything it started within `timeoutMs`. A second call waits for the first. */
+  close(timeoutMs: number): Promise<void>
+}
+
+/**
+ * One app's page or window in one attempt, as every driver offers it. Each command is bounded by its `timeoutMs`
+ * and never throws for a page or application problem: the answer carries the failure, and says how far the input
+ * got. Aborting `signal` stops the command: input not yet sent is never sent, and input already sent is not taken
+ * back. The failure then takes its class from `signal.reason`, a `Failure`, and anything else counts as a timeout.
+ * `dispose` is finite, and its failure never replaces the one that ended the test.
+ */
+export interface Session<Command> {
+  dispatch(command: Command, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand>
+  /** A PNG of what the session shows, within `timeoutMs`. Sends no input. */
+  screenshot(timeoutMs: number): Promise<Uint8Array>
+  dispose(timeoutMs: number): Promise<void>
+}
+
+/** Navigation, a web capability: `goto` among the commands, and the page's address, title and committed navigations. */
+export interface NavigationCapability {
+  /**
+   * The main frame's origin and path as of its latest commit, as navigations are told, or undefined while it has
+   * none. The parent's secret origin check reads it, so it never waits for a title.
+   */
+  readonly url: string | undefined
+  /**
+   * Reads the page's address, its title and whether its visible text holds each query, within `timeoutMs`. Sends
+   * no input. The visible text is `document.body.innerText` of the top-level document, read by `pageTextHolds`,
+   * and never leaves the page: only the answers do, one for each query.
+   */
+  readPage(queries: readonly TextQuery[], timeoutMs: number): Promise<PageReading>
+  /**
+   * Main frame navigations, each told when it commits: a new document, or a new path within the document. Returns
+   * a function that removes the listener.
+   */
+  onNavigation(listener: (navigation: PageNavigation) => void): () => void
+}
+
+/**
+ * Storage state, a web capability: the context's cookies and `localStorage` read back here, and restored into a new
+ * context by `NewPageOptions.storageState`.
+ */
+export interface StorageStateCapability {
+  /**
+   * Reads the context's cookies, and `localStorage` for each origin the page visited, within `timeoutMs`. What
+   * it returns holds session cookies: it goes to the run folder's `states` and nowhere else.
+   */
+  captureState(timeoutMs: number): Promise<StorageState>
+}
+
+/**
+ * Contexts, the proxy and emulation, web capabilities: each session opens in a new browser context of its own,
+ * whose `NewPageOptions` give its storage state, its proxy and the screen it emulates.
+ */
+export interface ContextCapability {
+  /** Opens a page in a new browser context within `timeoutMs`. */
+  newPage(options: NewPageOptions, timeoutMs: number): Promise<WebSession>
+}
+
 /** A browser this run launched, with its own process group and temporary profile. */
 export interface OwnedBrowser {
   readonly product: string
@@ -99,43 +275,110 @@ export interface OwnedBrowser {
   close(timeoutMs: number): Promise<void>
 }
 
-export interface OwnedPage {
+/** A web page as the runner holds it: its commands, navigation, storage state, a screenshot and disposal. */
+export interface OwnedPage extends NavigationCapability, StorageStateCapability {
   /**
-   * The main frame's origin and path as of its latest commit, as navigations are told, or undefined while it has
-   * none. The parent's secret origin check reads it, so it never waits for a title.
-   */
-  readonly url: string | undefined
-  /**
-   * Runs a command within `timeoutMs`. Never throws for a page or application problem; the result carries the
-   * failure instead. Aborting `signal` stops the command: input not yet sent is never sent, and input already
-   * sent is not taken back. The failure then takes its class from `signal.reason`, a `Failure` (anything else
-   * counts as a timeout), and says whether input was sent. `tap` needs a page that emulates a touch screen. A
-   * result that passed names the page the command went to in `page`, read in the same call that checked or read
-   * the element, and after `load` for a `goto`. Before a command goes past its start, every navigation already
-   * told has its `title` settled. A navigation the command's input or `goto` started carries `commandToken` back.
-   * An `observe` answers with `changes`, how many times the document has changed as the page counts it; one with
-   * `after` first waits for the count to pass `after.changes`, or for `after.waitMs`, and says how long in `waitedMs`.
+   * Runs a command within `timeoutMs`, and answers as `Session.dispatch` does, without saying how far the input got.
+   * Never throws for a page or application problem; the result carries the failure instead. Aborting `signal` stops
+   * the command: input not yet sent is never sent, and input already sent is not taken back. The failure then takes
+   * its class from `signal.reason`, a `Failure` (anything else counts as a timeout), and says whether input was sent.
+   * `tap` needs a page that emulates a touch screen. A result that passed names the page the command went to in
+   * `page`, read in the same call that checked or read the element, and after `load` for a `goto`. Before a command
+   * goes past its start, every navigation already told has its `title` settled. A navigation the command's input or
+   * `goto` started carries `commandToken` back. An `observe` answers with `changes`, how many times the document has
+   * changed as the page counts it; one with `after` first waits for the count to pass `after.changes`, or for
+   * `after.waitMs`, and says how long in `waitedMs`.
    */
   execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult>
   screenshot(timeoutMs: number): Promise<Uint8Array>
-  /**
-   * Reads the context's cookies, and `localStorage` for each origin the page visited, within `timeoutMs`. What
-   * it returns holds session cookies: it goes to the run folder's `states` and nowhere else.
-   */
-  captureState(timeoutMs: number): Promise<StorageState>
-  /**
-   * Reads the page's address, its title and whether its visible text holds each query, within `timeoutMs`. Sends
-   * no input. The visible text is `document.body.innerText` of the top-level document, read by `pageTextHolds`,
-   * and never leaves the page: only the answers do, one for each query.
-   */
-  readPage(queries: readonly TextQuery[], timeoutMs: number): Promise<PageReading>
-  /**
-   * Main frame navigations, each told when it commits: a new document, or a new path within the document. Returns
-   * a function that removes the listener.
-   */
-  onNavigation(listener: (navigation: PageNavigation) => void): () => void
   /** Disposes the page's browser context. */
   dispose(timeoutMs: number): Promise<void>
+  /**
+   * Diagnostics, a capability of Chromium pages: starts collecting the page's console messages, runtime errors and
+   * network metadata into `sink`, within `timeoutMs`, and resolves with what the collection covers. The parent calls
+   * it before the page's first navigation, and stops it once the attempt's checks are over. Collecting is read-only:
+   * it sends no input, never reads a page object and never asks for a body. Rejects when capture cannot start. Absent
+   * on a driver that collects nothing, whose results then say so.
+   */
+  collectDiagnostics?(sink: DiagnosticSink, timeoutMs: number): Promise<DiagnosticCollection>
+}
+
+/** A web session: the shared commands, with navigation and storage state. A Chromium page is one. */
+export interface WebSession extends Session<BrowserCommand>, OwnedPage {}
+
+/**
+ * A web runtime: a browser whose every session opens in a new context of its own, with its storage state, proxy and
+ * emulation. A Chromium browser is one.
+ */
+export interface WebRuntime extends SessionRuntime, ContextCapability, OwnedBrowser {
+  readonly identity: WebRuntimeIdentity
+  newPage(options: NewPageOptions, timeoutMs: number): Promise<WebSession>
+}
+
+/**
+ * A browser's identity as a web runtime, from what the browser reported at launch.
+ *
+ * @example webRuntimeIdentity(browser, 'chromium') // { kind: 'web', engine: 'chromium', product: 'Chrome', version: '154.0.8037.92', executablePath, processIds: [4242] }
+ */
+export function webRuntimeIdentity(browser: Pick<OwnedBrowser, 'product' | 'version' | 'executablePath' | 'pid'>, engine: WebEngine): WebRuntimeIdentity {
+  const { product, version, executablePath, pid } = browser
+  return { kind: 'web', engine, product, version, executablePath, processIds: [pid] }
+}
+
+/** A native app build to install or launch: the absolute path of its app bundle. */
+export type AppBuild = { readonly appPath: string }
+
+/** Where a native app is: not running, or running in the background or in the foreground. */
+export type AppState = 'not_running' | 'background' | 'foreground'
+
+/**
+ * What a native session starts from. Relaunching an app clears nothing by itself: `appData` and `keychain` each say
+ * whether the driver resets it before the session starts, or keeps what the last session left.
+ */
+export type ResetPolicy = { readonly appData: 'reset' | 'kept'; readonly keychain: 'reset' | 'kept' }
+
+/** A gesture on the element a locator finds, or without one, on the centre of the screen. */
+export type Gesture =
+  | { readonly kind: 'tap'; readonly locator?: LocatorRecipe }
+  | { readonly kind: 'swipe'; readonly locator?: LocatorRecipe; readonly direction: 'up' | 'down' | 'left' | 'right' }
+
+/** A request's answer: done, or the failure that says why not. */
+export type RequestResult = { readonly ok: true } | { readonly ok: false; readonly failure: Failure }
+
+/** A request's answer, and how far the request got, as `InputDispatch` counts it for input. */
+export type DispatchedRequest = { readonly result: RequestResult; readonly input: InputDispatch }
+
+/** Where an app is, or the failure that says why it could not be read. */
+export type AppStateReading = { readonly ok: true; readonly state: AppState } | { readonly ok: false; readonly failure: Failure }
+
+/**
+ * An app's lifecycle, a native capability: install a build, launch the app, bring it to the front, terminate it and
+ * read where it is. Each request is bounded by its `timeoutMs` and never throws for an app or platform problem: the
+ * answer carries the failure, and says how far the request got, so a `terminate` whose time ran out after it went
+ * answers `unknown`. Aborting `signal` stops the request: one not sent is never sent, and one that went is not taken
+ * back. Terminating an app resets none of its data; `resetPolicy` says what a session starts from.
+ */
+export interface AppLifecycleCapability {
+  readonly resetPolicy: ResetPolicy
+  install(build: AppBuild, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  launch(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  activate(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  terminate(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  /** Sends nothing to the app. */
+  appState(timeoutMs: number, signal?: AbortSignal): Promise<AppStateReading>
+}
+
+/** Gestures, a native capability: each sent once as real input, as `Session.dispatch` sends a command. */
+export interface GestureCapability {
+  gesture(gesture: Gesture, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+}
+
+/** A native session: the shared commands, its app's lifecycle and gestures. No driver implements one yet. */
+export interface NativeSession<Command> extends Session<Command>, AppLifecycleCapability, GestureCapability {}
+
+/** What native sessions open in: a simulator, or the Mac Retest runs on. No driver implements one yet. */
+export interface NativeRuntime extends SessionRuntime {
+  readonly identity: NativeRuntimeIdentity
 }
 
 /** Thrown when a browser cannot be launched. The message names the problem. */

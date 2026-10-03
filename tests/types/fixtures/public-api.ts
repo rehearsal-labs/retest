@@ -51,13 +51,13 @@ test('type mismatch', async ({ page }) => {
   await expect('Saved').toHaveText('Saved') // type-error TS2349 Type 'RetestTypeError<"toHaveText is for locators. Use toBe on a value.">' has no call signatures
   expect(loose).toBe(1) // type-error TS2339 Property 'toBe' does not exist on type 'RetestTypeError<"expect() received a value typed any. Write expect<T>(value) with its type.">'
   expect(page.goto('/')).toBe(undefined) // type-error TS2339 Property 'toBe' does not exist on type 'RetestTypeError<"Await the promise before expect().">'
-  await expect(page.getByTestId('saved-task')).toHaveText(3) // type-error TS2345 Argument of type 'number' is not assignable to parameter of type 'string | readonly string[]'
+  await expect(page.getByTestId('saved-task')).toHaveText(3) // type-error TS2345 Argument of type 'number' is not assignable to parameter of type 'string |
 })
 
 test('wrong arguments', async ({ page }) => {
   await page.getByTestId('task-title').fill(42) // type-error TS2345 Argument of type 'number' is not assignable to parameter of type 'string | Secret'
   page.getByTestId(7) // type-error TS2345 Argument of type 'number' is not assignable to parameter of type 'string'
-  await page.goto() // type-error TS2554 Expected 1 arguments, but got 0.
-  await page.getByTestId('save-task').click('twice') // type-error TS2554 Expected 0 arguments, but got 1.
+  await page.goto() // type-error TS2554 Expected 1-2 arguments, but got 0.
+  await page.getByTestId('save-task').click('twice') // type-error TS2559 Type '"twice"' has no properties in common with type 'CallOptions'.
   const text: string = await test.step('Count', async () => 2) // type-error TS2322 Type 'number' is not assignable to type 'string'
 })

@@ -59,7 +59,7 @@ describe('collectFiles', () => {
   test('an unknown test option is a usage failure', async () => {
     const file = await collectOne('unknown-option.retest.js')
     assert.equal(file.failure?.class, 'usage')
-    assert.equal(file.failure?.message, 'Unknown test option "retries". Test options are apps, tags, state and timeout.')
+    assert.equal(file.failure?.message, 'Unknown test option "retries". Test options are apps, tags, state, locks and timeout.')
     assert.equal(file.failure?.location?.line, 3)
   })
 

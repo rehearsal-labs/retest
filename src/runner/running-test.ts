@@ -1,8 +1,9 @@
 import type { OwnedPage, PageNavigation } from '../browser/contract.ts'
+import type { EvaluationRequests } from '../evaluation/attempt.ts'
 import type { ActionKind, CommandResult, FillValue, PageCommand } from '../protocol/commands.ts'
 import type { ChildEvent, EventBody, EventOrigin } from '../protocol/events.ts'
 import type { Failure, FailureClass, SourceLocation } from '../protocol/failures.ts'
-import type { LocatorRecipe } from '../protocol/locator.ts'
+import type { LocatorRecipe, TextMatch } from '../protocol/locator.ts'
 import type { ChildMessage } from '../protocol/messages.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
@@ -12,16 +13,19 @@ import type { NavigationStamp, NotedNavigation, PageDocument } from './page-navi
 import type { Redactor } from './redactor.ts'
 import type { FillResolution, SecretFill } from './secrets.ts'
 import type { ProcessEvent, TestFileMessage, TestFileProcess } from './test-file-process.ts'
-import { describeCommand } from '../protocol/commands.ts'
+import { refusedAnswer } from '../evaluation/attempt.ts'
+import { describeCommand, isNavigationKind } from '../protocol/commands.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
+import { formatSessionId } from '../protocol/evidence.ts'
 import { errorMessage, failure, withAlso, withLocation } from '../protocol/failures.ts'
 import { parseKey } from '../protocol/keys.ts'
+import { locatorProblem, locatorSteps } from '../protocol/locator.ts'
 import { observedRecord } from '../protocol/observation-record.ts'
 import { selectCommandProblem } from '../protocol/option-choices.ts'
 import { scrollProblem } from '../protocol/scroll-delta.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { bounded } from './bounded.ts'
-import { pageFields, ServedObservations } from './observations.ts'
+import { cleanedLook, pageFields, ServedObservations } from './observations.ts'
 import { PageNavigations } from './page-navigations.ts'
 
 /** How long a stopped test's process has to answer, and a page that lost its browser has to say so. */
@@ -47,6 +51,8 @@ export type RunningTestOptions = {
   redactor?: Redactor
   /** The apps whose page emulates a touch screen, where a click is sent, and recorded, as a tap. */
   touch?: ReadonlySet<string>
+  /** Runs the test's AI checks in this process. Without it, every check is refused. */
+  evaluations?: EvaluationRequests
 }
 
 /**
@@ -63,11 +69,23 @@ export type BodyReport = {
   endedBeforeStart?: ProcessExit
   /** How the file's process ended during the test; later tests in the file cannot run. */
   processEnded?: ProcessExit
+  /** The file's process ended on its own during the test, with nobody asking it to stop. */
+  crashed?: true
   /** The test ran out of its own time. Its process is being ended, so later tests in the file cannot run. */
   timedOut: boolean
+  /** The path of every project module the file's process had loaded when the test finished, as it said with its verdict. */
+  modules?: string[]
+  /**
+   * The failures the parent saw for itself during the body, in order: a page command's failed answer, an assertion
+   * failure on a look it served, an AI check it refused because the run has no judges, its own stop of the test and
+   * the process ending. A failure the test file's process reports is its claim unless it is one of these, and these
+   * fail the test whatever the process claims. Absent when there were none.
+   */
+  observed?: readonly Failure[]
 }
 
 type CommandMessage = Extract<ChildMessage, { type: 'command' }>
+type EvaluateMessage = Extract<ChildMessage, { type: 'evaluate' }>
 type TestScope = { testId: string; attemptId: string }
 type InFlight = {
   message: CommandMessage
@@ -80,6 +98,8 @@ type InFlight = {
   /** Settles once every navigation of that page told before the command arrived is written; absent when none waits. */
   navigations: Promise<void> | undefined
   startedAt: number
+  /** The time the parent gave the command: the smallest of the action's budget, the call's own and the test's time left. */
+  timeoutMs: number
   /** Settles once the page has answered. It exists before the page is called, which may lose its browser at once. */
   done: PromiseWithResolvers<void>
   /** Stops the page's work on the command when the test is revoked, with the revocation as its reason. */
@@ -89,6 +109,9 @@ type InFlight = {
   answered: boolean
   reported: boolean
 }
+
+// Commands that open a document, which the navigation budget times rather than the action budget.
+const navigationKinds: ReadonlySet<string> = new Set(['goto', 'reload', 'goBack', 'goForward'])
 
 // Failures that say the browser went away, from the page that saw it go.
 const lossClasses: ReadonlySet<FailureClass> = new Set<FailureClass>(['session_lost', 'outcome_unknown'])
@@ -122,6 +145,7 @@ export class RunningTest {
   #revocation: Failure | undefined
   /** The page's latest answer saying that it or the browser was gone. */
   #lossAnswer: Failure | undefined
+  readonly #observed: Failure[] = []
   #report: BodyReport | undefined
   #assertionsSeen = 0
   #graceExpired = false
@@ -152,7 +176,9 @@ export class RunningTest {
   revoke(reason: Failure, graceMs: number): void {
     if (this.#revocation !== undefined || this.#report !== undefined) return
     this.#revocation = reason
+    this.#observed.push(reason)
     clearTimeout(this.#testTimer)
+    this.#options.evaluations?.cancel(reason)
     this.#completeAnswered()
     for (const entry of this.#inFlight.values()) {
       this.#answer(entry, { ok: false, failure: withLocation(reason, entry.message.location) })
@@ -232,6 +258,8 @@ export class RunningTest {
         return this.#command(message)
       case 'event':
         return this.#childEvent(message.event)
+      case 'evaluate':
+        return this.#evaluate(message)
       case 'test-finished':
         return this.#childFinished(message)
       default:
@@ -246,7 +274,11 @@ export class RunningTest {
     const page = this.#options.pages.get(message.app)
     if (page === undefined) return this.#violation(`sent a command for the app ${JSON.stringify(message.app)}, which this test does not use`)
     const deadline = this.#deadline
-    const timeoutMs = deadline === undefined ? message.timeoutMs : smallestBudget(message.timeoutMs, deadline.remainingMs)
+    // A command's time is the parent's to keep, whatever the test process claims: the run's budget for its kind, cut
+    // by the call's own timeout and by what the test has left, never lengthened by either.
+    const own = message.callTimeoutMs === undefined ? [] : [message.callTimeoutMs]
+    const asked = smallestBudget(message.timeoutMs, this.#budgetOf(message.command), ...own)
+    const timeoutMs = deadline === undefined ? asked : smallestBudget(asked, deadline.remainingMs)
     this.#stepId = message.stepId
     const commandToken = this.#sent.size + 1
     this.#sent.set(commandToken, { app: message.app, stamp: stampOf(message.stepId, message.location) })
@@ -257,6 +289,7 @@ export class RunningTest {
       document: this.#documents.get(message.app),
       navigations: this.#navigations.waiting(message.app),
       startedAt: monotonicClock(),
+      timeoutMs,
       done: Promise.withResolvers(),
       stop: new AbortController(),
       pageAnswer: undefined,
@@ -279,7 +312,7 @@ export class RunningTest {
       result = thrownResult(command, error)
     }
     entry.pageAnswer = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
-    const earlier = result.ok && result.kind !== 'goto' ? entry.navigations : this.#navigations.waiting(app)
+    const earlier = result.ok && !isNavigationKind(result.kind) ? entry.navigations : this.#navigations.waiting(app)
     if (earlier !== undefined) await earlier
     this.#complete(entry)
   }
@@ -289,7 +322,7 @@ export class RunningTest {
     const answer = entry.pageAnswer
     const { id, app } = entry.message
     if (answer === undefined || !this.#inFlight.delete(id)) return
-    if (answer.ok && answer.kind === 'goto') this.#documents.set(app, gotoDocument(answer))
+    if (answer.ok && isNavigationKind(answer.kind) && 'url' in answer) this.#documents.set(app, openedDocument(answer))
     if (!answer.ok && lossClasses.has(answer.failure.class)) this.#lossAnswer = answer.failure
     this.#reportAction(entry, answer, commandPage(entry, answer, this.#documents.get(app)))
     this.#answer(entry, answer)
@@ -325,7 +358,7 @@ export class RunningTest {
   // An action is reported once: by the page's answer, or as unknown when the page gave none in time.
   #reportAction(entry: InFlight, result: CommandResult, page: PageFields): void {
     const { command, location, stepId, app } = entry.message
-    if (command.kind === 'observe' || entry.reported) return
+    if (command.kind === 'observe' || command.kind === 'observePage' || entry.reported) return
     entry.reported = true
     const touch = this.#options.touch?.has(app) === true
     const fields = {
@@ -339,8 +372,18 @@ export class RunningTest {
       durationMs: elapsedMs(entry.startedAt),
       ...(location === undefined ? {} : { location }),
       ...actionDetails(command, result, touch),
+      ...(entry.message.callTimeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs, callTimeoutMs: entry.message.callTimeoutMs }),
     }
+    // A command answered after the parent stopped the test failed because of that stop, which is already observed.
+    if (!result.ok && this.#revocation === undefined) this.#observed.push(result.failure)
     this.#options.emit(result.ok ? { type: 'action.completed', ...fields } : { type: 'action.failed', ...fields, failure: result.failure })
+  }
+
+  // The budget the run gives a command of this kind; a look's is the test process's to choose, within the test's time.
+  #budgetOf(command: PageCommand): number {
+    const { timeouts } = this.#options
+    if (command.kind.startsWith('observe')) return timeouts.test
+    return navigationKinds.has(command.kind) ? timeouts.navigation : timeouts.action
   }
 
   #answer(entry: InFlight, result: CommandResult): void {
@@ -359,24 +402,37 @@ export class RunningTest {
   }
 
   // A look the page answered is written down, as the test process receives it, before the answer goes; the
-  // id it carries is how an assertion names it.
+  // id and the session it carries are how an assertion names it.
   #serve(entry: InFlight, result: CommandResult): CommandResult {
     const { command, app, stepId } = entry.message
+    if (result.ok && result.kind === 'observePage' && command.kind === 'observePage') return this.#servePage(app, result)
     if (!result.ok || result.kind !== 'observe' || command.kind !== 'observe') return result
     const { locator } = command
     const { observation } = result
     const page = commandPage(entry, result, this.#documents.get(app))
-    const observationId = this.#observations.serve({ app, locator, observation, ...page })
     const { testId, attemptId } = this.#options
+    const sessionId = formatSessionId(attemptId, app)
+    const observationId = this.#observations.serve({ app, sessionId, locator, observation, ...page })
     const step = stepId === undefined ? {} : { stepId }
     const waited = result.waitedMs === undefined ? {} : { waitedMs: result.waitedMs }
-    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(entry.startedAt), ...waited })
-    return { ...result, observationId }
+    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, sessionId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(entry.startedAt), ...waited })
+    return { ...result, observationId, sessionId }
+  }
+
+  // A look at the page itself is kept for the assertion that names it, which records its address and title. Its looks
+  // have no event of their own, since an observation event is a look at a locator's elements. It is kept redacted, as
+  // the test process receives it, so the parent judges what the test process saw.
+  #servePage(app: string, result: Extract<CommandResult, { kind: 'observePage' }>): CommandResult {
+    const sessionId = formatSessionId(this.#options.attemptId, app)
+    const { baseUrl } = result
+    const observation = this.#options.redactor?.redactPageLook(result.observation) ?? cleanedLook(result.observation)
+    const observationId = this.#observations.serve({ app, sessionId, page: baseUrl === undefined ? observation : { ...observation, baseUrl } })
+    return { ...result, observation, observationId, sessionId }
   }
 
   // The page's own answer when it gave one. An action it never answered may have taken effect.
   #lossFailure(reason: string): Failure {
-    const unanswered = [...this.#inFlight.values()].find((entry) => entry.message.command.kind !== 'observe')
+    const unanswered = [...this.#inFlight.values()].find((entry) => !entry.message.command.kind.startsWith('observe'))
     if (unanswered !== undefined) {
       const { command, location } = unanswered.message
       const message = `The browser was lost during ${describeCommand(command)}, which had not answered ${abortGraceMs} ms later, so whether it took effect is unknown. ${reason}`
@@ -396,13 +452,35 @@ export class RunningTest {
     const app = event.session ?? firstApp
     const judged = this.#observations.judge(event, { app, ...(app === undefined ? {} : this.#documentFields(app)) })
     if (!judged.ok) return this.#violation(judged.problem)
+    if (judged.event.type === 'assertion.failed' && judged.event.observationId !== undefined && judged.event.failure.class === 'check_failed') this.#observed.push(judged.event.failure)
     this.#assertionsSeen++
     this.#options.emit(judged.event, 'child')
   }
 
+  // The parent captures the evidence and asks the judge itself; the test file's process only says what to judge, and
+  // its own time bounds the check. An answer that comes once the test is over or stopped goes nowhere.
+  #evaluate(message: EvaluateMessage): void {
+    if (this.#deadline?.expired === true) this.#runOutOfTime()
+    const { evaluations, process } = this.#options
+    const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest judged nothing.')
+    if (refusal !== undefined || evaluations === undefined) {
+      const reason = withLocation(refusal ?? failure('evaluation_error', 'This run cannot run AI checks.'), message.location)
+      // A check refused because the run has no judges is the parent's own refusal, so the class it gave stands when the
+      // test reports it back; a check refused because the test is over is covered by the verdict.
+      if (refusal === undefined) this.#observed.push(reason)
+      process.send({ type: 'evaluation-result', id: message.id, answer: refusedAnswer(message.call.mode, reason) })
+      return
+    }
+    const remainingMs = this.#deadline?.remainingMs ?? this.#options.timeouts.test
+    void evaluations.request(message.call, { location: message.location, stepId: message.stepId, remainingMs }).then((answer) => {
+      if (this.#report === undefined && this.#revocation === undefined) process.send({ type: 'evaluation-result', id: message.id, answer })
+    })
+  }
+
   #childFinished(message: Extract<TestFileMessage, { type: 'test-finished' }>): void {
     if (!this.#isOwn(message)) return this.#violation(`finished ${describeScope(message)} while ${describeScope(this.#options)} was running`)
-    this.#finish({ ...this.#verdict(message), assertionCount: message.assertionCount })
+    const modules = message.modules === undefined ? {} : { modules: message.modules }
+    this.#finish({ ...this.#verdict(message), assertionCount: message.assertionCount, ...modules })
   }
 
   #isOwn(scope: TestScope): boolean {
@@ -436,7 +514,8 @@ export class RunningTest {
         : this.#graceExpired
           ? { ...reason, message: `${reason.message} Its process did not stop within ${abortGraceMs} ms of being asked, so Retest ended it.` }
           : reason
-    this.#finish({ failure: problem, assertionCount: this.#assertionsSeen, processEnded: exit })
+    if (problem !== reason) this.#observed.push(problem)
+    this.#finish({ failure: problem, assertionCount: this.#assertionsSeen, processEnded: exit, ...(reason === undefined ? { crashed: true as const } : {}) })
   }
 
   #violation(problem: string): void {
@@ -469,11 +548,12 @@ export class RunningTest {
 
   // A timed-out test's process is asked to close; the kill timer from `revoke` ends it if it does not. The body is
   // over, so a navigation told from now on, as during the host checks, belongs to no step.
-  #finish(report: Omit<BodyReport, 'timedOut'>): void {
+  #finish(report: Omit<BodyReport, 'timedOut' | 'observed'>): void {
     if (this.#report !== undefined) return
-    this.#report = { ...report, timedOut: this.#timedOut }
+    this.#report = { ...report, timedOut: this.#timedOut, ...(this.#observed.length === 0 ? {} : { observed: [...this.#observed] }) }
     this.#stepId = undefined
     clearTimeout(this.#testTimer)
+    this.#options.evaluations?.cancel(failure('evaluation_error', 'The test ended before the answer came.'))
     if (this.#timedOut) this.#options.process.send({ type: 'close' })
     else clearTimeout(this.#killTimer)
     this.#finished.resolve(this.#report)
@@ -484,9 +564,9 @@ export class RunningTest {
 // nothing, a goto's address or the document the command arrived on. A failed command names the document the
 // parent last saw commit when the answer came, since the frame may have opened it while the command waited.
 function commandPage(entry: InFlight, result: CommandResult, latest: PageDocument | undefined): PageFields {
-  if (result.ok && result.page !== undefined) return pageFields(result.page.url, result.page.title)
-  if (result.ok) return result.kind === 'goto' ? { pageUrl: result.url } : documentFields(entry.document)
-  return documentFields(latest)
+  if (!result.ok) return documentFields(latest)
+  if ('page' in result && result.page !== undefined) return pageFields(result.page.url, result.page.title)
+  return 'url' in result ? { pageUrl: result.url } : documentFields(entry.document)
 }
 
 function documentFields(document: PageDocument | undefined): PageFields {
@@ -497,13 +577,16 @@ function stampOf(stepId: string | undefined, location: SourceLocation | undefine
   return { ...(stepId === undefined ? {} : { stepId }), ...(location === undefined ? {} : { location }) }
 }
 
-function gotoDocument(result: Extract<CommandResult, { kind: 'goto' }>): PageDocument {
+// The document a goto, a reload or a move through the history opened, as its answer names it.
+function openedDocument(result: Extract<CommandResult, { url: string }>): PageDocument {
   const title = result.page?.title
   return title === undefined ? { url: result.url } : { url: result.url, title }
 }
 
 // What the test process's own checks refuse, which the parent refuses again before the page sees the command.
 function commandProblem(command: PageCommand): Failure | undefined {
+  const located = 'locator' in command && command.locator !== undefined ? locatorProblem(command.locator) : undefined
+  if (located !== undefined) return located
   switch (command.kind) {
     case 'press': {
       const parsed = parseKey(command.key)
@@ -519,30 +602,40 @@ function commandProblem(command: PageCommand): Failure | undefined {
 }
 
 /**
- * A command whose locator's text or name holds a whole value the run has read, which the parent refuses before the
- * page is asked: the page matches a locator against its own text, unredacted, so such a locator could find a value
- * the page shows. The refusal never quotes the text. Part of a value is not refused, since refusing it would itself
- * say which texts are part of a secret.
+ * A command whose locator, in any of its steps, holds a whole value the run has read in its text, name, pattern or
+ * CSS selector, which the parent refuses before the page is asked: the page matches a locator against its own text
+ * and attributes, unredacted, so such a locator could find a value the page shows. The refusal never quotes the text.
+ * Part of a value is not refused, since refusing it would itself say which texts are part of a secret.
  */
 function secretLocatorProblem(command: PageCommand, redactor: Redactor | undefined): Failure | undefined {
-  const matched = 'locator' in command && command.locator !== undefined ? matchedText(command.locator) : undefined
-  if (redactor === undefined || matched === undefined || !redactor.holdsValue(matched.text, matched.exact)) return undefined
-  const message = `Retest did not send this command to the page: its locator's ${matched.named} holds the value of a secret. Find the element by its test id, or by text that holds no secret.`
+  if (redactor === undefined || !('locator' in command) || command.locator === undefined) return undefined
+  const held = matchedTexts(command.locator).find((matched) => redactor.holdsValue(matched.text, matched.exact))
+  if (held === undefined) return undefined
+  const message = `Retest did not send this command to the page: its locator's ${held.named} holds the value of a secret. Find the element by its test id, or by text that holds no secret.`
   return failure('usage', message)
 }
 
-// The text a locator matches against the page's own text, and how: a text or label locator's text, and a role
-// locator's name.
-function matchedText(locator: LocatorRecipe): { text: string; exact: boolean; named: 'text' | 'name' } | undefined {
-  switch (locator.by) {
-    case 'testId':
-      return undefined
-    case 'role':
-      return locator.name === undefined ? undefined : { text: locator.name, exact: locator.exact !== false, named: 'name' }
-    case 'label':
-    case 'text':
-      return { text: locator.text, exact: locator.exact !== false, named: 'text' }
-  }
+type MatchedText = { text: string; exact: boolean; named: 'text' | 'name' | 'pattern' | 'selector' }
+
+// What each step of a locator matches against the page, and how: a text, label or placeholder's text, a role's name,
+// a pattern's source, which may ignore case, and a CSS selector, which matches attributes as written.
+function matchedTexts(locator: LocatorRecipe): MatchedText[] {
+  return locatorSteps(locator).flatMap((step): MatchedText[] => {
+    switch (step.by) {
+      case 'testId':
+        return []
+      case 'css':
+        return [{ text: step.selector, exact: true, named: 'selector' }]
+      case 'role':
+        return step.name === undefined ? [] : [textOf(step.name, step.exact, 'name')]
+      default:
+        return [textOf(step.text, step.exact, 'text')]
+    }
+  })
+}
+
+function textOf(text: TextMatch, exact: boolean | undefined, named: 'text' | 'name'): MatchedText {
+  return typeof text === 'string' ? { text, exact: exact !== false, named } : { text: text.pattern, exact: false, named: 'pattern' }
 }
 
 type ActionDetails = Pick<
@@ -551,15 +644,14 @@ type ActionDetails = Pick<
 >
 
 const listed = { multiple: true } as const
-const scripted = { input: 'script' } as const
 const tapped = { touch: true } as const
 
 /**
  * What an action's event says besides its kind, locator and page, each only when it says something: how much a
  * fill typed or which secret, the key a press sent, the options a select chose, and whether the test passed them
- * as a list, the wheel's delta, and how the input reached the page. A select that completed set the choice from
- * Retest's world; one that failed set nothing. A check or uncheck on a touch screen taps. Whether the element
- * changed, and a label clicked in the control's place, come from the page's answer.
+ * as a list, and the wheel's delta. A select chooses with real keys, so no event says `input: 'script'` any more. A
+ * check or uncheck on a touch screen taps. Whether the element changed, and a label clicked in the control's place,
+ * come from the page's answer.
  */
 function actionDetails(command: PageCommand, result: CommandResult, touch: boolean): ActionDetails {
   switch (command.kind) {
@@ -568,7 +660,7 @@ function actionDetails(command: PageCommand, result: CommandResult, touch: boole
     case 'press':
       return { key: command.key }
     case 'select':
-      return { choices: command.choices, ...(command.multiple === true ? listed : {}), ...changedOf(result), ...(result.ok ? scripted : {}) }
+      return { choices: command.choices, ...(command.multiple === true ? listed : {}), ...changedOf(result) }
     case 'check':
     case 'uncheck':
       return { ...changedOf(result), ...(result.ok && 'via' in result && result.via !== undefined ? { via: result.via } : {}), ...(touch ? tapped : {}) }
@@ -585,7 +677,7 @@ function changedOf(result: CommandResult): { changed?: boolean } {
 
 // The page's answer says what it did; a failed click on a touch screen was a tap too.
 function recordedKind(sent: ActionKind, result: CommandResult, touch: boolean): ActionKind {
-  if (result.ok && result.kind !== 'observe') return result.kind
+  if (result.ok && result.kind !== 'observe' && result.kind !== 'observePage') return result.kind
   return sent === 'click' && touch ? 'tap' : sent
 }
 
@@ -600,7 +692,7 @@ function typedValue(value: FillValue): { valueLength: number } | { secret: strin
 
 function thrownResult(command: PageCommand, error: unknown): CommandResult {
   const message = `The browser call for ${describeCommand(command)} failed: ${errorMessage(error)}`
-  return { ok: false, failure: failure(command.kind === 'observe' ? 'session_lost' : 'outcome_unknown', message) }
+  return { ok: false, failure: failure(command.kind.startsWith('observe') ? 'session_lost' : 'outcome_unknown', message) }
 }
 
 function describeScope({ testId, attemptId }: TestScope): string {

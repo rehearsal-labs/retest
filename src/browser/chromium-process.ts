@@ -21,6 +21,8 @@ export type StartOptions = {
   profile: string
   /** Receives the browser's stdout and stderr. */
   logFile: string
+  /** Environment variables the process must not see. */
+  hiddenVariables?: readonly string[]
 }
 
 const pollMs = 25
@@ -149,7 +151,9 @@ export function signalGroup(pgid: number, signal: NodeJS.Signals | 0): boolean {
 async function spawnInGroup(options: StartOptions): Promise<ChromiumProcess> {
   const log = await openLog(options.logFile)
   try {
+    const hidden = new Set(options.hiddenVariables)
     const child = spawn(options.executable, options.args, {
+      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !hidden.has(name))),
       detached: true,
       stdio: ['ignore', log.fd, log.fd, 'pipe', 'pipe'],
     })

@@ -64,6 +64,21 @@ export function failureScreenshotFile(testId: string, attemptId: string, app?: s
   return `artifacts/${slug(testId, screenshotSlugLength)}-${attempt}${named}-failure.png`
 }
 
+/** Where diagnostics artifacts go: one JSON lines file for each session of each attempt. */
+export const diagnosticsFolder = 'diagnostics'
+
+/**
+ * Where one session's console, runtime error and network records go, named as its failure screenshot would be. A test
+ * with several apps has one file for each, named with the app.
+ *
+ * @example diagnosticsFile('examples/task.retest.ts > saves a task', 'k3v9q0x2mb') // 'diagnostics/examples-task-retest-ts-sa-<hash>-k3v9q0x2mb.jsonl'
+ */
+export function diagnosticsFile(testId: string, attemptId: string, app?: string): string {
+  const attempt = safeAttemptId.test(attemptId) ? attemptId : slug(attemptId)
+  const named = app === undefined ? '' : `-${slug(app, appSlugLength)}`
+  return `${diagnosticsFolder}/${slug(testId, screenshotSlugLength)}-${attempt}${named}.jsonl`
+}
+
 /**
  * The run folder used when no output folder is given, relative to where Retest runs.
  *

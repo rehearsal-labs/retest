@@ -310,13 +310,20 @@ export async function readFinishedRun({ retest, output }: StartedRun): Promise<F
 
 /**
  * Checks who judged each passed assertion. A locator assertion is judged by the parent, on the look it names: an
- * `observation` the parent wrote earlier in the same attempt, for the same app and locator. A value assertion's pass
- * is the test process's claim, and names no look.
+ * `observation` the parent wrote earlier in the same attempt, for the same app and locator. A page assertion is judged
+ * by the parent on a look at the page, which has no event of its own, so it names a look and records the page. A value
+ * assertion's pass is the test process's claim, and names no look.
  */
 export function assertJudged(events: readonly RetestEvent[]): void {
   for (const [index, event] of events.entries()) {
     if (event.type !== 'assertion.passed') continue
     const passed = `assertion.passed ${event.matcher} at sequence ${event.sequence}`
+    if (event.locator === undefined && /^(not\.)?toHave(URL|Title)$/.test(event.matcher)) {
+      assert.equal(event.judgedBy, 'parent', `${passed} was judged by the parent`)
+      assert.match(event.observationId ?? '', /^o\d+$/, `${passed} names the look it rested on`)
+      assert.ok(event.pageUrl !== undefined, `${passed} records the page it read`)
+      continue
+    }
     if (event.locator === undefined) {
       assert.deepEqual([event.judgedBy, event.observationId], ['child', undefined], `${passed} is the test process's claim`)
       continue

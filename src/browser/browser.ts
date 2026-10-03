@@ -1,14 +1,16 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { ChromiumProcess } from './chromium-process.ts'
-import type { NewPageOptions, OwnedBrowser, OwnedPage, ProxyOptions } from './contract.ts'
+import type { NewPageOptions, ProxyOptions, WebRuntime, WebRuntimeIdentity, WebSession } from './contract.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { s } from '../protocol/schema.ts'
+import { withoutCredentials } from '../protocol/url.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { BrowserError } from './browser-error.ts'
 import { CdpClosedError, CdpDisconnectedError } from './cdp/errors.ts'
 import { request, sendOptions } from './cdp-results.ts'
+import { webRuntimeIdentity } from './contract.ts'
 import { Listeners } from './listeners.ts'
 import { ChromiumPage } from './page.ts'
 import { restoreState } from './storage-state.ts'
@@ -28,8 +30,8 @@ export type BrowserOptions = {
 const contextSchema = s.object({ browserContextId: s.string() })
 const targetSchema = s.object({ targetId: s.string() })
 
-/** A Chromium browser this run launched and owns. */
-export class ChromiumBrowser implements OwnedBrowser {
+/** A Chromium browser this run launched and owns: a web runtime. */
+export class ChromiumBrowser implements WebRuntime {
   readonly product: string
   readonly version: string
   readonly userAgent: string
@@ -65,7 +67,11 @@ export class ChromiumBrowser implements OwnedBrowser {
     return this.#disconnectReason === undefined
   }
 
-  async newPage(options: NewPageOptions, timeoutMs: number): Promise<OwnedPage> {
+  get identity(): WebRuntimeIdentity {
+    return webRuntimeIdentity(this, 'chromium')
+  }
+
+  async newPage(options: NewPageOptions, timeoutMs: number): Promise<WebSession> {
     if (this.#disconnectReason !== undefined) throw this.#lost(this.#disconnectReason)
     const deadline = new Deadline(timeoutMs)
     const { browserContextId } = await this.#request('Target.createBrowserContext', browserContextOptions(options.proxy), contextSchema, deadline)
@@ -84,7 +90,8 @@ export class ChromiumBrowser implements OwnedBrowser {
         baseUrl: options.baseUrl,
         emulation: options.emulation,
         restoredOrigins,
-        proxyServer: options.proxy?.server,
+        // A failed navigation names the proxy, so the page holds its address without a user name or password.
+        proxyServer: options.proxy === undefined ? undefined : withoutCredentials(options.proxy.server),
         onListenerError: this.#onListenerError,
       }
       return await ChromiumPage.open(pageOptions, deadline)

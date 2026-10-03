@@ -9,6 +9,7 @@ import type { RunConfig } from './run-config.ts'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { launchBrowser } from '../browser/launch.ts'
+import { judgeVariables } from '../evaluation/judges.ts'
 import { withAlso } from '../protocol/failures.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { relativePosixPath } from '../shared/posix-path.ts'
@@ -20,6 +21,7 @@ import { collectConfig } from './run-config.ts'
 import { RunSession } from './run-session.ts'
 import { abortGraceMs } from './running-test.ts'
 import { scheduleRun } from './schedule.ts'
+import { secretVariables } from './secrets.ts'
 import { searchSetups } from './setup-search.ts'
 import { findTargetExecutable } from './target-executable.ts'
 import { TestFileProcess } from './test-file-process.ts'
@@ -62,8 +64,10 @@ export async function collectFiles(options: CollectOptions): Promise<CollectResu
   const rootDir = resolve(options.rootDir)
   const config = collectConfig(options.config)
   const processFailures = new Map<string, Failure>()
+  // A file's process never sees the variables the secrets and the judges' credentials are read from, as in a run.
+  const hiddenVariables = [...secretVariables(options.config?.secrets ?? new Map()), ...judgeVariables(options.config?.evaluation)]
   const collect = async (file: string): Promise<CollectedTests> => {
-    const { collected, processFailure } = await collectFile(file, rootDir, options.timeouts.collection)
+    const { collected, processFailure } = await collectFile({ file, rootDir, timeoutMs: options.timeouts.collection, hiddenVariables })
     if (processFailure !== undefined) processFailures.set(file, processFailure)
     return collected
   }
@@ -84,9 +88,11 @@ export async function collectFiles(options: CollectOptions): Promise<CollectResu
 
 type Loaded = { collected: CollectedTests; processFailure?: Failure }
 
-async function collectFile(file: string, rootDir: string, timeoutMs: number): Promise<Loaded> {
+type CollectFile = { file: string; rootDir: string; timeoutMs: number; hiddenVariables: readonly string[] }
+
+async function collectFile({ file, rootDir, timeoutMs, hiddenVariables }: CollectFile): Promise<Loaded> {
   if (!existsSync(resolve(rootDir, file))) return { collected: { file, ok: false, failure: missingFileFailure(file) } }
-  const child = TestFileProcess.spawn()
+  const child = TestFileProcess.spawn(hiddenVariables.length === 0 ? {} : { hiddenVariables })
   try {
     const loaded = await loadTests(child, { file, rootDir, timeoutMs })
     const closed = await child.close(abortGraceMs)
@@ -99,10 +105,11 @@ async function collectFile(file: string, rootDir: string, timeoutMs: number): Pr
   }
 }
 
-// The variants of each test a run with this selection would start, by test id.
+// The variants of each test a run with this selection would choose, by test id, skipped tests included.
 function scheduledVariants(plan: Plan, selection: Selection, variants: boolean): Map<string, Set<string>> {
   const kept = new Map<string, Set<string>>()
-  for (const attempt of scheduleRun(plan, selection, variants).visits.flatMap((visit) => visit.attempts)) {
+  const schedule = scheduleRun(plan, selection, variants)
+  for (const attempt of [...schedule.visits.flatMap((visit) => visit.attempts), ...schedule.skipped]) {
     const keys = kept.get(attempt.test.testId) ?? new Set()
     kept.set(attempt.test.testId, keys.add(variantKey(attempt.targets)))
   }

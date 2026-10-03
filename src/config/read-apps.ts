@@ -1,8 +1,8 @@
 import type { Infer, Path } from '../protocol/schema.ts'
 import type { DeviceName } from './devices.ts'
-import type { LoadedApp, LoadedEmulation, LoadedProxy, LoadedStart, LoadedTarget } from './loaded.ts'
+import type { LoadedApp, LoadedEmulation, LoadedNativeTarget, LoadedProxy, LoadedStart, LoadedTarget, LoadedWebTarget } from './loaded.ts'
 import type { Problems } from './problems.ts'
-import type { CustomEmulation } from './types.ts'
+import type { CustomEmulation, NativePlatform, Viewport } from './types.ts'
 import { resolve } from 'node:path'
 import { describeValue, isPlainObject, s } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
@@ -26,6 +26,7 @@ const proxySchema = s.union([s.object({ server: s.string(), bypass: s.optional(s
 const targetSettings = {
   headless: s.optional(s.boolean()),
   emulate: s.optional(s.union([s.enum(deviceNames), customEmulationSchema])),
+  viewport: s.optional(s.object({ width: pixels, height: pixels })),
   proxy: s.optional(proxySchema),
 }
 const proxySchemes: readonly string[] = ['http:', 'https:', 'socks4:', 'socks5:']
@@ -39,18 +40,30 @@ const startSchema = s.object({
 const appSettings = { baseUrl: s.optional(s.string()), start: s.optional(startSchema) }
 const appSettingsSchema = s.object(appSettings)
 
+const executablePath = s.optional(s.string())
 const targetSchema = s.discriminatedUnion('browser', [
-  s.object({ browser: s.literal('chromium'), executablePath: s.optional(s.string()), ...targetSettings }),
+  s.object({ browser: s.literal('chromium'), executablePath, ...targetSettings }),
   s.object({ browser: s.literal('chrome'), channel, ...targetSettings }),
   s.object({ browser: s.literal('edge'), channel, ...targetSettings }),
+  s.object({ browser: s.literal('firefox'), executablePath, ...targetSettings }),
+  s.object({ browser: s.literal('webkit'), executablePath, ...targetSettings }),
 ])
 const standaloneTargetSchema = s.discriminatedUnion('browser', [
-  s.object({ browser: s.literal('chromium'), executablePath: s.optional(s.string()), ...targetSettings, ...appSettings }),
+  s.object({ browser: s.literal('chromium'), executablePath, ...targetSettings, ...appSettings }),
   s.object({ browser: s.literal('chrome'), channel, ...targetSettings, ...appSettings }),
   s.object({ browser: s.literal('edge'), channel, ...targetSettings, ...appSettings }),
+  s.object({ browser: s.literal('firefox'), executablePath, ...targetSettings, ...appSettings }),
+  s.object({ browser: s.literal('webkit'), executablePath, ...targetSettings, ...appSettings }),
+])
+const nativeTargetSchema = s.discriminatedUnion('platform', [
+  s.object({ platform: s.literal('ios-simulator'), appPath: s.string(), device: s.string(), runtime: s.string() }),
+  s.object({ platform: s.literal('macos'), appPath: s.string() }),
 ])
 
 type ParsedTarget = Infer<typeof targetSchema>
+type ParsedNativeTarget = Infer<typeof nativeTargetSchema>
+/** What a target is: a browser, or the native platform it names. */
+type Kind = 'web' | NativePlatform
 type ParsedStart = Infer<typeof startSchema>
 type ParsedProxy = Infer<typeof proxySchema>
 
@@ -82,7 +95,19 @@ function readApp(name: string, entry: Record<string, unknown>, path: Path, conte
   const settings = readSettings(rest, path, context)
   const loaded = readTargets(targets, [...path, 'targets'], context)
   if (settings === undefined || loaded === undefined) return undefined
+  // A target that did not read says nothing of its kind, so the kinds are checked only once every target has read.
+  if (isPlainObject(targets) && loaded.size === Object.keys(targets).length) checkKinds(loaded, settings, path, context.problems)
   return { name, ...settings, targets: loaded }
+}
+
+// A test's handle on an app offers what its targets can do, so they are all one kind; a native app has no address.
+function checkKinds(targets: ReadonlyMap<string, LoadedTarget>, settings: LoadedSettings, path: Path, problems: Problems): void {
+  const kinds = new Set([...targets.values()].map(kindOf))
+  if (kinds.size > 1) {
+    const mixed = [...kinds].map(describeKind).join(' and ')
+    problems.add([...path, 'targets'], `mixes ${mixed}. An app's targets are all browsers, all iOS simulators or all macOS apps: give each kind an app of its own`)
+  }
+  if (settings.baseUrl !== undefined && !kinds.has('web')) problems.add([...path, 'baseUrl'], 'a native app has no address, so it takes no baseUrl')
 }
 
 function readStandaloneTarget(name: string, entry: unknown, path: Path, context: ReadContext): LoadedApp | undefined {
@@ -92,10 +117,20 @@ function readStandaloneTarget(name: string, entry: unknown, path: Path, context:
   }
   const { baseUrl, start, ...shape } = entry
   const settings = readSettings({ ...(baseUrl === undefined ? {} : { baseUrl }), ...(start === undefined ? {} : { start }) }, path, context)
-  const target = context.problems.check(targetSchema, shape, path)
+  const target = readTargetKind(shape, path, context)
   if (settings === undefined || target === undefined) return undefined
-  const loaded = loadTarget(target.browser, target, path, context)
-  return { name, ...settings, targets: new Map([[target.browser, loaded]]) }
+  checkKinds(new Map([[target.name, target]]), settings, path, context.problems)
+  return { name, ...settings, targets: new Map([[target.name, target]]) }
+}
+
+// A target on its own is named after its browser, or its platform.
+function readTargetKind(shape: Record<string, unknown>, path: Path, context: ReadContext): LoadedTarget | undefined {
+  if (Object.hasOwn(shape, 'platform')) {
+    const native = context.problems.check(nativeTargetSchema, shape, path)
+    return native === undefined ? undefined : loadNativeTarget(native.platform, native, path, context)
+  }
+  const target = context.problems.check(targetSchema, shape, path)
+  return target === undefined ? undefined : loadTarget(target.browser, target, path, context)
 }
 
 function readTargets(value: unknown, path: Path, context: ReadContext): Map<string, LoadedTarget> | undefined {
@@ -110,29 +145,65 @@ function readTargets(value: unknown, path: Path, context: ReadContext): Map<stri
     const targetPath = [...path, name]
     if (!problems.checkName(targetPath, name)) continue
     const target = readTargetShape(entry, targetPath, problems)
-    if (target !== undefined) targets.set(name, loadTarget(name, target, targetPath, context))
+    if (target === undefined) continue
+    targets.set(name, 'platform' in target ? loadNativeTarget(name, target, targetPath, context) : loadTarget(name, target, targetPath, context))
   }
   return targets
 }
 
-// Settings that belong to the app would otherwise read as unknown keys, which hides where they go.
-function readTargetShape(entry: unknown, path: Path, problems: Problems): ParsedTarget | undefined {
+// Settings that belong to the app would otherwise read as unknown keys, which hides where they go. A target that
+// names a platform is a native app's; any other is a browser.
+function readTargetShape(entry: unknown, path: Path, problems: Problems): ParsedTarget | ParsedNativeTarget | undefined {
   if (!isPlainObject(entry)) return problems.check(targetSchema, entry, path)
   const { baseUrl, start, ...target } = entry
   for (const [key, value] of Object.entries({ baseUrl, start })) {
     if (value !== undefined) problems.add([...path, key], `${key} belongs to the app, not to one of its targets`)
   }
-  return problems.check(targetSchema, target, path)
+  return Object.hasOwn(target, 'platform') ? problems.check(nativeTargetSchema, target, path) : problems.check(targetSchema, target, path)
 }
 
-function loadTarget(name: string, target: ParsedTarget, path: Path, { problems, folder }: ReadContext): LoadedTarget {
-  const emulate = target.emulate === undefined ? {} : { emulate: loadEmulation(target.emulate, [...path, 'emulate'], problems) }
+function loadTarget(name: string, target: ParsedTarget, path: Path, { problems, folder }: ReadContext): LoadedWebTarget {
+  const screen = loadScreen(target, path, problems)
+  const emulate = screen === undefined ? {} : { emulate: screen }
   const proxy = target.proxy === undefined ? undefined : loadProxy(target.proxy, [...path, 'proxy'], problems)
   const base = { name, headless: target.headless ?? true, ...emulate, ...(proxy === undefined ? {} : { proxy }) }
-  if (target.browser !== 'chromium') return { ...base, browser: target.browser, channel: target.channel ?? 'stable' }
-  if (target.executablePath === undefined) return { ...base, browser: 'chromium' }
+  if (target.browser === 'chrome' || target.browser === 'edge') return { ...base, browser: target.browser, channel: target.channel ?? 'stable' }
+  if (target.executablePath === undefined) return { ...base, browser: target.browser }
   problems.checkFilled([...path, 'executablePath'], target.executablePath, 'a path')
-  return { ...base, browser: 'chromium', executablePath: resolve(folder, target.executablePath) }
+  return { ...base, browser: target.browser, executablePath: resolve(folder, target.executablePath) }
+}
+
+function loadNativeTarget(name: string, target: ParsedNativeTarget, path: Path, { problems, folder }: ReadContext): LoadedNativeTarget {
+  problems.checkFilled([...path, 'appPath'], target.appPath, 'a path')
+  const appPath = resolve(folder, target.appPath)
+  if (target.platform === 'macos') return { name, platform: 'macos', appPath }
+  problems.checkFilled([...path, 'device'], target.device, 'a device type such as "iPhone 17"')
+  problems.checkFilled([...path, 'runtime'], target.runtime, 'an iOS version such as "26.0"')
+  return { name, platform: 'ios-simulator', appPath, device: target.device, runtime: target.runtime }
+}
+
+function kindOf(target: LoadedTarget): Kind {
+  return 'platform' in target ? target.platform : 'web'
+}
+
+function describeKind(kind: Kind): string {
+  if (kind === 'web') return 'browsers'
+  return kind === 'ios-simulator' ? 'iOS simulators' : 'macOS apps'
+}
+
+// A viewport alone is the custom emulation it stands for, so it reaches the page, the events and the reports the same
+// way. With `emulate` beside it, the two would disagree about the size.
+function loadScreen(target: ParsedTarget, path: Path, problems: Problems): LoadedEmulation | undefined {
+  const { emulate, viewport } = target
+  if (emulate !== undefined && viewport !== undefined) {
+    problems.add([...path, 'viewport'], 'emulate already sets the screen, so give viewport or emulate, not both')
+  }
+  if (emulate !== undefined) return loadEmulation(emulate, [...path, 'emulate'], problems)
+  return viewport === undefined ? undefined : viewportEmulation(viewport)
+}
+
+function viewportEmulation({ width, height }: Viewport): LoadedEmulation {
+  return { viewport: { width, height }, deviceScaleFactor: 1, touch: false, isMobile: false }
 }
 
 function loadEmulation(emulate: DeviceName | CustomEmulation, path: Path, problems: Problems): LoadedEmulation {

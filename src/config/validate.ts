@@ -5,17 +5,19 @@ import type { Variant } from '../protocol/variant.ts'
 import type { LoadedApp, LoadedConfig } from './loaded.ts'
 import type { ConfigIssue } from './problems.ts'
 import { dirname, resolve } from 'node:path'
+import { readDiagnostics } from '../diagnostics/policy.ts'
 import { tagOperators } from '../protocol/names.ts'
 import { describeChoices, describeValue, isPlainObject, s } from '../protocol/schema.ts'
 import { maxTimeout, partialTimeoutsSchema } from '../protocol/timeouts.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { configKey, Problems } from './problems.ts'
 import { readApps } from './read-apps.ts'
+import { readEvaluation } from './read-evaluation.ts'
 import { readSecrets } from './read-secrets.ts'
 
 export type ConfigResult = { ok: true; config: LoadedConfig } | { ok: false; failure: Failure }
 
-const configKeys = new Set(['apps', 'defaultApp', 'runs', 'secrets', 'secretOrigins', 'testIds', 'tags', 'states', 'timeouts'])
+const configKeys = new Set(['apps', 'defaultApp', 'runs', 'secrets', 'secretOrigins', 'testIds', 'tags', 'states', 'locks', 'timeouts', 'evaluation', 'diagnostics'])
 const namesSchema = s.array(s.string())
 const runsSchema = s.array(s.record(s.string()))
 const testIdsSchema = s.union([s.record(s.string()), s.array(s.string())])
@@ -54,7 +56,10 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
     if (tagOperators.has(tag)) problems.add(['tags', index], `${JSON.stringify(tag)} cannot be a tag, because --tag reads it as a word`)
   }
   const states = readNames(value['states'], ['states'], problems)
+  const locks = readNames(value['locks'], ['locks'], problems)
   const timeouts = readTimeouts(value['timeouts'], problems)
+  const evaluation = readEvaluation(value['evaluation'], file, problems)
+  const diagnostics = readDiagnostics(value['diagnostics'], problems)
   return {
     file,
     apps,
@@ -63,7 +68,10 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
     secrets,
     ...(tags === undefined ? {} : { tags }),
     ...(states === undefined ? {} : { states }),
+    ...(locks === undefined ? {} : { locks }),
     timeouts,
+    ...(evaluation === undefined ? {} : { evaluation }),
+    ...(diagnostics === undefined ? {} : { diagnostics }),
   }
 }
 

@@ -1,3 +1,4 @@
+import { diagnosticsSummarySchema, type DiagnosticsSummary } from './diagnostics.ts'
 import {
   countsSchema,
   exitCodeSchema,
@@ -10,18 +11,37 @@ import {
   type TargetInfo,
   type TestStatus,
 } from './events.ts'
+import { evaluationRecordSchema, type EvaluationRecord } from './evaluation.ts'
+import {
+  cleanupRecordSchema,
+  endingSchema,
+  executionRecordSchema,
+  preparationRecordSchema,
+  type CleanupRecord,
+  type Ending,
+  type ExecutionRecord,
+  type PreparationRecord,
+} from './execution.ts'
 import { failureSchema, sourceLocationSchema, type Failure, type SourceLocation } from './failures.ts'
 import { hostCheckResultSchema, type HostCheckResult } from './host-check.ts'
 import { s, type Schema } from './schema.ts'
 import { variantSchema, type Variant } from './variant.ts'
 
-/** A file saved during the test. `path` is relative to the run folder; `app` is the app it shows, when the run has a config. */
-export type Evidence = { kind: 'screenshot'; path: string; app?: string }
+/**
+ * A file saved during the test. `path` is relative to the run folder; `app` is the app it shows, when the run has a
+ * config. `sessionId`, `attemptId` and `capturedAt` say which session of which attempt captured it, and when, as its
+ * `EvidenceReference` does. A run recorded before sessions had ids has none of the three.
+ */
+export type Evidence = { kind: 'screenshot'; path: string; app?: string; sessionId?: string; attemptId?: string; capturedAt?: string }
 
 /**
  * One attempt at a test. A test that runs once per target has one result per variant, so a result is unique by
  * `testId` and `variantKey`. `setup` marks a `test.setup`. `hostChecks` lists every host check the test had, in
- * order, whatever happened to it.
+ * order, whatever happened to it. `evaluations` lists its AI checks: the test's own in the order they ended, then the
+ * host's in the order given, each with its verdict. `execution` is the attempt's execution identity, with the bundle
+ * it ran in the end; `preparations` and `cleanups` are the host's preparation and cleanup of it, in the order they
+ * ran; `ending` says what ended it. Each is absent in runs recorded before it, and `execution` for a test that never
+ * started.
  */
 export type TestResult = {
   testId: string
@@ -39,6 +59,16 @@ export type TestResult = {
   failure?: Failure
   cleanupFailures?: Failure[]
   hostChecks?: HostCheckResult[]
+  evaluations?: EvaluationRecord[]
+  execution?: ExecutionRecord
+  preparations?: PreparationRecord[]
+  cleanups?: CleanupRecord[]
+  ending?: Ending
+  /**
+   * Each session's console, runtime error and network capture: its state for each kind, its counts and its artifact.
+   * Absent for a test that never started its body, and in runs recorded before diagnostics.
+   */
+  diagnostics?: DiagnosticsSummary[]
   evidence: Evidence[]
 }
 
@@ -48,9 +78,16 @@ export type FileResult = { file: string; collection: 'ok' | 'failed'; failure?: 
 export type BrowserInfo = { product: string; version: string; executablePath: string; app?: string; target?: TargetInfo }
 
 /**
+ * How `test.only` narrowed a run: where each `test.only` and `test.describe.only` is, how many of the files' tests
+ * they kept, and how many the files hold, setups left out of both.
+ */
+export type Narrowed = { only: SourceLocation[]; kept: number; collected: number }
+
+/**
  * The contents of `result.json`, written once when the run ends. `browser` is the first browser the run
  * started; a run from a config lists every app target's browser in `browsers`. `failure` is the run's own,
- * one that no single test explains; tests it kept from running carry it too.
+ * one that no single test explains; tests it kept from running carry it too. `narrowed` is present when `test.only`
+ * kept part of the files' tests, so the run checked less than they hold.
  */
 export type RunResult = {
   schemaVersion: 1
@@ -66,6 +103,7 @@ export type RunResult = {
   browsers?: BrowserInfo[]
   counts: Counts
   failure?: Failure
+  narrowed?: Narrowed
   files: FileResult[]
 }
 
@@ -88,7 +126,22 @@ const testResultSchema = s.object({
   failure: s.optional(failureSchema),
   cleanupFailures: s.optional(s.array(failureSchema)),
   hostChecks: s.optional(s.array(hostCheckResultSchema)),
-  evidence: s.array(s.object({ kind: s.literal('screenshot'), path: s.string(), app: s.optional(s.string()) })),
+  evaluations: s.optional(s.array(evaluationRecordSchema)),
+  execution: s.optional(executionRecordSchema),
+  preparations: s.optional(s.array(preparationRecordSchema)),
+  cleanups: s.optional(s.array(cleanupRecordSchema)),
+  ending: s.optional(endingSchema),
+  diagnostics: s.optional(s.array(diagnosticsSummarySchema)),
+  evidence: s.array(
+    s.object({
+      kind: s.literal('screenshot'),
+      path: s.string(),
+      app: s.optional(s.string()),
+      sessionId: s.optional(s.string()),
+      attemptId: s.optional(s.string()),
+      capturedAt: s.optional(s.string()),
+    }),
+  ),
 })
 
 const browserInfoSchema = s.object({
@@ -113,6 +166,9 @@ export const runResultSchema: Schema<RunResult> = s.object({
   browsers: s.optional(s.array(browserInfoSchema)),
   counts: countsSchema,
   failure: s.optional(failureSchema),
+  narrowed: s.optional(
+    s.object({ only: s.array(sourceLocationSchema), kept: s.number({ integer: true, min: 0 }), collected: s.number({ integer: true, min: 0 }) }),
+  ),
   files: s.array(
     s.object({
       file: s.string(),

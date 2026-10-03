@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
+import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { failure, truncateText } from '../../src/protocol/failures.ts'
 import { resultFile, testId } from '../../src/protocol/run-folder.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
@@ -197,6 +198,7 @@ describe('the page each event names', () => {
       locator: field,
       check: { matcher: 'toHaveValue', value: 'Release' },
       observationId: 'o1',
+      sessionId: formatSessionId(run.attemptId, scriptedApp),
       pageUrl: 'http://evil.example/claimed',
       pageTitle: 'Claimed',
     }

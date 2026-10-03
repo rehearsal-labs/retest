@@ -12,6 +12,8 @@ export type AppServersOptions = {
   /** The absolute path of an app server's log. */
   logFile: (app: string) => string
   redactor: Redactor
+  /** Environment variables no server may see, such as the ones AI judges' credentials are read from. */
+  hiddenVariables?: readonly string[]
   setupMs: number
   /** Aborted when the run is interrupted. */
   signal: AbortSignal
@@ -48,10 +50,11 @@ export class AppServers {
 
   async #start({ name, start }: LoadedApp): Promise<Failure | undefined> {
     if (start === undefined) return undefined
-    const { logFile, redactor, setupMs, signal, emit } = this.#options
+    const { logFile, redactor, setupMs, signal, emit, hiddenVariables } = this.#options
     const ready = withoutCredentials(start.ready)
     try {
-      const server = await startAppServer({ name, start, logFile: logFile(name), redactor, signal }, start.timeoutMs ?? setupMs)
+      const hidden = hiddenVariables === undefined ? {} : { hiddenVariables }
+      const server = await startAppServer({ name, start, logFile: logFile(name), redactor, signal, ...hidden }, start.timeoutMs ?? setupMs)
       if (server.status === 'reused') {
         emit({ type: 'app.reused', app: name, ready })
         return undefined

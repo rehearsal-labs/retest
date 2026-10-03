@@ -1,5 +1,6 @@
 import type { Failure } from './failures.ts'
 import { failureSchema } from './failures.ts'
+import { isName } from './names.ts'
 import { describeChoices, describeValue, formatPath, isArray, isPlainObject, s, type Path, type Schema } from './schema.ts'
 import { normalizeText } from './text.ts'
 import { maxTimeout } from './timeouts.ts'
@@ -13,10 +14,14 @@ import { isWebUrl, readOrigin } from './url.ts'
  *   writes it, and a `RegExp` matches it. The query and the fragment are never read.
  * - `text`: the page's visible text holds `text`, whitespace normalised as locators normalise it, and
  *   case-sensitive unless `ignoreCase`. With `absent`, it does not hold it.
+ *
+ * `id` names the check within a requirement version and travels with its events, its result and its failure. A
+ * run with a `requirement` needs one on every check.
  */
 export type HostCheck =
   | {
       readonly kind: 'address'
+      readonly id?: string
       readonly app?: string
       readonly origin: string
       readonly path?: string | RegExp
@@ -25,6 +30,7 @@ export type HostCheck =
     }
   | {
       readonly kind: 'text'
+      readonly id?: string
       readonly app?: string
       readonly text: string
       readonly ignoreCase?: boolean
@@ -33,10 +39,13 @@ export type HostCheck =
       readonly timeoutMs?: number
     }
 
-/** A host check as events and results record it. A `RegExp` path is its source and flags; the origin is written as the URL standard writes it. */
+/**
+ * A host check as events and results record it. A `RegExp` path is its source and flags; the origin is written as the
+ * URL standard writes it. `id` is present when the host gave one.
+ */
 export type HostCheckRecord =
-  | { kind: 'address'; name?: string; origin: string; path?: string | { pattern: string; flags: string } }
-  | { kind: 'text'; name?: string; text: string; ignoreCase?: true; absent?: true }
+  | { kind: 'address'; id?: string; name?: string; origin: string; path?: string | { pattern: string; flags: string } }
+  | { kind: 'text'; id?: string; name?: string; text: string; ignoreCase?: true; absent?: true }
 
 /**
  * What a check saw on its last look: the page's origin and path and its title, and for a text check whether the
@@ -59,12 +68,14 @@ export type HostCheckSubject = { readonly testId: string; readonly file: string 
 export const hostCheckRecordSchema: Schema<HostCheckRecord> = s.discriminatedUnion('kind', [
   s.object({
     kind: s.literal('address'),
+    id: s.optional(s.string()),
     name: s.optional(s.string()),
     origin: s.string(),
     path: s.optional(s.union([s.string(), s.object({ pattern: s.string(), flags: s.string() })])),
   }),
   s.object({
     kind: s.literal('text'),
+    id: s.optional(s.string()),
     name: s.optional(s.string()),
     text: s.string(),
     ignoreCase: s.optional(s.literal(true)),
@@ -92,7 +103,7 @@ export const hostCheckResultSchema: Schema<HostCheckResult> = s.object({
  * @example hostCheckRecord({ kind: 'address', origin: 'https://App.example/', path: /^\/done/ }) // { kind: 'address', origin: 'https://app.example', path: { pattern: '^\\/done', flags: '' } }
  */
 export function hostCheckRecord(check: HostCheck): HostCheckRecord {
-  const name = check.name === undefined ? {} : { name: check.name }
+  const name = { ...(check.id === undefined ? {} : { id: check.id }), ...(check.name === undefined ? {} : { name: check.name }) }
   if (check.kind === 'text') {
     const ignoreCase = check.ignoreCase === true ? { ignoreCase: true as const } : {}
     const absent = check.absent === true ? { absent: true as const } : {}
@@ -159,8 +170,8 @@ export function unmatchedHostCheckKeys(hostChecks: Readonly<Record<string, unkno
 
 const checkKinds = ['address', 'text']
 const allowedKeys: Readonly<Record<string, readonly string[]>> = {
-  address: ['kind', 'app', 'origin', 'path', 'name', 'timeoutMs'],
-  text: ['kind', 'app', 'text', 'ignoreCase', 'absent', 'name', 'timeoutMs'],
+  address: ['kind', 'id', 'app', 'origin', 'path', 'name', 'timeoutMs'],
+  text: ['kind', 'id', 'app', 'text', 'ignoreCase', 'absent', 'name', 'timeoutMs'],
 }
 
 type AddProblem = (path: Path, message: string) => void
@@ -197,6 +208,8 @@ function checkProblems(value: unknown, path: Path, add: AddProblem): void {
   }
   for (const key of Object.keys(check)) if (!allowedKeys[kind]?.includes(key)) add([...path, key], 'unknown key')
   for (const key of ['app', 'name']) if (key in check && typeof check[key] !== 'string') add([...path, key], `expected string, received ${describeValue(check[key])}`)
+  const id = check['id']
+  if (id !== undefined && (typeof id !== 'string' || !isName(id))) add([...path, 'id'], `expected a name of letters, digits, "_" and "-" that starts with a letter, received ${describeValue(id)}`)
   if ('timeoutMs' in check && !isBudget(check['timeoutMs'])) {
     add([...path, 'timeoutMs'], `expected a whole number of milliseconds from 1 to ${maxTimeout}, received ${describeValue(check['timeoutMs'])}`)
   }

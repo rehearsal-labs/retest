@@ -1,29 +1,30 @@
-import type { LaunchOptions, OwnedBrowser, ProxyOptions } from '../browser/contract.ts'
-import type { LoadedApp, LoadedProxy, LoadedTarget } from '../config/loaded.ts'
+import type { LaunchOptions, OwnedBrowser, ProxyOptions, WebRuntimeIdentity } from '../browser/contract.ts'
+import type { LoadedApp, LoadedChromiumTarget, LoadedProxy, LoadedTarget } from '../config/loaded.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { TargetInfo } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { BrowserInfo } from '../protocol/result.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Bounded } from './bounded.ts'
-import { closeGraceMs, LaunchError } from '../browser/contract.ts'
+import { closeGraceMs, LaunchError, webRuntimeIdentity } from '../browser/contract.ts'
 import { emulationFor } from '../config/devices.ts'
 import { errorMessage, failure } from '../protocol/failures.ts'
 import { withoutCredentials } from '../protocol/url.ts'
 import { bounded } from './bounded.ts'
 import { abortGraceMs } from './running-test.ts'
+import { targetDriver } from './target-drivers.ts'
 
 /** Starts a browser. The runner passes its setup budget; tests pass a fake. */
 export type LaunchBrowser = (options: LaunchOptions, timeoutMs: number) => Promise<OwnedBrowser>
 
-/** Finds the executable a target launches, or says why there is none, naming the paths it tried. */
-export type FindExecutable = (target: LoadedTarget) => Promise<{ ok: true; path: string } | { ok: false; failure: Failure }>
+/** Finds the executable a Chromium target launches, or says why there is none, naming the paths it tried. */
+export type FindExecutable = (target: LoadedChromiumTarget) => Promise<{ ok: true; path: string } | { ok: false; failure: Failure }>
 
 /**
- * An app target ready for pages: its browser, what its pages emulate, and the proxy each page's browser context
- * sends its requests through.
+ * An app target ready for pages: its browser and what it is, what its pages emulate, and the proxy each page's
+ * browser context sends its requests through.
  */
-export type ReadyTarget = { browser: OwnedBrowser; emulation?: Emulation; proxy?: ProxyOptions }
+export type ReadyTarget = { browser: OwnedBrowser; runtime: WebRuntimeIdentity; emulation?: Emulation; proxy?: ProxyOptions }
 
 export type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
 
@@ -51,19 +52,23 @@ export type BrowserPoolOptions = {
   onStarted: (started: StartedTarget) => void
   /** Told when a browser this pool launched goes away while the run still needs it. */
   onLost: (browser: OwnedBrowser, reason: string) => void
+  /** Environment variables no browser may see, such as the ones AI judges' credentials are read from. */
+  hiddenVariables?: readonly string[]
 }
 
 type Launched = { kind: 'ready'; browser: OwnedBrowser } | { kind: 'unavailable'; failure: Failure; browser?: OwnedBrowser }
-type AppTarget = { ok: true; key: string; emulation?: Emulation } | { ok: false; failure: Failure }
+type AppTarget = { ok: true; key: string; emulation?: Emulation; proxy?: LoadedProxy } | { ok: false; failure: Failure }
 
 /**
- * The run's browsers. Each distinct target, its executable with its headless setting and emulation, launches
- * once, the first time a test needs it or when the run warms it, and app targets that are the same share it. A
- * proxy belongs to each page's browser context, so targets that differ only by proxy share a browser too. A
- * browser that fails to launch, or is lost, is not launched again: every later test that needs it does not run.
- * App targets are set up one after another, so two that share a browser never launch it twice. A target's tests
- * can be spread over several browsers, each worker keeping to one: one browser serves every context it is given
- * from a single process, which a run on many workers saturates.
+ * The run's browsers. A target runs on the driver it needs, and only Chromium's exists. A run refuses the tests of
+ * any other target before it asks the pool; should one still reach it, it fails setup by name and launches nothing.
+ * Each distinct target, its executable with its headless setting and emulation, launches once, the first time a test
+ * needs it or when the run warms it, and app targets that are the same share it. A proxy belongs to each page's
+ * browser context, so targets that differ only by proxy share a browser too. A browser that fails to launch, or is
+ * lost, is not launched again: every later test that needs it does not run. App targets are set up one after
+ * another, so two that share a browser never launch it twice. A target's tests can be spread over several browsers,
+ * each worker keeping to one: one browser serves every context it is given from a single process, which a run on
+ * many workers saturates.
  */
 export class BrowserPool {
   readonly #options: BrowserPoolOptions
@@ -120,11 +125,16 @@ export class BrowserPool {
     if (this.#closing !== undefined) return { ok: false, failure: failure('setup_failed', 'The browser was closed.') }
     if (launched?.kind !== 'ready') return { ok: false, failure: launched?.failure ?? failure('setup_failed', 'The browser was closed.') }
     const emulation = known.emulation === undefined ? {} : { emulation: known.emulation }
-    const proxy = target.proxy === undefined ? {} : { proxy: target.proxy }
-    return { ok: true, value: { browser: launched.browser, ...emulation, ...proxy } }
+    const proxy = known.proxy === undefined ? {} : { proxy: known.proxy }
+    const runtime = webRuntimeIdentity(launched.browser, 'chromium')
+    return { ok: true, value: { browser: launched.browser, runtime, ...emulation, ...proxy } }
   }
 
-  /** Closes every browser within the cleanup budget, and waits for any launch the run gave up on. A second call waits for the first. */
+  /**
+   * Closes every browser within the cleanup budget, and waits for any launch the run gave up on. A setup still queued
+   * launches nothing once this is called, and one in flight is waited for, so no browser starts after the close. A
+   * second call waits for the first.
+   */
   close(): Promise<void> {
     this.#closing ??= this.#closeAll()
     return this.#closing
@@ -132,6 +142,7 @@ export class BrowserPool {
 
   async #closeAll(): Promise<void> {
     const { cleanup } = this.#options.timeouts
+    await this.#setups
     const browsers = [...this.#launched.values()].flatMap((entry) => (entry.browser === undefined ? [] : [entry.browser]))
     await Promise.all(browsers.map((browser) => bounded(browser.close(cleanup), cleanup + closeGraceMs + abortGraceMs)))
     await bounded(Promise.all(this.#releases), cleanup)
@@ -149,18 +160,25 @@ export class BrowserPool {
     return known
   }
 
-  async #first(app: LoadedApp, target: LoadedTarget, instance: number): Promise<AppTarget> {
+  async #first(app: LoadedApp, loaded: LoadedTarget, instance: number): Promise<AppTarget> {
+    const closed = (): AppTarget => ({ ok: false, failure: this.#options.interruption() ?? failure('setup_failed', 'The browser was closed.') })
+    if (this.#closing !== undefined) return closed()
+    const driver = targetDriver(app.name, loaded)
+    if (!driver.ok) return driver
+    const { target } = driver
     const found = await this.#options.findExecutable(target)
     if (!found.ok) return found
+    if (this.#closing !== undefined) return closed()
     const executablePath = found.path
     const headless = this.#options.headless && target.headless
     const key = JSON.stringify([executablePath, headless, target.emulate ?? null, instance])
-    const launched = this.#launched.get(key) ?? (await this.#launch(key, { executablePath, headless, logFile: this.#options.logFile(app.name, target.name, instance) }))
+    const hidden = this.#options.hiddenVariables === undefined ? {} : { hiddenVariables: this.#options.hiddenVariables }
+    const launched = this.#launched.get(key) ?? (await this.#launch(key, { executablePath, headless, logFile: this.#options.logFile(app.name, target.name, instance), ...hidden }))
     if (launched.kind !== 'ready') return { ok: false, failure: launched.failure }
     const { browser } = launched
     const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
     this.#announce(app, target, browser, emulation, instance)
-    return emulation === undefined ? { ok: true, key } : { ok: true, key, emulation }
+    return { ok: true, key, ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
   }
 
   async #launch(key: string, options: LaunchOptions): Promise<Launched> {
@@ -175,6 +193,13 @@ export class BrowserPool {
       return entry
     }
     const browser = launched.value
+    // A browser that finished launching while the pool was closing is closed with the rest, never handed out.
+    if (this.#closing !== undefined) {
+      this.#releases.push(browser.close(cleanup).catch(() => undefined))
+      const entry: Launched = { kind: 'unavailable', failure: this.#options.interruption() ?? failure('setup_failed', 'The browser was closed.') }
+      this.#launched.set(key, entry)
+      return entry
+    }
     const entry: Launched = { kind: 'ready', browser }
     this.#launched.set(key, entry)
     browser.onDisconnect((reason) => this.#lost(key, browser, reason))
@@ -189,7 +214,7 @@ export class BrowserPool {
   }
 
   // The run's result lists each app target once, so only its first browser joins `started`; every browser is told.
-  #announce(app: LoadedApp, target: LoadedTarget, browser: OwnedBrowser, emulation: Emulation | undefined, instance: number): void {
+  #announce(app: LoadedApp, target: LoadedChromiumTarget, browser: OwnedBrowser, emulation: Emulation | undefined, instance: number): void {
     const { product, version, userAgent, pid, executablePath } = browser
     const device = typeof target.emulate === 'string' ? { device: target.emulate } : {}
     const proxy = target.proxy === undefined ? {} : { proxy: recordedProxy(target.proxy) }

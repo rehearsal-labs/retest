@@ -450,17 +450,19 @@ test('signs in', async ({ page }) => {
 })
 
 describe('a failure on our side after a failed check', () => {
-  test('makes the test an error with session_lost, keeps the failed check in also and in order, and the checks after it do not run', async () => {
+  test('leaves the test failed by the check that read the app, keeps the loss in also, and the checks after it do not run', async () => {
     const record = await runSupportFiles(['host-checks.retest.ts'], {
       hostChecks: { [saves]: [{ kind: 'address', origin, path: '/wrong', timeoutMs: 60 }, { kind: 'text', text: 'Release checklist' }, { kind: 'address', origin }] },
       selection: onlySaves,
       fake: { onRead: (page) => void ((page.reads.at(-1)?.length ?? 0) > 0 && page.browser.disconnect('The browser process exited.')) },
     })
     const result = testNamed(record.result, 'saves a task')
-    assert.deepEqual([result.status, result.failure?.class], ['error', 'session_lost'])
-    assert.match(String(result.failure?.details?.['also']), /^host_check_failed: The address check on page failed: the page is on http:\/\/127\.0\.0\.1:4173\/done, expected http:\/\/127\.0\.0\.1:4173\/wrong\./)
+    // The check read the page and found it on the wrong address; the browser lost after it does not replace that.
+    assert.deepEqual([result.status, result.failure?.class], ['failed', 'host_check_failed'])
+    assert.match(result.failure?.message ?? '', /^The address check on page failed: the page is on http:\/\/127\.0\.0\.1:4173\/done, expected http:\/\/127\.0\.0\.1:4173\/wrong\./)
+    assert.match(String(result.failure?.details?.['also']), /^session_lost: The browser of page was lost during a host check/)
     assert.deepEqual(result.hostChecks?.map((entry) => [entry.status, entry.failure?.class]), [['failed', 'host_check_failed'], ['failed', 'session_lost'], ['not_run', undefined]])
-    assert.equal(record.result.exitCode, 2)
+    assert.deepEqual([result.ending?.kind, record.result.exitCode], ['required_check_failed', 1])
   })
 })
 

@@ -1,8 +1,9 @@
 import type { Counts } from '../protocol/events.ts'
-import type { BrowserInfo, RunResult, TestResult } from '../protocol/result.ts'
+import type { BrowserInfo, RunResult } from '../protocol/result.ts'
 import type { RunRecord } from './run-record.ts'
 import { withoutCredentials } from '../protocol/url.ts'
 import { variantKey, variantPairs, type Variant } from '../protocol/variant.ts'
+import { addToCounts } from '../runner/outcome.ts'
 import { printable } from './format.ts'
 
 /**
@@ -117,7 +118,7 @@ export function targetSummaries(result: RunResult, targets: RunTargets): TargetS
     if (test.variant === undefined || Object.keys(test.variant).length === 0) continue
     const key = variantKey(test.variant)
     const summary = summaries.get(key) ?? { label: key, browser: variantBrowser(test.variant, targets), counts: noCounts(), durationMs: 0 }
-    summary.counts[countName(test)]++
+    addToCounts(summary.counts, test.status)
     summary.durationMs += test.durationMs
     summaries.set(key, summary)
   }
@@ -147,6 +148,3 @@ function noCounts(): Counts {
   return { passed: 0, failed: 0, error: 0, notRun: 0, inconclusive: 0 }
 }
 
-function countName(test: TestResult): keyof Counts {
-  return test.status === 'not_run' ? 'notRun' : test.status
-}

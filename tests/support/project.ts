@@ -1,4 +1,4 @@
-import type { LoadedConfig, LoadedTarget } from '../../src/config/loaded.ts'
+import type { LoadedChromiumTarget, LoadedConfig } from '../../src/config/loaded.ts'
 import type { Timeouts } from '../../src/protocol/timeouts.ts'
 import type { Reporter } from '../../src/reporters/reporter.ts'
 import type { FindExecutable } from '../../src/runner/browser-pool.ts'
@@ -46,7 +46,7 @@ export type ProjectRunOptions = {
   reporters?: Reporter[]
   signal?: AbortSignal
   findExecutable?: FindExecutable
-} & Pick<RunOptions, 'hostChecks' | 'testEnvironment'>
+} & Pick<RunOptions, 'hostChecks' | 'hostEvaluations' | 'testEnvironment' | 'workers' | 'browsers' | 'forbidOnly'>
 
 export type ProjectRecord = RunRecord & { root: string; config: LoadedConfig }
 
@@ -68,7 +68,9 @@ export async function runProject(root: string, options: ProjectRunOptions): Prom
       timeouts: { ...quickTimeouts, ...options.timeouts },
       outputDir: folder,
       headless: true,
-      workers: 1,
+      workers: options.workers ?? 1,
+      ...(options.browsers === undefined ? {} : { browsers: options.browsers }),
+      ...(options.forbidOnly === undefined ? {} : { forbidOnly: options.forbidOnly }),
       signal: options.signal ?? new AbortController().signal,
       onOutput: (chunk) => void output.push(chunk),
       ...runOptions(options),
@@ -82,7 +84,7 @@ export async function runProject(root: string, options: ProjectRunOptions): Prom
 }
 
 /** Resolves a target the way the real finder would name it, without looking at the machine. */
-export const fakeExecutable: FindExecutable = async (target: LoadedTarget) => {
+export const fakeExecutable: FindExecutable = async (target: LoadedChromiumTarget) => {
   if (target.browser === 'chromium') return { ok: true, path: target.executablePath ?? '/fake/chromium' }
   return { ok: true, path: `/fake/${target.browser}-${target.channel}` }
 }

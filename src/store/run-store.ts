@@ -2,10 +2,11 @@ import type { RetestEvent } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { RunResult } from '../protocol/result.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { redactArtifactText } from '../diagnostics/artifact.ts'
 import { errorMessage } from '../protocol/failures.ts'
-import { eventsFile, logsFolder, resultFile, statesFolder } from '../protocol/run-folder.ts'
+import { diagnosticsFolder, eventsFile, logsFolder, resultFile, statesFolder } from '../protocol/run-folder.ts'
 import { parse } from '../protocol/schema.ts'
 import { storageStateSchema } from '../protocol/storage-state.ts'
 import { errorCode } from '../shared/error-code.ts'
@@ -86,6 +87,22 @@ export class RunStore {
       const path = join(folder, entry.name)
       const text = readFileSync(path, 'utf8')
       const redacted = redact(text)
+      if (redacted !== text) writeFileSync(path, redacted)
+    }
+  }
+
+  /**
+   * Rewrites every diagnostics artifact with each page text passed through `redact`, as `redactLogs` rewrites the logs.
+   * A run with no artifact has nothing to rewrite.
+   */
+  redactDiagnostics(redact: (text: string) => string): void {
+    const folder = this.#path(diagnosticsFolder)
+    if (!existsSync(folder)) return
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      const path = join(folder, entry.name)
+      const text = readFileSync(path, 'utf8')
+      const redacted = redactArtifactText(text, redact)
       if (redacted !== text) writeFileSync(path, redacted)
     }
   }

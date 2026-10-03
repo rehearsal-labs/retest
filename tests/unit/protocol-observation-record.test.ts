@@ -13,20 +13,30 @@ import { observationOf } from '../support/observation.ts'
 
 describe('observedRecord', () => {
   test('keeps everything a look saw, with its text marked whole', () => {
-    const record = observedRecord(observationOf([{ text: 'Saved', visible: true }], 'Ada'))
+    const record = observedRecord(observationOf([{ text: 'Saved', visible: true }], 'Ada', { checked: false, enabled: false }))
     assert.deepEqual(record, {
       count: 1,
       visible: true,
       text: { text: 'Saved', truncated: false, length: 5 },
       value: { text: 'Ada', truncated: false, length: 3 },
+      checked: false,
+      enabled: false,
       items: [{ text: { text: 'Saved', truncated: false, length: 5 }, visible: true }],
       itemsTruncated: false,
     })
     assert.deepEqual(parse(observedRecordSchema, JSON.parse(JSON.stringify(record))), { ok: true, value: record })
   })
 
+  test('names the step of a scoped locator that kept nothing, and reads a record from before looks read states', () => {
+    const empty = observedRecord({ ...observationOf([]), emptyStep: { step: 1, matched: 3 } })
+    assert.deepEqual(empty.emptyStep, { step: 1, matched: 3 })
+    assert.equal(parse(observedRecordSchema, JSON.parse(JSON.stringify(empty))).ok, true)
+    const older = { count: 0, visible: null, text: null, value: null, items: [], itemsTruncated: false }
+    assert.equal(parse(observedRecordSchema, older).ok, true, 'a run recorded before checked and enabled still reads')
+  })
+
   test('a look with no match, or several, keeps nulls where one element would have said something', () => {
-    assert.deepEqual(observedRecord(observationOf([])), { count: 0, visible: null, text: null, value: null, items: [], itemsTruncated: false })
+    assert.deepEqual(observedRecord(observationOf([])), { count: 0, visible: null, text: null, value: null, checked: null, enabled: null, items: [], itemsTruncated: false })
     const record = observedRecord(observationOf(Array.from({ length: 101 }, (_, index) => ({ text: `Task ${index}`, visible: true }))))
     assert.equal(record.count, 101)
     assert.equal(record.items.length, 100)

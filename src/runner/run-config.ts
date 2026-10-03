@@ -17,6 +17,8 @@ export type RunConfig = {
   readonly secrets: ReadonlyMap<string, LoadedSecret>
   readonly tags?: readonly string[]
   readonly states?: readonly string[]
+  /** The locks tests may hold. Absent in milestone 1's mode, which has no config to declare them, so any is held. */
+  readonly locks?: readonly string[]
   /** False in milestone 1's mode, whose tests have no variant and whose browser is the one given. */
   readonly variants: boolean
 }
@@ -53,7 +55,7 @@ export function collectConfig(config: LoadedConfig | undefined): RunConfig {
 }
 
 function fromLoaded(config: LoadedConfig): RunConfig {
-  const { apps, defaultApp, runs, secrets, tags, states } = config
+  const { apps, defaultApp, runs, secrets, tags, states, locks } = config
   return {
     apps,
     ...(defaultApp === undefined ? {} : { defaultApp }),
@@ -61,6 +63,7 @@ function fromLoaded(config: LoadedConfig): RunConfig {
     secrets,
     ...(tags === undefined ? {} : { tags }),
     ...(states === undefined ? {} : { states }),
+    locks: locks ?? [],
     variants: true,
   }
 }

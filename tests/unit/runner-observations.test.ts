@@ -6,11 +6,12 @@ import type { ScriptedTest } from '../support/scripted-process.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { retestEventSchema } from '../../src/protocol/events.ts'
+import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { failure, truncateText } from '../../src/protocol/failures.ts'
 import { textComparison } from '../../src/protocol/text.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { eventsOfType, isGoneWithin, printedPids, runSupportFiles, testNamed } from '../support/run-harness.ts'
-import { scriptedTest } from '../support/scripted-process.ts'
+import { scriptedApp, scriptedTest } from '../support/scripted-process.ts'
 
 type Body<Type extends EventBody['type']> = Extract<EventBody, { type: Type }>
 
@@ -26,12 +27,16 @@ type Claim = {
   locator?: LocatorRecipe
   check?: LocatorCheckRecord
   observationId?: string
+  sessionId?: string
   session?: string
   pageUrl?: string
 }
 
-// An assertion as a test process sends it, with values of its own that the parent must not keep.
+// An assertion as a test process sends it, with values of its own that the parent must not keep. One that names a
+// look sends back the session this run's page was served in, as Retest's own test process does, unless it names
+// another.
 function claim(run: ScriptedTest, { type = 'assertion.passed', ...fields }: Claim): ChildEvent {
+  const reference = fields.observationId === undefined ? {} : { sessionId: formatSessionId(run.attemptId, scriptedApp) }
   const common = {
     testId: run.testId,
     attemptId: run.attemptId,
@@ -41,6 +46,7 @@ function claim(run: ScriptedTest, { type = 'assertion.passed', ...fields }: Clai
     comparison: 'as the process pleases',
     attempts: 2,
     durationMs: 5,
+    ...reference,
     ...fields,
   }
   return type === 'assertion.passed' ? { type, ...common } : { type, ...common, failure: failure('check_failed', 'It did not show.') }
@@ -340,7 +346,7 @@ describe('claims the parent cannot accept', () => {
     await earlier.command(1, { kind: 'observe', locator: title })
     await earlier.finish()
     const later = await scriptedTest({ attemptId: 'attempt2' })
-    later.event(claim(later, { locator: title, observationId: 'o1', check: { matcher: 'toBeVisible' } }))
+    later.event(claim(later, { locator: title, observationId: 'o1', sessionId: formatSessionId(earlier.attemptId, scriptedApp), check: { matcher: 'toBeVisible' } }))
     await violated(later, /named the look "o1", which Retest did not serve to this test/)
   })
 
@@ -368,7 +374,7 @@ describe('claims the parent cannot accept', () => {
     const run = await scriptedTest()
     await run.command(1, { kind: 'observe', locator: title })
     const value = { type: 'assertion.passed', testId: run.testId, attemptId: run.attemptId, matcher: 'toBe', expected: truncateText('2'), actual: truncateText('2'), attempts: 1, durationMs: 0 } as const
-    run.event({ ...value, observationId: 'o1' })
+    run.event({ ...value, observationId: 'o1', sessionId: formatSessionId(run.attemptId, scriptedApp) })
     await violated(run, /sent assertion\.passed for a value, naming a look or a locator check, which only a locator assertion has/)
   })
 })
@@ -385,5 +391,18 @@ describe('a real test process that forges a pass', async () => {
     const [pid] = printedPids(record.output)
     assert.ok(pid !== undefined && (await isGoneWithin(pid, 1000)), 'the process is gone')
     assert.equal(testNamed(record.result, 'never gets a turn').status, 'not_run')
+  })
+})
+
+describe('a real test process that claims a pass after the parent failed its assertion on a look it served', async () => {
+  const record = await runSupportFiles(['forged-pass.retest.ts'])
+
+  test('is failed by what the parent saw, and the failed assertion is written as the child reported it', () => {
+    const result = testNamed(record.result, 'claims a pass after the parent failed its assertion')
+    assert.deepEqual([result.status, result.failure?.class, result.ending?.kind], ['failed', 'check_failed', 'assertion_failed'])
+    assert.equal(result.failure?.message, "expect(getByTestId('missing')).toBeVisible() failed: nothing matched.")
+    assert.deepEqual(eventsOfType(record.events, 'assertion.failed').map((event) => [event.origin, event.observationId, event.failure.class]), [['child', 'o1', 'check_failed']])
+    assert.deepEqual(eventsOfType(record.events, 'assertion.passed').map((event) => [event.matcher, event.judgedBy]), [['toBe', 'child']], "only the process's own value assertion passed")
+    assert.equal(record.result.exitCode, 1)
   })
 })

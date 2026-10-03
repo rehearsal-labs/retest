@@ -20,6 +20,9 @@ const failureClasses = [
   'usage',
   'interrupted',
   'reporting_failed',
+  'evaluation_failed',
+  'evaluation_inconclusive',
+  'evaluation_error',
 ] as const
 
 export type FailureClass = (typeof failureClasses)[number]

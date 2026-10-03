@@ -1,7 +1,7 @@
 import type { ProcessExit } from '../shared/process-exit.ts'
 import type { CdpDiagnostic } from './cdp/connection.ts'
 import type { PipeStreams, Transport } from './cdp/transport.ts'
-import type { LaunchOptions, OwnedBrowser } from './contract.ts'
+import type { LaunchOptions, WebRuntime } from './contract.ts'
 import type { BrowserVersion } from './browser.ts'
 import { appendFileSync } from 'node:fs'
 import { mkdtemp, open, stat } from 'node:fs/promises'
@@ -40,7 +40,7 @@ export async function launchBrowser(
   options: LaunchOptions,
   timeoutMs: number = launchTimeoutMs,
   transport: (pipe: PipeStreams) => Transport = (pipe) => new PipeTransport(pipe),
-): Promise<OwnedBrowser> {
+): Promise<WebRuntime> {
   const deadline = new Deadline(timeoutMs)
   const executable = await checkExecutable(options.executablePath)
   const staleProfileProblems = await removeStaleProfiles(tmpdir())
@@ -49,7 +49,8 @@ export async function launchBrowser(
   })
   const args = chromiumArguments(profile, options.headless)
   const outputStart = await logLength(options.logFile)
-  const chromium = await ChromiumProcess.start({ executable, args, profile, logFile: options.logFile })
+  const hidden = options.hiddenVariables === undefined ? {} : { hiddenVariables: options.hiddenVariables }
+  const chromium = await ChromiumProcess.start({ executable, args, profile, logFile: options.logFile, ...hidden })
   const log = logWriter(options.logFile)
   for (const problem of staleProfileProblems) log(problem)
   // Every command Retest sends names its own timeout; the launch budget bounds any that would not.

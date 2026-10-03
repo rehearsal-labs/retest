@@ -2,6 +2,8 @@ import type { TestStatus } from '../protocol/events.ts'
 import type { RunResult } from '../protocol/result.ts'
 import type { ChildOutput } from '../runner/contract.ts'
 import type { Reporter } from './reporter.ts'
+import { diagnosticsLocation, diagnosticsTotals } from '../diagnostics/report.ts'
+import { countEvaluations } from '../evaluation/report.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { createChildEcho } from './child-output.ts'
 import {
@@ -17,6 +19,9 @@ import {
   countParts,
   describeAppEvent,
   describeBorrowedSetup,
+  describeLocks,
+  describeNarrowed,
+  describeSessions,
   describeStateEvent,
   failureLabel,
   formatDetail,
@@ -134,6 +139,7 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
       }
       write(notRunLines(result, targets, style))
       write(runFailureLines(result, style))
+      if (result.narrowed !== undefined) write(`\n  ${style.yellow('!')} ${describeNarrowed(result.narrowed)}\n`)
       write(summaryLines(result, { record, targets, runFolder, style }))
     },
   }
@@ -161,18 +167,24 @@ function testLines(event: EventOfType<'test.finished'>, test: TestRecord | undef
     error: style.yellow('!'),
     not_run: style.dim('-'),
     inconclusive: style.yellow('?'),
+    skipped: style.dim('○'),
   }
   const name = test === undefined ? event.testId : titleWithin(test.name, test.describePath)
   const setup = test?.setup === true ? ` ${style.dim('(setup)')}` : ''
   const label = variantLabel(test?.variant, context.targets)
   const variant = label === undefined ? '' : `  ${style.cyan(label)}`
-  const after = event.status === 'not_run' ? 'not run' : formatDuration(event.durationMs)
+  const after = event.status === 'not_run' ? 'not run' : event.status === 'skipped' ? 'skipped' : formatDuration(event.durationMs)
   const borrowed = test?.setupFor === undefined || event.status === 'not_run' ? [] : [describeBorrowedSetup(test.name, test.file, test.setupFor)]
-  const states = (test?.events ?? []).flatMap((stateEvent) =>
-    stateEvent.type === 'state.saved' || stateEvent.type === 'state.restored' ? [describeStateEvent(stateEvent)] : [],
-  )
+  const states = (test?.events ?? []).flatMap((noted) => {
+    if (noted.type === 'state.saved' || noted.type === 'state.restored') return [describeStateEvent(noted)]
+    if (noted.type === 'session.reserved' && noted.attemptId === event.attemptId) return [describeSessions(noted)]
+    return noted.type === 'lock.acquired' && noted.attemptId === event.attemptId ? [describeLocks(noted)] : []
+  })
   const notes = [...borrowed, ...states].map((note) => `      ${style.dim(note)}\n`)
-  return `    ${marks[event.status]} ${name}${setup}${variant}  ${style.dim(after)}\n${notes.join('')}`
+  // An advisory AI check that did not pass is a warning, shown whatever the test's status.
+  const warnings = (test?.events ?? []).flatMap((noted) => (noted.type === 'evaluation.finished' && noted.attemptId === event.attemptId && noted.evaluation.warning !== undefined ? [noted.evaluation.warning] : []))
+  const warned = warnings.map((warning) => `      ${style.yellow('!')} ${warning}\n`)
+  return `    ${marks[event.status]} ${name}${setup}${variant}  ${style.dim(after)}\n${notes.join('')}${warned.join('')}`
 }
 
 function notRunLines(result: RunResult, targets: RunTargets, style: Style): string {
@@ -205,6 +217,10 @@ function summaryLines(result: RunResult, context: SummaryContext): string {
   if (checks.length > 0) rows.push(['Checks', checks.join(' · ')])
   const hostChecks = countHostChecks(result.files.flatMap((file) => file.tests))
   if (hostChecks.length > 0) rows.push(['Host checks', hostChecks.join(' · ')])
+  const evaluations = countEvaluations(result.files.flatMap((file) => file.tests))
+  if (evaluations.length > 0) rows.push(['AI checks', evaluations.join(' · ')])
+  const diagnostics = diagnosticsTotals(result.files.flatMap((file) => file.tests))
+  if (diagnostics !== undefined) rows.push(['Diagnostics', [...diagnostics, diagnosticsLocation(context.runFolder)].join(' · ')])
   const files = fileProblemCounts(result)
   if (files.length > 0) rows.push(['Files', files.join(' · ')])
   rows.push(['Time', formatDuration(result.durationMs)], ['Output', context.runFolder])

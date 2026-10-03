@@ -1,3 +1,5 @@
+import type { DiagnosticsLine } from '../diagnostics/report.ts'
+import type { EvaluationLine } from '../evaluation/report.ts'
 import type { TestStatus } from '../protocol/events.ts'
 import type { Failure, FailureDetail, SourceLocation, TruncatedText } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
@@ -8,6 +10,8 @@ import type { EventOfType, RunRecord, TestEvent } from './run-record.ts'
 import type { RunTargets } from './targets.ts'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { diagnosticsCardLines } from '../diagnostics/report.ts'
+import { evaluationCardLines } from '../evaluation/report.ts'
 import { actionNotes, describeWrittenAction } from './actions.ts'
 import { canRerun, formatRerunCommand } from './commands.ts'
 import { plural, testTitle } from './format.ts'
@@ -54,6 +58,10 @@ export type FailureCard = CardSubject & {
   evidenceProblems: string[]
   /** Cleanup failures besides `failure`. */
   cleanupFailures: Failure[]
+  /** What the test's AI checks found: each that did not pass in full, then one line for each of the rest. */
+  evaluations: EvaluationLine[]
+  /** Each session's console and network capture, in counts, with its artifact. */
+  diagnostics?: DiagnosticsLine[]
   rerun?: string
 }
 
@@ -70,8 +78,8 @@ export function describeFileProblem(problem: FileProblem): string {
 }
 
 /**
- * One card for each file that could not be collected, each test that failed or ended in an error, and
- * each file whose process failed outside its tests, in run order.
+ * One card for each file that could not be collected, each test that failed, ended in an error or could not be
+ * decided, and each file whose process failed outside its tests, in run order.
  *
  * @example failureCards(result, { record, runFolder: '.retest/runs/latest' })
  */
@@ -81,7 +89,7 @@ export function failureCards(result: RunResult, options: CardOptions): FailureCa
     const problem = fileProblemOf(file)
     if (problem === 'collection') cards.push(fileCard(file, problem, options))
     for (const test of file.tests) {
-      if (test.status === 'failed' || test.status === 'error') cards.push(testCard(test, options))
+      if (test.status === 'failed' || test.status === 'error' || test.status === 'inconclusive') cards.push(testCard(test, options))
     }
     if (problem === 'process') cards.push(fileCard(file, problem, options))
   }
@@ -196,6 +204,8 @@ export function testCard(test: TestResult, options: CardOptions): FailureCard {
     screenshots: evidencePaths(events, test).map((path) => join(options.runFolder, path)),
     evidenceProblems: events.flatMap((event) => (event.type === 'evidence.failed' ? [event.message] : [])),
     cleanupFailures,
+    evaluations: evaluationCardLines(test.evaluations ?? [], options.runFolder),
+    diagnostics: diagnosticsCardLines(test.diagnostics ?? [], options.runFolder),
     ...(run === undefined ? {} : { rerun: formatRerunCommand(run, { file: test.file, line: test.location.line, row: record?.row, targets }) }),
   }
 }
@@ -214,6 +224,7 @@ function fileCard(file: FileResult, problem: FileProblem, options: CardOptions):
     screenshots: [],
     evidenceProblems: [],
     cleanupFailures: [],
+    evaluations: [],
     ...(run === undefined ? {} : { rerun: formatRerunCommand(run, { file: file.file }) }),
   }
 }
@@ -285,13 +296,23 @@ export function callNotes(call: FailingCall): string[] {
   return call.type === 'action.failed' ? actionNotes(call) : []
 }
 
+// An action's limit is shown only when the call set its own timeout, since otherwise it is the run's budget. The call
+// is named as the one that set it only when its value is the one the parent applied; a budget or the test's time left
+// can have been shorter.
+function callLimit(call: Extract<FailingCall, { type: 'action.failed' }>, duration: (milliseconds: number) => string): string {
+  const { timeoutMs, callTimeoutMs } = call
+  if (timeoutMs === undefined || callTimeoutMs === undefined) return ''
+  if (timeoutMs === callTimeoutMs) return `, limit ${duration(timeoutMs)} set by the call`
+  return `, limit ${duration(timeoutMs)}, shorter than the ${duration(callTimeoutMs)} the call asked for`
+}
+
 /**
  * How long the failing call waited and for what, with durations written by `duration`.
  *
  * @example describeWait(call, formatDuration) // '5s for toHaveText, looked 14 times, limit 5s'
  */
 export function describeWait(call: FailingCall, duration: (milliseconds: number) => string): string {
-  if (call.type === 'action.failed') return `${duration(call.durationMs)} for ${call.command}`
+  if (call.type === 'action.failed') return `${duration(call.durationMs)} for ${call.command}${callLimit(call, duration)}`
   const limit = call.timeoutMs === undefined ? '' : `, limit ${duration(call.timeoutMs)}`
   return `${duration(call.durationMs)} for ${call.matcher}, looked ${plural(call.attempts, 'time')}${limit}`
 }

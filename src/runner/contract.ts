@@ -1,13 +1,22 @@
 import type { LoadedConfig } from '../config/loaded.ts'
-import type { SecretContext } from '../config/types.ts'
+import type { DiagnosticsConfig, SecretContext } from '../config/types.ts'
+import type { HostEvaluation } from '../protocol/evaluation.ts'
 import type { CollectedTest } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { HostCheck } from '../protocol/host-check.ts'
 import type { LastRunTest } from '../protocol/last-run.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
+import type { Requirement } from './fingerprint.ts'
+import type { HostPreparations } from './preparation.ts'
+import type { SessionOptions } from './sessions.ts'
 
+export type { DiagnosticsConfig, StrictDiagnostics } from '../config/types.ts'
 export type { HostCheck } from '../protocol/host-check.ts'
+export type { HostEvaluation, HostEvidence } from '../protocol/evaluation.ts'
+export type { Requirement } from './fingerprint.ts'
+export type { CleanupContext, HostPreparation, HostPreparations, PreparationAnswer, PreparationContext, PreparedState } from './preparation.ts'
+export type { ActiveSessions, SessionLimits, SessionOptions } from './sessions.ts'
 
 /** What stops a run from outside. The run stops the same way for each; its exit code says which it was. */
 export type StopSignal = 'SIGINT' | 'SIGTERM'
@@ -102,6 +111,12 @@ export type RunOptions = {
    */
   browsers?: number
   /**
+   * Refuses a run whose files mark any test or block with `only`, as a usage failure before any test runs. The text
+   * says why, and ends the failure's message: the command line refuses `only` when CI is set, unless `--allow-only`
+   * is given. Absent, `only` narrows the run and the reports say so.
+   */
+  forbidOnly?: string
+  /**
    * The files are Playwright test files. Their imports of `@playwright/test` resolve to Retest's own
    * `/playwright` subpath, relative imports may leave out their extension, and the run says so in `run.started`.
    */
@@ -117,6 +132,34 @@ export type RunOptions = {
    * file a selected test comes from is a usage failure before any test runs.
    */
   hostChecks?: Readonly<Record<string, readonly HostCheck[]>>
+  /**
+   * Required AI checks the parent runs after a test's body and its host checks, on that attempt's pages, keyed as
+   * `hostChecks` are. Each has an id that never changes, its criteria, its evidence and, optionally, its judge. Test
+   * code cannot skip, weaken or answer one. A key that names no selected test, a judge the config lacks or an app a
+   * test does not use is a usage failure before any test runs.
+   */
+  hostEvaluations?: Readonly<Record<string, readonly HostEvaluation[]>>
+  /**
+   * The owner this run's browser sessions count against and the budget they come from. Each attempt reserves a session
+   * for each of its apps, all at once, before its first action, and waits for them in turn, at most `waitMs`; one that
+   * gets none does not run. Absent: sessions are not counted, and the browser pool works as before.
+   */
+  sessions?: SessionOptions
+  /**
+   * Preparation and cleanup the parent runs for each attempt, keyed as `hostChecks` are. A preparation runs once the
+   * attempt holds its browsers, locks and sessions and before it opens a page; one that fails, does not answer in time
+   * or answers what Retest cannot read ends the attempt with `setup_failed`, and the body never runs. Each cleanup runs
+   * once the attempt is over, within its own time, and its failure is reported beside the attempt's, never in its place.
+   */
+  prepare?: HostPreparations
+  /**
+   * The requirement version the host's checks belong to, and, once frozen, each check's fingerprint. With it, every host
+   * check needs an id, and a check whose content differs from its frozen fingerprint is refused by name before any test
+   * runs.
+   */
+  requirement?: Requirement
+  /** Each app's build as the host knows it, such as a commit or an image digest, by app name. Each attempt records it. */
+  appBuilds?: Readonly<Record<string, string>>
   /** The test process's whole environment. Absent: the parent's, without the variables secrets read. */
   testEnvironment?: Readonly<Record<string, string>>
   /**
@@ -125,6 +168,13 @@ export type RunOptions = {
    * `rootDir`.
    */
   lastRunFile?: string | false
+  /**
+   * Console, runtime error and network capture for this run, in the shape a config's `diagnostics` takes. Given, it
+   * replaces the config's whole block. A strict policy is enforced by this process from what the pages did, whatever
+   * the test code does; a required capture keeps a test from passing when its capture is not complete. A block that
+   * cannot be read is a usage failure before any test runs.
+   */
+  diagnostics?: DiagnosticsConfig
 }
 
 export type ChildOutput = { file: string; stream: 'stdout' | 'stderr'; text: string }

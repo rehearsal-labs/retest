@@ -15,6 +15,8 @@ export type TestDescription = {
   location: SourceLocation
   /** A `test.for` row's number in its list, from 1. */
   row?: number | undefined
+  /** Declared with `test.skip`, or inside `test.describe.skip`. */
+  skip?: true | undefined
   describePath?: string[] | undefined
   variant?: Variant | undefined
   variantKey?: string | undefined
@@ -55,6 +57,8 @@ export class RunRecord {
   /** Every browser the run started, in order. */
   readonly browsers: EventOfType<'browser.started'>[] = []
   finished: EventOfType<'run.finished'> | undefined
+  /** How `test.only` narrowed the run, when it did. */
+  narrowed: EventOfType<'run.narrowed'> | undefined
   last: RetestEvent | undefined
   readonly files: Map<string, FileRecord> = new Map()
   /** Keyed by `resultKey`. */
@@ -75,6 +79,9 @@ export class RunRecord {
         return
       case 'run.finished':
         this.finished = event
+        return
+      case 'run.narrowed':
+        this.narrowed = event
         return
       case 'app.started':
       case 'app.reused':
@@ -142,6 +149,7 @@ export class RunRecord {
       variantKey: described.variantKey,
       setup: described.setup,
       setupFor: described.setupFor,
+      skip: described.skip,
       events: [],
     }
     this.tests.set(key, test)

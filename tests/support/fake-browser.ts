@@ -246,6 +246,17 @@ export class FakePage implements OwnedPage {
         return this.#check(command, timeoutMs, signal)
       case 'scroll':
         return this.#scroll(command, timeoutMs, signal)
+      case 'observePage': {
+        const title = this.#rawTitle()
+        const observation = { url: this.url ?? null, title: this.navigating ? null : (title ?? '') }
+        const base = this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }
+        return { ok: true, kind: 'observePage', observation, changes: this.changes, ...base, ...this.#facts() }
+      }
+      case 'reload':
+      case 'goBack':
+      case 'goForward':
+      case 'hover':
+        return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${describeCommand(command)}.` } }
     }
     const testId = command.locator.by === 'testId' ? command.locator.value : undefined
     const touch = this.options.emulation?.touch === true

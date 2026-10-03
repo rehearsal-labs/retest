@@ -1,5 +1,8 @@
 import type { Counts, RetestEvent, RunStatus, TestStatus } from '../protocol/events.ts'
+import type { CleanupRecord, PreparationRecord } from '../protocol/execution.ts'
+import type { Narrowed } from '../protocol/result.ts'
 import { truncateText, type FailureClass, type FailureDetail, type TruncatedText } from '../protocol/failures.ts'
+import { formatLine } from '../protocol/location.ts'
 import { listWords } from '../shared/list-words.ts'
 
 /** How many characters of a recorded value a terminal report shows. `inspect --json` keeps them all. */
@@ -25,6 +28,9 @@ const failureLabels: Record<FailureClass, string> = {
   usage: 'Usage error',
   interrupted: 'Interrupted',
   reporting_failed: 'Reporting failed',
+  evaluation_failed: 'AI check failed',
+  evaluation_inconclusive: 'AI check undecided',
+  evaluation_error: 'AI check error',
 }
 
 export function failureLabel(failureClass: FailureClass): string {
@@ -37,6 +43,7 @@ const statusLabels: Record<TestStatus, string> = {
   error: 'Error',
   not_run: 'Not run',
   inconclusive: 'Inconclusive',
+  skipped: 'Skipped',
 }
 
 /** @example statusLabel('not_run') // 'Not run' */
@@ -80,17 +87,89 @@ export function countParts(counts: Counts): string[] {
     [counts.inconclusive, 'inconclusive'],
     [counts.passed, 'passed'],
     [counts.notRun, 'not run'],
+    [counts.skipped ?? 0, 'skipped'],
   ]
   return parts.filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`)
 }
 
-/** What a reader must know about how the run ended besides its exit code. */
-export function runNotes(result: { status: RunStatus; complete: boolean }): string[] {
-  return [...(result.status === 'interrupted' ? ['interrupted'] : []), ...(result.complete ? [] : ['incomplete'])]
+/** What a reader must know about how the run ended besides its exit code: that it checked less than its files hold. */
+export function runNotes(result: { status: RunStatus; complete: boolean; narrowed?: Narrowed | undefined }): string[] {
+  return [
+    ...(result.status === 'interrupted' ? ['interrupted'] : []),
+    ...(result.complete ? [] : ['incomplete']),
+    ...(result.narrowed === undefined ? [] : ['narrowed by test.only']),
+  ]
 }
 
 export function totalTests(counts: Counts): number {
-  return counts.passed + counts.failed + counts.error + counts.notRun + counts.inconclusive
+  return counts.passed + counts.failed + counts.error + counts.notRun + counts.inconclusive + (counts.skipped ?? 0)
+}
+
+/**
+ * How `test.only` narrowed a run, as the warning a report prints.
+ *
+ * @example describeNarrowed({ only: [{ file: 'a.retest.ts', line: 12, column: 1 }], kept: 2, collected: 14 }) // 'test.only at a.retest.ts:12 keeps 2 of 14 tests, so the run checks less than the suite.'
+ */
+export function describeNarrowed(narrowed: Narrowed): string {
+  const places = listWords(narrowed.only.map((location) => formatLine(location)), 'and')
+  return `test.only at ${places} keeps ${narrowed.kept} of ${plural(narrowed.collected, 'test')}, so the run checks less than the suite.`
+}
+
+/**
+ * The locks an attempt took, and how long it waited for them.
+ *
+ * @example describeLocks({ locks: ['inbox'], waitedMs: 2100 }) // 'holds lock inbox, after waiting 2.1s'
+ */
+export function describeLocks(event: { locks: readonly string[]; waitedMs: number }): string {
+  const held = `holds ${event.locks.length === 1 ? 'lock' : 'locks'} ${listWords(event.locks, 'and')}`
+  return event.waitedMs === 0 ? held : `${held}, after waiting ${formatDuration(event.waitedMs)}`
+}
+
+/**
+ * The sessions an attempt reserved for its owner, and how long it waited for them.
+ *
+ * @example describeSessions({ owner: 'agent-1', sessions: 2, waitedMs: 1500 }) // 'holds 2 sessions of agent-1, after waiting 1.5s'
+ */
+export function describeSessions(event: { owner: string; sessions: number; waitedMs: number }): string {
+  const held = `holds ${plural(event.sessions, 'session')} of ${event.owner}`
+  return event.waitedMs === 0 ? held : `${held}, after waiting ${formatDuration(event.waitedMs)}`
+}
+
+/**
+ * The sessions an attempt gave back, and when.
+ *
+ * @example describeSessionsReleased({ owner: 'agent-1', sessions: 2, after: 'browser_closed' }) // 'gave back 2 sessions of agent-1 once their browser closed, since their contexts could not be closed'
+ */
+export function describeSessionsReleased(event: { owner: string; sessions: number; after: 'contexts_closed' | 'browser_closed' }): string {
+  const given = `gave back ${plural(event.sessions, 'session')} of ${event.owner}`
+  return event.after === 'contexts_closed' ? `${given} once their contexts closed` : `${given} once their browser closed, since their contexts could not be closed`
+}
+
+/**
+ * A host's preparation of an attempt, as one line.
+ *
+ * @example describePreparation({ key: 'a.retest.ts', outcome: 'prepared', recipe: 'tasks@3', apps: ['web'], backendData: 'prepared', durationMs: 120 }) // 'prepared by the host for a.retest.ts: tasks@3'
+ */
+export function describePreparation(record: PreparationRecord): string {
+  const subject = `by the host for ${record.key}`
+  switch (record.outcome) {
+    case 'prepared':
+      return `prepared ${subject}: ${record.recipe ?? 'nothing to prepare'}${record.seed === undefined ? '' : `, seed ${record.seed}`}`
+    case 'not_run':
+      return `preparation ${subject} not run`
+    default:
+      return `preparation ${subject} ${record.outcome === 'uncertain' ? 'could not be confirmed' : record.outcome}${record.reason === undefined ? '' : `: ${record.reason}`}`
+  }
+}
+
+/**
+ * A host's cleanup of an attempt, as one line.
+ *
+ * @example describeCleanup({ key: 'a.retest.ts', outcome: 'done', durationMs: 40 }) // 'cleaned up by the host for a.retest.ts'
+ */
+export function describeCleanup(record: CleanupRecord): string {
+  if (record.outcome === 'done') return `cleaned up by the host for ${record.key}`
+  return `cleanup by the host for ${record.key} ${record.outcome === 'timed_out' ? 'did not finish' : 'failed'}${record.reason === undefined ? '' : `: ${record.reason}`}`
 }
 
 /**
