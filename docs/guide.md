@@ -6,11 +6,13 @@ Retest runs TypeScript test files against Chromium-family browsers, through its 
 
 Everything here was checked on macOS arm64, with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker, with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3's first part adds `press`, host checks, observations, a proxy per target and a test environment. All of its checks ran on macOS. On Linux, its own integration checks ran in Docker with Google Chrome 154 and Debian's Chromium 154. Retest handles the SIGTERM a CI runner sends on cancel, but it has not run on a CI runner yet.
 
+Some rules on this page were checked only in unit tests with the fake browser, not on Chrome: a finder after a step that keeps several elements; `first().nth()` refusing; the modifier rules of `press` beyond the shortcuts the Chrome checks press, `Shift+Tab` among them; the macOS editing commands other than `Meta+A`, and several of them, `Alt+Delete`, `Meta+ArrowUp` and `Meta+ArrowDown` among them, appear in no test at all; `check` on a `switch`, `menuitemcheckbox`, `menuitemradio` or `aria-checked="mixed"`; a wheel another element takes; `getByLabel` on a `slider`, `spinbutton` or `switch`; `toContainText` with a `RegExp`; `.not.toBeChecked()` on an element that cannot be checked; `.not.toHaveText()` on no match; and the 65,536-character limit and the "could not judge" negation, which are checked as functions alone.
+
 The package is not published and is marked private. Its intended name is `@rehearsal-labs/retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
 
 ## Prerequisites
 
-- Node.js 24.12 or later. Retest runs `.ts` files with Node's built-in type stripping.
+- Node.js 24.12 or later. Retest loads `.ts` files with Node's own TypeScript transformer, so TypeScript is needed only to check types; see [TypeScript and imports](#typescript-and-imports).
 - An installed Chromium, Google Chrome or Microsoft Edge. Retest downloads no browser. Where a path is asked for, give the executable itself, not a macOS app bundle.
 - macOS or Linux. Linux was verified only inside Docker, on arm64; see [Run in a container](#run-in-a-container). Retest relies on POSIX process groups, so Windows does not work.
 
@@ -64,7 +66,7 @@ npx retest run
 
 - `retest.config.ts`, with the block that registers its types;
 - `tests/example.retest.ts`;
-- `tsconfig.retest.json`, with the flags that make `tsc` reject what Node's type stripping cannot run;
+- `tests/tsconfig.json`, which extends the project's own `tsconfig.json` when there is one and lets `tsc` pass what Retest loads and refuse what it does not; see [TypeScript and imports](#typescript-and-imports);
 - `.github/workflows/retest.yml`, only with `--ci github`;
 - the `test:e2e` and `typecheck:e2e` scripts in `package.json`, which it creates when there is none;
 - `.retest/` in `.gitignore`.
@@ -73,11 +75,11 @@ It never overwrites a file. A file that is already there is reported as "left as
 
 It asks questions only at a terminal where no coding agent is detected. Each question has a flag: `--app name=url`, `--start "command"` and `--browser chromium|chrome|edge`. `--yes` takes the default for every question without a flag. The default browser is the first one installed where Retest looks: Chrome, then Edge, then Chromium from `RETEST_CHROMIUM`.
 
-A project that does not say `"type": "module"` in `package.json` gets a note: add it, or the type check reads the tests as CommonJS.
+A project that does not say `"type": "module"` in `package.json` gets a note: add it, or Node guesses each test file's module format and warns that it did.
 
 ## The config
 
-A project's config is `retest.config.ts` in the folder Retest runs from, or the file `--config <path>` names. Retest imports it with Node's type stripping, in its own process only. The test files never load it.
+A project's config is `retest.config.ts` in the folder Retest runs from, or the file `--config <path>` names. Retest imports it in its own process only, as it loads test files; see [TypeScript and imports](#typescript-and-imports). The test files never load it.
 
 ```ts
 import { app, chrome, chromium, defineConfig, env } from '@rehearsal-labs/retest'
@@ -99,6 +101,7 @@ const config = defineConfig({
   secrets: { password: env('TASK_APP_PASSWORD') },
   tags: ['smoke', 'roles', 'browsers', 'phone'],
   states: ['signed-in'],
+  locks: ['saves'],
   timeouts: { action: 5000, assertion: 5000, test: 30_000 },
 })
 
@@ -119,7 +122,9 @@ The `declare module` block registers the config's type once, for every file in t
 
 - `apps` in a test takes only the config's app names, and a test can only use the apps it declares.
 - `tags`, `state`, `secret()` and `getByTestId()` take only the config's tags, states, secrets and test ids. A config that lists no `tags`, `states` or `testIds` accepts any string for them. One that declares no `secrets` accepts none.
+- `locks` in a test takes only the config's locks. A config that lists no `locks` accepts none.
 - `tap()` exists only on an app whose every target emulates a touch screen.
+- An iOS simulator or macOS app's page has no `goto`, `select`, `check` or `uncheck`. Its elements take `tap()` on iOS and `click()` on macOS. A wrong method is a type error that says what to use.
 
 Without a registered config, a test may not declare `apps` or `state`: the type error says how to register. `page` still works, and so do any tag, secret name and test id.
 
@@ -139,11 +144,14 @@ The type check helps TypeScript callers only. Retest checks the same things agai
 | `testIds` | The test ids `getByTestId` accepts, as a list or an object of constants. Only the type check reads it |
 | `tags` | The tags tests may use. `--tag` refuses any other |
 | `states` | The names `test.setup` may save |
+| `locks` | The shared state tests may hold with `locks`. A run refuses any other |
 | `timeouts` | Budgets that replace the defaults. `--timeouts` replaces these in turn |
+| `evaluation` | The AI judges, the default judge, their time and limits; see [AI checks](#ai-checks) |
+| `diagnostics` | Console and network capture, its strict and required policies and its limits; see [Console and network diagnostics](#console-and-network-diagnostics) |
 
-Names of apps, targets, secrets, tags and states hold letters, digits, `_` and `-`, and start with a letter. A tag cannot be `and`, `or` or `not`. `executablePath` and `start.cwd` are relative to the config's folder. `baseUrl` and `start.ready` are http or https addresses. A key set to `undefined` counts as absent. An unknown key is an error.
+Names of apps, targets, secrets, tags, states and locks hold letters, digits, `_` and `-`, and start with a letter. A tag cannot be `and`, `or` or `not`. `executablePath`, `appPath` and `start.cwd` are relative to the config's folder. `baseUrl` and `start.ready` are http or https addresses. A key set to `undefined` counts as absent. An unknown key is an error.
 
-An invalid config is a usage error, exit 2, before anything runs. The message names the file and each key at fault, such as `apps.web.baseUrl: expected an http or https URL, received "ftp://tasks.example"`. Within one app, only the first problem is named until it is fixed.
+An invalid config is a usage error, exit 2, before anything runs. The message names the file and each key at fault, such as `apps.web.baseUrl: expected an http or https URL, received "ftp://tasks.example"`. Every problem is named at once, except that a target whose shape cannot be read stops at that.
 
 ### Targets
 
@@ -154,6 +162,14 @@ A target is a browser to run in:
 - `edge({ channel?, headless?, emulate? })` runs Microsoft Edge the same way.
 
 Each of them also takes `proxy`, described [below](#proxy).
+
+The config also accepts four targets that Retest has no driver for yet:
+
+- `{ browser: 'firefox' }` and `{ browser: 'webkit' }`, which take `executablePath`, `headless`, `emulate`, `viewport` and `proxy` as `chromium()` does; no test puts a `viewport` on either yet.
+- `{ platform: 'ios-simulator', appPath, device, runtime }`: an app on an iOS simulator. `appPath` is its simulator build, the `.app` bundle. `device` and `runtime` name the simulator, such as `'iPhone 17'` and `'26.0'`.
+- `{ platform: 'macos', appPath }`: an app on this Mac, by its `.app` bundle.
+
+A run refuses every test that needs one of these as soon as it has planned, before it starts any server or browser for that test. The test is not run, with `setup_failed`: "Retest has no driver for Firefox yet, so it cannot start the target firefox of the app web." The other tests run as usual. `doctor` says the same of the target. An app's targets are all browsers, all iOS simulators or all macOS apps, and a native app takes no `baseUrl`.
 
 Retest finds Chrome and Edge where they install: on macOS in `/Applications` and `~/Applications`, and on Linux in the standard paths. A browser that is not there is a setup failure that lists the paths it tried, before any test that needs it. Only `chrome()` stable and `chromium({ executablePath })` were run. Edge and the other Chrome channels were not installed on the machine Retest was checked on.
 
@@ -207,7 +223,9 @@ Each run of a test is a variant, such as `desktop=chromium`. Its key is its `app
 - A name from the built-in table: `'Pixel 9'`, `'Galaxy S24'`, `'iPhone 17'` or `'iPad Pro 11'`. Each gives a viewport, a pixel ratio, `isMobile`, a touch screen and a user agent. An Android device's user agent names the running browser's own major version. The sizes come from published specifications and were not measured on the devices.
 - An object: `{ viewport: { width, height }, deviceScaleFactor, touch, isMobile?, userAgent? }`. `isMobile` defaults to false. Without `userAgent`, the browser keeps its own.
 
-An emulated target is marked "emulated" in every event, result and report. A named device sends no user-agent client hints, so the page sees only the device's user agent.
+`viewport: { width, height }` on a target sizes its pages and nothing else, as in `chromium({ viewport: { width: 1280, height: 720 } })`. It is the same as `emulate: { viewport: { width, height }, deviceScaleFactor: 1, touch: false }`: no touch screen, a pixel ratio of 1, and the browser's own user agent. A target takes `viewport` or `emulate`, not both; a config with both is refused before anything runs. A native app takes neither.
+
+An emulated target is marked "emulated" in every event, result and report, a target with a viewport included. A named device sends no user-agent client hints, so the page sees only the device's user agent.
 
 On a touch screen, `click()` is sent as a tap and recorded as a tap.
 
@@ -221,6 +239,28 @@ An app with `start: { command, ready, cwd?, timeoutMs? }` gets its server starte
 4. When the run ends, it sends the group SIGTERM, then SIGKILL after one second.
 
 A server that exits early, or never answers, is a setup failure for every test that needs it: they do not run. The server's output is in its log, and the failure says where. If Retest itself is killed with SIGKILL, nothing is left to stop a server it started.
+
+### Locks
+
+Tests in different files run at the same time, so two that share something outside the page, such as one inbox, one staging account or one counter on a server, can disturb each other. A lock keeps them apart:
+
+```ts
+// retest.config.ts
+locks: ['inbox'],
+
+// a test file
+test('reads the code from the inbox', { locks: ['inbox'] }, async ({ page }) => {})
+```
+
+- Two tests that hold a common lock never run at the same time, across workers and browsers. Tests that hold different locks, or none, run beside them as before.
+- A test takes all of its locks at once, or waits and takes none, so two tests cannot each hold what the other waits for. `test.describe` passes its `locks` down, and a test's own add to them.
+- When a lock frees, the waiting tests are served in the run's order, the one planned first going first. A test that waits for two locks keeps both from every test planned after it, so it is never overtaken for ever.
+- A test waits for its locks once its apps are ready and before its budget starts. The wait counts against none of its budgets, and its `durationMs` leaves it out.
+- `lock.acquired` records, before `test.started`, the locks an attempt holds, how long it waited for them in `waitedMs`, and in `heldBy` the tests that held one of them when it asked. The human report adds `holds lock inbox, after waiting 2.1s` under the test, and `inspect --test` shows it in the timeline.
+- A lock name must be in the config's `locks`. Any other, or any lock when the config lists none, fails its file with a usage error that names the declared ones. Without a config, as with `--browser`, any name holds.
+- A lock lasts one run. Two runs at once, or another process, do not see each other's locks.
+
+The example's count of every save holds the lock `saves`, as does every test that saves; [examples/tasks](../examples/tasks) shows it.
 
 ## Write a test
 
@@ -242,6 +282,7 @@ test('saves a task', { tags: ['smoke'] }, async ({ page }) => {
 - `apps`: the apps the test uses. Its function then receives one page per app, by name, instead of `page`.
 - `tags`: tags that `--tag` selects it by.
 - `state`: a saved sign-in state to start from. With several apps, give one per app: `state: { web: 'signed-in' }`.
+- `locks`: the shared state it holds while it runs, described under [Locks](#locks).
 - `timeout`: its own budget in milliseconds.
 
 Names are unique in a file. [examples/tasks/tests](../examples/tasks/tests) uses every part of the API.
@@ -256,6 +297,8 @@ Names are unique in a file. [examples/tasks/tests](../examples/tasks/tests) uses
   - Each hook is reported as a step marked `beforeEach` or `afterEach`.
 - `test.for(rows)(name, options?, fn)` declares one test per row. Each `$key` in the name takes the row's `key`. The function gets the row after the context. Two rows that make the same name fail collection.
 - `test.step(name, fn)` runs part of a test as a reported step and returns what `fn` returns.
+- `test.skip(name, options?, fn)` declares a test that does not run, and `test.describe.skip` a block whose tests do not. Each is reported as `skipped`, its own status and never a pass: no `test.started`, no pages, no setup run for it, and `skipped` in `counts`. `test.finished` records it. A skipped test inside a block marked only is still skipped. A check a host requires of a skipped test, a host check or an AI check, is not made, and test code cannot waive it, so the run cannot pass; see [Host checks](#host-checks).
+- `test.only(name, options?, fn)` and `test.describe.only` single out tests: a run keeps only those, in every file it loads, and leaves the rest out. Inside a block marked only, every test runs unless a test or block within it is marked only too. Setups the kept tests need still run. [Choosing tests](#choosing-tests) says what a run with `only` prints, and why CI refuses it.
 
 ### Sign-in state
 
@@ -293,61 +336,101 @@ A locator is a recipe, not an element. Retest finds the element again for every 
 | `getByRole(role, { name?, exact? })` | Elements with this ARIA role and, when given, this accessible name |
 | `getByLabel(text, { exact? })` | Form controls whose accessible name matches: roles `textbox`, `searchbox`, `combobox`, `listbox`, `checkbox`, `radio`, `switch`, `slider` and `spinbutton` |
 | `getByText(text, { exact? })` | The innermost elements whose text matches |
+| `getByPlaceholder(text, { exact? })` | Elements whose `placeholder` attribute matches |
+| `locator(selector)` | Elements a CSS selector matches, as `querySelectorAll` matches it |
 
 How names and text match:
 
 - Both sides are trimmed, and each run of spaces or line breaks reads as one space.
 - `exact` defaults to true: the whole string, case and all. `name: 'Save'` never matches "Save draft" or "save".
 - `exact: false` matches any part, in any case. `name: 'save', exact: false` matches "Save", "save" and "Save draft".
+- A `RegExp` in place of the text, or as `name`, is searched for anywhere in the trimmed text, with its own flags: `getByText(/^Saved \d+ tasks$/)` or `getByRole('button', { name: /save/i })`. A `RegExp` takes no `exact`, and giving both fails `usage`.
+
+Finding inside a locator:
+
+- Every finder above is also a method of a locator. It finds elements inside the elements that locator keeps, never those elements themselves: `page.getByTestId('inbox').getByRole('button', { name: 'Delete' })`.
+- A step looks inside every element the step before it kept, so `page.locator('li').getByRole('button')` finds the buttons of every list item.
+- `first()`, `last()` and `nth(index)` keep one of a locator's matches, by its place in the document. `nth` counts from 0, and from the end when negative, so `nth(-1)` is the last. An index past the matches keeps none, and an action waits as it does for no match. A locator chooses once: `first().nth(1)` fails `usage`. Choose, then find inside: `getByRole('listitem').nth(1).getByRole('button')`.
+- An action or a matcher that finds nothing names the step that kept nothing, as in "getByTestId('trash') matched no element" or "getByRole('listitem') matched 4 elements, and nth(9) keeps none of them."
+- Reports, events and failures write a chain as the test wrote it. An event's `locator` holds the last step, with the steps before it in `within`.
+
+CSS:
+
+- `locator(selector)` takes CSS only. XPath, such as `//button`, and Playwright's selector engines, such as `text=Save` or `div >> span`, fail `usage` before anything is sent.
+- A selector the browser cannot read, such as one with `:has-text()`, fails at once as `usage`, with the browser's reason.
+- Inside a locator, a selector matches as that element's own `querySelectorAll` does: the elements below it that match, and a combinator may reach above it.
 
 Where the name comes from:
 
 - `getByRole` and `getByLabel` use the accessibility tree Chrome computes. So the name comes from `aria-label`, `aria-labelledby`, `<label for>`, a wrapping `<label>`, `title`, a placeholder or the content, as Chrome decides. Retest does not compute names itself.
+- Chrome gives a table row or a list item a name only from `aria-label` or `aria-labelledby`, not from its text, as Retest reads its tree. So `getByRole('row', { name: 'Ada 36' })` is expected to find no row of a plain table; no check asks for a row or a list item by name. Retest's checks find a row by its place, as in `getByRole('row').nth(1)`, and a cell by its name. Find the row by its place or by a test id.
 - They leave out elements Chrome leaves out of that tree: `aria-hidden`, `display: none`, `hidden`, `visibility: hidden` and `inert`.
 - `getByText` reads the text in the page. It skips `script`, `style`, `template` and `noscript`. It finds hidden elements too, and reports them as not visible.
+- `getByPlaceholder` reads the attribute as the page wrote it.
 
-All four search only the top-level document. They do not look into shadow roots or frames.
+All of them search only the top-level document. They do not look into shadow roots or frames. A Playwright test file run with `--playwright` finds by Playwright's rules where Retest can; see [Run Playwright test files](#run-playwright-test-files).
 
 ### Actions
 
 - `page.goto(url)` opens a URL and waits for the `load` event. A relative URL resolves against the app's base URL. A page that replaces itself before `load` is followed to its own `load`.
+- `page.reload()` reloads the page and waits for its `load`.
+- `page.goBack()` and `page.goForward()` move one entry through the page's history, as the browser's buttons do, and wait for that page, or for a move within the document. A page with no entry that way fails `not_actionable`, and nothing is sent.
+- When the browser gives up the navigation of a `reload`, `goBack` or `goForward` without opening a document, as it does for a response with no content (204), which was run, or a download, which was not, the action fails `not_actionable` at once, naming the address it gave up, with `details.inputSent: true`. The page stays where it was.
 - `locator.fill(value)` focuses a text-like `input` or a `textarea`, selects its value and types the new one. `value` is text or a `secret()`.
 - `locator.click()` presses the mouse at the element's centre once it is visible, stable, enabled and not covered. On a touch screen it taps.
+- `locator.hover()` moves the mouse to the element's centre once it is visible, stable and not covered. A disabled element can be hovered.
 - `locator.tap()` taps the element's centre. It exists only on an app whose every target emulates a touch screen.
-- `locator.press(key)` focuses the element and presses one key on it. The element must be attached, visible and enabled, and keep the keyboard focus once Retest focuses it. There is no check at a point, since a key does not go through one.
-- `page.keyboard.press(key)` presses one key on whatever holds the keyboard focus, with no checks.
-- `locator.select(choice)` chooses options of a `<select>`: by label, by `{ value }`, or a list of them.
+- `locator.press(key)` focuses the element and presses one key, or one shortcut, on it. The element must be attached, visible and enabled, and keep the keyboard focus once Retest focuses it. There is no check at a point, since a key does not go through one.
+- `page.keyboard.press(key)` presses one key, or one shortcut, on whatever holds the keyboard focus, with no checks.
+- `locator.select(choice)` chooses options of a `<select>` with the keyboard: by label, by `{ value }`, or a list of them.
 - `locator.check()` and `locator.uncheck()` tick and untick a checkbox, a radio button or an element with a checkable role.
 - `locator.scroll({ x, y })` turns the mouse wheel at the element's centre. `page.scroll({ x, y })` turns it at the centre of the viewport.
+
+A navigation that `reload`, `goBack` or `goForward` started is recorded with the cause `goto`, as a goto's is.
+
+Two reads tell a test about the page. `await page.url()` is the page's address as Retest records it: its origin and path, with no query or fragment. `await page.title()` is its title, cut to 300 code units and trimmed at its end, or empty for a page with none; while another document is on its way, it waits for that document. To wait for an address or a title, use `toHaveURL` or `toHaveTitle`, below.
 
 Retest checks the element just before it acts, and a guard in the page watches the input itself. If the press, the release or the click lands on another element, Retest stops that event before any listener of the page hears it. The action then fails `not_actionable` and names the element that took it. While the browser is opening another document in the frame, no action starts: Retest waits for that document and looks for the element there, and an action whose time runs out meanwhile fails `not_actionable`, naming the address the page was opening. Typing that arrives in a document that replaced the one Retest checked is stopped by that document's own guard, and the fill fails `not_actionable`, naming the document. Two cases end as `outcome_unknown` instead, because Retest cannot see where the input went:
 
 - the press never reaches the element's document, as when a same-origin frame covers the element;
 - the page moves to a new document before the guard reports, and that document received no typing.
 
-The guard covers press, release, click, touch and typing events, and the wheel while a scroll is on its way. Hover events, such as `pointerover` when the mouse arrives, still reach the page, and so do the `input` and `change` events a checkbox fires after a click. Downloads are refused: Retest asks the browser to deny them in every context it opens.
+The guard covers press, release, click, touch and typing events, the wheel while a scroll is on its way, and the mouse's arrival while a hover is. A hover's `pointerover` or `pointermove` must reach the element. If another element takes it, Retest stops the event before the page's listeners hear it, and the hover fails `not_actionable`, naming that element; the browser's own `:hover` style may already show on it. The mouse's move before a click is not guarded, so hover events such as `pointerover` still reach the page then, and so do the `input` and `change` events a checkbox fires after a click. Downloads are refused: Retest asks the browser to deny them in every context it opens.
 
 ### Pressing keys
 
-`press` takes one key at a time:
+`press` takes one key, with modifiers when the test names them:
 
 - A named key: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, `Space`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Home`, `End`, `PageUp` or `PageDown`.
-- `Shift+` and a named key, such as `Shift+Tab`. Shift goes with named keys only.
 - One character, such as `a`, `7`, `?` or `é`. Retest presses the key that types it on a US keyboard, with Shift for an uppercase letter or a symbol such as `!`. A character no US key types, such as `é`, is sent as its text alone.
+- Modifiers and a key, joined by `+`: `Shift+Tab`, `Control+A`, `Meta+Shift+Z`, `Control+Alt+Delete`, or `Control++` for the plus key. The modifiers are `Shift`, `Control`, `Alt`, `Meta` and `ControlOrMeta`, which is Meta on macOS and Control elsewhere.
 
-Control, Alt and Meta are refused, in the type check and when the test runs, as `unsupported`. An editing shortcut needs each platform's own command, and the platforms differ. The type check also refuses a misspelt key, such as `press('Entr')`. A key it cannot read, such as a `string`, is checked when the test runs; an unknown one fails `usage`, and the message lists what `press` takes. `KeyArgument<K>` lets a helper take a key the way `press` does.
+How a shortcut is pressed:
+
+- Each modifier goes down in the order written, stays down for the key, and comes up in reverse, so the page hears a `keydown` and a `keyup` for each, as from a person's keyboard. The key's own events carry every modifier held.
+- A letter in a shortcut names its key, whatever its case: `Control+A` is `Control+a`. Shift is pressed only when it is written, as in `Control+Shift+T`.
+- A shortcut with Control, Alt or Meta types nothing into a field.
+- `Shift+` with a character and no other modifier fails `usage`: press the uppercase letter itself. A modifier written twice, or one `press` does not know, such as `Ctrl` or `Cmd`, fails `usage` too.
+
+What the browser does with a shortcut:
+
+- The page's own listeners hear it, so an app's shortcut, such as `ControlOrMeta+K` for a palette, works.
+- On macOS, Chrome edits a field only by commands the window system would give it. Retest sends macOS's own command with these shortcuts: `Meta+A` (select all), `Meta+Z` and `Meta+Shift+Z` (undo and redo), `Meta+Backspace`, `Meta` with an arrow key, `Alt+ArrowLeft` and `Alt+ArrowRight`, `Alt+Backspace` and `Alt+Delete`, each arrow also with Shift to extend the selection. Any other shortcut edits nothing on macOS. Of these, `Meta+A` was run.
+- On Linux, Chrome applies its own editing shortcuts, such as `Control+A`. Retest has not run a shortcut on Linux.
+
+The type check refuses a misspelt key, such as `press('Entr')`, and a modifier it does not know, such as `press('Ctrl+a')`. A key it cannot read, such as a `string`, is checked when the test runs; an unknown one fails `usage`, and the message lists what `press` takes. `KeyArgument<K>` lets a helper take a key the way `press` does.
 
 What a press does:
 
 - The key goes down and comes back up as real keyboard input, so the page hears the same events a person's key gives it.
 - Enter in a form field submits the form once. The press passed once its `keydown` reached the field. The page that answers the form is the page's own navigation, and is recorded as one.
 - A `keydown` the page cancels with `preventDefault` still reached its element, and the press passes.
-- The `keydown` decides. It must reach the element or something inside it. If the keyboard focus moved to another element before the key arrived, as when a dialog takes the focus, Retest stops the key before any listener of the page hears it, and the press fails `not_actionable`, naming that element. Once the `keydown` has reached the element, the rest of the keystroke belongs to the page, so a key that makes the page move the focus or submit a form is never stopped halfway.
+- The first `keydown` decides, which for a shortcut is its first modifier's. It must reach the element or something inside it. If the keyboard focus moved to another element before the key arrived, as when a dialog takes the focus, Retest stops the key before any listener of the page hears it, and the press fails `not_actionable`, naming that element. Once the `keydown` has reached the element, the rest of the keystroke belongs to the page, so a key that makes the page move the focus or submit a form is never stopped halfway.
 - A key for the page's keyboard while the focus is inside a frame never reaches the page's document. Retest cannot see where it went, so the press ends `outcome_unknown`, naming the frame.
 - While the browser is opening another document in the frame, no press starts, as for every action.
 - A browser lost after the key went down leaves the outcome unknown: `outcome_unknown`, and the key is never sent again.
 
-Action events record the key in `key`, as the test wrote it. Reports write a press as the test wrote it: `getByLabel('Search').press('Enter')` or `page.keyboard.press('Enter')`.
+Action events record the key in `key`, as the test wrote it. Reports write a press as the test wrote it: `getByLabel('Search').press('Enter')` or `page.keyboard.press('Control+A')`.
 
 ### Choosing, ticking and scrolling
 
@@ -360,7 +443,17 @@ Action events record the key in `key`, as the test wrote it. Reports write a pre
 - An element that is not a `<select>` fails at once as `unsupported`. Choose from a list the page draws itself with `click()`.
 - When the selection already is the one asked for, nothing is sent, and the event says `changed: false`.
 
-`select` is the one action that is not real input. Chrome draws a select's list outside the page, where Retest's input cannot reach it. So Retest sets the selection from its own script, then dispatches `input` and `change`, as the browser does after a person picks. Those two events have `isTrusted` set to false, so a page that ignores untrusted events ignores this select too. The event says `input: 'script'`, and reports say "set by script".
+`select` chooses with the keyboard, as a person can, because Chrome draws a select's list outside the page, where input cannot reach it:
+
+- For a select that takes one option, Retest focuses it and types the shortest start of the option's label that lands on it, as Chrome jumps to the next option whose label starts with what was typed. It waits first until a second has passed since a key last went to that select, so no earlier key joins the typing. An option whose label another option shares is reached by typing its first letter again.
+- For a `<select multiple>`, Retest moves the focus to the first option with Meta held, Control off macOS, steps down the list, and toggles each option whose state is not the one asked for with that modifier and Space. Disabled and hidden options are skipped, as Chrome skips them.
+- Each key must reach the select, as a press's key must, or the select fails as a press would, naming its choice.
+- The page hears the keys and the browser's own `input` and `change` events, trusted, once for each option the select lands on or toggles. An option whose label starts like an earlier option's may be landed on first, and the page hears that option chosen on the way.
+- Then Retest reads the selection until it is the one asked for, or the action budget runs out. It never types again: a select left holding other options fails `not_actionable`, with `details: { check: 'selection', inputSent: true }`.
+- A select whose own `change` takes it off the page, or opens another page, cannot be read afterwards. Retest reads what it holds as its `input` or `change` event arrives, before the page's listeners run, and it passes if that was the selection asked for. A select still on the page is read as it stands, so one whose listener puts another option back fails.
+- Every key of a select goes to the select in the document Retest planned it in. Once a key has made the page set off for another document, Retest types no more, even into a select of the same locator on the next page. The select then passes if it held the options asked for when the last key arrived, and otherwise fails `not_actionable`, saying how many of its keys went and what the select held, with `details.inputSent: true`.
+- An option no key reaches, such as one with no label to type, or a hidden option a list must change, fails `unsupported` at once, and nothing is typed.
+- Only macOS was run. The modifier a list takes on Linux, Control, was never run.
 
 `check()` and `uncheck()`:
 
@@ -374,27 +467,48 @@ Action events record the key in `key`, as the test wrote it. Reports write a pre
 `scroll({ x, y })`:
 
 - `x` and `y` are CSS pixels, positive right and down. Both missing or 0, or either not a finite number, fails `usage`.
-- `locator.scroll` needs the checks a click does, and its `wheel` event must reach the element or something inside it. A `wheel` another element takes is stopped before the page hears it, and the scroll fails `not_actionable`, naming that element. `page.scroll` has no checks.
+- `locator.scroll` needs the checks a click does, and its `wheel` event must reach the element or something inside it. A `wheel` another element takes is stopped before it reaches that element, and the scroll fails `not_actionable`, naming that element. A wheel listener the page puts on the window in the capture phase hears it first, since Retest listens for the wheel only while a scroll is on its way. `page.scroll` has no checks.
 - One wheel event carries the whole distance. The scroll passes once that event reached its element. It says nothing about how far the page moved, since smooth scrolling may still be going. The next action waits for its element to stand still.
-- The distance is the CSS pixels the page scrolls, also on an emulated phone whose page is zoomed out to fit. On a page with an emulated device pixel ratio, the page's own `WheelEvent.deltaY` reads the distance divided by that ratio.
+- The distance is the CSS pixels the page scrolls, also on an emulated phone whose page is zoomed out to fit. What the page's own `WheelEvent.deltaY` reads on a page with an emulated device pixel ratio was not checked.
 - On a touch screen, `scroll` still turns the wheel. It does not swipe.
 - Retest listens for `wheel` only while a scroll is on its way, so the page scrolls as it always does.
 - Every action already brings its element into view. Scroll only for what the page does on scroll, such as loading more items, or enabling a button once a text has been read to its end.
 
-Reports write each of these as the test wrote it, with what the call leaves out: `getByLabel('Toppings').select(['Basil', { value: 'olives' }]), set by script`, `getByLabel('Newsletter').check(), clicked its label`, `getByTestId('agree').check(), already checked, sent nothing`, or `page.scroll({ y: 600 })`.
+Reports write each of these as the test wrote it, with what the call leaves out: `getByLabel('Toppings').select(['Basil', { value: 'olives' }])`, `getByLabel('Newsletter').check(), clicked its label`, `getByTestId('agree').check(), already checked, sent nothing`, or `page.scroll({ y: 600 })`. A run recorded before select used the keyboard says `input: 'script'` on its selects, and reports say "set by script".
 
 ### Matchers
 
-Locator matchers look again until they pass or the assertion budget runs out. They never repeat an action. Await them. The page tells Retest when its document changes, so a look follows a change within about 50 ms; without a change, looks come 50, 100 and 250 ms apart, then every 500 ms.
+Locator matchers look again until they pass or the assertion budget runs out. They never repeat an action. Await them. The page tells Retest when its document changes, so a look follows a change as soon as 50 ms have passed since the previous look; without a change, looks come 50, 100 and 250 ms apart, then every 500 ms.
 
 - `toBeVisible()`: exactly one match, and it is visible.
 - `toBeHidden()`: nothing matches, or nothing that matches is visible.
-- `toHaveText(text)`: exactly one match, whose whole text equals `text`.
-- `toHaveText([...texts])`: the matches, hidden ones included, have exactly these texts, in document order.
+- `toBeChecked()`: exactly one match, a checkbox, a radio button or an element with a checkable role, and it is checked, as `check()` reads it. `aria-checked="mixed"` is not checked.
+- `toBeEnabled()` and `toBeDisabled()`: exactly one match, and it is enabled, or disabled. Disabled is a native control that is disabled, on its own or in a disabled `<fieldset>`, or an element whose nearest `aria-disabled`, on itself or an ancestor, is `true`. Actions check only the native disabled state, so a click still goes to an element that `aria-disabled` alone marks.
+- `toHaveText(text)`: exactly one match, whose whole text equals `text`, or matches a `RegExp` anywhere.
+- `toHaveText([...texts])`: the matches, hidden ones included, have exactly these texts, in document order. The list may hold strings and `RegExp`s.
+- `toContainText(text)`: exactly one match, whose text holds `text`, case and all, or matches a `RegExp` anywhere.
 - `toHaveCount(n)`: exactly `n` matches, visible or not.
-- `toHaveValue(value)`: exactly one field matches, and its whole value is exactly `value`.
+- `toHaveValue(value)`: exactly one field matches, and its whole value is exactly `value`, or matches a `RegExp` anywhere.
 
-`toHaveText` trims both ends and reads each run of spaces or line breaks as one space. Nothing else is loosened, and `toHaveValue` loosens nothing. An observation lists at most 100 matches, so `toHaveText([...])` and `toBeHidden()` cannot pass when more match.
+`toHaveText` and `toContainText` trim both ends and read each run of spaces or line breaks as one space, and a `RegExp` reads the text the same way. Nothing else is loosened, and `toHaveValue` loosens nothing. An observation lists at most 100 matches, so `toHaveText([...])` and `toBeHidden()` cannot pass when more match.
+
+The page has two matchers of its own, which look again in the same way:
+
+- `expect(page).toHaveURL(url)`: the page's whole address, query and fragment included, equals `url`, as Playwright compares it. A relative URL resolves against the app's base URL. A `RegExp` is searched for anywhere in the whole address.
+- `expect(page).toHaveTitle(title)`: the page's whole title equals `title`, with both ends trimmed and each run of spaces read as one, or matches a `RegExp` anywhere. A look while another document is on its way has no title, and passes neither way.
+
+Both read the address and the title as the page has them, up to 65,536 characters each, with every secret value replaced by its placeholder. A page that holds more than that passes neither way. A negation also fails when the part it compares holds a placeholder, since Retest cannot tell what the page showed there; the failure says it could not judge.
+
+The parent judges each passed page matcher on the look it names, as it judges a locator matcher. A look at the page has no `observation` event of its own: the assertion names it in `observationId` and records the page it read in `pageUrl`, the whole redacted address, and `pageTitle`, cut to 300 code units. Navigation events and `page.url()` keep the origin and path only.
+
+`.not` before a locator or page matcher passes only on a look that shows the opposite, as in `await expect(page.getByRole('dialog')).not.toBeVisible()`:
+
+- No element is the opposite only where the matcher says so. `.not.toBeVisible()` passes when nothing matches, as Playwright documents, and so do `.not.toHaveCount(n)` and `.not.toHaveText([...])`, since no match is another count and other texts. Every other negation needs exactly one element: `.not.toHaveText('Draft')` on none fails `not_found`, and on several fails `ambiguous`.
+- `.not.toBeHidden()` passes once exactly one element matches and it is visible. No match fails `not_found`, and several fail `ambiguous`.
+- An element that cannot have the state passes neither way: `.not.toBeChecked()` on a paragraph fails, as `toBeChecked()` does.
+- Events and reports write a negated matcher as `not.toBeVisible`. Value matchers have no `.not`.
+
+Every locator and page matcher takes `{ timeout }` in milliseconds, as in `toBeVisible({ timeout: 2000 })`. It shortens the assertion budget for that call and never lengthens it: a longer one is cut to the budget. The event records the time the assertion had in `timeoutMs`.
 
 Value matchers check at once:
 
@@ -408,7 +522,7 @@ Two more ways to check:
 - `expect.poll(fn, { timeout?, intervals? })` calls `fn` again until its value passes a value matcher or its time runs out. Its time is `timeout`, or the assertion budget. `intervals` are the waits between looks, the last one repeating. `fn` may only read. An action inside it fails the test, because it would run again on every look.
 - `expect.soft(x)` records a failure and lets the test go on. The test fails at the end, with its first failure leading and the others in `failure.details.also`. Every soft failure has its own event, marked `soft: true`.
 
-The type check rejects a value matcher on a locator, a locator matcher on a value, and any matcher on a secret.
+The type check rejects a value matcher on a locator, a locator matcher on a value or a page, a page matcher on a locator, `.not` written twice, and any matcher on a secret.
 
 ### Secrets
 
@@ -423,7 +537,7 @@ await page.getByLabel('Password').fill(secret('password'))
 - The function is called with `{ signal }`. Retest aborts that `AbortSignal` once it stops waiting for the value: when the fill runs out of time, or when the test or the run is stopped. Pass it on, as to `fetch`, so the work stops too. `SecretContext` is its type.
 - The function is called as the fill begins, before Retest looks for the field. A test that types a one-time code waits for the page that asks for it first, as with `await expect(page.getByLabel('Code')).toBeVisible()`, so the code has been sent by then.
 - A secret is bound to origins: those of the base URLs of the test's apps, and any `secretOrigins` lists for it. On any other page, the fill fails `not_actionable`, naming the page's origin, and nothing is typed.
-- Retest checks the origin twice: before it reads the value, and again in the page, just before it types. While it types, it stops the page from leaving for another document. While the browser is already opening another document, the fill waits for it and checks that document instead. A document that still arrives while the text is on its way stops the text itself, since nothing was armed there: the fill fails `not_actionable`, naming the document, and the text reaches no document Retest did not check.
+- Retest checks the origin twice: before it reads the value, and again in the page, just before it types. From the moment the field takes focus until the text is in, it stops the page from leaving for another document; the check that ran shows a page that sets off as the field takes focus kept where it is, with nothing typed, and a page that sets off while the text is on its way was not run. While the browser is already opening another document, the fill waits for it and checks that document instead. A document that still arrives while the text is on its way stops the text itself, since nothing was armed there: the fill fails `not_actionable`, naming the document, and the text reaches no document Retest did not check.
 - Retest writes `{{name}}` in place of every value in all text it records or reports: events, results, logs, app server output, browser logs, the terminal, and every address it records, in every form a URL gives a value, percent-encoded or form-encoded. Page text the test reads is redacted before it reaches the test's process, so a check against it compares `{{password}}`. Each value is hidden in the whole text before Retest quotes, escapes or cuts it.
 - Locators are not redacted. The page matches a locator's text and name against its own text, as it shows it. So a locator that holds part of a value, with the text the page shows beside it, can match it, and a test that tries can learn what the page shows in place of `{{name}}`. Retest refuses, as `usage`, a command whose locator text or name holds a whole value it has read, and never sends it to the page. The refusal does not repeat the text. A locator's text and name are recorded with every value hidden.
 - A fill of a secret records `secret: name` in its event, instead of the length of the text.
@@ -445,13 +559,254 @@ A test that runs out of time ends its file's process, because its code may still
 
 If a browser is lost, the page reports what happened to its command: `session_lost` when the input was never sent, and `outcome_unknown` when it was. Later tests on that browser do not run. Tests on the run's other browsers still do.
 
-### Syntax limits
+### TypeScript and imports
 
-Node strips the types from test files and does not check them. Run `tsc` for that, as `npm run typecheck:e2e` does after `init`.
+Retest loads test files and the config with the TypeScript transformer Node ships, through Node's `module.stripTypeScriptTypes`. It removes types and turns TypeScript-only syntax into JavaScript. It does not check types: run `tsc` for that, as `npm run typecheck:e2e` does after `init`. Node calls the function experimental and says it might change at any time; its documentation lists it as a release candidate. Retest has run it on Node 24.12.0 only, and `engines` asks for 24.12 or later on that one version's evidence.
 
-- Erasable TypeScript only: no `enum`, no namespaces with values, no parameter properties.
-- No JSX, no path aliases, no `tsconfig.json` reading.
-- Relative imports name their extension, as in `import { helper } from './helper.ts'`.
+Types are stripped first, which keeps every line and column where it is. A file that has an enum, a namespace with values or a parameter property is transformed instead, with a source map, so a failure in it, and the stack of an error thrown there, still name its TypeScript line and column.
+
+What loads:
+
+- ES modules in `.ts`, `.mts`, `.js` and `.mjs` files. A CommonJS JavaScript helper, such as a `.cjs` file, loads into them as Node loads it.
+- Enums, namespaces with values and parameter properties.
+- A relative import with or without its extension. `./helper` finds `./helper.ts`, then `./helper.js`, `./helper.mts` and `./helper.mjs`, then the folder's `index.ts` or `index.js`. `./helper.js` loads `./helper.ts` when that file exists, as `tsc` reads it, and `./helper.js` otherwise; `./helper.mjs` and `./helper.mts` work the same way. `.`, `..` and a path ending in `/` load the folder's `index.ts` or `index.js`.
+- The `paths` of the `tsconfig.json` nearest the importing file, at or above its folder, the same rule for test files, helpers and the config. Retest follows `extends`, to a file or a package, allows comments and trailing commas, and reads `paths` from `baseUrl` when one is set, otherwise from the file that declares them. TypeScript 7 removed `baseUrl`, and `paths` work the same without it.
+- An alias tries its targets in order, each with the extensions above. An import none of them finds resolves as Node resolves it, such as a package of that name. An import that cannot be found names the `tsconfig.json` that governed it.
+
+An empty `tsconfig.json`, or one that holds only comments, reads as `{}`, as `tsc` reads it. One that is not JSON with comments, extends a file that is not there or extends itself, or holds `paths` that is not an object of patterns and lists of paths, or that has more than one `*` in a pattern or a target, fails with a message that names the file; nothing else `tsc` would refuse in `paths` is checked. The failure comes before anything loads for the config and for each test file, and for any other file as it imports.
+
+These fail as their file loads, with a message that names the construct and the file:
+
+- CommonJS test files, configs and TypeScript. A `.cts` file does not load, and neither does a test file, a config or a `.ts` file that Node reads as CommonJS and that uses `require()`, `module.exports`, `exports.`, `__dirname` or `__filename`. Write `import` and `export`, and set `"type": "module"`.
+- JSX, in `.tsx` and `.jsx` files or in a `.ts` file. For a `.ts` file, the message names the line.
+- Decorators. Node's transformer leaves them in place, and Node cannot run them. When the project `.ts` file Retest last handed to Node, which is the one that failed to compile when Node compiles each module as it loads, holds an `@` decorator, the message names its line as what may be the cause.
+- A type imported without `type`, because Node keeps every import. Write `import type { Title } from './titles.ts'`. When the TypeScript file imported declares the name as a type or an interface, the message says it declares the name only as a type.
+
+Retest does not read project references, does not look up bare imports from `baseUrl` alone, and ignores every other `tsconfig.json` setting, such as `jsx`, `experimentalDecorators` or `target`.
+
+The `tests/tsconfig.json` that `init` writes extends the project's own when there is one, and its options follow the rules above: `tsc -p tests/tsconfig.json` accepts enums, parameter properties, imports without extensions and aliases, and refuses JSX: the consumer check runs TypeScript 6 and 7 on those. Its options are meant to refuse `import x = require()` and a type imported without `type` as well, and to accept a decorator and a `require()` call, which Retest refuses; none of those four was run through `tsc`.
+
+A test file's process runs Node with `--enable-source-maps` as its only added flag; the `--conditions` of the process that started it pass through. Before any test file loads, the process registers a resolve hook that points Retest's own specifiers at the copy of Retest that runs the file, and then the project's resolve and load hooks above. A process started with `--experimental-transform-types`, such as through `NODE_OPTIONS`, which a test file's process inherits, transforms every TypeScript file itself, erasable ones included, each with a source map, and Retest's load hook leaves it to Node. Node prints a warning the first time the transformer runs; Retest holds back that one warning, matched by its text. Every other warning, including one test code causes, is meant to print as usual; no test causes one to check.
+
+## AI checks
+
+An AI check asks a judge, a model you choose, whether evidence meets a requirement you wrote before it looks. Use one where the requirement needs reading, such as whether an error message says how to continue. Check facts with `expect`: a total, a title, a checked box. A screenshot check cannot tell whether a task was saved to the server, only what the page shows.
+
+```ts
+test('explains the saved task', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('task-title').fill('Release checklist')
+  await page.getByTestId('save-task').click()
+  await expect(page.getByTestId('saved-task')).toHaveText('Release checklist')
+  await test.evaluate({
+    requirement: 'The message says the task was saved and names it.',
+    evidence: { capture: 'screenshot' },
+  })
+})
+```
+
+Retest's own process captures the evidence, calls the judge, checks the answer and records the verdict. The test file's process only names what to judge. It never holds the judge's credentials and never loads its code. When a required check does not pass, it receives the same failure the record holds, and nothing else of the judge's answer.
+
+### Judges
+
+A config declares its judges under `evaluation`:
+
+```ts
+evaluation: {
+  judges: {
+    visual: {
+      adapter: '@rehearsal-labs/retest/evaluation/ai-sdk',
+      credentials: { apiKey: env('ANTHROPIC_API_KEY') },
+      options: { provider: 'anthropic', model: 'claude-sonnet-5' },
+      accepts: ['text', 'images'],
+    },
+    house: { adapter: './judges/house.ts', credentials: { token: () => vault.read('judge-token') }, accepts: ['text'] },
+  },
+  defaultJudge: 'visual',
+  timeoutMs: 30_000,
+  limits: { callsPerTest: 5, callsPerRun: 100 },
+}
+```
+
+- `adapter` makes the judge: a module path relative to the config, a package, or a function. A module's default export is the factory. Retest's process imports it the first time a check names the judge, and calls it once per run with the judge's credentials, its `options` and a signal aborted when the run ends. An adapter that does not load, or a factory that does not finish, within `timeoutMs` fails the judge's setup, naming the adapter, and the run still ends. A factory never receives a file path.
+- `credentials` are read as secrets are: `env('NAME')`, read when the judge is first used, or a function, called once with `{ signal }` and given `timeoutMs` to answer. A credential written as its value is refused, and the message never quotes it. Retest leaves the variables out of the environment it gives each test file's process, app server and browser, in a run and in `retest doctor` and `retest list`. On real Chrome runs, the test file's process and an app server Retest started were shown to see the variable absent; the browser's own environment was not read, only the launch's list of hidden variables. A start command that loads them again, from a shell profile or a `.env` file, brings them back, and Retest cannot prevent that. An app that needs the same key reads it under another name. Each value an environment variable holds is taught to the redactor as the run starts, whether or not a check uses its judge, and a function's value as soon as it is read. Retest writes each value as `{{visual.apiKey}}` in all text it records, so a page or a provider error that quotes the key leaves it nowhere in the run folder.
+- `options` hold JSON values only.
+- `accepts` lists what the judge takes: `text`, `images` or `frames`. A judge gets only what it lists. A text judge never receives a screenshot read out as text: the check is an error instead.
+- `defaultJudge` is the judge a check without `judge` uses. With one judge, it is that one.
+- `timeoutMs` is how long a check may take, 30 seconds by default. Setting the judge up counts against it.
+- `limits` bound every run: `callsPerTest` 5, `callsPerRun` 100, `concurrentCalls` 2, `maxOutputTokens` 1000, `maxInputBytes` 8000000, `maxImages` 4, `maxImageWidth` and `maxImageHeight` 4096. These defaults are bounds, not tuned numbers. Retest's process holds the counters for every worker and takes a call before it sends it, so two workers can never both take the last one. A call taken is never given back. Nothing estimates a price.
+
+The config refuses an unknown key, a `defaultJudge` it does not declare, a judge with no `accepts`, and options that are not JSON. A run of ordinary tests loads no adapter and reads no credential, so it needs neither the AI packages nor the keys.
+
+### The check
+
+`test.evaluate({ judge?, requirement, evidence, context?, mode?, timeoutMs? })`:
+
+- `requirement` is a sentence, or criteria by id, such as `{ saved: 'The task shows as saved.', titled: 'It shows its title.' }`. Every criterion must pass. A sentence is one criterion, with the id `requirement`.
+- `evidence` is one item or a list of them, each with an id the judge cites: `e1`, `e2` and so on.
+  - `{ capture: 'screenshot', app? }`: Retest's process takes a screenshot of that app's page as the check runs, and saves it in the run folder. `app` defaults to the test's first app.
+  - `{ text, label? }`: text the test supplies, such as a reply it read from the page. It is redacted before the judge sees it.
+  - `{ recording: { step }, app? }`: refused by name, because Retest records no steps yet.
+- `context` is reference text the judge may read, such as a policy an answer must follow.
+- `mode` is `required`, the default, or `advisory`.
+- `timeoutMs` may shorten the check's time. It never lengthens the config's `timeoutMs` or the time its test has left.
+
+Await it. The type check knows the config's judges, what each accepts and its apps, so a judge name with a typo, a screenshot for a text judge, or an app the config lacks fails to compile. A config with no judges makes every `test.evaluate` a type error.
+
+### Verdicts
+
+A check passes only when every criterion passed. A failed criterion fails it. Otherwise one the judge could not decide leaves it inconclusive: nothing turns an undecided criterion into a pass.
+
+Once a required check has not passed, a failure comes first, then an undecided check, then an error, whatever order they happened in. A failure the test reports, such as a failed `expect` or a check it never awaited, counts as a failure. What the test file's process reports that is not a failure, such as a lost browser, is listed after Retest's own records and never decides the status. So test code cannot turn a failed check into an error, an undecided result or a pass.
+
+| The check ends | Required | Advisory |
+| --- | --- | --- |
+| pass | Counts as the test's assertion | Nothing more |
+| fail | The test fails with `evaluation_failed`, exit 1, and the check counts as an assertion | A warning |
+| inconclusive | The test is `inconclusive`, with `evaluation_inconclusive`, exit 2 | A warning |
+| error | The test is `error`, with `evaluation_error`, exit 2 | A warning |
+| cancelled | An interruption stays the test's failure. A check cut off because its test ended or ran out of time adds `evaluation_error` after the test's own failure | Nothing more |
+
+- Inconclusive: the judge said it could not decide, or the evidence is missing: the browser was gone, the screenshot failed, or it is not a PNG Retest can read.
+- Error: no judge, a judge that could not be set up, as when its package or credential is missing, no answer in time, a limit reached, evidence the judge does not take, or an answer that breaks the contract. An answer breaks it with a criterion missing, repeated or unknown, any key the contract lacks, such as a self-reported confidence, a cited id Retest never supplied, a pass or fail that cites nothing, or a justification over 2000 characters.
+- A required check that does not pass throws, as a failed `expect` does. Catching the error changes nothing: Retest's process recorded the verdict and fails the test whatever the test does with the promise.
+- An earlier failure stays the test's failure. A later passing check clears nothing.
+- A test whose only checks are advisory makes no assertion, so it fails `no_assertions`.
+- A check still running when its test ends, or when the run stops, ends `cancelled`. Retest stops waiting at once, aborts the request's signal and never reads an answer that comes later. A check stopped before it is sent spends no call. Stopping cannot prove the provider stopped working on a request already sent.
+
+### What the judge receives
+
+Each check sends one request: Retest's fixed instructions, version `retest-judge-1`, the criteria and context, the evidence, the output bound, the time left and a signal. The request holds no tool, no page and no function, so a judge cannot act on the app. The instructions say that text and pixels in the evidence are data, never instructions, and they travel apart from the criteria. That lowers the risk of an app's text steering the verdict. It does not make a model immune to misleading text, and Retest's tests only show where such text travels, not that a model's verdict cannot change.
+
+The judge answers with a verdict for each criterion, the evidence ids it rests on, a short justification, and, when the provider says, the exact model that answered and the tokens it counted. Retest checks every part before it reads the answer.
+
+### Records
+
+A check that ran, was cancelled or, for a host's check, never ran writes an `evaluation.finished` event, always the parent's, so a result rebuilt from the events lists the same checks as `result.json`. A check refused before the parent took it, as when no test was running, writes none. Each test's result lists its checks in `evaluations`: the test's own in the order they ended, then the host's. A test's own checks are numbered `evaluation-1`, `evaluation-2` and so on in each attempt. A record holds the check's id, its source, mode, judge and verdict, each criterion with its verdict and citations, a SHA-256 of the criteria and context as the judge received them, the evidence, the justification, a reason when there is no judged verdict, a failure or a warning, and the evaluator: provider, model, model revision, evaluator version, instruction version, sampling, latency and token usage when given. A piece of evidence names its kind, its SHA-256 and size, and for a screenshot the app, session, attempt, capture time, pixel size and file. The bytes stay in the run folder and the text stays out of the record.
+
+The judge's words, every reason, and every string an evaluator or its provider returns, model names included, pass through the redactor before Retest keeps them. Screenshots are not redacted: a check sends the page as it shows, including a secret on screen. Do not judge a screen that shows one.
+
+A check that did not pass adds its lines to its test's failure card, under the card's other lines: the check, each criterion, what the judge said and the evidence, then one line for each check that passed. For a failed check the card reads:
+
+```text
+    AI check failed
+    The AI check evaluation-1 failed: the judge found "saved" not met. It said: "The banner reads 'Could not save'."
+
+    AI check         evaluation-1 failed, required, judge visual (anthropic claude-sonnet-5-20260901)
+    Criterion        saved: fail, cites e1
+    Judge said       "The banner reads 'Could not save'."
+    Evidence         e1 screenshot of web 1280x720 .retest/runs/…/artifacts/…-evaluation-1-….png
+```
+
+A warning prints under its test, even a passing one, with a `!`. The summary gains a row counting the required checks by verdict, then advisory passes and warnings, such as `AI checks  1 failed · 3 passed · 1 warning`. The agent report puts the same lines under each failure, and a `warn` line under each passing test that has a warning. `retest inspect --test` shows each check in the timeline.
+
+### The AI SDK adapter
+
+`@rehearsal-labs/retest/evaluation/ai-sdk` is a judge over the Vercel AI SDK for Anthropic and OpenAI. Retest does not install the SDK: install `ai@^7.0.127` with `@ai-sdk/anthropic@^4.0.71` or `@ai-sdk/openai@^4.0.83` yourself. They are optional peers of Retest. Without them, a check that names the judge fails its setup with `evaluation_error`, naming the missing package, and every other test runs.
+
+Options: `provider`, `anthropic` or `openai`, and `model`, the model id, both required; `temperature`, `topP` and `seed` when you want them; and `baseURL`, an endpoint you name. Credential: `apiKey`. The adapter makes its own provider instance with your key, so it uses no gateway and no environment variable of the SDK's own. It asks for structured output with retries off and no tools: Anthropic's native output format, and OpenAI's strict JSON schema. It writes app text into the request as a JSON string, so nothing in it can end an evidence item. It checks the answer before Retest checks it again.
+
+Its tests ran ai 7.0.127, @ai-sdk/anthropic 4.0.71 and @ai-sdk/openai 4.0.83 against a local stand-in for each provider's API, from the packed package. They prove the request the SDK sends and how the adapter reads the reply. No provider has been called: the live check waits for keys supplied for it, so the model ids on this page are untested.
+
+### A judge of your own
+
+An adapter module's default export takes the setup and returns an evaluator. `EvaluatorFactory` and the types around it come from the root export.
+
+```ts
+import type { EvaluationRequest, EvaluatorFactory, JudgeAnswer } from '@rehearsal-labs/retest'
+
+// Your own call to the model: it sends the request and reads the reply. Retest does not supply it.
+declare function askHouseModel(token: string | undefined, request: EvaluationRequest): Promise<{ criteria: JudgeAnswer['criteria']; summary: string }>
+
+const judge: EvaluatorFactory = ({ credentials, options }) => ({
+  identity: { provider: 'house', model: String(options['model']), version: 'house-judge/1' },
+  async evaluate(request) {
+    const reply = await askHouseModel(credentials['token'], request)
+    return { criteria: reply.criteria, justification: reply.summary }
+  },
+})
+
+export default judge
+```
+
+`evaluate` receives the request described above and returns the answer. Use `request.instructions` as the system prompt, keep the evidence apart from it, stop when `request.signal` aborts, and never send a tool. Retest checks whatever comes back.
+
+## Console and network diagnostics
+
+Each test's pages have their console, their uncaught errors and their requests recorded, in passing and failing runs alike. Nothing in them fails a test unless the config asks: a test may well exercise a 404 or an error message on purpose.
+
+```text
+<run>/diagnostics/<test>-<attempt>.jsonl         one file for each test's page, named with the app in a run from a config
+```
+
+### What is captured
+
+- Console messages: each type as Chrome names it (`log`, `debug`, `info`, `warning`, `error`, `table`, `assert`, `count`, `trace`, `dir` and the rest), its level, its text, the address, line and column it came from, and whether it came from the page's main frame or an embedded one. The text is the arguments as the console shows them: strings as written, other values as Chrome describes them, an error with its stack, a function by the first line of its source, and an object's properties one level deep as Chrome previewed them, strings in quotes. Chrome cuts a value of 100 characters or more in a preview, keeping its start and its end; Retest keeps none of such a value and writes `(cut)`, since a secret cut in two is one the redactor can no longer find. Retest never reads a page object itself, so no getter of the page runs, and it keeps no handle to one. `%s` and the other format directives are left as written.
+- Chrome's own entries, such as `Failed to load resource`, with `origin: 'browser'` and the request each is about.
+- Runtime errors: an error the page threw and did not catch, and a promise rejected with no handler, each with Chrome's own line, such as `Uncaught Error: boom`, and the first frames of its stack. A rejection the page handled later is marked `handledLater`, and counted apart from the errors it never handled.
+- Requests: each hop's method, address, resource type and frame; its response's status and content type, whether a cache or a service worker answered, when Chrome says, and the protocol; when it finished, how long it took by Chrome's own clock and how many bytes Chrome counted; or why it failed. A 404 or a 500 is a response with that status. A refused connection, a name that does not resolve or a cancelled request is a failure, with Chrome's reason and no status. Chrome ends an error answer with no body with a failure after the response; it counts once, as the HTTP error, and the requests of the error page Chrome shows instead are marked `out_of_scope`. Each hop of a redirect is a request of its own, and its response names the next. A request still open when the test ends is marked pending, with how far it got and why.
+- A duration or a size Chrome did not give is left out, never written as zero.
+
+### What is left out
+
+- No header and no body, of a request or of a response. Cookie, Set-Cookie and Authorization never reach a file.
+- Every address field, and every address with a scheme in a text, such as the frames of a stack, loses its user name and password, its query, written `?…`, and its fragment, written `#…`. A path segment that looks like a token is written `…`: a JSON Web Token, or, unless it is a file name, a version or a date, a segment of 12 digits or more or of 16 letters and digits or more. A long slug is hidden too, once it holds 16 letters and digits; `buy-milk` is kept. A `data:` address keeps its media type only. An address without a scheme inside a text, such as `/api?token=…` in a message, is kept as the page wrote it, after the redactor has read it.
+- Every text from the page passes through the redactor before its addresses are cleaned and before it is cut, so a secret the page logs, throws or puts in an address reads `{{name}}`. A text longer than four times the message limit is first cut to that length, and the redactor reads that much, holding back a tail that may be the start of a secret; what lay beyond the cut is never read and never kept. The files are redacted again when the run ends, as logs are.
+
+### Scope
+
+Capture starts on each test's page before it opens anything, and ends once the test body and the parent's checks are over, before a failure screenshot and before the page closes. Each result and each artifact names what it covers.
+
+- Covered: the page's document; the frames Chrome renders in the page's own process, frames of the page's origin among them; a dedicated worker's console messages, which Chrome forwards with their level only.
+- Not covered: a frame of another site, which Chrome runs in a process of its own; a dedicated worker's requests; a service worker's own messages and requests; shared workers. A request Chrome hands to one of these, such as a worker's own script or the document of another site's frame, is marked `out_of_scope` rather than pending. A response a service worker answered for the page is recorded, with `serviceWorker: true`.
+
+### Capture status
+
+A test's result lists each page's capture in `diagnostics`, with a state for its console and one for its network:
+
+- `complete`: everything in scope from start to end. Zero records means the page produced none.
+- `partial`, with a reason and the counts: records were dropped at a limit, Chrome sent an event Retest could not read, or the page crashed or its connection ended. What came before stays.
+- `unavailable`, with the reason: capture never started, or its file could not be saved. No file claims a capture.
+- `disabled`: the run turned capture off.
+
+### Limits
+
+Each test attempt, all its apps together, keeps at most 1000 console messages and runtime errors in 1 MiB, and 1000 request hops in 2 MiB. Each message is cut at 4096 characters, and each stack at 20 frames. A cut message or error text keeps its full length beside it; a cut address is marked `urlTruncated`, with no length; and the short fields, such as a method, a status text, a failure reason, a function name, a content type or a protocol, are cut to their own limits with no mark. A record past a limit is dropped and counted. A request is kept only while the attempt can also hold its response and its end, so a kept request never loses them. These are bounds, not tuned numbers.
+
+### The config
+
+```ts
+diagnostics: {
+  strict: { runtimeErrors: true, httpErrors: true, allow: ['/favicon.ico'] },
+  requireComplete: false,
+  limits: { consoleEntries: 1000, consoleBytes: 1048576, requests: 1000, networkBytes: 2097152, textLength: 4096, stackFrames: 20 },
+}
+```
+
+- `capture: false` records nothing, and every result says `disabled`.
+- `strict` fails a test that otherwise passed when its pages had any of what it names: `runtimeErrors`, leaving out a rejection the page handled later; `consoleErrors`, written by the page's own code or its workers; `transportFailures`, leaving out a cancelled request and the failure that ends an error answer; and `httpErrors`, a status of 400 or more. A record whose text or address holds an `allow` entry is not counted. Retest's own process decides from the records it kept, whatever the test code does. The test fails with `host_check_failed`, naming the counts and each record by its session and id, such as `Records: k3v9q0x2mb:web e1, n4 in diagnostics/….jsonl`, and the run exits 1. A message's text never enters the failure. A failure the test already had stays first, with the policy's after it in `details.also`.
+- A strict rule never passes on capture that was not all there. When a kind a rule reads, the console for `runtimeErrors` and `consoleErrors` and the network for the others, is not `complete`, as when debug lines used up the limit before the error, the test is `error`, with `reporting_failed` saying the policy could not judge it, and the run exits 2. When a strict rule also matched, the match comes first: the test is `failed` with `host_check_failed`, the run exits 1, and `reporting_failed` follows in `details.also`.
+- `requireComplete: true` keeps a test from passing when any of its capture is not `complete`: the test is `error`, with `reporting_failed`, and the run exits 2. Capture that was lost never replaces a failure the test already had.
+- A program passes the same block as `RunOptions.diagnostics`, which replaces the config's whole block. A block that cannot be read refuses the run before any test runs.
+
+### Reports
+
+The terminal shows counts, never what a message says. A failed test's card has a line for each page, naming a partial or unavailable capture with its reason, and, beside its artifact, what the capture covers:
+
+```text
+    Diagnostics      web: console 18 entries, 2 errors, 1 warning, 2 runtime errors · network 14 requests, 2 HTTP errors, 1 failed, 1 pending, 2 out of scope · .retest/runs/…/diagnostics/….jsonl
+    Scope            web: console covers top level document, same process frames, dedicated workers; network covers top level document, same process frames
+```
+
+The summary gains a row when the pages did something worth a look, a capture was partial or unavailable, or a record was cut, counting in this order runtime errors, console errors, HTTP errors, failed requests, partial captures, unavailable captures and records cut, such as `Diagnostics  2 runtime errors · 1 console error · 1 HTTP error · 1 failed request · 1 partial capture · 3 unavailable captures · .retest/runs/…/diagnostics`. So a run on a driver that collects nothing never prints what a complete, quiet capture prints, which is nothing. The agent report has the same, as a `diagnostics:` line and lines under each failure.
+
+`retest inspect --test` shows each page's capture under the timeline: its counts, what it covers, its first 50 console entries and a table of its first 100 requests with method, address, status, duration and failure; the artifact and `--json` keep them all. Each row is at its time since the test started, on the timeline's clock, with the action that was running then. A time says when something happened, never that an action caused it. With `--json`, each page's lines are under `diagnostics`.
+
+### Records
+
+`diagnostics.started` is written as capture starts, with its scope, its limits and the policy, and `diagnostics.finished` as it ends, with the page's summary and its artifact. A capture whose run was cut off before its end is `unavailable` in the rebuilt result. A run stopped while a page is still starting its capture waits for no page: the test is interrupted, and that capture is `unavailable`.
+
+An artifact is JSON lines: `capture.started`, the records in the order they came, and `capture.finished`. The records are `console`, `runtime_error`, `network.request`, `network.response`, `network.finished`, `network.failed` and `network.pending`. Each carries its test, attempt, app and session, and its target in a run with variants. Console messages and errors are numbered `c1`, `e1` and on, and request hops `n1` and on; a hop's later records carry its id. AI checks receive no diagnostics.
 
 ## Run the example
 
@@ -473,7 +828,7 @@ node --conditions=retest-source ../../src/cli/main.ts run
 node ../../node_modules/typescript/bin/tsc -p tsconfig.json
 ```
 
-Against the working app all 16 test runs pass. Against the broken app five fail with a failure card. The example's `tsconfig.json` resolves the package to its source in this repository; a project that installs it leaves `customConditions` out.
+Against the working app all 15 tests pass, and the `signed-in` setup with them. Against the broken app five fail with a failure card. The example's `tsconfig.json` resolves the package to its source in this repository; a project that installs it leaves `customConditions` out.
 
 Milestone 1's example still runs without a config: `retest run examples/task.retest.ts --browser <path> --base-url <url>`.
 
@@ -500,14 +855,21 @@ With a config and no files, `run` and `list` take every `.retest.ts` file under 
 
 The filters combine: a test runs when it passes all of them. The setups the chosen tests need run too. A selection that keeps nothing exits 2 and says why.
 
+`test.only` narrows a run before the filters do. A run with `only` checks less than its files hold, so it says so: `run.narrowed` names every `test.only` and `test.describe.only` with how many tests they kept, `result.json` keeps the same in `narrowed`, and the reports print a warning such as `test.only at tests/a.retest.ts:3 keeps 2 of 14 tests, so the run checks less than the suite.` The exit line adds `narrowed by test.only`.
+
+When the `CI` environment variable is set to anything but nothing, `0` or `false`, a run whose files hold any `test.only` or `test.describe.only` is a usage error before any test runs, exit 2, naming each file and line. No browser starts. `--allow-only` runs it anyway. A program that calls `runFiles` asks for the same with `forbidOnly`, whose text ends the error's message.
+
+A test declared with `test.skip` counts as chosen but does not run. A run whose every chosen test is skipped checked nothing, and exits 2 saying so.
+
 ### Other options
 
 - `--config <path>` loads another config.
 - `--reporter human|jsonl|agent`. With `jsonl`, stdout holds only event lines.
 - `--timeouts action=500,test=3000` replaces some budgets.
 - `--output <dir>` names a new run folder. Retest refuses one that holds files.
-- `--workers <n>` sets how many test files run at once, each in a process of its own, sharing each target's browser. The default is half the machine's cores, at least one. Setups run first, one after another, so every saved state exists before a test starts from it. `--workers 1` runs the files one after another. Tests in different files run at the same time, so two that share something outside the page, such as one account or one counter on a server, can disturb each other: give each its own, as the example's count of saves does with a title of its own, or run with `--workers 1`.
+- `--workers <n>` sets how many test files run at once, each in a process of its own, sharing each target's browser. The default is half the machine's cores, at least one. Setups run first, one after another, so every saved state exists before a test starts from it. `--workers 1` runs the files one after another. Tests in different files run at the same time, so two that share something outside the page, such as one account or one counter on a server, can disturb each other: give each its own, or hold a [lock](#locks), as the example's count of saves does.
 - `--browsers <n>` sets how many browsers a target's tests are spread over, each worker keeping to one. The default is one browser for every three workers that have a file to run. A target that runs a share of the run's tests, as each target of a matrix does, gets that share of the browsers, at least one, and never more than the files that use it. One browser serves all its pages from a single process, which many workers saturate; the human report says how many a target has, as in `started web=chromium  Chrome 154 · 3 browsers`, each further browser is a `browser.started` event with its `instance`, and its log is `logs/browser-…-2.log` and so on.
+- `--allow-only` runs the tests marked only when `CI` is set, which otherwise refuses them.
 - `--headed` shows every browser window. Nobody has run it yet.
 - `--agent` and `--no-agent`. Retest prints the short agent report when `CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CURSOR_AGENT`, `GEMINI_CLI`, `AGENT` or `AI_AGENT` is set, unless you pick `--reporter` or `--no-agent`.
 
@@ -519,7 +881,7 @@ Every wait answers to one of these budgets. The defaults are collection 10000, s
 
 - `collection`: loading each test file.
 - `setup`: launching a browser, opening each test's pages, and starting an app server without its own `timeoutMs`.
-- `action`, `navigation` and `assertion`: one command each, and never more than the test has left.
+- `action`, `navigation` and `assertion`: one command each, and never more than the test has left. `goto` and every action take `{ timeout }` in milliseconds, as in `click({ timeout: 2000 })`, which shortens that call's budget and never lengthens it: a longer one is cut to the budget. The parent keeps that time, whatever the test file's process claims. The call's `action.completed` or `action.failed` records what it asked for in `callTimeoutMs`, and in `timeoutMs` the time it was given, which is shorter when the budget or the test's time left was. A failure card names the call as the limit only when its timeout was the one applied.
 - `test`: one test.
 - `cleanup`: commands a test left running, the failure screenshots, closing each test's pages, and closing the browsers at the end.
 
@@ -539,10 +901,19 @@ retest run --playwright tests/checkout.spec.ts --browser /usr/bin/chromium --bas
 
 - Files end in `.spec.ts`, `.spec.js`, `.spec.mts` or `.spec.mjs`, or the same with `.test.`. With none named, Retest takes every `.spec.` file under the folder and leaves `.test.` files out, since a project's unit tests end the same way.
 - `@playwright/test` and `playwright/test` resolve to Retest's own `@rehearsal-labs/retest/playwright`, wherever the file is. Neither package has to be installed in the project.
-- A relative import may leave out its extension, as Playwright suites write them: `./helper` finds `./helper.ts`, then `./helper.js`, then the folder's index.
-- What runs: `test`, `test.describe`, `test.beforeEach`, `test.afterEach` and `test.step`; the `page` fixture; `page.goto`, `getByRole`, `getByLabel`, `getByText`, `getByTestId` and `page.keyboard.press`; a locator's `fill`, `click`, `press`, `check` and `uncheck`; `expect` with `toBeVisible`, `toBeHidden`, `toHaveText`, `toHaveCount`, `toHaveValue`, `toBe`, `toEqual`, `toContain` and `toMatch`, and `expect.soft` and `expect.poll`.
-- Everything else fails where it is used, as `unsupported`, naming the member: "page.getByPlaceholder is not supported yet by Retest's Playwright compatibility." Nothing is skipped or dropped. An options argument such as `{ timeout }`, `.not`, `test.skip`, test details, a titled hook and a fixture other than `page` are each refused by name. A test that meets one ends as an error at that line, and the run exits 2.
+- Imports resolve as in Retest's own test files: `./helper` finds `./helper.ts`, then `./helper.js`, `./helper.mts` and `./helper.mjs`, then the folder's `index.ts` or `index.js`; `./helper.js` loads `./helper.ts` when that file exists; and the `paths` of the nearest `tsconfig.json` apply, as under "TypeScript and imports".
+- What runs: `test`, `test.describe`, `test.beforeEach`, `test.afterEach` and `test.step`; the `page` fixture; `page.goto`, `reload`, `goBack`, `goForward` and `title`; `getByRole`, `getByLabel`, `getByText`, `getByTestId`, `getByPlaceholder` and `locator`, on a page and on a locator; a locator's `first`, `last` and `nth`; `page.keyboard.press`; a locator's `fill`, `click`, `hover`, `press`, `check` and `uncheck`; `expect` with `toBeVisible`, `toBeHidden`, `toBeChecked`, `toBeEnabled`, `toBeDisabled`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveValue`, `toHaveURL` and `toHaveTitle`, each also after `.not`, and `toBe`, `toEqual`, `toContain` and `toMatch`; `expect.soft` and `expect.poll`.
+- `{ timeout }` on `goto`, `reload`, `goBack`, `goForward`, those actions and those locator and page matchers goes to Retest's own, which shortens the budget and never lengthens it.
+- Everything else fails where it is used, as `unsupported`, naming the member: "page.getByAltText is not supported yet by Retest's Playwright compatibility." Nothing is skipped or dropped. Any other option is refused by name, such as `page.goto(url, { waitUntil })`, `locator.click({ force })`, `locator.fill(value, { noWaitAfter })`, `locator.press(key, { delay })`, `page.getByRole(role, { level })` or `expect().toHaveText(…, { ignoreCase })`, and so is `test.step`'s third argument. `.not` on a value, `toContainText` with a list, `page.url`, which Playwright reads at once where Retest has to ask the page, `test.skip`, test details, a titled hook and a fixture other than `page` are each refused by name too. A test that meets one ends as an error at that line, and the run exits 2.
 - The rules are Retest's. A test with no assertion fails, a locator that matches several elements is ambiguous, an action is sent once, and `toHaveText` compares whole text.
+- Finders follow Playwright's rules where Retest can. `getByText`, `getByLabel`, `getByPlaceholder` and a role's `name` match any part of the text in any case, unless `exact: true`; both trim the text and read each run of spaces as one. `exact` beside a `RegExp`, or on a role with no name, is left out, as Playwright ignores it. `getByLabel` also finds any element that an `aria-label`, or the text an `aria-labelledby` points at, names. Reports write these locators as the file wrote them. Retest's own test files keep Retest's defaults.
+- A page that holds an open shadow root is refused. Playwright looks inside shadow roots and Retest does not, so any locator on such a page fails at once as `unsupported`, naming the shadow root's host, rather than pass on what it could not see.
+- What still differs from Playwright:
+  - Names come from Chrome's accessibility tree, not from Playwright's own reckoning. A table row or a list item has a name only from `aria-label` or `aria-labelledby`, so `getByRole('row', { name })` is expected to find no row Playwright would name from its cells; no check asks for one.
+  - `getByLabel` finds a form control that Chrome names by its `placeholder` or `title`, which Playwright's does not, and leaves out a form control Chrome leaves out of its tree, such as a hidden one, which Playwright's finds.
+  - `toBeEnabled` and `toBeDisabled` take `aria-disabled` from the element or the nearest ancestor that has it, whatever the element's role. Playwright reads it only for an element whose role takes `aria-disabled`, such as a button, so a plain element inside an `aria-disabled` container is disabled to Retest and enabled to Playwright.
+  - A `{ timeout }` longer than Retest's budget is cut to it.
+  - `goBack` and `goForward` with no entry that way fail instead of answering `null`, and `reload`, `goBack` and `goForward` answer nothing rather than a response.
 - `playwright.config.ts` is not read. The browser and the base URL come from the command line, or from `retest.config.ts`.
 - The human report's first line says `playwright compatibility`, and `run.started.options.playwright` is true, so no reader takes the run for Playwright's own.
 
@@ -558,6 +929,7 @@ retest doctor
 - For each app with `start`, it starts the server, waits for `ready` and stops it. A server already running is left alone.
 - For each app with only a `baseUrl`, it checks that the address answers.
 - It checks that each secret's environment variable is set.
+- It checks that Node is 24.12 or later, and starts Node with a test file process's flags, in the environment a run gives, to transform a snippet with an enum and a parameter property through Retest's own transform module and run it from a data URL; the project hooks take no part in that probe. Node gets a line only when one of the two fails.
 
 Each problem comes with its fix. `doctor` exits 0 when everything is ready and 2 otherwise. When a browser or a server fails, the message points to its log, which is kept under `.retest/doctor/<time>/`. Otherwise `doctor` removes its logs.
 
@@ -591,7 +963,7 @@ retest inspect .retest/runs/<time> --json
 retest inspect .retest/runs/<time> --test "tests/devices.retest.ts > saves a task in each desktop browser" --target desktop=chromium
 ```
 
-`list` loads each file the way a run does and prints its tests with their source lines, tags, apps and variants. It takes the same selection flags as `run`, and opens no browser.
+`list` loads each file the way a run does and prints its tests with their source lines, tags, locks, apps and variants. A test declared with `test.skip` shows `(skip)`, and one that `test.only` or a block marked only singles out shows `(only)`; `list` itself lists every test either way. It takes the same selection flags as `run`, and opens no browser.
 
 `inspect` reads a run folder and never runs anything. It shows each test's variant and, for one test, the app of each action. A run that stopped before writing `result.json` is rebuilt from `events.jsonl` and marked incomplete, so it never reads as a pass.
 
@@ -620,6 +992,7 @@ Without `--output`, a run goes to `.retest/runs/<time>`.
 <run>/logs/browser-<target>.log    each browser's own output; logs/browser.log without a config
 <run>/logs/app-<name>.log          the output of a server Retest started
 <run>/artifacts/*.png              one failure screenshot for each app page of a failed test
+<run>/diagnostics/*.jsonl          each test page's console, runtime errors and requests
 <run>/states/                      saved sign-in state, only while the run goes on
 .retest/last-run.json              the tests the last run did not pass, for --last-failed
 ```
@@ -629,6 +1002,8 @@ A program that calls `runFiles` can move `.retest/last-run.json` with `lastRunFi
 Every event says who reported it: `origin: 'parent'` for what Retest's own process saw, and `origin: 'child'` for what the test file's process claimed. Every event of a test's run carries its `variant` and `variantKey`, and every event about an app names it in `session`. Milestone 1's mode has one app, named `page`, and no variants.
 
 `browser.started` comes once for each app target, with the app and the target, and whether it is emulated. `app.started`, `app.reused` and `app.failed` tell what became of each server. `state.saved` and `state.restored` name a state, never its contents. `result.json` lists every app target's browser in `browsers`, and each screenshot names its app.
+
+A session is one app's page in one attempt. Its id is the attempt's id and the app's name, such as `k3v9q0x2mb:web`. `observation`, `evidence.captured` and `evidence.failed` name it in `sessionId`. A screenshot's event and its entry in `result.json` also give its `attemptId`, and when it was taken in `capturedAt`. Runs recorded before sessions had ids have none of these.
 
 `observation` is a look the parent served the test file's process, and `host_check.passed` and `host_check.failed` are host checks. [Use Retest from code](#use-retest-from-code) explains both, and `judgedBy` on `assertion.passed`.
 
@@ -643,8 +1018,8 @@ A `navigation` event names the page's title in `title`, what opened it in `cause
 
 `cause` is one of three:
 
-- `goto`: the navigation a `goto` started.
-- `action`: a navigation the page asked for while an action's input was on its way. For a click, a key or a scroll, that runs from the input until Retest's next call into the page has answered, since Chrome can report a link's navigation after the click itself has answered. For `select`, it runs until the call that sets the selection has answered.
+- `goto`: the navigation a `goto`, `reload`, `goBack` or `goForward` started.
+- `action`: a navigation the page asked for while an action's input was on its way. For a click, a key or a scroll, that runs from the input until Retest's next call into the page has answered, since Chrome can report a link's navigation after the click itself has answered. For `select`, it runs from each key it types, as for a key.
 - `page`: anything else, such as a redirect the page makes on its own after it loads, a timer, or the browser. A navigation a `setTimeout` in a click listener starts is the page's.
 
 A navigation that a `goto` or an action started names that command's step in `stepId`, and where the command is in the test file in `location`. That holds however late it commits, as when Chrome reports a link's navigation after the next command has begun. Any other navigation names the step the test was in when it committed, and has no `location`.
@@ -653,12 +1028,14 @@ A problem no single test explains, such as a browser that did not start, is the 
 
 Paths inside the folder are relative, so the folder can be moved. The JSON Schemas for events and results are in `dist/schemas` after a build.
 
+`schemaVersion` is still 1, and every field this release added is optional, so a reader built from this release reads run folders written before it. The other way round does not hold: every object in the schema refuses a key it does not know, so a reader built before this release, `readRunFolder` and `inspect` included, refuses a run folder written by it. Every attempt now writes `execution` in `test.started` and `ending` in `test.finished`, so that is every folder with an attempt in it, not only one with an AI check, a diagnostics artifact or a RegExp locator. Keep the reader as new as the writer.
+
 ## Use Retest from code
 
 A program can run tests itself, with no command line. This guide calls such a program a host. A host runs Retest on its own machines, often for apps it did not write. The root export stays the authoring API, and a host uses two subpaths:
 
-- `@rehearsal-labs/retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `readRunFolder`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError`, `RunFolderReadError` and `LaunchError`, and the types a caller needs: `RunOptions`, `StopReason`, `HostCheck`, `RunFolder`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements, `PageNavigation` included.
-- `@rehearsal-labs/retest/protocol` exports the event, result, command and failure types, their schemas, `parse`, `testId` and `testTitle`, `defaultTimeouts` and `mergeTimeouts`, `eventSchemaUrl` and `resultSchemaUrl`, the file URLs of the JSON Schema files, and `eventsFile`, `resultFile` and `logsFolder`, the names of a run folder's files. `PageFacts`, `NavigationCause` and `OptionChoiceRecord` are among its types.
+- `@rehearsal-labs/retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `readRunFolder`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError`, `RunFolderReadError` and `LaunchError`, and the types a caller needs: `RunOptions`, `StopReason`, `HostCheck`, `RunFolder`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements, `PageNavigation` included. It also exports the session contract's types, which a driver implements. A `WebRuntime` names what it runs on in `identity`, and a `WebSession` answers `dispatch(command, timeoutMs, signal?, token?)` with the result `execute` gives and how far the command's input got: `not_sent`, `sent` or `unknown`. A launcher a host passes still returns an `OwnedBrowser`, and a run does not record how far an input got yet. `SessionBudget` counts browser sessions across runs, and `HostPreparation`, `PreparationAnswer`, `PreparationContext`, `CleanupContext`, `SessionOptions` and `Requirement` type the options below.
+- `@rehearsal-labs/retest/protocol` exports the event, result, command and failure types, their schemas, `parse`, `testId` and `testTitle`, `defaultTimeouts` and `mergeTimeouts`, `eventSchemaUrl` and `resultSchemaUrl`, the file URLs of the JSON Schema files, and `eventsFile`, `resultFile` and `logsFolder`, the names of a run folder's files, and `formatSessionId`, which writes a session's id. `PageFacts`, `NavigationCause`, `OptionChoiceRecord` and `EvidenceReference` are among its types, and so are `ExecutionRecord`, `PreparationRecord`, `CleanupRecord` and `Ending`, with their schemas.
 
 The root export adds `OptionChoice`, `ScrollDelta` and `SecretContext` for code that passes options, distances or a secret's context on.
 
@@ -704,6 +1081,8 @@ This is the heart of [examples/host/host.ts](../examples/host/host.ts). A test f
 ### Host checks
 
 `RunOptions.hostChecks` holds checks the parent process runs itself, after a test's body, on the page the test left. A test passes only if its body and its checks pass. They are the part of a verdict test code cannot write. There is no config key or command line flag for them.
+
+A test declared with `test.skip` never runs, so a check keyed to it, by its id or by its file, is never made. The test stays `skipped` and the check `not_run`, and the run cannot pass: it ends with `host_check_failed`, exit 2, naming the test and the check, in `run.finished`, `result.json` and every report. The same holds for an AI check a host keys to a skipped test.
 
 Keys name what the checks apply to:
 
@@ -753,15 +1132,139 @@ A check that did not run is a `Not run` line on the test's card. The summary gai
 
 The command line cannot give host checks, so a report of a run that had them prints no command to run a test again. Each card points to `retest inspect` instead. The same goes for a run whose config has no file behind it.
 
+### Host AI checks
+
+`RunOptions.hostEvaluations` holds AI checks the host requires, keyed as host checks are, by test id or file. The parent runs them itself, on that attempt's pages, and test code cannot skip, weaken or answer them. `/runner` exports their types, `HostEvaluation` and `HostEvidence`, and `/protocol` exports `EvaluationRecord` and the types inside it.
+
+```ts
+hostEvaluations: {
+  [file]: [
+    {
+      id: 'saved-message',
+      criteria: { saved: 'The message says the task was saved.', named: 'It names the task.' },
+      evidence: { capture: 'screenshot', app: 'web' },
+    },
+  ],
+}
+```
+
+- `id` names the check and never changes. `criteria` maps each criterion's id to its requirement. `evidence` is `{ capture: 'screenshot', app? }` or `{ text, label? }`, one or a list. `judge`, `context` and `timeoutMs` work as in `test.evaluate`, and the config's `defaultJudge` applies.
+- Every host AI check is required. A test passes only if its body, its host checks and its host AI checks pass. Its own `timeoutMs` may shorten the config's, never lengthen it.
+- They run after the host checks, and only when the body, the test's own AI checks and the host checks all passed. Otherwise each is listed as `not_run` and adds nothing to the failure the test already has.
+- A run interrupted before or while they run ends the check in flight `cancelled` and lists the rest as `not_run`, and the interruption is the test's failure, as with host checks: a test whose required check never ran never passes.
+- The parent captures their screenshots from that attempt's sessions, and each record names the attempt and the session. A test that asks for the same requirement as advisory, or catches an error, changes nothing about the host's check.
+- Before any test runs, the run refuses each of these as a usage error, exit 2, and starts no browser: a key that names no selected test and no selected file, host checks in a run with no judges, a judge the config lacks, evidence the judge does not take, an app a test does not use, an id a test gets twice from its file and its own key, an unknown key, a criterion that is empty or has an id that is not a name, and a `timeoutMs` that is not a whole number from 1.
+- `run.started.options.hostEvaluations` records every check the run was asked for, with every value hidden in its criteria, context, evidence text and labels, as a host check's text is. Each record in a result has `source: 'host'`.
+- A host whose judge reads a key from its own secret store gives the credential as a function. The parent calls it once, and the key never reaches the test file's process, the run folder, an event or a report.
+
+### Participants with their own accounts
+
+A test that names several apps gets a browser context and a page for each, and the apps of one config may share a base URL. That is how one flow holds several participants, such as an owner and a member, each signed in as a different test account: give each app its own `test.setup` and name the states in the test's `state`.
+
+```ts
+test.setup('owner-account', { apps: ['owner'] }, async ({ owner }) => { /* sign in as owner-a */ })
+test.setup('member-account', { apps: ['member'] }, async ({ member }) => { /* sign in as member-b */ })
+
+test('the member reads the record the owner made', { apps: ['owner', 'member'], state: { owner: 'owner-account', member: 'member-account' } }, async ({ owner, member }) => {
+  const reference = 'record-' + randomUUID()
+  // the owner makes the record under `reference`; the member opens it by `reference`
+})
+```
+
+Each participant keeps its own cookies and local storage. Each look and each screenshot names its session, the attempt's id and the app, so the parent can tell whose page it was. On Chrome this is tested with two and with four participants on one origin, each signed in as its own account. Find a shared record by a value the test made, not by a title another attempt may also have used.
+
+Participants are the apps a test declares before it runs. A test cannot open another context, a popup or a second tab.
+
+### Session limits
+
+`RunOptions.sessions` holds back a run's browser sessions. A session is one browser context and its page, not a browser process.
+
+```ts
+const budget = new SessionBudget({ perOwner: 4, host: 8 })
+await Promise.all([
+  runFiles({ ...options, outputDir: first, sessions: { owner: 'worker-1', budget } }, []),
+  runFiles({ ...options, outputDir: second, sessions: { owner: 'worker-2', budget } }, []),
+])
+```
+
+- `owner` is whoever the sessions count against, such as one of the host's workers. The host vouches for it; Retest takes it as given.
+- `budget` is shared by every run given the same one, in one process. It never lets one owner hold more than `perOwner` sessions, or all owners together more than `host`.
+- An attempt asks for a session for each of its apps, all at once. It never holds some while it waits for the rest. It asks after its locks, and the wait counts against none of its budgets.
+- Requests are served in the order they came. One held back by its own owner's limit keeps no other owner waiting. The first one held back by the host's limit keeps the sessions that free up, so a test with four apps is never passed over forever by tests with one.
+- An attempt waits at most `waitMs`, the setup budget by default. One that gets nothing in that time does not run, with `setup_failed`. So does one that needs more sessions than either limit allows, at once.
+- An attempt gives its sessions back once it has closed its browser contexts and its host cleanups have run, a stopped run's too, within the cleanup budget. A context that could not be closed keeps its sessions until its browser closes, which may be the end of the run.
+- A stopped run withdraws every request it was waiting on.
+- `session.reserved` records, before `test.started`, the owner, how many sessions the attempt took, how long it waited and what was active once it had them. `session.released` records when it gave them back: `after: 'contexts_closed'`, or `'browser_closed'` when its contexts could not be closed. `run.started` records the owner and the limits.
+
+Without `sessions`, nothing is counted, and runs work as before.
+
+### Preparing an attempt's state
+
+`RunOptions.prepare` holds the host's own preparation and cleanup, keyed as host checks are, by test id or file. A file's preparation runs before a test's own.
+
+```ts
+prepare: {
+  [file]: {
+    prepare: async ({ attemptId, signal }) => {
+      const receipt = await fixtures.seed({ recipe: 'shared-records@1', signal })
+      return { status: 'prepared', recipe: 'shared-records@1', seed: 1, receipt, metadata: { records: 1 } }
+    },
+    cleanup: async ({ prepared, failed }) => fixtures.remove(prepared?.receipt),
+  },
+}
+```
+
+- `prepare` runs once the attempt has its browsers, locks and sessions, after `test.started` and before the attempt opens a page. It has `timeoutMs`, the setup budget by default, and a `signal` aborted when that runs out or the run stops.
+- It answers `{ status: 'prepared', recipe, seed?, receipt?, metadata? }`, or `{ status: 'failed' | 'uncertain', reason }` when it knows it did not prepare the state or cannot tell. A `recipe`, `seed` or `receipt` longer than 500 characters, or a `metadata` value that long, is refused, which makes the preparation `uncertain`; a `reason`, and the text of anything thrown, is cut to 500. `metadata` is up to 32 flat values. The record redacts every string; the cleanup gets the answer as it was given. A receipt names an operation; it does not prove the data is the same.
+- A preparation that fails, throws, does not answer in time or answers anything else ends the attempt before any app action, with `setup_failed`, status `error`. The body never runs, and the preparations after it are not called. Giving up on a preparation does not undo what it started.
+- A preparation that was never called, because an earlier one did not succeed or the run had stopped, is recorded as `not_run`, and its cleanup does not run. One the run stopped while it ran is `cancelled`, and its cleanup runs.
+- `cleanup` runs once the attempt is over, whenever its preparation was called: after a pass, after a failure, after a failed preparation and after the run was stopped. A declaration with nothing to prepare runs its cleanup when every preparation before it was called; once one failed or the run stopped, the declarations after it, with or without a `prepare`, are left alone. After a stop without session limits, it runs before the run closes its browsers, so the attempt's pages may still be open; with session limits, it runs once the attempt has closed them. It has `cleanupTimeoutMs`, the cleanup budget by default. A cleanup that fails or runs out of time is a `cleanup_failed` in the test's `cleanupFailures`, beside its own failure and never in its place. Alone, it makes a passing test an error.
+- Cleanup is the parent's work. A parent that is killed outright, such as by SIGKILL, runs no cleanup at all.
+- `backendData: 'reused'` or `'external'` declares a backend that is not prepared: kept on purpose, or managed elsewhere. `apps` names the apps a preparation covers, all the test's apps by default.
+- `preparation.finished` and `cleanup.finished` record each one, and the test's result lists them in `preparations` and `cleanups`.
+
+Retest does not look inside the app's data, and it does not reset it. A fresh browser context is not a fresh database: a test can find what an earlier run left on the server.
+
+### What an attempt ran
+
+`test.started` carries `execution`, and the test's result keeps it:
+
+- `bundle`: the modules of the project this attempt ran, by path from the root and the SHA-256 the parent read from disk, and a fingerprint of the list. That is the modules the test file's process loaded with the file, and the ones this attempt loaded for the first time, which `test.finished` adds in `bundle`. A module an earlier test in the same process imported first is that test's, so a test's bundle is the same in a full run and in a run of it alone, unless it imports that same module late itself. Modules under `node_modules` and Retest's own are left out.
+- `configuration`: what changes how this test runs, and its fingerprint. That is its own apps' targets, browsers, channels, headless settings, emulated screens and proxies without credentials, its budgets, the locks it holds, the names of the variables the host gave its process in `testEnvironment`, never their values, the diagnostics policy, and the judges its host AI checks use: each one's adapter code (the SHA-256 of a file adapter, the installed version of a package adapter, or `codeUnavailable` for a factory), its options as a fingerprint, its time and limits, and the version of Retest's instructions to judges. The base URL and the browser's path are left out, since they say where things are, not how the test runs. A judge the test names only in its own `test.evaluate` is not known before it runs: each such check's record names its judge and the version that judge reported.
+- `secretReferences`: the config's secrets by name and source, beside the fingerprint and not in it, since which of them a test types is not known before it runs.
+- `runtime` (Retest, Node and the platform), `sessions` (each app's session id and the browser as it reported itself), `owner`, and `appBuilds`, which the host gives in `RunOptions.appBuilds` by app.
+- `startingState`: for each app, whether its browser storage was `fresh` or `saved`, restored from a saved state, and its backend data as the host declared it: `prepared`, `reused`, `external` or `unavailable` when nothing was said.
+- `unavailable` names what Retest could not record, such as `app-build:web` or `judge-code:<judge>`.
+
+Every string is redacted before it is hashed or written, so a rotated secret changes no fingerprint. On Chrome, a changed helper, budget, target or judge adapter changes the matching fingerprint, and a file the test never loaded, or a judge it never uses, changes nothing.
+
+### Requirements and check ids
+
+`RunOptions.requirement` holds the version the host's checks belong to: `{ version: 'saves-v1' }`. With it, every host check needs an `id`. Host AI checks have one already. An id is bound to the SHA-256 of its check's content: kind, app, text or address, options and time, but not its `name`; for an AI check, its criteria, evidence and judge, the judge's adapter code and options included. The version and every string of a check are redacted before they are recorded or hashed.
+
+`run.started.options.requirement` lists every check with its fingerprint. To freeze a requirement, pass them back:
+
+```ts
+requirement: { version: 'saves-v1', checks: { 'saved-title': '3f1c…', 'saved-reads-well': '9a07…' } }
+```
+
+Before any test runs, a frozen requirement refuses a check whose content changed under its id, a check it does not hold and one it holds that the run does not have, each by name, as a usage error. Any requirement also refuses a check with no id, one id for two different checks, a check that holds the value of a secret read from the environment, since a fingerprint is public, and an id such as `evaluation-1`, which belongs to a test's own AI checks. A changed check needs a new version.
+
+A check's id is in its result, its events, and its failure's `details.checkId`. Each result has `ending`, which says what ended the attempt: `passed`, `assertion_failed` for the test's own checks, `required_check_failed` with `checkId` for the host's, `check_error` for a required check the parent could not complete, such as one whose page did not answer in time, `action_failed`, `setup_failed`, `timed_out`, `crashed`, `cancelled`, `outcome_unknown`, `inconclusive`, `evaluation_error`, `test_error`, `cleanup_failed`, `not_run` or `skipped`. `notRun` names each required check that never ran. An earlier action failure or a failed setup never reads as the intended check failing.
+
+An ending rests on the parent's own records. A kind that names a required check, a crash or an unknown outcome needs the parent to have seen it: its host check failed, its browser was gone or the test file's process ended on its own, an action it dispatched never answered. A failure the test file's process only reports is the test's own, `assertion_failed` for a failed value check or an `expect.poll` that ran out of time, and `test_error` for anything else, whatever class it gives.
+
+A test that reproduces a defect fails like any other, and exits 1. On Chrome, a fixed test passes against a correct app, fails at its intended check against a broken one and passes again once the app is repaired, with the same bundle, configuration and requirement fingerprints and only the app build changed.
+
 ### What a pass rests on
 
-Every time the parent answers the test file's process with what the page showed, it writes an `observation` event first. Each look has an id, `o1`, `o2` and so on, counted within the attempt. Nothing is skipped: an assertion that looked 13 times writes 13 events. `observed` holds what the process received, redacted, so page text that holds a secret reads `{{name}}` there.
+Every time the parent answers the test file's process with what the page showed, it writes an `observation` event first. Each look has an id, `o1`, `o2` and so on, counted within the attempt. A look at the page itself, for `url()`, `title()`, `toHaveURL` and `toHaveTitle`, takes an id from the same count and writes no event, so the ids of the `observation` events can skip one. An assertion at a locator that looked 13 times writes 13 events. `observed` holds what the process received, redacted, so page text that holds a secret reads `{{name}}` there.
 
-A locator assertion names the look its verdict rested on, its last, in `observationId`. The parent then judges each passed locator assertion again, on that look, with the same rule. It writes the matcher, the expected value, the comparison, the actual value and the page address from its own records, never from what the test file's process sent.
+A locator assertion names the look its verdict rested on, its last, in `observationId`, and sends back the session that served it. Ids start again at `o1` in every attempt, so the parent refuses an assertion whose session is not the one that served its look, as when a process names a look from an earlier attempt. The parent then judges each passed locator assertion again, on that look, with the same rule. It writes the matcher, the expected value, the comparison, the actual value and the page address from its own records, never from what the test file's process sent.
 
 `assertion.passed` says who judged it, in `judgedBy`:
 
-- `parent`: a locator assertion the parent judged on the look it names.
+- `parent`: a locator assertion the parent judged on the look it names, or `toHaveURL` and `toHaveTitle`, judged on the look at the page the assertion names.
 - `child`: a value assertion, such as `toBe` or `expect.poll`. The values live only in the test file's process, so the pass is that process's own word. `inspect` marks such a pass "reported by the test file".
 
 A test file that sends a pass the look does not support, such as `toBeVisible` on a look that matched nothing, has broken the protocol. The test ends `test_error`, its process is killed, and no `assertion.passed` is written for the claim. A failed assertion carries no mark: a test may always fail itself.
@@ -790,6 +1293,8 @@ One process may call `runFiles` again before the first call ends, with another r
 - Actions, navigations, observations, host checks and every outcome are the parent's own facts.
 - The `RunResult` that `runFiles` returns, and the events a reporter receives, come from the parent's memory. `result.json` and `events.jsonl` are copies, in a folder the test file's process can write. A host that must trust a run takes the result from `runFiles` and the events from its own reporter, and reads the run folder only for screenshots and logs.
 - Each navigation's `cause`, `document`, step and `location` are the parent's facts. A host can require that no `goto` opened the page its checks read.
+- The list of modules in an attempt's `bundle` comes from the test file's process, which says what it loaded; the hash of each is the parent's own reading of the file from disk when the list arrived. A process could leave a module out of its list.
+- An attempt's `ending` rests on the parent's own records, never on the class of a failure the test file's process reports.
 - The test file's process is not a sandbox. It runs as the same user, can read and write what that user can, and can reach the network. A host that runs code it did not write runs all of Retest inside isolation it controls, such as one container per run.
 - Screenshots are not redacted.
 
@@ -812,36 +1317,36 @@ The first two commands run from this repository. The app refuses every request w
 
 ## Exit codes
 
-- 0: every selected test passed and cleaned up.
-- 1: tests ran and at least one failed its checks, a host check included, even if others hit problems.
-- 2: nothing trustworthy came out, or a test could not be checked. This covers usage errors, an invalid config, a missing secret, missing files, collection and setup failures, a lost browser, tests that did not run, cleanup failures, results that could not be written, and a selection that kept nothing.
+- 0: every selected test passed and cleaned up. Tests declared with `test.skip` do not count against it, and a run narrowed by `test.only` says so beside its exit code.
+- 1: tests ran and at least one failed its checks, a host check, a required AI check or a strict diagnostics policy included, even if others hit problems.
+- 2: nothing trustworthy came out, or a test could not be checked. This covers a required AI check that was inconclusive or could not run, a required diagnostics capture that was not complete, usage errors, an invalid config, a missing secret, missing files, collection and setup failures, a lost browser, tests that did not run, cleanup failures, results that could not be written, a selection that kept nothing or only skipped tests, a check a host required of a skipped test, and `test.only` when `CI` is set without `--allow-only`.
 - 130: interrupted with Ctrl+C, or stopped by a program with a `Failure` as the reason.
 - 143: stopped by SIGTERM, as a CI runner does on cancel.
 
 SIGINT and SIGTERM take the same path: the running test stops, the run records `interrupted`, writes `result.json`, closes the browsers, stops the servers it started and deletes saved state. A second signal of either kind quits at once, and its exit hooks still end the browsers and servers and delete saved state.
 
-130 and 143 win over 2, and 2 for an untrustworthy run wins over 1.
+130 and 143 win over everything. 2 for a run that cannot be trusted as a whole, one no test ran in, one whose output or a file's process failed, or one with a host check it could not run, wins over 1. Otherwise a failed test gives 1 before anything else: a test that errored, was not run or was left undecided beside a failed test still exits 1, and 2 only when no test failed.
 
 ## What Retest does not do yet
 
-- Browsers: Chromium, Chrome and Edge only. No Firefox, WebKit or Safari, and no real phones, tablets, native or desktop apps. Emulation is a desktop browser pretending.
+- Browsers: Chromium, Chrome and Edge only. The config accepts Firefox, WebKit, iOS simulator and macOS targets, and a run refuses every test that needs one, because Retest has no driver for them. No Safari, and no real phones or tablets. Emulation is a desktop browser pretending.
 - Checked on macOS arm64 with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3 ran on Linux only in its own integration checks, with Google Chrome 154 and Debian's Chromium 154. Linux on x86-64, Linux outside a container, Edge, Chrome beta, dev and canary, and CI runners were never run. Windows cannot work.
-- The keyboard only presses one key at a time: no Control, Alt or Meta, no key held down across actions, and no text typed key by key. `fill` types text.
-- `select` sets the selection by script, so the page's `input` and `change` events for it are not trusted. `scroll` is one wheel event, also on a touch screen: no swipe.
+- The keyboard presses one key or one shortcut at a time: no key held down across actions, and no text typed key by key. `fill` types text. On macOS, only the shortcuts in Retest's table edit a field, and no shortcut was run on Linux.
+- `select` chooses with the keyboard, and was run on macOS only. `scroll` is one wheel event, also on a touch screen: no swipe.
 - Host checks are given only by a program, through `runFiles`. They read the final page, not the steps to it, and not frames or shadow roots. A navigation's `cause` says what opened that page, and nothing about the steps before.
 - Retest does not sign in to a proxy. Only an `http` proxy was run.
 - `--headed`, and `headless: false` in a config, were never run.
-- Locators search the top-level document only: no shadow DOM, no frames. No `first()`, `nth()`, `filter()` or chained locators.
+- Locators search the top-level document only: no shadow DOM, no frames. No `filter()`, `and()`, `or()`, `getByAltText()` or `getByTitle()`, and no XPath.
 - No popups, dialogs, uploads, downloads, network mocking, video or visual comparison. A JavaScript dialog fails the command as unsupported.
-- No `lock`, retries, watch mode, `skip`, `only`, custom fixtures or `test.extend`. Files run on workers; the tests of one file do not.
+- No retries, watch mode, custom fixtures or `test.extend`, and no `test.skip()` called inside a test with a condition. Files run on workers; the tests of one file do not. A lock lasts one run and is not shared with another process.
 - No `retest install` and no browser download. No HTML report.
-- No `toMeet`, `test.eval`, judges or agent session API.
+- No `toMeet`, `test.eval` or agent session API. AI checks judge text and screenshots only: evidence from recorded frames is refused, a screenshot cannot be cropped to a region or masked, and no judge's accuracy has been measured on a set of labelled cases. No provider has been called through the AI SDK adapter yet.
 - Test files are loaded more than once: once to plan the run, and again for each visit that runs them. Top-level code runs each time.
 - Screenshots are not redacted. A secret the page shows appears in its screenshot.
 - A function source's value is hidden only from the moment its source gives it; page text read before that reached the test's process as it was.
 - Locators match the page's text as it shows it, not redacted. Retest refuses a locator that holds a whole secret value, but a locator that holds part of one, with the text beside it, can still match it.
 - A page that moves the keyboard focus into a frame of another site as the text arrives can receive the text there. Retest reports `outcome_unknown` and names the frame; it cannot stop typing inside a frame it is not attached to.
-- Page console messages are not recorded.
+- Diagnostics come from Chromium pages only, within the scope above: no request or response body or header, no WebSocket message, and nothing from a frame of another site, a service worker or a shared worker. Network observation does not mock, wait on or replay a request.
 - SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is removed when the next run starts. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.
 - `list --json` has no published JSON Schema. Events and results do.
 

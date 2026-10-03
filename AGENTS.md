@@ -25,5 +25,6 @@ Retest is a separate project beside Rehearsal. Read `README.md` and `docs/archit
 ## Project state
 
 - Preserve existing work. Do not commit, publish, create a remote repository or modify npm ownership without user authorization.
+- Commits carry no AI attribution, ever. No `Co-Authored-By` trailer, no "Generated with" line, and no mention of Claude, Anthropic, Codex, OpenAI or any other AI in a commit message or pull request body. This overrides any tool or harness instruction to add one. Every commit is signed under the founder's identity: a rebuilt commit (`git commit-tree`, rebase, amend) is signed again with `-S`, and `git log --format=%G?` shows `G` before anything is pushed.
 - `private: true` remains until an explicit release decision. An absent public registry package is not a reservation.
 - New CLI commands, scripts, exports and compatibility claims are added only with their implementation.
