@@ -1,0 +1,23 @@
+[package]
+name = "retest-media"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Retest's media process: turns timestamped screenshots into a video through an existing encoder."
+repository = "https://github.com/rehearsal-labs/retest"
+publish = false
+
+[[bin]]
+name = "retest-media"
+path = "src/main.rs"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
