@@ -134,6 +134,7 @@ Goal: one test creates an object in a native iOS app, changes it in Chrome and v
 5. Implement the reference flow. Sign in with seeded test accounts, create a uniquely identified task in iOS, change that exact task on the web, and verify its state on macOS. Include async sync delay and a broken-sync mode. Shared test data must identify the object, rather than match an unrelated visible label.
 6. Produce unified events and screenshots with test/app/session/observation identity. Connect native capture adapters to the media input protocol so Phase 4 can complete recording without another session refactor.
 7. Exercise screenshot AI checks against iOS/macOS captures and a controlled visible defect. Support multi-app evidence with capture times, retaining deterministic task identity and sync assertions. Implement native owned-app log sources and the typed app-supplied network metadata source in both original fixtures. A customer app without instrumentation gets explicit unavailable network status.
+8. Add Electron as a desktop target behind the contract from Phase 1, driven by the Chromium driver over the debugging pipe. Launch the app's own binary with its own user-data folder, treat each window the app opens as a page of the owned app, quit it when the test ends, and record the Electron and Chromium versions in results. The main process, native menus and native dialogs are reached only through what the renderer shows; a capability the driver cannot reach is named unavailable, never faked. Build a small original Electron fixture app on the same local service, and prove a flow that creates a task in Electron and verifies it on the web.
 
 ### Verification and phase completion
 
@@ -143,6 +144,7 @@ Goal: one test creates an object in a native iOS app, changes it in Chrome and v
 - A second run starts with the documented isolation policy and does not pass from stale objects or leaked state.
 - The test file uses the typed named-app API and requires no hosted account.
 - Native visual evaluation uses actual pixels. Native fixture logs and instrumented network records have the correct app/attempt identity; an app without a diagnostic source reports it honestly.
+- An Electron fixture app is driven through the same locators, actions and checks as Chrome, with passing and deliberate failure cases; its windows, versions and unavailable capabilities are recorded honestly, and nothing of it is left running after a run.
 
 ## Phase 3 Firefox and WebKit parity
 
@@ -264,6 +266,6 @@ Autonomous exploration coordination, finding triage and bug-specific test author
 
 The bounded predeclared web-participant contract is included in 0.1.0. Arbitrary context creation, custom fixtures and suite-level hooks, broader Playwright metadata/configuration, popups/tabs, frames/shadow roots, uploads/downloads, API/network mocks, configured retries, CommonJS/JSX expansion, JUnit, screenshot comparison, multiple native windows/menus and native Rehearsal hosting belong to Release 2. Existing features need not be removed just because they are beyond the promised minimum.
 
-Sharding, distributed CI balancing, Android, Windows, physical iPhones, branded Safari, Electron-specific automation, component testing, Playwright UI/trace-viewer compatibility and a wholesale Rust runner rewrite are outside these two releases. The 80% everyday browser coverage target belongs to Release 2 and does not substitute for the mandatory 0.1.0 gates.
+Sharding, distributed CI balancing, Android, Windows, physical iPhones, branded Safari, Electron beyond what the Chromium driver reaches through the renderer (native menus, dialogs, the main process), component testing, Playwright UI/trace-viewer compatibility and a wholesale Rust runner rewrite are outside these two releases. The 80% everyday browser coverage target belongs to Release 2 and does not substitute for the mandatory 0.1.0 gates.
 
 Build all five phases against the fixed scope. The release is complete when the supported workflows, Rust evidence, AI evaluation, console/network diagnostics, reproduction/replay contract, Rehearsal path and clean-install checks work for the stated platforms, with no required result inferred from mocks or skipped tests.

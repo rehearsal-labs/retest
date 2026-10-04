@@ -163,19 +163,118 @@ A target is a browser to run in:
 
 Each of them also takes `proxy`, described [below](#proxy).
 
-The config also accepts four targets that Retest has no driver for yet:
+The config accepts Firefox and WebKit targets with `{ browser: 'firefox' }` or `{ browser: 'webkit' }`. Neither has a runner driver yet. A test needing one is refused at planning, before its servers or browsers start; `doctor` names the same refusal. Native targets use the runner described below.
 
-- `{ browser: 'firefox' }` and `{ browser: 'webkit' }`, which take `executablePath`, `headless`, `emulate`, `viewport` and `proxy` as `chromium()` does; no test puts a `viewport` on either yet.
-- `{ platform: 'ios-simulator', appPath, device, runtime }`: an app on an iOS simulator. `appPath` is its simulator build, the `.app` bundle. `device` and `runtime` name the simulator, such as `'iPhone 17'` and `'26.0'`.
-- `{ platform: 'macos', appPath }`: an app on this Mac, by its `.app` bundle.
+### Native apps
 
-A run refuses every test that needs one of these as soon as it has planned, before it starts any server or browser for that test. The test is not run, with `setup_failed`: "Retest has no driver for Firefox yet, so it cannot start the target firefox of the app web." The other tests run as usual. `doctor` says the same of the target. An app's targets are all browsers, all iOS simulators or all macOS apps, and a native app takes no `baseUrl`.
+Native runner wiring is in progress. Real CLI runs opened TaskPhone on iOS Simulator 26.5 and TaskDesk on macOS, filled their account fields, recorded native identity and closed their sessions. The sign-in and task flows remain unverified: `secret()` input is refused before its value is read, because executor logs and XCTest result output are not yet protected before persistence. The public swipe, keyboard dismissal and alert helpers still need construction in the test process. `doctor` still reports native targets as having no driver; that diagnostic has not been connected.
+
+Configure the app bundle and the platform's launch settings:
+
+```ts
+const config = defineConfig({
+  apps: {
+    phone: {
+      platform: 'ios-simulator',
+      appPath: './TaskPhone.app',
+      device: 'iPhone 17',
+      runtime: '26.5',
+      arguments: ['-reset', '-serviceURL', 'http://127.0.0.1:4310'],
+    },
+    desk: {
+      platform: 'macos',
+      appPath: './TaskDesk.app',
+      arguments: ['-reset', '-windowFrame', '20,60,700,480'],
+      environment: { TASK_MODE: 'test' },
+    },
+  },
+})
+```
+
+`appPath` is relative to the config. iOS needs a simulator build, an installed device type and runtime, the pinned Xcode and the pinned executor sources or builds. macOS needs the native executor and Automation Mode already enabled without a prompt. A prompt is a refusal; Retest does not accept it. A native target takes no `baseUrl`, viewport, browser emulation, proxy or saved browser state. An app's targets must share one kind.
+
+`arguments` and `environment` are optional. Retest refuses its own debugging and data-folder switches by name, executor environment names and malformed settings. Argument and environment values are excluded from execution settings: those settings retain their counts and SHA-256 hashes. Variables that supply secrets or host credentials are withheld from native tools and the launched app, including an attempted explicit environment override.
+
+After registering the config's type, a test gets native handles under the app names:
+
+```ts
+test('shows the account field', { apps: ['phone', 'desk'] }, async ({ phone, desk }) => {
+  await phone.getByTestId('account-field').fill('ada')
+  await expect(phone.getByTestId('account-field')).toHaveValue('ada')
+  await desk.getByTestId('sign-in-button').click()
+})
+```
+
+This example describes the API; that paired native test has not been verified. The current desktop and simulator executors expose one active app session per native resource. Pair one native app with web apps; several macOS apps, or several apps on one simulator device and runtime, are refused.
+
+Native locators use accessibility identifiers through `getByTestId`, supported roles through `getByRole`, labels through `getByLabel` and text through `getByText`. These finders can be chained to scope a lookup, with `first`, `last` and `nth` picking a match. CSS, placeholder lookup and web navigation are refused even when a test forges a command. Each action needs exactly one match. iOS takes `tap`; macOS takes `click`. Both expose `fill`, `press` and `scroll`. iOS swipe and the software keyboard and alert operations are connected in the parent, but their public helpers remain unfinished.
+
+The native assertion types expose `toBeVisible`, `toBeHidden`, `toBeEnabled`, `toHaveText`, `toHaveValue`, `toBeSelected` and `toHaveCount`, with `.not`. The parent judges them from its scoped native tree, and a verdict supplied by the test process cannot soften a failure. A property the platform does not expose is unsupported, including selected state on an element without one. Text checks on editable fields are refused; use a value check. The native layer refuses stale references, records input whose outcome is unknown and never resends it.
+
+An iOS test starts a fresh simulator after it acquires all its resources, and shutdown deletes that simulator. A macOS app's data and keychain are kept. `-reset` requests the app's own reset when it offers one; this is recorded as an app request and does not claim OS isolation. Backend state remains external unless the host declares a preparation. A desktop or device lease comes free only after its native session and runtime end; an uncertain shutdown retains the lease. Retest never adopts or ends an app copy it did not launch.
+
+A native secret destination is the exact bundle identifier in `secretOrigins`, such as `dev.retest.fixtures.taskphone`. It is not a web origin. Native secret input remains refused until every executor output is protected. Text redaction does not protect image pixels.
+
+`native.started` records the app bundle, build, checksum, OS, executor pin and Xcode beside the session id. `native.ended` keeps unresolved action outcomes. Result files and `inspect --test` retain native sessions and named capture sources. iOS executor-screen capture was exercised through the runner. TaskDesk window capture was refused for an overlapping foreign window; no full native window capture is claimed by this wiring work. Capture writers use the run's clock; older store callers retain the clock inferred from events as a fallback. Events remain at `schemaVersion: 1`; old strict readers refuse the new event types and fields.
 
 Retest finds Chrome and Edge where they install: on macOS in `/Applications` and `~/Applications`, and on Linux in the standard paths. A browser that is not there is a setup failure that lists the paths it tried, before any test that needs it. Only `chrome()` stable and `chromium({ executablePath })` were run. Edge and the other Chrome channels were not installed on the machine Retest was checked on.
 
 `headless` defaults to true. `--headed` shows every browser. Nobody has run a browser with a window yet.
 
 Targets on the same executable, with the same headless setting and emulation, share one browser process. Each distinct target launches once, the first time a test needs it, and closes when the run ends. Every test gets a new browser context and page for each of its apps.
+
+### Electron apps
+
+`electron({ executablePath, appPath, args?, userDataDir? })` is a desktop app built on Electron. Retest drives it with its Chromium driver, over the app's own debugging pipe.
+
+```ts
+import { defineConfig, electron } from '@rehearsal-labs/retest'
+
+export default defineConfig({
+  apps: {
+    desktop: electron({ executablePath: 'electron/dist/Electron.app/Contents/MacOS/Electron', appPath: 'desktop' }),
+  },
+})
+```
+
+- `executablePath` is the Electron binary. On macOS it is the file inside `Electron.app/Contents/MacOS`. `appPath` is the app's folder, which holds its `package.json`, or its entry file. Both are relative to the config's folder.
+- `args` reach the app after its path. Retest sets the debugging pipe and the data folder itself, so an argument that starts with `--remote-debugging-` or names `--user-data-dir` is refused. A secret never goes in `args`: give it through `secrets`. Each attempt's record keeps the arguments as their count and the SHA-256 of their list, never their text, so a change to them changes the configuration fingerprint. A short secret could still be guessed from that hash.
+- An Electron app has no address. It takes no `baseUrl`, and no `headless`, `emulate`, `viewport` or `proxy`. An app's targets are all Electron apps or none. It may carry `start`, for a server the app talks to.
+- No two Electron targets may name the same `userDataDir`. The config is refused, naming both, since each target's launches would wait on the other's.
+
+How a test runs:
+
+- Each test launches the app afresh, in a process group of its own, and quits it when the test ends. Retest closes the app's debugging pipe, which Electron quits on, waits up to one second for the app's processes to end, and kills any that are left.
+- The first window the app opens is the test's page. What Retest's own checks ran there: `getByTestId`, `getByRole`, `getByLabel` and `getByText` with `first()` and `nth()`; `fill`, `click`, `press` and `check`; `toHaveText`, `toHaveCount`, `toBeChecked`, `.not.toBeChecked()`, `toBeVisible`, `toHaveTitle` and `toHaveURL`; `page.url()`, `reload()`, `goBack()` and `goForward()`. The rest of the page API goes to the window as it goes to a Chrome page, and was not run on Electron.
+- Without `userDataDir`, each launch gets a new data folder in the temporary folder, as a browser's profile does. Retest removes it, with whatever the app stored in it, after confirming the app's processes have ended. A folder left by a run that was killed outright is retained: a later run cannot prove it is still disposable.
+- With `userDataDir`, every launch uses that folder, so the app keeps its data from one test to the next. Retest leaves the folder as the app left it, and each attempt's record says the app's storage was reused, not fresh. Launches of the target take turns on the folder, each starting once every process of the one before it has gone.
+- Fresh means a new Chromium data folder and nothing more. What the app keeps elsewhere carries over from one launch to the next. This includes the user defaults of the binary's bundle (`com.github.Electron`, shared by every unpacked app run on Electron's own binary), the binary's cache under the user cache folder, `~/Library/Logs/<app name>` when the app writes logs there, and any file the app writes outside its data folder.
+- The app never sees the environment variables that judges' credentials come from. It never sees `ELECTRON_RUN_AS_NODE`, which would make the binary run as plain Node. Nor does it see Electron's logging variables, such as `ELECTRON_ENABLE_LOGGING`, which would print its windows' console lines into its output.
+- The app's output goes to its browser log. A run that passes its redactor to the launch writes each line redacted, so a secret the app prints shows as its placeholder.
+- On macOS the app gets Chromium's fake keychain, so its safe storage stays out of your login keychain.
+- The app's windows open on your screen. Electron has no headless mode.
+
+What Retest refuses, by name:
+
+- `page.goto()` on an Electron app is a type error: "An Electron app has no address. Its page is the first window the app opens." If it runs anyway, it fails as `unsupported`.
+- A test cannot reach any window after the first. Each launch writes `electron/<app and target>/<launch>/windows.json` in the run folder. It lists every window in the order Retest learned of it, with when it opened and closed and whether a test could reach it. A window already open when Retest began to watch is marked `existing`, and its opening time is when Retest learned of it. The browser log notes each new window. When the app closes its first window, the next command fails with `session_lost`, and the message says no other window is reachable.
+- The main process, native menus and native dialogs: a test reaches only what the first window shows.
+- Sign-in state: a test cannot restore one into an Electron app, and a `test.setup` on one runs its body, then fails as `unsupported` when Retest cannot save its state. Use `userDataDir` to keep the app's data.
+- A secret is typed only on an http or https origin that the test's apps or `secretOrigins` allow. A window on a `file://` address has no such origin, so the fill is refused. A window the app serves from `http://127.0.0.1:<port>` takes the secret once `secretOrigins` names that origin.
+
+On Electron, a page's origin is whatever the app says it is: an app can show its own page under any address, as Retest's fixture shows its page under its service's. Allowing an origin for a secret therefore means trusting the app with it. In a test whose web app has that origin as its `baseUrl`, the base URL alone lets the secret into the Electron window. Retest's own two-app check typed its password into the Electron window that way.
+
+The app opens its first window as it starts, and Electron answers on its pipe only once the app is ready, so the window's page has usually loaded before Retest reaches it. Retest reads the page's address from the window itself, so `page.url()`, `toHaveURL` and the secret rule know it from the start. Retest's own scripts start in that page after the app's scripts have run. If Retest cannot start its change observer there, `windows.json` and the browser log note it, and checks in that page wait out their timers instead of waking on a change.
+
+Console and network diagnostics come from the first window, and they are always `partial` there, with the reason: "the app's window was already showing its page when capture began, so what the page logged or loaded before then was not captured". Today, a diagnostics policy with `requireComplete` fails every Electron test for that reason: Retest cannot reach the window before the app's own page has run, so the start of every capture is missing. Each capture also says it does not cover the app's main process or its other windows, and why. An app's requests made from its main process are not captured.
+
+`browser.started` comes for each launch. Its `product` is `Electron`, and its `version` is the Electron release. Retest reads the release from the binary's files: the Electron framework's bundle on macOS, or the `version` file beside Electron's own build. When the files name none, as a packaged app's may not, it reads the release from the user agent the app reports. `target.electron` holds that release and the Chromium it embeds, as the app reported it. Launches after the first carry `instance`. The human report prints `started desktop=electron  Electron 44.5.1 · Chromium 152.0.7977.130` and marks the target `(Electron)` on every test line and failure card.
+
+`doctor` checks that the binary is a file it may run and that the app is there. It names the Electron release when the binary's files state one, and says so when they do not. It does not start the app.
+
+An Electron app can be one of several apps in a test, as a browser can. Retest's own check names two apps, an Electron target and a Chrome target, in one test. The test creates a task in the Electron window and reads its id from the window's address. It then opens that task by its id on the web, marks it done there, and waits until the Electron window shows it done. When the service never passes changes on to the web, the same test fails at the web's check, which names the task's id, and nothing after that check runs.
+
+Checked with Electron 44.5.1 on macOS arm64, from the official release. Linux, Windows and packaged apps were not run.
 
 ### Proxy
 
@@ -255,12 +354,63 @@ test('reads the code from the inbox', { locks: ['inbox'] }, async ({ page }) => 
 - Two tests that hold a common lock never run at the same time, across workers and browsers. Tests that hold different locks, or none, run beside them as before.
 - A test takes all of its locks at once, or waits and takes none, so two tests cannot each hold what the other waits for. `test.describe` passes its `locks` down, and a test's own add to them.
 - When a lock frees, the waiting tests are served in the run's order, the one planned first going first. A test that waits for two locks keeps both from every test planned after it, so it is never overtaken for ever.
-- A test waits for its locks once its apps are ready and before its budget starts. The wait counts against none of its budgets, and its `durationMs` leaves it out.
-- `lock.acquired` records, before `test.started`, the locks an attempt holds, how long it waited for them in `waitedMs`, and in `heldBy` the tests that held one of them when it asked. The human report adds `holds lock inbox, after waiting 2.1s` under the test, and `inspect --test` shows it in the timeline.
+- A test waits for its locks before anything is launched for it and before its budget starts. The wait counts against none of its budgets, and its `durationMs` leaves it out.
+- `lock.acquired` records, before `test.started`, the locks an attempt holds, how long it waited for them in `waitedMs`, and in `heldBy` the tests that held one of them when it asked. The human report adds `holds lock inbox, after waiting 2.1s` under the test, then `held by` and those tests when it had to wait. `inspect --test` shows the first line in the timeline.
 - A lock name must be in the config's `locks`. Any other, or any lock when the config lists none, fails its file with a usage error that names the declared ones. Without a config, as with `--browser`, any name holds.
-- A lock lasts one run. Two runs at once, or another process, do not see each other's locks.
+- A lock belongs to one run and lasts one run. Two runs at once, even two in one process, do not see each other's locks, so a named lock never keeps two runs apart. The Mac's desktop, a simulator and an Electron data folder are different: one table holds them for every run in the process (see Resources and leases).
 
 The example's count of every save holds the lock `saves`, as does every test that saves; [examples/tasks](../examples/tasks) shows it.
+
+### Resources and leases
+
+A test holds everything it needs before it acts on any app. Retest works out what that is from the test's apps and locks:
+
+- each lock the test holds
+- the Mac's interactive desktop, for a macOS app
+- its simulator, for an iOS app
+- the data folder, for an Electron app whose target names `userDataDir`
+- one session for each app, when the host gave `sessions`
+
+A browser target needs nothing of its own. Each test gets a new browser context, so tests on one browser run side by side. An Electron app without `userDataDir` gets a new folder for each launch, so it needs nothing either. Two apps on one desktop, one simulator or one data folder take it once.
+
+A data folder is held under its real path: a link and the folder it points to are one folder, and on a volume that ignores case, so are `.data/Desk` and `.data/desk`. Retest reads a volume's case rule by writing a small file in a temporary folder beside the data folder, looking for it with its name's case turned over, and removing it. When it cannot write or read that file, the test does not run, with `setup_failed`, rather than guess.
+
+How a test gets them:
+
+- Every test acquires in one order, in three steps. Its locks come first, from the run's own table: a named lock keeps the tests of one run apart, never two runs. The desktop, simulators and data folders come next, from one table that every run in the process shares, since a Mac has one desktop and a folder is one folder whichever run names it. Sessions come last, from the host's budget. Within a step everything is taken at once or not at all, and within a kind it goes by name.
+- A test holds each step while it waits for the next, and never waits for anything earlier in the order than what it holds. So no two tests can each hold what the other waits for.
+- Nothing starts for a test until it holds all of it. No browser context opens, no Electron app launches and no host preparation runs before then. The run does not start any Electron app early, so with one session and four workers, one Electron app runs at a time.
+- A test waits for a lock for as long as the test holding it runs, as before; that test is bound by its own budgets.
+- A test waits for the desktop, a simulator or a data folder for as long as the test holding it is inside its lease. Once that lease has expired, it waits at most the setup budget more.
+- Sessions wait at most `waitMs` from the moment the test asks, as before.
+- A test that does not get everything it needs does not run. It ends with `setup_failed`, the failure names what it waited for and who held it, and it gives back whatever it held. Only tests of the same run are named. Another run's holders are counted, never named: `heldElsewhere` for the desktop, simulators and data folders, and `heldByOthers`, the sessions every other run holds, whatever its owner.
+- Waits count against none of the test's budgets. Its `durationMs` leaves them out.
+
+How a test gives them back:
+
+- In the reverse order, however the test ended. That includes a launch that failed, a host preparation that failed, a browser lost while the pages opened and a stopped run.
+- Sessions come back once the test's browser contexts close, as before.
+- A data folder comes back once every Electron app the run launched on it has gone, including a launch the run gave up waiting for, whose app may still come up. A desktop or a simulator comes back once whatever made its app ready says its native session has ended. The runner supplies that signal from native shutdown. A free signal that fails says nothing, so the part stays held.
+- What a test holds while it runs is its lease. Once the test lets go, a desktop, simulator or data folder has the cleanup budget to come free. One that does not expires the lease and stays held until it is free, so no other test gets it while it may still be in use. The locks after it in the order come back.
+- An Electron app launched for a test is quit before the test's result is written: by closing its page, or, when its page never opened, by the runner. An app that is not gone within the cleanup budget is a `cleanup_failed` beside the test's outcome. A test that passed then ends `error`, and a test that already failed keeps its failure.
+- A stopped run withdraws every test still waiting, and none of them runs. When the run ends, it waits up to the cleanup budget for what is still coming free. A desktop, simulator or data folder whose app is still there then stays held, past the run's end, and its lease is recorded as expired, so no later run in the process is handed it.
+
+What the run folder records:
+
+- `lock.acquired` comes when the locks are granted, with the same fields as before.
+- `resource.acquired` comes when the desktop, simulators and data folders are granted. It lists them in `resources`, with `waitedMs`, the tests of this run that held one in `heldBy`, and in `heldElsewhere` how many another run held.
+- `session.reserved` comes when the sessions are granted, with the same fields as before.
+- `lease.taken` comes once the test holds everything, before `test.started`. Its `lease` lists what it covers in the acquisition order, when it was taken in `takenAt`, and `releaseWithinMs`, the cleanup budget.
+- `lease.expired` names what did not come free in time in `held`, and in `released` what had really come back by then; sessions whose browser contexts could not close are not among them. It comes after the test's `test.finished`, or as the run ends.
+- Each session in an attempt's execution record names its `resource`: `browser-context`, `app-launch`, `data-folder`, `desktop` or `device`.
+- The human report prints `holds the data folder /work/.data/desk of desk=electron, after waiting 1.2s` under the test. When a test waited for a lock or a resource, a line under it now says who held it: `held by tests/a.retest.ts > a holds the folder`, or `held by another run in this process`. The failure card of a test that did not get what it needed lists `Waited for`, `Held by`, `Other runs held` or `Others held`, and what it `Gave back`.
+- A reader built before this release refuses a run folder in which any test held a lock, a resource or sessions. `lease.taken`, `resource.acquired` and `lease.expired` are event types it does not know. Every attempt's execution record also carries `resource` now, so it refuses every run folder with an attempt in it.
+
+Limits:
+
+- Locks last one run, as before, and never keep two runs apart. The desktop, simulators and data folders last as long as the process. Two processes on one Mac do not see each other's.
+- Native runtimes start only after the test has acquired its complete lease. The native sign-in flows remain blocked as described above.
+- Commands to one app go one at a time because the test file's process refuses a second while one runs, with `concurrent_commands`. The parent does not refuse a second command itself.
 
 ## Write a test
 
@@ -682,7 +832,7 @@ The judge answers with a verdict for each criterion, the evidence ids it rests o
 
 ### Records
 
-A check that ran, was cancelled or, for a host's check, never ran writes an `evaluation.finished` event, always the parent's, so a result rebuilt from the events lists the same checks as `result.json`. A check refused before the parent took it, as when no test was running, writes none. Each test's result lists its checks in `evaluations`: the test's own in the order they ended, then the host's. A test's own checks are numbered `evaluation-1`, `evaluation-2` and so on in each attempt. A record holds the check's id, its source, mode, judge and verdict, each criterion with its verdict and citations, a SHA-256 of the criteria and context as the judge received them, the evidence, the justification, a reason when there is no judged verdict, a failure or a warning, and the evaluator: provider, model, model revision, evaluator version, instruction version, sampling, latency and token usage when given. A piece of evidence names its kind, its SHA-256 and size, and for a screenshot the app, session, attempt, capture time, pixel size and file. The bytes stay in the run folder and the text stays out of the record.
+A check that ran, was cancelled or, for a host's check, never ran writes an `evaluation.finished` event, always the parent's, so a result rebuilt from the events lists the same checks as `result.json`. A check refused before the parent took it, as when no test was running, writes none. Each test's result lists its checks in `evaluations`: the test's own in the order they ended, then the host's. A test's own checks are numbered `evaluation-1`, `evaluation-2` and so on in each attempt. A record holds the check's id, its source, mode, judge and verdict, each criterion with its verdict and citations, a SHA-256 of the criteria and context as the judge received them, the evidence, the justification, a reason when there is no judged verdict, a failure or a warning, and the evaluator: provider, model, model revision, evaluator version, instruction version, the sampling the call sent, any setting it did not send as given with the provider's reason, latency and token usage when given. A piece of evidence names its kind, its SHA-256 and size, and for a screenshot the app, session, attempt, capture time, pixel size and file. The bytes stay in the run folder and the text stays out of the record.
 
 The judge's words, every reason, and every string an evaluator or its provider returns, model names included, pass through the redactor before Retest keeps them. Screenshots are not redacted: a check sends the page as it shows, including a secret on screen. Do not judge a screen that shows one.
 
@@ -702,11 +852,26 @@ A warning prints under its test, even a passing one, with a `!`. The summary gai
 
 ### The AI SDK adapter
 
-`@rehearsal-labs/retest/evaluation/ai-sdk` is a judge over the Vercel AI SDK for Anthropic and OpenAI. Retest does not install the SDK: install `ai@^7.0.127` with `@ai-sdk/anthropic@^4.0.71` or `@ai-sdk/openai@^4.0.83` yourself. They are optional peers of Retest. Without them, a check that names the judge fails its setup with `evaluation_error`, naming the missing package, and every other test runs.
+`@rehearsal-labs/retest/evaluation/ai-sdk` is a judge over the Vercel AI SDK for Anthropic, OpenAI and Azure OpenAI deployments. Retest does not install the SDK: install `ai@^7.0.127` with `@ai-sdk/anthropic@^4.0.71`, `@ai-sdk/openai@^4.0.83` or `@ai-sdk/azure@^4.0.90` yourself. They are optional peers of Retest. Without them, a check that names the judge fails its setup with `evaluation_error`, naming the missing package, and every other test runs.
 
-Options: `provider`, `anthropic` or `openai`, and `model`, the model id, both required; `temperature`, `topP` and `seed` when you want them; and `baseURL`, an endpoint you name. Credential: `apiKey`. The adapter makes its own provider instance with your key, so it uses no gateway and no environment variable of the SDK's own. It asks for structured output with retries off and no tools: Anthropic's native output format, and OpenAI's strict JSON schema. It writes app text into the request as a JSON string, so nothing in it can end an evidence item. It checks the answer before Retest checks it again.
+Options: `provider`, `anthropic`, `openai` or `azure`, and `model`, the model id, both required; `temperature` and `topP` when you want them; and `baseURL`, an endpoint you name, by default the provider's public API. `baseURL` must be https, or http only to this machine (`localhost`, `127.0.0.1` or `::1`), so the key and the evidence never cross a network in clear text. Credential: `apiKey`. The adapter makes its own provider instance with your key and an endpoint, so it uses no gateway and no environment variable of the SDK's own. It ignores `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`: to send judge requests through a gateway or to a data-residency endpoint, set `baseURL`. Before this change, a judge without `baseURL` left the endpoint to the SDK, which read those variables and sent your key wherever they pointed.
 
-Its tests ran ai 7.0.127, @ai-sdk/anthropic 4.0.71 and @ai-sdk/openai 4.0.83 against a local stand-in for each provider's API, from the packed package. They prove the request the SDK sends and how the adapter reads the reply. No provider has been called: the live check waits for keys supplied for it, so the model ids on this page are untested.
+The provider decides which sampling settings it sends. OpenAI and Azure drop `temperature` and `topP` for a model the SDK takes to be a reasoning model, judging by its id, or on Azure by the deployment's name. Anthropic drops them for some models, and caps `temperature` at 1. Each record keeps under `sampling` only what the call sent, and names a dropped or changed setting in `samplingNotSent` with the provider's reason. None of the three provider packages sends a seed, so the adapter refuses `seed`.
+
+The adapter asks for structured output with retries off and no tools: Anthropic's native output format, and OpenAI's strict JSON schema. It asks OpenAI and Azure not to keep the request, with `store: false`. Anthropic's API has no such setting, so Retest claims nothing about what Anthropic keeps. It writes app text into the request as a JSON string, so nothing in it can end an evidence item. It checks the answer before Retest checks it again. A host that bundles the SDK can call `createAiSdkEvaluatorWith(setup, load)` from the same export, and the adapter loads `ai` and the provider's package through `load` instead of `import`.
+
+For a model deployed on an Azure OpenAI resource, install `@ai-sdk/azure` and set `provider: 'azure'`. `model` is the name of your deployment, not a model id. Name the endpoint with `resourceName`, the resource's name, or with `baseURL`, such as `https://<resource>.openai.azure.com/openai`. Give exactly one of them. A judge with both or neither fails its setup, and the message names both options. These two shapes, `<resource>.openai.azure.com` by name or by that base URL, are the ones Retest's tests exercised. Foundry project addresses (`<name>.services.ai.azure.com/api/projects/...`), other `.services.ai.azure.com` and `.cognitiveservices.azure.com` addresses, and base URLs that end in `/openai/v1` are untested. Leave `apiVersion` out unless your endpoint needs one: the SDK then sends `api-version=v1`, and Microsoft's v1 API does not need a dated version. The adapter refuses `apiVersion` where the SDK would send none: a base URL whose path ends in `/openai/v1`, a Foundry project address, or a host outside Azure's own. Read the key from a variable of your own. The usual name is `RETEST_EVALUATION_AZURE_KEY`, which Retest's live check also reads. The adapter gives the SDK the key and the endpoint itself, so the SDK never reads `AZURE_API_KEY` or `AZURE_RESOURCE_NAME`. Each check sends one request to the Responses API at that endpoint, naming the deployment as its model, with the key in the `api-key` header, a strict JSON schema, `store: false`, retries off and no tools.
+
+```ts
+azure: {
+  adapter: '@rehearsal-labs/retest/evaluation/ai-sdk',
+  credentials: { apiKey: env('RETEST_EVALUATION_AZURE_KEY') },
+  options: { provider: 'azure', resourceName: 'my-resource', model: 'my-deployment' },
+  accepts: ['text', 'images'],
+},
+```
+
+Its tests ran ai 7.0.127, @ai-sdk/anthropic 4.0.71, @ai-sdk/openai 4.0.83 and @ai-sdk/azure 4.0.90 against a local stand-in for each provider's API, from the packed package. The stand-in answered at Azure addresses, and at `api.anthropic.com` and `api.openai.com` for judges with no `baseURL`, while `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `AZURE_RESOURCE_NAME` and the providers' key variables named other values. They prove the request the SDK sends and how the adapter reads the reply. No provider has been called: the live checks wait for keys supplied for them, so the model ids on this page are untested, and no Azure deployment has judged anything yet.
 
 ### A judge of your own
 
@@ -807,6 +972,20 @@ The summary gains a row when the pages did something worth a look, a capture was
 `diagnostics.started` is written as capture starts, with its scope, its limits and the policy, and `diagnostics.finished` as it ends, with the page's summary and its artifact. A capture whose run was cut off before its end is `unavailable` in the rebuilt result. A run stopped while a page is still starting its capture waits for no page: the test is interrupted, and that capture is `unavailable`.
 
 An artifact is JSON lines: `capture.started`, the records in the order they came, and `capture.finished`. The records are `console`, `runtime_error`, `network.request`, `network.response`, `network.finished`, `network.failed` and `network.pending`. Each carries its test, attempt, app and session, and its target in a run with variants. Console messages and errors are numbered `c1`, `e1` and on, and request hops `n1` and on; a hop's later records carry its id. AI checks receive no diagnostics.
+
+## Native diagnostics and screenshot checks
+
+The internal native collectors use an owned app's stdout and an explicitly declared network metadata file. They do not subscribe to the machine's logs. TaskPhone's stdout comes through the launch proxy's pipe in `simctl launch --console`; TaskDesk's stdout comes through the pipe its launcher opened. A line names its test, attempt, app, session, owned pid and source (`simctl-stdout` or `macos-stdout`). Text is redacted and bounded before persistence. Native lines retain `consoleType: 'stdout'` and `origin: 'native'`; they supply no JavaScript exception or console-error classification.
+
+The fixture service's `--network-log <file>` supplies versioned JSON lines with method, route, status, measured request time, client and completion status. The collector opens that declared file before app launch, then reads appended records for `ios` or `macos` only. Request, response and completion records retain the app's identity and `app-network-file` provenance. No header or body is accepted. Routes pass through redaction and URL sanitization. The launch owner must keep each file/client interval exclusive to its attempt: the service's client name cannot distinguish two simultaneous copies of the same app.
+
+Both sources report `complete`, `partial` with a reason, `unavailable` with a reason, or `disabled`. A native source with no records never claims `complete`. An app with no declared network source says `unavailable: the app provides no network source`. A declared file that is missing or unreadable says so. Overflow, an invalid record or an interrupted line preserves the records already kept and reports `partial`. The same diagnostics limits and parent policy apply; a strict JavaScript error rule cannot pass on native stdout.
+
+Native screenshot evidence uses the session's actual PNG and named capture source: `executor-screen`, `simulator-display` or `window-crop`. Each saved image retains its test, attempt, app, session, capture reference, capture time, run-clock time and PNG hash. A check selecting several apps keeps those values for each image; their timestamps do not claim simultaneous capture. The parent freezes the pixels and judges the answer under the existing required-check rules. A later pass cannot clear an earlier required failure. Exact task identity and synchronization still need deterministic assertions.
+
+Screenshots are pixels. Text redaction does not hide a secret displayed in an image. These proofs use screens with no secrets; no pixel masking capability was added. The native proof uses the local fake evaluator's decoded pixel-hash mode, which requires no model credential and measures the evidence path, not a live model's accuracy.
+
+A native target names its sources under `diagnostics`, such as `diagnostics: { network: { path: './service/network.jsonl', client: 'ios' } }`. `logs` is `'stdout'` unless you set `'none'`. With `'stdout'`, Retest launches the app itself and reads its standard output from a pipe. On the simulator it uses `simctl launch --console`. On macOS it starts the app's executable and then activates the app, because the macOS runner drives only an app it launched or activated. With `'none'`, or in a run with `capture: false`, the executor launches the app, and a log Retest did not keep says `unavailable: the app provides no log source`. `network` names the metadata file, relative to the config, and the client name its records give this app. An app without it says `unavailable: the app provides no network source`. The config refuses two apps that declare one file and client, and two targets of one app on different simulators, naming both keys. It cannot see a second run on the same machine that reads the same file. Both sources start before the app launches and finish once the body, its dispatched commands and the parent's checks are over, before anything closes. The result, the events, the artifact and `inspect --test` show them as they show a browser page's capture. See the [native diagnostics proof](plans/public-beta/proofs/native-diagnostics.md) for the targets this ran on and its limits.
 
 ## Run the example
 
@@ -1029,6 +1208,34 @@ A problem no single test explains, such as a browser that did not start, is the 
 Paths inside the folder are relative, so the folder can be moved. The JSON Schemas for events and results are in `dist/schemas` after a build.
 
 `schemaVersion` is still 1, and every field this release added is optional, so a reader built from this release reads run folders written before it. The other way round does not hold: every object in the schema refuses a key it does not know, so a reader built before this release, `readRunFolder` and `inspect` included, refuses a run folder written by it. Every attempt now writes `execution` in `test.started` and `ending` in `test.finished`, so that is every folder with an attempt in it, not only one with an AI check, a diagnostics artifact or a RegExp locator. Keep the reader as new as the writer.
+
+## Records and the session they came from
+
+Every record that comes from a session carries the same keys: `testId`, `attemptId`, `app`, `sessionId` and, when the record rests on a look, `observationId`. A session is one app's page in one attempt, and its id is the attempt's id and the app's name, such as `k3v9q0x2mb:web`. Events name the app in `session`, as they always have; every other record calls it `app`. A key is there only when the writer knew it.
+
+| Record | Keys it carries |
+| --- | --- |
+| `action.completed`, `action.failed`, `navigation` | `testId`, `attemptId`, `session`, `sessionId` |
+| `observation` | the same, and `observationId` |
+| `assertion.passed`, `assertion.failed` on a locator or the page | the same; `observationId` when it names a look, and `sessionId` is the session that served that look |
+| `host_check.passed`, `host_check.failed`, `state.saved` | `testId`, `attemptId`, the app, `sessionId` |
+| `evidence.captured` and a screenshot in `result.json` | `attemptId`, the app, `sessionId`, `source`, `capturedAt`, `capturedElapsedMs` |
+| each line of a diagnostics artifact | `testId`, `attemptId`, `app`, `sessionId` |
+| each screenshot an AI check sent its judge | `testId`, `attemptId`, `app`, `sessionId`, `source`, `capturedAt`, `capturedElapsedMs` |
+
+`source` says what took a screenshot: `chromium` for a Chromium page or an Electron window, or a native session's own source, `executor-screen`, `simulator-display` or `window-crop`. `capturedAt` is the wall-clock time the capture came back. `capturedElapsedMs` is the same moment on the run's clock, in whole milliseconds since the run started, the clock every event's `elapsedMs` counts on, so a screenshot falls between the events around it.
+
+To find everything one session produced, read `events.jsonl`, `result.json` and the diagnostics artifacts, and keep what has its `sessionId`. `inspect --test` shows the source and the session on each screenshot's line:
+
+```text
+     5.3s  screenshot .retest/runs/<time>/artifacts/tests-tasks-retest-ts-saves-a-task-<hash>-k3v9q0x2mb-web-<hash>-failure.png  chromium, session k3v9q0x2mb:web
+```
+
+A screenshot is pixels. Text redaction never reaches it: a secret the page shows is in the picture. Keep run folders where secrets may be kept.
+
+Runs do not record video yet. The frames a recording will be made of come from Chrome's screencast of one page. Chrome sends frames when it chooses to, as the page paints, and waits for each to be acknowledged before the next, so some paints never arrive as a frame. Retest keeps each frame as the JPEG or PNG Chrome encoded and stamps it with the run's clock and the page's identity. A page that stands still sends no frames, and the video shows its last frame for as long as it stood still. No frame between two moments never means nothing appeared on the page in between. Retest's own tests feed those frames to its media process and check what it wrote.
+
+`schemaVersion` is still 1 and these keys are optional, so a reader built from this release reads older run folders. A reader built before them refuses a folder that has them, which is every folder with an action, a navigation or a screenshot in it.
 
 ## Use Retest from code
 
@@ -1329,7 +1536,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 
 ## What Retest does not do yet
 
-- Browsers: Chromium, Chrome and Edge only. The config accepts Firefox, WebKit, iOS simulator and macOS targets, and a run refuses every test that needs one, because Retest has no driver for them. No Safari, and no real phones or tablets. Emulation is a desktop browser pretending.
+- Browsers: Chromium, Chrome and Edge only. Firefox and WebKit are refused by the runner. Native wiring opens iOS simulator and macOS apps, with the unfinished public helpers and privacy refusal described above. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
 - Checked on macOS arm64 with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3 ran on Linux only in its own integration checks, with Google Chrome 154 and Debian's Chromium 154. Linux on x86-64, Linux outside a container, Edge, Chrome beta, dev and canary, and CI runners were never run. Windows cannot work.
 - The keyboard presses one key or one shortcut at a time: no key held down across actions, and no text typed key by key. `fill` types text. On macOS, only the shortcuts in Retest's table edit a field, and no shortcut was run on Linux.
 - `select` chooses with the keyboard, and was run on macOS only. `scroll` is one wheel event, also on a touch screen: no swipe.
@@ -1347,7 +1554,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - Locators match the page's text as it shows it, not redacted. Retest refuses a locator that holds a whole secret value, but a locator that holds part of one, with the text beside it, can still match it.
 - A page that moves the keyboard focus into a frame of another site as the text arrives can receive the text there. Retest reports `outcome_unknown` and names the frame; it cannot stop typing inside a frame it is not attached to.
 - Diagnostics come from Chromium pages only, within the scope above: no request or response body or header, no WebSocket message, and nothing from a frame of another site, a service worker or a shared worker. Network observation does not mock, wait on or replay a request.
-- SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is removed when the next run starts. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.
+- SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is retained, since a later run cannot prove it is still disposable. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.
 - `list --json` has no published JSON Schema. Events and results do.
 
 ## Project documents

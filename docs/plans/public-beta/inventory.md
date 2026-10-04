@@ -172,6 +172,28 @@ Missing in full: text, screenshot and frame-sequence evidence; named evaluators;
 | Requirement identity and stable required-check ids | Missing | | Host checks have an optional `name`; observation ids count within an attempt |
 | Attempt-bound evidence | Existing, verified | screenshot names carry the attempt; references carry session, attempt and time | `unit/run-folder.test.ts`, `unit/runner-session-evidence.test.ts` |
 
+## Electron targets
+
+Added in Phase 2 by the Electron lane; the full table with the proving test for each row is in [proofs/electron.md](proofs/electron.md). An Electron app is a desktop target of the Chromium driver: `electron({ executablePath, appPath, args?, userDataDir? })`.
+
+| Capability | On an Electron target |
+| --- | --- |
+| Launch and quit | The app's own binary over the debugging pipe, in its own process group, one launch per test; quit by closing the pipe, a bounded wait, then a kill; nothing left after a run |
+| Data folder | Retest's own in the temporary folder, removed with what the app wrote at quit; a named `userDataDir` is used by launches one after another, kept, and recorded as `browserStorage: 'reused'`; two targets sharing one are refused |
+| What "fresh" isolates | The Chromium data folder only; the shared `com.github.Electron` defaults and cache folders and anything the app writes elsewhere persist |
+| The test's page | The first window the app opens; later windows are unavailable and listed in `windows.json` in the order Retest learned of them, pre-existing ones marked `existing` |
+| Locators, actions, checks run on it | Test id, role and name, label, text, `first()`, `nth()`; fill, click, press, check; `toHaveText`, `toHaveCount`, `toBeChecked`, `.not.toBeChecked`, `toBeVisible`, `toHaveTitle`, `toHaveURL`; `reload`, `goBack`, `goForward`. Nothing else was run on Electron |
+| `goto` | A type error on an `ElectronPage`, and `unsupported` at run time |
+| Main process, native menus, native dialogs | Unavailable; no command reaches them; the diagnostics scope names them as not covered |
+| Diagnostics | Captured from the first window from the moment capture starts, always `partial` with the reason, since Electron reads its pipe only once the app is ready; a `requireComplete` policy fails every Electron test |
+| Sign-in state | Save and restore refused `unsupported`; a `test.setup` runs its body before the refusal; `userDataDir` keeps the app's data instead |
+| `baseUrl`, `headless`, `emulate`, `viewport`, `proxy` | Refused by the config reader and by the page |
+| Secrets | Refused on a `file://` window (no origin); typed on an http-served window once `secretOrigins` names it, and on Electron an origin is whatever the app says it is, so allowing one means trusting the app |
+| Environment | Hidden variables, `ELECTRON_RUN_AS_NODE` and Electron's logging variables withheld; the app's output goes to its log line by line through the run's redactor when the launch is given one |
+| Records | `browser.started`, `result.json` and each attempt's `execution.sessions` carry the Electron and Chromium versions; `args` is recorded as count and sha256, never values; a reader built before this phase refuses an Electron run folder |
+| Cross-app flow | One test across an Electron app and Chrome on the shared local service, with broken sync failing at the web check |
+| Off macOS | Real-binary tests skip by name until a Linux route exists; on macOS a missing binary fails them and a missing binary fails setup by name with nothing in its place |
+
 ## Native lifecycle, interaction and checks
 
 Missing in full. `src/browser/contract.ts` declares the lifecycle (`AppLifecycleCapability`: install, launch, activate and terminate, each bounded, stoppable and answering with its failure and how far the request got; app state; `ResetPolicy`) and gestures (`GestureCapability`) as types. Nothing implements them, and no public subpath exports them. The test-side types give native apps `NativePage` and `NativeLocator`, with no `goto`, `select`, `check` or `uncheck`, `tap()` on iOS and `click()` on macOS; a run refuses every test that needs a native target, so no test body receives one. Native locators, input, checks, dialogs, keyboard handling, crash detection and the reset documentation all remain.

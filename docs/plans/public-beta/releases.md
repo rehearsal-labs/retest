@@ -58,8 +58,9 @@ The Playwright adapter implements only the supported behavior and options. Match
 | Cross-platform flow | Acquire the requested apps before acting; pass ordinary data between them; retry state observations while awaiting sync; report one overall outcome |
 | Isolation | Fresh web contexts, documented native reset policy, device/desktop leases and cleanup on failure or stop |
 | Native diagnostics | Declared owned-app log sources and app-instrumented HTTP metadata, exercised in the original fixtures; unavailable source status for other apps |
+| Electron apps | Launch a test-owned Electron app through the Chromium driver over the debugging pipe, its windows as pages, versions recorded, unreachable capabilities named; in addition to the native macOS app, never instead of it |
 
-A native macOS app is required. An Electron browser window does not meet that requirement. iOS means simulator support in these two releases; physical iPhone support stays outside the release promise.
+A native macOS app is required. An Electron browser window does not meet that requirement. Electron apps are supported in their own right, as a desktop target of the Chromium driver, because many teams ship one. iOS means simulator support in these two releases; physical iPhone support stays outside the release promise.
 
 The required reference flow creates a uniquely named task in the iOS app, finds and changes that task on the web, and checks its changed state in the macOS app. Run it with Chrome, Firefox and WebKit. A deliberately broken sync must fail at the intended check and leave evidence from the relevant apps.
 
@@ -189,7 +190,7 @@ Report three browser scores instead of averaging engines together. Maintain a se
 ## Outside both releases
 
 - Test sharding, distributed browser scheduling and automatic CI balancing.
-- Windows, Android, physical iPhones, branded Safari and Electron-specific APIs.
+- Windows, Android, physical iPhones, branded Safari, and the parts of Electron the Chromium driver cannot reach through the renderer (native menus, dialogs, the main process).
 - Playwright UI mode, trace-viewer format compatibility, component testing and code generation.
 - Arbitrary third-party Playwright reporter compatibility.
 - Automatic visual fallback for failed locators. AI checks are part of Release 1 and remain read-only.
