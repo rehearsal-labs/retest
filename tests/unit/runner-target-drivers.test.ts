@@ -162,27 +162,48 @@ for (const app of ['firefox', 'webkit', 'iphone', 'mac'] as const) {
   test(\`runs on \${app}\`, { apps: [app] }, async () => {})
 }
 `
-  const record = await runProject(tempProject({ 'retest.config.ts': config, 'tests/targets.retest.ts': tests }), { files: ['tests/targets.retest.ts'] })
+  const root = tempProject({ 'retest.config.ts': config, 'tests/targets.retest.ts': tests })
+  const record = await runProject(root, { files: ['tests/targets.retest.ts'] })
   const results = record.result.files.flatMap((file) => file.tests)
 
   test('every refused attempt ends first, not run, with the setup failure that names its target, and the Chromium test runs', () => {
     // result.json lists the tests as the file declares them, as a result rebuilt from the events does; the events
     // below show the refusals ended first.
     assert.deepEqual(
-      results.map((result) => [result.name, result.status, result.failure?.class, result.failure?.message]),
+      results.slice(0, 3).map((result) => [result.name, result.status, result.failure?.class, result.failure?.message]),
       [
         ['runs on Chromium', 'passed', undefined, undefined],
         ['runs on firefox', 'not_run', 'setup_failed', 'Retest has no driver for Firefox yet, so it cannot start the target firefox of the app firefox.'],
         ['runs on webkit', 'not_run', 'setup_failed', 'Retest has no driver for WebKit yet, so it cannot start the target webkit of the app webkit.'],
-        ['runs on iphone', 'not_run', 'setup_failed', 'Retest has no driver for iOS simulator apps yet, so it cannot start the target ios-simulator of the app iphone.'],
-        ['runs on mac', 'not_run', 'setup_failed', 'Retest has no driver for macOS apps yet, so it cannot start the target macos of the app mac.'],
       ],
     )
-    const finished = eventsOfType(record.events, 'test.finished').map((event) => event.status)
+    const finished = eventsOfType(record.events, 'test.finished')
     const started = eventsOfType(record.events, 'browser.started')
-    assert.deepEqual(finished.slice(0, 4), ['not_run', 'not_run', 'not_run', 'not_run'], 'the refusals are written before anything runs')
+    assert.deepEqual(finished.slice(0, 2).map((event) => event.status), ['not_run', 'not_run'], 'the refusals are written before anything runs')
+    const refusedIds = new Set(results.slice(1, 3).map((result) => result.testId))
+    assert.deepEqual(new Set(finished.slice(0, 2).map((event) => event.testId)), refusedIds)
     assert.ok(record.events.findIndex((event) => event.type === 'browser.started') > record.events.findIndex((event) => event.type === 'test.finished'))
     assert.equal(started.length, 1)
+  })
+
+  // Native targets have a driver now: their attempts are not refused at planning. Each takes its lease, then starts its
+  // app, which here fails because the project holds no app bundle.
+  test('a native app is not refused at planning: it takes its lease and starts, and an app with no bundle fails its setup by name', () => {
+    assert.deepEqual(
+      results.slice(3).map((result) => [result.name, result.status, result.failure?.class]),
+      [
+        ['runs on iphone', 'not_run', 'setup_failed'],
+        ['runs on mac', 'not_run', 'setup_failed'],
+      ],
+    )
+    const [iphone, mac] = results.slice(3)
+    assert.ok(iphone?.failure?.message.startsWith(`Retest cannot read the app's Info.plist at ${join(root, 'build/Tasks.app/Info.plist')}: `), iphone?.failure?.message)
+    assert.ok(mac?.failure?.message.startsWith(`Retest cannot read the app's Info.plist at ${join(root, 'build/Tasks.app/Contents/Info.plist')}: `), mac?.failure?.message)
+    for (const result of [iphone, mac]) {
+      const own = record.events.filter((event) => 'testId' in event && event.testId === result?.testId).map((event) => event.type)
+      assert.deepEqual(own, ['resource.acquired', 'lease.taken', 'test.finished'], `${result?.name} took its lease before it ended`)
+    }
+    assert.deepEqual(eventsOfType(record.events, 'native.started'), [], 'no app was started')
   })
 
   test('only Chromium launched, and the run is not a pass', () => {
@@ -194,16 +215,38 @@ for (const app of ['firefox', 'webkit', 'iphone', 'mac'] as const) {
 })
 
 describe('a refused attempt starts nothing', () => {
-  test('a native app’s start command is never run, and the refusal is the failure', async () => {
+  const writesStarted = `node -e "require(\\'node:fs\\').writeFileSync(\\'started\\', \\'\\')"`
+
+  test('a refused app’s start command is never run, and the refusal is the failure', async () => {
     const config = `import { defineConfig } from '@rehearsal-labs/retest'
 
 export default defineConfig({
   apps: {
-    mac: {
-      platform: 'macos',
-      appPath: 'build/Tasks.app',
-      start: { command: 'node -e "require(\\'node:fs\\').writeFileSync(\\'started\\', \\'\\')"', ready: 'http://127.0.0.1:9/' },
-    },
+    firefox: { browser: 'firefox', baseUrl: 'http://127.0.0.1:4173', start: { command: '${writesStarted}', ready: 'http://127.0.0.1:9/' } },
+  },
+})
+`
+    const tests = `import { test } from '@rehearsal-labs/retest'
+
+test('syncs on Firefox', async () => {})
+`
+    const root = tempProject({ 'retest.config.ts': config, 'tests/firefox.retest.ts': tests })
+    const record = await runProject(root, { files: ['tests/firefox.retest.ts'] })
+    const [result] = record.result.files.flatMap((file) => file.tests)
+    assert.deepEqual([result?.status, result?.failure?.message], ['not_run', 'Retest has no driver for Firefox yet, so it cannot start the target firefox of the app firefox.'])
+    assert.equal(existsSync(join(root, 'started')), false, 'the start command never ran')
+    assert.deepEqual(record.events.filter((event) => event.type.startsWith('app.')), [], 'no server started, failed or was reused')
+    assert.deepEqual([record.browsers.length, record.result.browser], [0, null])
+  })
+
+  // Native apps are no longer refused, so their start command runs as a web app's does: inside the attempt's lease,
+  // before the app it serves, which does not start once its server fails.
+  test('a native app’s start command runs inside its lease, before its app, and a server that never answers is the failure', async () => {
+    const config = `import { defineConfig } from '@rehearsal-labs/retest'
+
+export default defineConfig({
+  apps: {
+    mac: { platform: 'macos', appPath: 'build/Tasks.app', start: { command: '${writesStarted}', ready: 'http://127.0.0.1:9/' } },
   },
 })
 `
@@ -214,13 +257,39 @@ test('syncs on the Mac', async () => {})
     const root = tempProject({ 'retest.config.ts': config, 'tests/mac.retest.ts': tests })
     const record = await runProject(root, { files: ['tests/mac.retest.ts'] })
     const [result] = record.result.files.flatMap((file) => file.tests)
-    assert.deepEqual([result?.status, result?.failure?.message], ['not_run', 'Retest has no driver for macOS apps yet, so it cannot start the target macos of the app mac.'])
-    assert.equal(existsSync(join(root, 'started')), false, 'the start command never ran')
-    assert.deepEqual(record.events.filter((event) => event.type.startsWith('app.')), [], 'no server started, failed or was reused')
+    assert.equal(result?.status, 'not_run')
+    assert.match(result?.failure?.message ?? '', /^The server for mac exited with exit code 0 before http:\/\/127\.0\.0\.1:9\/ answered\. Its output is in \S+\.log\.$/)
+    assert.equal(existsSync(join(root, 'started')), true, 'the start command ran')
+    const types = record.events.map((event) => event.type)
+    assert.ok(types.indexOf('lease.taken') >= 0 && types.indexOf('lease.taken') < types.indexOf('app.failed'), types.join(', '))
+    assert.deepEqual(eventsOfType(record.events, 'native.started'), [], 'the app never started')
     assert.deepEqual([record.browsers.length, record.result.browser], [0, null])
   })
 
-  test('a test on a web app and a native app launches no browser for the web app', async () => {
+  test('a test on a web app and an app with no driver launches no browser for the web app', async () => {
+    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+
+export default defineConfig({
+  apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173' }), firefox: { browser: 'firefox', baseUrl: 'http://127.0.0.1:4173' } },
+  defaultApp: 'web',
+})
+`
+    const tests = `import { test } from '@rehearsal-labs/retest'
+
+test('creates on Chromium, checks on Firefox', { apps: ['web', 'firefox'] }, async () => {})
+`
+    const record = await runProject(tempProject({ 'retest.config.ts': config, 'tests/mixed.retest.ts': tests }), { files: ['tests/mixed.retest.ts'] })
+    const [result] = record.result.files.flatMap((file) => file.tests)
+    assert.deepEqual([result?.status, result?.failure?.message], ['not_run', 'Retest has no driver for Firefox yet, so it cannot start the target firefox of the app firefox.'])
+    assert.equal(record.browsers.length, 0, 'Chromium never launched')
+    assert.deepEqual(eventsOfType(record.events, 'browser.started'), [])
+    assert.equal(record.result.browser, null)
+    assert.equal(record.result.browsers?.length ?? 0, 0)
+  })
+
+  // A native app has a driver now, so a test on a web app and a native app takes its lease and makes each app ready in
+  // the order the test names them: here Chromium, then the Mac app, whose missing bundle keeps the test from running.
+  test('a test on a web app and a native app takes its lease, then readies each app in turn, and closes the browser it launched', async () => {
     const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
 
 export default defineConfig({
@@ -232,13 +301,16 @@ export default defineConfig({
 
 test('creates on the web, checks on the Mac', { apps: ['web', 'mac'] }, async () => {})
 `
-    const record = await runProject(tempProject({ 'retest.config.ts': config, 'tests/mixed.retest.ts': tests }), { files: ['tests/mixed.retest.ts'] })
+    const root = tempProject({ 'retest.config.ts': config, 'tests/mixed.retest.ts': tests })
+    const record = await runProject(root, { files: ['tests/mixed.retest.ts'] })
     const [result] = record.result.files.flatMap((file) => file.tests)
-    assert.deepEqual([result?.status, result?.failure?.message], ['not_run', 'Retest has no driver for macOS apps yet, so it cannot start the target macos of the app mac.'])
-    assert.equal(record.browsers.length, 0, 'Chromium never launched')
-    assert.deepEqual(eventsOfType(record.events, 'browser.started'), [])
-    assert.equal(record.result.browser, null)
-    assert.equal(record.result.browsers?.length ?? 0, 0)
+    assert.equal(result?.status, 'not_run')
+    assert.ok(result?.failure?.message.startsWith(`Retest cannot read the app's Info.plist at ${join(root, 'build/Tasks.app/Contents/Info.plist')}: `), result?.failure?.message)
+    const types = record.events.map((event) => event.type)
+    assert.ok(types.indexOf('lease.taken') >= 0 && types.indexOf('lease.taken') < types.indexOf('browser.started'), types.join(', '))
+    assert.deepEqual([types.includes('test.started'), types.includes('native.started')], [false, false])
+    assert.equal(record.browsers.length, 1)
+    assert.equal(record.browsers[0]?.closed, true, 'the browser launched for the web app was closed')
   })
 
   test('refused attempts take no share of the browsers the run spreads a target’s tests over', async () => {
@@ -276,6 +348,7 @@ export default defineConfig({
       baseUrl: 'http://127.0.0.1:4173',
       start: { command: 'node -e "require(\\'node:fs\\').writeFileSync(\\'started\\', \\'\\')"', ready: 'http://127.0.0.1:9/' },
     }),
+    firefox: { browser: 'firefox', baseUrl: 'http://127.0.0.1:4173' },
     mac: { platform: 'macos', appPath: 'build/Tasks.app' },
   },
   defaultApp: 'web',
@@ -293,7 +366,11 @@ test.setup('signed-in', { apps: ['web'] }, async ({ web }) => {
 `
   const sync = `import { test } from '@rehearsal-labs/retest'
 
-test('syncs', { apps: ['web', 'mac'], state: { web: 'signed-in' } }, async () => {})
+test('syncs', { apps: ['web', 'firefox'], state: { web: 'signed-in' } }, async () => {})
+`
+  const syncOnMac = `import { test } from '@rehearsal-labs/retest'
+
+test('syncs on the Mac', { apps: ['web', 'mac'], state: { web: 'signed-in' } }, async () => {})
 `
 
   test('does not run: no server starts, no browser launches, and the run exits 2 for the refusal alone', async () => {
@@ -306,12 +383,29 @@ test('syncs', { apps: ['web', 'mac'], state: { web: 'signed-in' } }, async () =>
     const results = record.result.files.flatMap((file) => file.tests)
     assert.deepEqual(
       results.map((result) => [result.name, result.status, result.failure?.message]),
-      [['syncs', 'not_run', 'Retest has no driver for macOS apps yet, so it cannot start the target macos of the app mac.']],
+      [['syncs', 'not_run', 'Retest has no driver for Firefox yet, so it cannot start the target firefox of the app firefox.']],
     )
     assert.equal(existsSync(join(root, 'started')), false, 'the web server never started')
     assert.deepEqual(record.events.filter((event) => event.type.startsWith('app.') || event.type === 'test.started' || event.type === 'action.completed'), [])
     assert.deepEqual([record.browsers.length, record.result.browser], [0, null])
     assert.deepEqual([record.result.exitCode, record.result.counts], [2, { passed: 0, failed: 0, error: 0, notRun: 1, inconclusive: 0 }])
+  })
+
+  // A native app is not refused, so a test on one needs its setup like any other: the setup starts its server, which here
+  // never answers, so the setup and the test that needs it do not run.
+  test('runs for a test on a native app, which is not refused', async () => {
+    const root = tempProject({ 'retest.config.ts': config, 'tests/setup.retest.ts': setup, 'tests/sync.retest.ts': syncOnMac })
+    const record = await runProject(root, {
+      files: ['tests/setup.retest.ts', 'tests/sync.retest.ts'],
+      selection: { grep: 'syncs' },
+      env: { TASK_APP_PASSWORD: 'hunter2-long-enough' },
+    })
+    const results = record.result.files.flatMap((file) => file.tests)
+    assert.deepEqual(results.map((result) => [result.name, result.status]), [['signed-in', 'not_run'], ['syncs on the Mac', 'not_run']])
+    assert.match(results[0]?.failure?.message ?? '', /^The server for web exited with exit code 0 before http:\/\/127\.0\.0\.1:9\/ answered\./)
+    assert.match(results[1]?.failure?.message ?? '', /^Not run: the setup "signed-in" did not pass on chromium\. The server for web exited/)
+    assert.equal(existsSync(join(root, 'started')), true, 'the setup asked for its app server')
+    assert.deepEqual(eventsOfType(record.events, 'native.started'), [], 'the Mac app never started')
   })
 
   test('still starts when the selection chose it for itself', async () => {

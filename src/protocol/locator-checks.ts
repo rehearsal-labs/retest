@@ -32,7 +32,7 @@ type Negation = { not?: true }
  */
 export type LocatorCheckRecord = Negation &
   (
-    | { matcher: 'toBeVisible' | 'toBeHidden' | 'toBeChecked' | 'toBeEnabled' | 'toBeDisabled' }
+    | { matcher: 'toBeVisible' | 'toBeHidden' | 'toBeChecked' | 'toBeSelected' | 'toBeEnabled' | 'toBeDisabled' }
     | { matcher: 'toHaveText'; text: string }
     | { matcher: 'toHaveText'; pattern: TextPattern }
     | { matcher: 'toHaveText'; texts: ExpectedText[] }
@@ -59,7 +59,7 @@ const not = s.optional(s.literal(true))
 const expectedText = s.union([s.string(), textPatternSchema])
 
 export const locatorCheckRecordSchema: Schema<LocatorCheckRecord> = s.union([
-  s.object({ matcher: s.enum(['toBeVisible', 'toBeHidden', 'toBeChecked', 'toBeEnabled', 'toBeDisabled']), not }),
+  s.object({ matcher: s.enum(['toBeVisible', 'toBeHidden', 'toBeChecked', 'toBeSelected', 'toBeEnabled', 'toBeDisabled']), not }),
   s.object({ matcher: s.literal('toHaveText'), text: s.string(), not }),
   s.object({ matcher: s.literal('toHaveText'), pattern: textPatternSchema, not }),
   s.object({ matcher: s.literal('toHaveText'), texts: s.array(expectedText), not }),
@@ -92,6 +92,7 @@ const lookMatchers: ReadonlySet<string> = new Set([
   'toBeVisible',
   'toBeHidden',
   'toBeChecked',
+  'toBeSelected',
   'toBeEnabled',
   'toBeDisabled',
   'toHaveText',
@@ -170,6 +171,8 @@ export function locatorCheck(record: LocatorCheckRecord): LocatorCheck {
       return negated ? someVisibleCheck() : hiddenCheck()
     case 'toBeChecked':
       return single(checkedRule, negated)
+    case 'toBeSelected':
+      return single(selectedRule, negated)
     case 'toBeEnabled':
       return single(enabledRule, negated)
     case 'toBeDisabled':
@@ -243,6 +246,14 @@ const visibleRule: SingleRule = {
   unmet: (_observation, locator) => `${locator} is hidden.`,
   met: (_observation, locator) => `${locator} is visible.`,
   absentIsFalse: true,
+}
+
+const selectedRule: SingleRule = {
+  matcher: 'toBeSelected', expected: 'selected',
+  holds: (observation) => observation.selected ?? undefined,
+  actual: (observation) => observation.selected === undefined || observation.selected === null ? null : observation.selected ? 'selected' : 'not selected',
+  unmet: (_observation, locator) => `${locator} is not selected.`,
+  met: (_observation, locator) => `${locator} is selected.`,
 }
 
 const checkedRule: SingleRule = {

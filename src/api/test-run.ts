@@ -166,7 +166,7 @@ export class TestRun {
     const stepId = currentScope()?.stepId
     const { promise, resolve } = Promise.withResolvers<EvaluationAnswer>()
     this.#evaluations.set(id, resolve)
-    this.#options.send({ type: 'evaluate', id, call, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) })
+    this.#options.send({ type: 'evaluate', testId: this.testId, attemptId: this.attemptId, id, call, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) })
     return promise
   }
 
@@ -386,6 +386,8 @@ export class TestRun {
     this.#answers.set(id, resolve)
     this.#options.send({
       type: 'command',
+      testId: this.testId,
+      attemptId: this.attemptId,
       id,
       app,
       command,

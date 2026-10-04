@@ -1,18 +1,23 @@
 import type { AppHasTouch, AppKind, AppName, DefaultAppName, IsRegistered, RetestTypeError } from '../config/register.ts'
-import type { NativePage, Page } from './page.ts'
+import type { ElectronPage, NativePage, Page } from './page.ts'
 
 /**
  * A test's handle on one app, which offers only what the app's targets can do: a web page for browsers, with `tap()`
- * when every target has a touch screen, and a native app's handle for an iOS simulator or macOS app, with no `goto`.
- * An app whose targets mix kinds, which the loader refuses, has no handle.
+ * when every target has a touch screen, an Electron app's page, a web page with no `goto`, and a native app's handle
+ * for an iOS simulator or macOS app, with no `goto`. An app whose targets mix kinds, which the loader refuses, has no
+ * handle.
  */
 export type AppHandle<Name extends AppName> = [AppKind<Name>] extends ['web']
   ? Page<AppHasTouch<Name>>
-  : [AppKind<Name>] extends ['ios-simulator']
-    ? NativePage<'ios-simulator'>
-    : [AppKind<Name>] extends ['macos']
-      ? NativePage<'macos'>
-      : RetestTypeError<"This app's targets mix browsers and native apps. Give each kind an app of its own.">
+  : [AppKind<Name>] extends ['electron']
+    ? ElectronPage
+    : [AppKind<Name>] extends ['ios-simulator']
+      ? NativePage<'ios-simulator'>
+      : [AppKind<Name>] extends ['macos']
+        ? NativePage<'macos'>
+        : 'electron' extends AppKind<Name>
+          ? RetestTypeError<"This app's targets mix an Electron app with another kind. Give each kind an app of its own.">
+          : RetestTypeError<"This app's targets mix browsers and native apps. Give each kind an app of its own.">
 
 /** One handle for each app a test declares, named as the config names the app. */
 export type Apps<Names extends AppName> = { readonly [Name in Names]: AppHandle<Name> }

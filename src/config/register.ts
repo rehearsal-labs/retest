@@ -89,12 +89,18 @@ export type AppHasTouch<Name extends AppName> = [AppTargets<Config['apps'][Name]
     : true
 
 /**
- * What an app's targets are: `web` for browsers, or the native platform they name. The loader refuses an app whose
- * targets are of more than one kind; its type is then every kind they are.
+ * What an app's targets are: `web` for browsers, `electron` for Electron apps, or the native platform they name. The
+ * loader refuses an app whose targets are of more than one kind; its type is then every kind they are.
  */
 export type AppKind<Name extends AppName> = TargetKind<AppTargets<Config['apps'][Name]>>
 
-type TargetKind<Target> = Target extends { readonly browser: string } ? 'web' : Target extends { readonly platform: infer Platform extends NativePlatform } ? Platform : 'web'
+type TargetKind<Target> = Target extends { readonly browser: 'electron' }
+  ? 'electron'
+  : Target extends { readonly browser: string }
+    ? 'web'
+    : Target extends { readonly platform: infer Platform extends NativePlatform }
+      ? Platform
+      : 'web'
 
 /** The config's judge names: any string before a config is registered, never when it declares no judges. */
 export type JudgeName = IsRegistered extends true ? (keyof ConfigJudges & string) : string

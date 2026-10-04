@@ -112,7 +112,7 @@ describe('locator matchers in a test', () => {
     const { runPage } = inProcessRun(file, matching([]), { timeouts: { assertion: 80 } })
     const verdict = await runPage(({ page }) => expect(page.getByRole('listitem')).toHaveCount(2))
     assert.equal(verdict.failure?.class, 'check_failed')
-    assert.match(verdict.failure?.message ?? '', /^getByRole\('listitem'\) matched no element, expected 2\. Looked \d+ times in 80 ms\.$/)
+    assert.match(verdict.failure?.message ?? '', /^getByRole\('listitem'\) matched no element, expected 2\. Looked \d+ times? in 80 ms\.$/)
     assert.deepEqual(verdict.failure?.details?.['received'], truncateText('0'))
   })
 

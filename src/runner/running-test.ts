@@ -1,3 +1,8 @@
+import type { NativeLook } from '../native/assertions.ts'
+import { unsupportedCheck } from '../native/assertions.ts'
+import { describeElement } from '../native/locators.ts'
+import { isPageCheck, locatorCheck } from '../protocol/locator-checks.ts'
+import { NativePageAdapter } from './native-pool.ts'
 import type { OwnedPage, PageNavigation } from '../browser/contract.ts'
 import type { EvaluationRequests } from '../evaluation/attempt.ts'
 import type { ActionKind, CommandResult, FillValue, PageCommand } from '../protocol/commands.ts'
@@ -19,6 +24,7 @@ import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol
 import { formatSessionId } from '../protocol/evidence.ts'
 import { errorMessage, failure, withAlso, withLocation } from '../protocol/failures.ts'
 import { parseKey } from '../protocol/keys.ts'
+import { formatLine } from '../protocol/location.ts'
 import { locatorProblem, locatorSteps } from '../protocol/locator.ts'
 import { observedRecord } from '../protocol/observation-record.ts'
 import { selectCommandProblem } from '../protocol/option-choices.ts'
@@ -56,10 +62,10 @@ export type RunningTestOptions = {
 }
 
 /**
- * Where a secret fill is going: the page's address as it stands now, the fill's own time, and a signal aborted
- * when the fill is stopped, as when its test is.
+ * Where a secret fill is going: the page's address as it stands now, or for a native app the bundle id its
+ * installed app names, the fill's own time, and a signal aborted when the fill is stopped, as when its test is.
  */
-export type SecretFillContext = { pageUrl: string | undefined; timeoutMs: number; signal: AbortSignal }
+export type SecretFillContext = { pageUrl: string | undefined; bundleId?: string; timeoutMs: number; signal: AbortSignal }
 
 /** What the parent knows once the test body is over. */
 export type BodyReport = {
@@ -85,6 +91,10 @@ export type BodyReport = {
 }
 
 type CommandMessage = Extract<ChildMessage, { type: 'command' }>
+/** Work running on an app that another command may not overlap: as the test writes it, and where. */
+type Busy = { label: string; location: SourceLocation | undefined }
+/** An AI check the parent is running, and the apps whose pages it captures. */
+type Evaluating = { apps: readonly string[]; location: SourceLocation | undefined }
 type EvaluateMessage = Extract<ChildMessage, { type: 'evaluate' }>
 type TestScope = { testId: string; attemptId: string }
 type InFlight = {
@@ -122,7 +132,10 @@ type SentCommand = { app: string; stamp: NavigationStamp }
 /**
  * The parent's side of one test body. It forwards the child's page commands to the browser, reports
  * each action, writes down each look it serves, judges each assertion against the look it names, and
- * enforces the test's deadline. An assertion it cannot accept ends the test as a protocol violation.
+ * enforces the test's deadline. An assertion it cannot accept ends the test as a protocol violation. It keeps the
+ * test file's process's lanes too: an action goes to an app only while no command and no AI check that captures that
+ * app runs there, and a look or such an AI check only while no action does, so what the process's own lanes would have
+ * refused is refused here, with a failure the parent records.
  * Stopping a test revokes it: later commands are refused,
  * commands in flight are answered and stopped in the page, the child is asked to abort, and a child that
  * does not answer within the grace period is killed. A test that runs out of time also ends its process,
@@ -131,6 +144,8 @@ type SentCommand = { app: string; stamp: NavigationStamp }
 export class RunningTest {
   readonly #options: RunningTestOptions
   readonly #inFlight = new Map<number, InFlight>()
+  /** The AI checks running, by the id the test process gave each. */
+  readonly #evaluating = new Map<number, Evaluating>()
   readonly #finished = Promise.withResolvers<BodyReport>()
   #deadline: Deadline | undefined
   #testTimer: NodeJS.Timeout | undefined
@@ -138,6 +153,7 @@ export class RunningTest {
   /** The document each app's page last committed, as far as the parent knows. */
   readonly #documents = new Map<string, PageDocument>()
   readonly #navigations = new PageNavigations((navigation) => this.#writeNavigation(navigation))
+  readonly #nativeLooks = new Map<string, { page: NativePageAdapter; look: NativeLook }>()
   readonly #observations: ServedObservations
   /** Every command sent to a page in this attempt, by the token the page was given with it. */
   readonly #sent = new Map<number, SentCommand>()
@@ -179,6 +195,7 @@ export class RunningTest {
     this.#observed.push(reason)
     clearTimeout(this.#testTimer)
     this.#options.evaluations?.cancel(reason)
+    for (const page of this.#options.pages.values()) if (page instanceof NativePageAdapter) page.cancel(reason)
     this.#completeAnswered()
     for (const entry of this.#inFlight.values()) {
       this.#answer(entry, { ok: false, failure: withLocation(reason, entry.message.location) })
@@ -268,11 +285,15 @@ export class RunningTest {
   }
 
   #command(message: CommandMessage): void {
+    if (!this.#isOwn(message)) return this.#violation('sent a command for an inactive test attempt')
     if (this.#deadline?.expired === true) this.#runOutOfTime()
     const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest sent nothing to the page.')
     if (refusal !== undefined) return this.#send(message.id, { ok: false, failure: withLocation(refusal, message.location) })
     const page = this.#options.pages.get(message.app)
     if (page === undefined) return this.#violation(`sent a command for the app ${JSON.stringify(message.app)}, which this test does not use`)
+    if (this.#inFlight.has(message.id) || this.#evaluating.has(message.id)) return this.#violation(`sent command ${message.id} again while the first was still running`)
+    const running = this.#busyWith(message.app, isLook(message.command))
+    if (running !== undefined) return this.#refuseConcurrent(message, running)
     const deadline = this.#deadline
     // A command's time is the parent's to keep, whatever the test process claims: the run's budget for its kind, cut
     // by the call's own timeout and by what the test has left, never lengthened by either.
@@ -298,6 +319,32 @@ export class RunningTest {
     }
     this.#inFlight.set(message.id, entry)
     void this.#execute(entry, timeoutMs).finally(() => entry.done.resolve())
+  }
+
+  // What runs on the app that new work there may not overlap, as the test file's own lanes decide: an action needs its
+  // app to itself, and a look, like an AI check that captures the app, needs no action running there, though looks and
+  // such checks may overlap each other.
+  #busyWith(app: string, looking: boolean): Busy | undefined {
+    for (const entry of this.#inFlight.values()) {
+      if (entry.message.app !== app) continue
+      if (!looking || !isLook(entry.message.command)) return { label: describeCommand(entry.message.command), location: entry.message.location }
+    }
+    if (looking) return undefined
+    for (const evaluating of this.#evaluating.values()) {
+      if (evaluating.apps.includes(app)) return { label: 'test.evaluate()', location: evaluating.location }
+    }
+    return undefined
+  }
+
+  // The test file's own lanes never send such a command, so one that arrives came from a process that skipped them. It
+  // goes nowhere near the page, and its refusal is the parent's own failure, which fails the test whatever the process
+  // claims; an action's refusal is its failed event. What already runs goes on.
+  #refuseConcurrent(message: CommandMessage, running: Busy): void {
+    const { app, command, location } = message
+    const refused = concurrentFailure(`sent ${describeCommand(command)} to ${app}`, running, location, 'Retest did not send it')
+    this.#observed.push(refused)
+    if (!isLook(command)) this.#writeAction(message, { ok: false, failure: refused }, this.#documentFields(app), { durationMs: 0 })
+    this.#send(message.id, { ok: false, failure: refused })
   }
 
   // A passed command's answer is written after every navigation that came before the command. A goto's, and a
@@ -337,19 +384,23 @@ export class RunningTest {
     for (const entry of answered) this.#complete(entry)
   }
 
-  // A secret is read, within the command's own time, only once the page's current address may take it. What the
-  // test process's own checks refuse is refused again here, since it may send what those checks never saw. A
-  // locator that holds a secret's value never reaches the page, which matches it against its own unredacted text.
+  // A secret is read, within the command's own time, only once the page's current address, or the native app's
+  // bundle id, may take it. What the test process's own checks refuse is refused again here, since it may send what
+  // those checks never saw. A locator that holds a secret's value never reaches the page, which matches it against
+  // its own unredacted text.
   async #run({ message, page, stop, commandToken }: InFlight, timeoutMs: number): Promise<CommandResult> {
     const { command } = message
     const problem = commandProblem(command) ?? secretLocatorProblem(command, this.#options.redactor)
     if (problem !== undefined) return { ok: false, failure: problem }
+    if (command.kind === 'swipe' || command.kind === 'nativeKeyboard' || command.kind === 'nativeAlert') return page instanceof NativePageAdapter ? page.execute(command, timeoutMs, stop.signal) : { ok: false, failure: failure('unsupported', `${command.kind} needs a native app session.`) }
     if (command.kind !== 'fill') return page.execute(command, timeoutMs, stop.signal, commandToken)
     const { locator, value } = command
     if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal, commandToken)
     const deadline = new Deadline(timeoutMs)
     const { fillSecret } = this.#options
-    const context: SecretFillContext = { pageUrl: page.url, timeoutMs, signal: stop.signal }
+    // A native app has no address: the bundle id read from its installed app is where the secret would go.
+    const destination = page instanceof NativePageAdapter ? { pageUrl: undefined, bundleId: page.bundleId } : { pageUrl: page.url }
+    const context: SecretFillContext = { ...destination, timeoutMs, signal: stop.signal }
     const resolved = fillSecret === undefined ? noSecrets(value.secret) : await fillSecret({ kind: 'fill', locator, value }, context)
     if (!resolved.ok) return { ok: false, failure: resolved.failure }
     return page.execute(resolved.command, deadline.commandTimeoutMs, stop.signal, commandToken)
@@ -357,25 +408,33 @@ export class RunningTest {
 
   // An action is reported once: by the page's answer, or as unknown when the page gave none in time.
   #reportAction(entry: InFlight, result: CommandResult, page: PageFields): void {
-    const { command, location, stepId, app } = entry.message
-    if (command.kind === 'observe' || command.kind === 'observePage' || entry.reported) return
+    const { command, callTimeoutMs } = entry.message
+    if (isLook(command) || entry.reported) return
     entry.reported = true
+    // A command answered after the parent stopped the test failed because of that stop, which is already observed.
+    if (!result.ok && this.#revocation === undefined) this.#observed.push(result.failure)
+    const timing = callTimeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs, callTimeoutMs }
+    this.#writeAction(entry.message, result, page, { durationMs: elapsedMs(entry.startedAt), ...timing })
+  }
+
+  #writeAction(message: CommandMessage, result: CommandResult, page: PageFields, timing: { durationMs: number; timeoutMs?: number; callTimeoutMs?: number }): void {
+    const { command, location, stepId, app } = message
+    if (isLook(command)) return
     const touch = this.#options.touch?.has(app) === true
     const fields = {
       testId: this.#options.testId,
       attemptId: this.#options.attemptId,
       ...(stepId === undefined ? {} : { stepId }),
       session: app,
+      sessionId: formatSessionId(this.#options.attemptId, app),
       command: recordedKind(command.kind, result, touch),
       ...('locator' in command && command.locator !== undefined ? { locator: command.locator } : {}),
       ...page,
-      durationMs: elapsedMs(entry.startedAt),
+      durationMs: timing.durationMs,
       ...(location === undefined ? {} : { location }),
       ...actionDetails(command, result, touch),
-      ...(entry.message.callTimeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs, callTimeoutMs: entry.message.callTimeoutMs }),
+      ...(timing.timeoutMs === undefined || timing.callTimeoutMs === undefined ? {} : { timeoutMs: timing.timeoutMs, callTimeoutMs: timing.callTimeoutMs }),
     }
-    // A command answered after the parent stopped the test failed because of that stop, which is already observed.
-    if (!result.ok && this.#revocation === undefined) this.#observed.push(result.failure)
     this.#options.emit(result.ok ? { type: 'action.completed', ...fields } : { type: 'action.failed', ...fields, failure: result.failure })
   }
 
@@ -389,7 +448,7 @@ export class RunningTest {
   #answer(entry: InFlight, result: CommandResult): void {
     if (entry.answered || this.#report !== undefined) return
     entry.answered = true
-    this.#options.process.send({ type: 'command-result', id: entry.message.id, result: this.#serve(entry, this.#redacted(result)) })
+    this.#options.process.send({ type: 'command-result', id: entry.message.id, result: this.#serve(entry, this.#redacted(result), entry.page instanceof NativePageAdapter && result.ok && result.kind === 'observe' ? entry.page.lookFor(result.observation) : undefined) })
   }
 
   #send(id: number, result: CommandResult): void {
@@ -403,7 +462,7 @@ export class RunningTest {
 
   // A look the page answered is written down, as the test process receives it, before the answer goes; the
   // id and the session it carries are how an assertion names it.
-  #serve(entry: InFlight, result: CommandResult): CommandResult {
+  #serve(entry: InFlight, result: CommandResult, nativeLook?: NativeLook): CommandResult {
     const { command, app, stepId } = entry.message
     if (result.ok && result.kind === 'observePage' && command.kind === 'observePage') return this.#servePage(app, result)
     if (!result.ok || result.kind !== 'observe' || command.kind !== 'observe') return result
@@ -413,9 +472,11 @@ export class RunningTest {
     const { testId, attemptId } = this.#options
     const sessionId = formatSessionId(attemptId, app)
     const observationId = this.#observations.serve({ app, sessionId, locator, observation, ...page })
+    if (nativeLook !== undefined && entry.page instanceof NativePageAdapter) this.#nativeLooks.set(observationId, { page: entry.page, look: nativeLook })
+    const native = nativeLook === undefined ? {} : { native: { generation: nativeLook.reference.generation, selected: nativeLook.observation.selected, ...(nativeLook.matches.length === 1 && nativeLook.matches[0] !== undefined ? { element: describeElement(nativeLook.matches[0], nativeLook.tree.platform) } : {}) } }
     const step = stepId === undefined ? {} : { stepId }
     const waited = result.waitedMs === undefined ? {} : { waitedMs: result.waitedMs }
-    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, sessionId, locator, ...page, observed: observedRecord(observation), durationMs: elapsedMs(entry.startedAt), ...waited })
+    this.#options.emit({ type: 'observation', testId, attemptId, ...step, session: app, observationId, sessionId, locator, ...page, observed: observedRecord(observation), ...native, durationMs: elapsedMs(entry.startedAt), ...waited })
     return { ...result, observationId, sessionId }
   }
 
@@ -445,14 +506,31 @@ export class RunningTest {
 
   // An assertion is written only as the parent judged it; one the parent cannot accept ends the test.
   #childEvent(event: ChildEvent): void {
-    if (!this.#isOwn(event)) return this.#violation(`sent ${event.type} for ${describeScope(event)} while ${describeScope(this.#options)} was running`)
+    if (!this.#isOwn(event)) return this.#violation(`sent ${event.type} for an inactive test attempt`)
     if (event.type !== 'assertion.passed' && event.type !== 'assertion.failed') return this.#options.emit(event, 'child')
-    // An assertion that names no app looks at the test's first one, as milestone 1's single page.
+    // An assertion that names no app looks at the test's first one, as milestone 1's single page. One that names an app
+    // the test does not have names a session that never existed.
+    if (event.session !== undefined && !this.#options.pages.has(event.session)) {
+      return this.#violation(`sent ${event.type} for the app ${JSON.stringify(event.session)}, which this test does not use`)
+    }
     const [firstApp] = this.#options.pages.keys()
     const app = event.session ?? firstApp
-    const judged = this.#observations.judge(event, { app, ...(app === undefined ? {} : this.#documentFields(app)) })
+    const looked = app === undefined ? {} : { sessionId: formatSessionId(this.#options.attemptId, app), ...this.#documentFields(app) }
+    const native = event.observationId === undefined ? undefined : this.#nativeLooks.get(event.observationId)
+    let assertion = event
+    if (native !== undefined && event.check !== undefined && !isPageCheck(event.check) && event.locator !== undefined) {
+      const rule = locatorCheck(event.check)
+      const unsupported = native.page.native.checkReference(native.look.reference) ?? unsupportedCheck(event.check, native.look.matches, event.locator, native.look.tree.platform)
+      if (unsupported !== undefined || !rule.passes(native.look.observation)) {
+        const element = native.look.matches[0]
+        const description = element === undefined ? undefined : describeElement(element, native.look.tree.platform)
+        const failed = unsupported ?? failure('check_failed', `${rule.mismatch(native.look.observation, describeCommand({ kind: 'observe', locator: event.locator }))}${description === undefined ? '' : ` Element: ${description}.`}`)
+        assertion = { ...event, type: 'assertion.failed', failure: failed }
+      }
+    }
+    const judged = this.#observations.judge(assertion, { app, ...looked })
     if (!judged.ok) return this.#violation(judged.problem)
-    if (judged.event.type === 'assertion.failed' && judged.event.observationId !== undefined && judged.event.failure.class === 'check_failed') this.#observed.push(judged.event.failure)
+    if (judged.event.type === 'assertion.failed') this.#observed.push(judged.event.failure)
     this.#assertionsSeen++
     this.#options.emit(judged.event, 'child')
   }
@@ -460,6 +538,8 @@ export class RunningTest {
   // The parent captures the evidence and asks the judge itself; the test file's process only says what to judge, and
   // its own time bounds the check. An answer that comes once the test is over or stopped goes nowhere.
   #evaluate(message: EvaluateMessage): void {
+    if (!this.#isOwn(message)) return this.#violation('sent an evaluation for an inactive test attempt')
+    if (this.#evaluating.has(message.id) || this.#inFlight.has(message.id)) return this.#violation(`sent evaluation ${message.id} again while the first request was still running`)
     if (this.#deadline?.expired === true) this.#runOutOfTime()
     const { evaluations, process } = this.#options
     const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest judged nothing.')
@@ -471,14 +551,30 @@ export class RunningTest {
       process.send({ type: 'evaluation-result', id: message.id, answer: refusedAnswer(message.call.mode, reason) })
       return
     }
+    // A check that captures an app's page holds that app as a look does, as the test file's own lanes hold it, so no
+    // action runs there while the screenshot is taken and judged.
+    const apps = capturedApps(message.call, [...this.#options.pages.keys()])
+    const running = apps.map((app) => this.#busyWith(app, true)).find((busy) => busy !== undefined)
+    if (running !== undefined) {
+      const refused = concurrentFailure(`asked for test.evaluate() on ${apps.join(' and ')}`, running, message.location, 'Retest did not run it')
+      this.#observed.push(refused)
+      process.send({ type: 'evaluation-result', id: message.id, answer: refusedAnswer(message.call.mode, refused) })
+      return
+    }
+    this.#evaluating.set(message.id, { apps, location: message.location })
     const remainingMs = this.#deadline?.remainingMs ?? this.#options.timeouts.test
-    void evaluations.request(message.call, { location: message.location, stepId: message.stepId, remainingMs }).then((answer) => {
-      if (this.#report === undefined && this.#revocation === undefined) process.send({ type: 'evaluation-result', id: message.id, answer })
-    })
+    void evaluations
+      .request(message.call, { location: message.location, stepId: message.stepId, remainingMs })
+      .then((answer) => {
+        // The check lets go of its apps before its answer goes, as a command does, so the test's next action is not refused.
+        this.#evaluating.delete(message.id)
+        if (this.#report === undefined && this.#revocation === undefined) process.send({ type: 'evaluation-result', id: message.id, answer })
+      })
+      .finally(() => this.#evaluating.delete(message.id))
   }
 
   #childFinished(message: Extract<TestFileMessage, { type: 'test-finished' }>): void {
-    if (!this.#isOwn(message)) return this.#violation(`finished ${describeScope(message)} while ${describeScope(this.#options)} was running`)
+    if (!this.#isOwn(message)) return this.#violation('finished an inactive test attempt')
     const modules = message.modules === undefined ? {} : { modules: message.modules }
     this.#finish({ ...this.#verdict(message), assertionCount: message.assertionCount, ...modules })
   }
@@ -538,7 +634,8 @@ export class RunningTest {
     const { stepId, location } = stamp
     const step = stepId === undefined ? {} : { stepId }
     const place = location === undefined ? {} : { location }
-    this.#options.emit({ type: 'navigation', testId, attemptId, ...step, session: app, url, ...(title === undefined ? {} : { title }), cause, document: opened, ...place })
+    const sessionId = formatSessionId(attemptId, app)
+    this.#options.emit({ type: 'navigation', testId, attemptId, ...step, session: app, sessionId, url, ...(title === undefined ? {} : { title }), cause, document: opened, ...place })
   }
 
   // The document the parent last saw an app's page commit, as an event records its page.
@@ -695,6 +792,28 @@ function thrownResult(command: PageCommand, error: unknown): CommandResult {
   return { ok: false, failure: failure(command.kind.startsWith('observe') ? 'session_lost' : 'outcome_unknown', message) }
 }
 
-function describeScope({ testId, attemptId }: TestScope): string {
-  return `${JSON.stringify(testId)} (attempt ${attemptId})`
+// The apps whose pages an AI check captures: each screenshot's or recording's app, the test's first app when it names
+// none, as the test file's process counts them. An app the test does not have is the check's own refusal.
+function capturedApps(call: EvaluateMessage['call'], apps: readonly string[]): string[] {
+  const [first] = apps
+  const named = call.evidence.flatMap((selector) => (selector.kind === 'text' ? [] : [selector.app ?? first]))
+  return [...new Set(named.filter((app): app is string => app !== undefined && apps.includes(app)))]
+}
+
+// Work refused because the app was busy: what was asked, what was still running there, and both places in the test.
+function concurrentFailure(asked: string, running: Busy, location: SourceLocation | undefined, outcome: string): Failure {
+  const text = [
+    `The test file's process ${asked} while ${running.label} was still running there, so ${outcome}.`,
+    'Retest sends one command at a time to each app, and no action while a check looks at it.',
+  ].join(' ')
+  return { ...failure('concurrent_commands', text, location), details: { running: lineOrNull(running.location), next: lineOrNull(location) } }
+}
+
+// A look reads its app's page and changes nothing there; every other command is an action.
+function isLook(command: PageCommand): command is Extract<PageCommand, { kind: 'observe' | 'observePage' }> {
+  return command.kind === 'observe' || command.kind === 'observePage'
+}
+
+function lineOrNull(location: SourceLocation | undefined): string | null {
+  return location === undefined ? null : formatLine(location)
 }

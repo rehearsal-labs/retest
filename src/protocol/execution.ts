@@ -23,9 +23,10 @@ export type BundleRecord = { sha256: string; modules: ModuleRecord[] }
 
 /**
  * An app's target as it changes how a test runs: the target's name and kind, the browser and channel, whether it
- * runs headless, the named device or the screen it emulates, and the proxy, without its credentials. The executable's
- * path and the app's base URL are left out: they say where things are on this machine, and the browser's own
- * identity is in `sessions`.
+ * runs headless, the named device or the screen it emulates, the proxy, without its credentials, and for an Electron
+ * app how many arguments it is started with and the SHA-256 of their list as canonical JSON, never their text. The
+ * executable's path, the app's folder and its base URL are left out: they say where things are on this machine, and the
+ * browser's own identity is in `sessions`.
  */
 export type AppSettings = {
   target: string
@@ -37,6 +38,8 @@ export type AppSettings = {
   emulation?: Emulation
   proxy?: { server: string; bypass: string[] }
   simulator?: { device: string; runtime: string }
+  args?: { count: number; sha256: string }
+  environment?: { count: number; sha256: string }
 }
 
 /** A secret by name and where it is read from: the variable an `env` source names, or `function`. Never its value. */
@@ -94,8 +97,28 @@ export type ConfigurationRecord = { sha256: string; settings: ExecutionSettings 
 /** What ran the test: Retest's version, Node's and the platform, as `process.platform-process.arch`. */
 export type RuntimeRecord = { retest: string; node: string; platform: string }
 
-/** A session of the attempt: its app, its id, and the browser it ran in as the browser reported itself. */
-export type SessionRecord = { app: string; sessionId: string; engine: string; product: string; version: string }
+/**
+ * What a session takes while it runs: a context in a browser others share, an Electron app launched for this attempt
+ * alone, an Electron app on the data folder its target names, which one attempt holds at a time, the Mac's interactive
+ * desktop, or a simulator device.
+ */
+export type SessionResource = 'browser-context' | 'app-launch' | 'data-folder' | 'desktop' | 'device'
+
+/**
+ * A session of the attempt: its app, its id, the browser it ran in as the browser reported itself, and the resource it
+ * took. `resource` is absent in runs recorded before it.
+ */
+/** The native executor's identity as a portable JSON record. */
+export type NativeExecutionRecord = {
+  platform: 'ios-simulator' | 'macos'
+  app: { bundleId: string; version?: string; build?: string; path: string; sha256: string }
+  os: { name: 'iOS' | 'macOS'; version: string; build: string }
+  device?: { name: string; type: string; udid: string }
+  executor: { name: string; version: string; commit: string; commitVerified: boolean; productsSha256: string; codeDirectoryHash?: string; origin: 'built' | 'adopted' }
+  xcode: { version: string; build: string }
+}
+
+export type SessionRecord = { app: string; sessionId: string; engine: string; product: string; version: string; resource?: SessionResource; native?: NativeExecutionRecord }
 
 /**
  * One check a host requires, in a requirement version: its id, which never changes within the version, whether it
@@ -115,10 +138,13 @@ export type RequirementRecord = { version: string; sha256: string; checks: Requi
 export type BackendData = 'prepared' | 'reused' | 'external' | 'unavailable'
 
 /**
- * Where an app of an attempt started: its browser storage, new or restored from a saved state, which it names, and its
- * backend data as the host declared it.
+ * Where an app of an attempt started: its browser storage, new, restored from a saved state, which it names, or reused
+ * from the data folder its Electron target names, which earlier launches may have changed; and its backend data as the
+ * host declared it.
  */
-export type StartingState = { app: string; browserStorage: 'fresh' | 'saved'; state?: string; backendData: BackendData }
+export type NativeStartingState = { appData: 'reset' | 'kept'; keychain: 'reset' | 'kept'; boundary: string; appReset?: true; notIsolated: string[] }
+
+export type StartingState = { app: string; browserStorage?: 'fresh' | 'saved' | 'reused'; native?: NativeStartingState; state?: string; backendData: BackendData }
 
 /**
  * The identity of one attempt's execution, as the parent recorded it before the attempt's first action: the bundle
@@ -216,6 +242,8 @@ const appSettingsSchema: Schema<AppSettings> = s.object({
   emulation: s.optional(emulationSchema),
   proxy: s.optional(s.object({ server: s.string(), bypass: names })),
   simulator: s.optional(s.object({ device: s.string(), runtime: s.string() })),
+  args: s.optional(s.object({ count: s.number({ integer: true, min: 1 }), sha256: hex })),
+  environment: s.optional(s.object({ count: s.number({ integer: true, min: 1 }), sha256: hex })),
 })
 
 export const executionSettingsSchema: Schema<ExecutionSettings> = s.object({
@@ -251,16 +279,39 @@ const backendDataSchema = s.enum(['prepared', 'reused', 'external', 'unavailable
 
 export const requirementCheckSchema: Schema<RequirementCheck> = s.object({ id: s.string(), kind: s.enum(['page', 'evaluation']), sha256: hex })
 
+export const nativeExecutionIdentitySchema: Schema<NativeExecutionRecord> = s.object({
+  platform: s.enum(['ios-simulator', 'macos']),
+  app: s.object({ bundleId: s.string(), version: s.optional(s.string()), build: s.optional(s.string()), path: s.string(), sha256: hex }),
+  os: s.object({ name: s.enum(['iOS', 'macOS']), version: s.string(), build: s.string() }),
+  device: s.optional(s.object({ name: s.string(), type: s.string(), udid: s.string() })),
+  executor: s.object({ name: s.string(), version: s.string(), commit: s.string(), commitVerified: s.boolean(), productsSha256: hex, codeDirectoryHash: s.optional(s.string()), origin: s.enum(['built', 'adopted']) }),
+  xcode: s.object({ version: s.string(), build: s.string() }),
+})
+
+export const nativeStartingStateSchema: Schema<NativeStartingState> = s.object({
+  appData: s.enum(['reset', 'kept']), keychain: s.enum(['reset', 'kept']), boundary: s.string(), appReset: s.optional(s.literal(true)), notIsolated: names,
+})
+
 export const executionRecordSchema: Schema<ExecutionRecord> = s.object({
   bundle: s.optional(bundleRecordSchema),
   configuration: s.object({ sha256: hex, settings: executionSettingsSchema }),
   secretReferences: s.optional(s.array(s.object({ ...secretReferenceShape, origins: names }))),
   runtime: s.object({ retest: s.string(), node: s.string(), platform: s.string() }),
-  sessions: s.array(s.object({ app: s.string(), sessionId: s.string(), engine: s.string(), product: s.string(), version: s.string() })),
+  sessions: s.array(
+    s.object({
+      app: s.string(),
+      sessionId: s.string(),
+      engine: s.string(),
+      product: s.string(),
+      version: s.string(),
+      resource: s.optional(s.enum(['browser-context', 'app-launch', 'data-folder', 'desktop', 'device'])),
+      native: s.optional(nativeExecutionIdentitySchema),
+    }),
+  ),
   owner: s.optional(s.string()),
   appBuilds: s.optional(s.record(s.string())),
   requirement: s.optional(s.object({ version: s.string(), sha256: hex, checks: s.array(requirementCheckSchema) })),
-  startingState: s.array(s.object({ app: s.string(), browserStorage: s.enum(['fresh', 'saved']), state: s.optional(s.string()), backendData: backendDataSchema })),
+  startingState: s.array(s.object({ app: s.string(), browserStorage: s.optional(s.enum(['fresh', 'saved', 'reused'])), native: s.optional(nativeStartingStateSchema), state: s.optional(s.string()), backendData: backendDataSchema })),
   unavailable: s.optional(names),
 })
 

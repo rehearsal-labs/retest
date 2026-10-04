@@ -1,10 +1,23 @@
 import type { Infer, Path } from '../protocol/schema.ts'
 import type { DeviceName } from './devices.ts'
-import type { LoadedApp, LoadedEmulation, LoadedNativeTarget, LoadedProxy, LoadedStart, LoadedTarget, LoadedWebTarget } from './loaded.ts'
+import type {
+  LoadedApp,
+  LoadedElectronTarget,
+  LoadedEmulation,
+  LoadedNativeDiagnostics,
+  LoadedNativeTarget,
+  LoadedProxy,
+  LoadedStart,
+  LoadedTarget,
+  LoadedWebTarget,
+} from './loaded.ts'
 import type { Problems } from './problems.ts'
 import type { CustomEmulation, NativePlatform, Viewport } from './types.ts'
+import { configKey } from './problems.ts'
+import { folderKey } from '../runner/resources.ts'
+import { errorMessage } from '../protocol/failures.ts'
 import { resolve } from 'node:path'
-import { describeValue, isPlainObject, s } from '../protocol/schema.ts'
+import { describeValue, isPlainObject, parse, s } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { deviceNames } from './devices.ts'
 import { channels } from './types.ts'
@@ -41,12 +54,21 @@ const appSettings = { baseUrl: s.optional(s.string()), start: s.optional(startSc
 const appSettingsSchema = s.object(appSettings)
 
 const executablePath = s.optional(s.string())
+// An Electron app has no screen to emulate and no proxy of Retest's: its windows are its own.
+const electronShape = {
+  browser: s.literal('electron'),
+  executablePath: s.string(),
+  appPath: s.string(),
+  args: s.optional(s.array(s.string())),
+  userDataDir: s.optional(s.string()),
+}
 const targetSchema = s.discriminatedUnion('browser', [
   s.object({ browser: s.literal('chromium'), executablePath, ...targetSettings }),
   s.object({ browser: s.literal('chrome'), channel, ...targetSettings }),
   s.object({ browser: s.literal('edge'), channel, ...targetSettings }),
   s.object({ browser: s.literal('firefox'), executablePath, ...targetSettings }),
   s.object({ browser: s.literal('webkit'), executablePath, ...targetSettings }),
+  s.object(electronShape),
 ])
 const standaloneTargetSchema = s.discriminatedUnion('browser', [
   s.object({ browser: s.literal('chromium'), executablePath, ...targetSettings, ...appSettings }),
@@ -54,16 +76,25 @@ const standaloneTargetSchema = s.discriminatedUnion('browser', [
   s.object({ browser: s.literal('edge'), channel, ...targetSettings, ...appSettings }),
   s.object({ browser: s.literal('firefox'), executablePath, ...targetSettings, ...appSettings }),
   s.object({ browser: s.literal('webkit'), executablePath, ...targetSettings, ...appSettings }),
+  s.object({ ...electronShape, ...appSettings }),
 ])
+const nativeDiagnostics = s.object({
+  logs: s.optional(s.enum(['stdout', 'none'])),
+  network: s.optional(s.object({ path: s.string(), client: s.enum(['ios', 'macos']) })),
+})
+const nativeLaunch = { arguments: s.optional(s.array(s.string())), environment: s.optional(s.record(s.string())), diagnostics: s.optional(nativeDiagnostics) }
 const nativeTargetSchema = s.discriminatedUnion('platform', [
-  s.object({ platform: s.literal('ios-simulator'), appPath: s.string(), device: s.string(), runtime: s.string() }),
-  s.object({ platform: s.literal('macos'), appPath: s.string() }),
+  s.object({ platform: s.literal('ios-simulator'), appPath: s.string(), device: s.string(), runtime: s.string(), ...nativeLaunch }),
+  s.object({ platform: s.literal('macos'), appPath: s.string(), ...nativeLaunch }),
 ])
 
 type ParsedTarget = Infer<typeof targetSchema>
+type ParsedBrowserTarget = Exclude<ParsedTarget, { browser: 'electron' }>
+type ParsedElectronTarget = Extract<ParsedTarget, { browser: 'electron' }>
 type ParsedNativeTarget = Infer<typeof nativeTargetSchema>
-/** What a target is: a browser, or the native platform it names. */
-type Kind = 'web' | NativePlatform
+type ParsedNativeDiagnostics = Infer<typeof nativeDiagnostics>
+/** What a target is: a browser, an Electron app, or the native platform it names. */
+type Kind = 'web' | 'electron' | NativePlatform
 type ParsedStart = Infer<typeof startSchema>
 type ParsedProxy = Infer<typeof proxySchema>
 
@@ -86,7 +117,66 @@ export function readApps(value: unknown, context: ReadContext): Map<string, Load
       : readStandaloneTarget(name, entry, appPath, context)
     if (app !== undefined) apps.set(name, app)
   }
+  checkDataFolders(apps, value, context.problems)
+  checkNetworkSources(apps, value, context.problems)
   return apps
+}
+
+// A data folder holds one running Electron app at a time, so every launch of a target waits for the one before it on
+// its folder. Two targets on one folder would wait on each other's idle app, the one its setup left for its first
+// test, for the whole run, so each target needs a folder of its own.
+function checkDataFolders(apps: ReadonlyMap<string, LoadedApp>, entries: Record<string, unknown>, problems: Problems): void {
+  const folders = [...apps.values()].flatMap((app) => [...app.targets.values()].flatMap((target) => 'browser' in target && target.browser === 'electron' && target.userDataDir !== undefined ? [target.userDataDir] : []))
+  const distinct = new Set(folders)
+  if (folders.length < 2) return
+  const first = new Map<string, string>()
+  for (const [appName, app] of apps) {
+    const entry = entries[appName]
+    const standalone = !(isPlainObject(entry) && Object.hasOwn(entry, 'targets'))
+    for (const [targetName, target] of app.targets) {
+      if (!('browser' in target) || target.browser !== 'electron' || target.userDataDir === undefined) continue
+      const path = standalone ? ['apps', appName] : ['apps', appName, 'targets', targetName]
+      let key: string
+      try { key = distinct.size === 1 ? target.userDataDir : folderKey(target.userDataDir) } catch (error) {
+        problems.add([...path, 'userDataDir'], `could not read the folder or its disk's case rule: ${errorMessage(error)}`)
+        continue
+      }
+      const earlier = first.get(key)
+      if (earlier === undefined) first.set(key, path.join('.'))
+      else problems.add([...path, 'userDataDir'], `is also the data folder of ${earlier}: give each Electron target a folder of its own`)
+    }
+  }
+}
+
+// A network file's records name their client and nothing else, so a file and client read for one app would hand it
+// another's requests too. Two apps may not share one, and neither may two targets of one app that can run at once:
+// iOS targets on different simulators. Targets on one simulator, or on the Mac's one desktop, run one at a time.
+function checkNetworkSources(apps: ReadonlyMap<string, LoadedApp>, entries: Record<string, unknown>, problems: Problems): void {
+  type Declared = { app: string; path: Path; file: string; client: string; runsOn: string }
+  const declared: Declared[] = []
+  for (const [appName, app] of apps) {
+    const entry = entries[appName]
+    const standalone = !(isPlainObject(entry) && Object.hasOwn(entry, 'targets'))
+    for (const [targetName, target] of app.targets) {
+      const network = 'platform' in target ? target.diagnostics?.network : undefined
+      if (network === undefined || !('platform' in target)) continue
+      const path = [...(standalone ? ['apps', appName] : ['apps', appName, 'targets', targetName]), 'diagnostics', 'network']
+      declared.push({ app: appName, path, file: network.path, client: network.client, runsOn: target.platform === 'macos' ? 'macos' : `${target.device} (${target.runtime})` })
+    }
+  }
+  const first = new Map<string, Declared>()
+  for (const entry of declared) {
+    if (!declared.some((other) => other !== entry && other.client === entry.client)) continue
+    let key: string
+    try { key = `${entry.client}:${folderKey(entry.file)}` } catch (error) {
+      problems.add([...entry.path, 'path'], `could not read where the file is or its disk's case rule: ${errorMessage(error)}`)
+      continue
+    }
+    const earlier = first.get(key)
+    if (earlier === undefined) first.set(key, entry)
+    else if (earlier.app !== entry.app) problems.add(entry.path, `is also the network source of ${configKey(earlier.path)} for the client ${entry.client}: the records cannot tell the two apps apart, so give each app a file or client of its own`)
+    else if (earlier.runsOn !== entry.runsOn) problems.add(entry.path, `is also the network source of ${configKey(earlier.path)} for the client ${entry.client}, on another simulator that can run at the same time: give each simulator a file or client of its own`)
+  }
 }
 
 // The settings are checked whatever the targets say, so one pass reports every problem of the app.
@@ -100,14 +190,20 @@ function readApp(name: string, entry: Record<string, unknown>, path: Path, conte
   return { name, ...settings, targets: loaded }
 }
 
-// A test's handle on an app offers what its targets can do, so they are all one kind; a native app has no address.
+// A test's handle on an app offers what its targets can do, so they are all one kind; a native app has no address,
+// and neither has an Electron app, whose first window is the page.
 function checkKinds(targets: ReadonlyMap<string, LoadedTarget>, settings: LoadedSettings, path: Path, problems: Problems): void {
   const kinds = new Set([...targets.values()].map(kindOf))
   if (kinds.size > 1) {
     const mixed = [...kinds].map(describeKind).join(' and ')
-    problems.add([...path, 'targets'], `mixes ${mixed}. An app's targets are all browsers, all iOS simulators or all macOS apps: give each kind an app of its own`)
+    const rule = kinds.has('electron') ? "An app's targets are all of one kind" : "An app's targets are all browsers, all iOS simulators or all macOS apps"
+    problems.add([...path, 'targets'], `mixes ${mixed}. ${rule}: give each kind an app of its own`)
   }
-  if (settings.baseUrl !== undefined && !kinds.has('web')) problems.add([...path, 'baseUrl'], 'a native app has no address, so it takes no baseUrl')
+  if (settings.baseUrl === undefined || kinds.has('web')) return
+  const problem = kinds.has('electron')
+    ? 'an Electron app has no address: the first window it opens is the page, so it takes no baseUrl'
+    : 'a native app has no address, so it takes no baseUrl'
+  problems.add([...path, 'baseUrl'], problem)
 }
 
 function readStandaloneTarget(name: string, entry: unknown, path: Path, context: ReadContext): LoadedApp | undefined {
@@ -126,7 +222,7 @@ function readStandaloneTarget(name: string, entry: unknown, path: Path, context:
 // A target on its own is named after its browser, or its platform.
 function readTargetKind(shape: Record<string, unknown>, path: Path, context: ReadContext): LoadedTarget | undefined {
   if (Object.hasOwn(shape, 'platform')) {
-    const native = context.problems.check(nativeTargetSchema, shape, path)
+    const native = readNativeShape(shape, path, context.problems)
     return native === undefined ? undefined : loadNativeTarget(native.platform, native, path, context)
   }
   const target = context.problems.check(targetSchema, shape, path)
@@ -159,10 +255,14 @@ function readTargetShape(entry: unknown, path: Path, problems: Problems): Parsed
   for (const [key, value] of Object.entries({ baseUrl, start })) {
     if (value !== undefined) problems.add([...path, key], `${key} belongs to the app, not to one of its targets`)
   }
-  return Object.hasOwn(target, 'platform') ? problems.check(nativeTargetSchema, target, path) : problems.check(targetSchema, target, path)
+  return Object.hasOwn(target, 'platform') ? readNativeShape(target, path, problems) : problems.check(targetSchema, target, path)
 }
 
-function loadTarget(name: string, target: ParsedTarget, path: Path, { problems, folder }: ReadContext): LoadedWebTarget {
+function loadTarget(name: string, target: ParsedTarget, path: Path, context: ReadContext): LoadedWebTarget | LoadedElectronTarget {
+  return target.browser === 'electron' ? loadElectronTarget(name, target, path, context) : loadBrowserTarget(name, target, path, context)
+}
+
+function loadBrowserTarget(name: string, target: ParsedBrowserTarget, path: Path, { problems, folder }: ReadContext): LoadedWebTarget {
   const screen = loadScreen(target, path, problems)
   const emulate = screen === undefined ? {} : { emulate: screen }
   const proxy = target.proxy === undefined ? undefined : loadProxy(target.proxy, [...path, 'proxy'], problems)
@@ -173,27 +273,72 @@ function loadTarget(name: string, target: ParsedTarget, path: Path, { problems, 
   return { ...base, browser: target.browser, executablePath: resolve(folder, target.executablePath) }
 }
 
+// Retest gives the app its debugging pipe and its data folder. Chromium reads the switches after the app's path too,
+// and the last of two wins, so an argument that names either would take the app away from Retest.
+function loadElectronTarget(name: string, target: ParsedElectronTarget, path: Path, { problems, folder }: ReadContext): LoadedElectronTarget {
+  problems.checkFilled([...path, 'executablePath'], target.executablePath, 'a path')
+  problems.checkFilled([...path, 'appPath'], target.appPath, 'a path')
+  const args = target.args ?? []
+  for (const [index, argument] of args.entries()) {
+    const problem = reservedArgumentProblem(argument)
+    if (problem !== undefined) problems.add([...path, 'args', index], problem)
+  }
+  if (target.userDataDir !== undefined) problems.checkFilled([...path, 'userDataDir'], target.userDataDir, 'a folder')
+  const dataFolder = target.userDataDir === undefined ? {} : { userDataDir: resolve(folder, target.userDataDir) }
+  const paths = { executablePath: resolve(folder, target.executablePath), appPath: resolve(folder, target.appPath) }
+  return { name, browser: 'electron', ...paths, args: [...args], ...dataFolder }
+}
+
+// Chromium takes a switch written with one dash or two. The message names the switch, never the value beside it.
+function reservedArgumentProblem(argument: string): string | undefined {
+  const name = argument.replace(/^-{1,2}/, '--').split('=', 1)[0] ?? ''
+  if (name === '--user-data-dir') return 'Retest gives the app its data folder: set userDataDir instead of --user-data-dir'
+  if (name.startsWith('--remote-debugging-')) return `Retest drives the app over a debugging pipe of its own, so the app takes no ${name}`
+  return undefined
+}
+
 function loadNativeTarget(name: string, target: ParsedNativeTarget, path: Path, { problems, folder }: ReadContext): LoadedNativeTarget {
   problems.checkFilled([...path, 'appPath'], target.appPath, 'a path')
   const appPath = resolve(folder, target.appPath)
-  if (target.platform === 'macos') return { name, platform: 'macos', appPath }
+  const launch = { ...(target.arguments === undefined ? {} : { arguments: [...target.arguments] }), ...(target.environment === undefined ? {} : { environment: { ...target.environment } }) }
+  for (const [index, argument] of (target.arguments ?? []).entries()) {
+    const reserved = reservedArgumentProblem(argument)
+    if (reserved !== undefined) problems.add([...path, 'arguments', index], reserved)
+    if (argument.includes('\0')) problems.add([...path, 'arguments', index], 'takes no null byte')
+  }
+  for (const [key, value] of Object.entries(target.environment ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) problems.add([...path, 'environment'], 'takes environment variable names only')
+    else if (key.startsWith('TEST_RUNNER_') || key.startsWith('SIMCTL_CHILD_') || key.startsWith('DYLD_') || ['USE_PORT', 'USE_IP', 'USE_HOST', 'MJPEG_SERVER_PORT', 'NODE_OPTIONS'].includes(key)) problems.add([...path, 'environment', key], `Retest owns ${key}; the app cannot set it`)
+    if (value.includes('\0')) problems.add([...path, 'environment', key], 'takes no null byte')
+  }
+  const diagnostics = target.diagnostics === undefined ? {} : { diagnostics: loadNativeDiagnostics(target.diagnostics, [...path, 'diagnostics'], { problems, folder }) }
+  if (target.platform === 'macos') return { name, platform: 'macos', appPath, ...launch, ...diagnostics }
   problems.checkFilled([...path, 'device'], target.device, 'a device type such as "iPhone 17"')
   problems.checkFilled([...path, 'runtime'], target.runtime, 'an iOS version such as "26.0"')
-  return { name, platform: 'ios-simulator', appPath, device: target.device, runtime: target.runtime }
+  return { name, platform: 'ios-simulator', appPath, device: target.device, runtime: target.runtime, ...launch, ...diagnostics }
+}
+
+// The app's standard output unless the config says 'none', and the network file with its path made absolute.
+function loadNativeDiagnostics(declared: ParsedNativeDiagnostics, path: Path, { problems, folder }: ReadContext): LoadedNativeDiagnostics {
+  const { network } = declared
+  if (network !== undefined) problems.checkFilled([...path, 'network', 'path'], network.path, 'a file')
+  return { logs: declared.logs ?? 'stdout', ...(network === undefined ? {} : { network: { path: resolve(folder, network.path), client: network.client } }) }
 }
 
 function kindOf(target: LoadedTarget): Kind {
-  return 'platform' in target ? target.platform : 'web'
+  if ('platform' in target) return target.platform
+  return target.browser === 'electron' ? 'electron' : 'web'
 }
 
 function describeKind(kind: Kind): string {
   if (kind === 'web') return 'browsers'
+  if (kind === 'electron') return 'Electron apps'
   return kind === 'ios-simulator' ? 'iOS simulators' : 'macOS apps'
 }
 
 // A viewport alone is the custom emulation it stands for, so it reaches the page, the events and the reports the same
 // way. With `emulate` beside it, the two would disagree about the size.
-function loadScreen(target: ParsedTarget, path: Path, problems: Problems): LoadedEmulation | undefined {
+function loadScreen(target: ParsedBrowserTarget, path: Path, problems: Problems): LoadedEmulation | undefined {
   const { emulate, viewport } = target
   if (emulate !== undefined && viewport !== undefined) {
     problems.add([...path, 'viewport'], 'emulate already sets the screen, so give viewport or emulate, not both')
@@ -271,4 +416,15 @@ function loadStart(start: ParsedStart, path: Path, { problems, folder }: ReadCon
   }
   const timeout = start.timeoutMs === undefined ? {} : { timeoutMs: start.timeoutMs }
   return { command: start.command, ready: start.ready, cwd: resolve(folder, start.cwd ?? '.'), ...timeout }
+}
+
+function readNativeShape(value: Record<string, unknown>, path: Path, problems: Problems): ParsedNativeTarget | undefined {
+  const parsed = parse(nativeTargetSchema, value)
+  if (parsed.ok) return parsed.value
+  for (const issue of parsed.issues) {
+    if (issue.path.startsWith('$.arguments')) problems.add([...path, 'arguments'], 'expected a list of argument strings; argument values are withheld')
+    else if (issue.path.startsWith('$.environment')) problems.add([...path, 'environment'], 'expected environment variable names mapped to strings; values are withheld')
+    else problems.issues.push({ key: configKey(path) + issue.path.slice(1), message: issue.message })
+  }
+  return undefined
 }

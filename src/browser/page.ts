@@ -1,6 +1,7 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { CdpSession } from './cdp/session.ts'
-import type { BrowserCommand, DispatchedCommand, PageNavigation, PageReading, TextQuery, WebSession } from './contract.ts'
+import type { ChromiumCaptureOptions } from './capture.ts'
+import type { BrowserCommand, DispatchedCommand, PageNavigation, PageReading, SessionIdentity, TextQuery, WebSession } from './contract.ts'
 import type { ActionTarget, PendingNavigation, ReadyTarget } from './actionability.ts'
 import type { ActionIntent, PlannedKey, Pointer, SelectPlan, Selection } from './element-queries.ts'
 import type { Guard, GuardedIntent, GuardVerdict } from './input-guard.ts'
@@ -9,6 +10,7 @@ import type { DiagnosticCollection, DiagnosticSink } from '../diagnostics/observ
 import type { ObserveAfter, CommandResult, PageObservation } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { Failure } from '../protocol/failures.ts'
+import type { RecordIdentity } from '../protocol/identity.ts'
 import type { Key, ModifierName } from '../protocol/keys.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
@@ -17,6 +19,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { ChromiumCollector } from '../diagnostics/chromium-collector.ts'
 import { isNavigationKind } from '../protocol/commands.ts'
 import { Deadline, monotonicClock } from '../protocol/deadline.ts'
+import { formatSessionId } from '../protocol/evidence.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { keyStrokes, namedKeys, parseKey } from '../protocol/keys.ts'
 import { describeLocator } from '../protocol/locator.ts'
@@ -27,6 +30,7 @@ import { secretPlaceholder } from '../protocol/secret.ts'
 import { isWebUrl } from '../protocol/url.ts'
 import { invalidSelector, shadowRefused, waitUntilActionable } from './actionability.ts'
 import { BrowserError } from './browser-error.ts'
+import { ChromiumFrameSource } from './capture.ts'
 import { CdpClosedError, CdpDisconnectedError, CdpInvalidResponseError, CdpProtocolError, CdpTimeoutError } from './cdp/errors.ts'
 import { readProtocol, request, sendOptions } from './cdp-results.ts'
 import { awaitCheckedState } from './checked-state.ts'
@@ -133,14 +137,20 @@ export class ChromiumPage implements WebSession {
   readonly #origins: Set<string>
   #mainFrameId: string
   #url: URL | undefined
+  // How many commits of the main frame the page has been told, so a read of the frame that was overtaken is not kept.
+  #commits = 0
   #pendingNavigation: PendingNavigation | undefined
   #lostReason: string | undefined
   #dialog: string | undefined
   #disposing: Promise<void> | undefined
+  // The session this page is, once the runner has named it; what its captures are recorded as.
+  #identity: RecordIdentity | undefined
 
   /**
    * Applies the page's emulation, reads its main frame, then follows it through the events this enables, and has
    * every document it opens install Retest's input guard and its change observer before the page's own scripts run.
+   * The frame is read again once its events are on, since a document that committed before that, as an app's own
+   * window commits its first, is told by no event.
    *
    * @example const page = await ChromiumPage.open({ connection, session, browserContextId, baseUrl, emulation, restoredOrigins: [], onListenerError }, deadline)
    */
@@ -150,6 +160,10 @@ export class ChromiumPage implements WebSession {
     const { frameTree } = await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))
     const page = new ChromiumPage(options, frameTree.frame)
     await request(session, 'Page.enable', undefined, s.object({}), sendOptions(deadline))
+    // A commit told while the frame is read again is at least as new as the read, so the read is kept only without one.
+    const commits = page.#commits
+    const current = await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))
+    if (page.#commits === commits) page.#holdFrame(current.frameTree.frame)
     await request(session, 'Page.setLifecycleEventsEnabled', { enabled: true }, s.object({}), sendOptions(deadline))
     // Chrome delivers a binding's calls only while the Runtime domain is enabled (fact F7 of the speed plan), so it is
     // enabled here, as Playwright and Puppeteer enable it on every page. Its other events have no listeners and are dropped.
@@ -225,6 +239,18 @@ export class ChromiumPage implements WebSession {
     const dispatch = new Dispatch()
     const result = await this.#execute(command, { timeoutMs, signal, commandToken, dispatch })
     return { result, input: dispatch.input }
+  }
+
+  /** A capture names this page\'s runner session beside its Chromium source. */
+  async capture(timeoutMs: number): Promise<{ readonly ok: true; readonly capture: { readonly png: Uint8Array; readonly source: 'chromium'; readonly reference: { readonly sessionId: string }; readonly capturedAt: string } } | { readonly ok: false; readonly failure: Failure }> {
+    if (this.#identity === undefined) return { ok: false, failure: { class: 'unsupported', message: 'The runner has not named this page\'s session, so no capture can be attributed to it.' } }
+    try {
+      const png = await this.screenshot(timeoutMs)
+      return { ok: true, capture: { png, source: 'chromium', reference: { sessionId: this.#identity.sessionId }, capturedAt: new Date().toISOString() } }
+    } catch (error) {
+      if (error instanceof BrowserError) return { ok: false, failure: error.failure }
+      throw error
+    }
   }
 
   async screenshot(timeoutMs: number): Promise<Uint8Array> {
@@ -317,6 +343,39 @@ export class ChromiumPage implements WebSession {
       throw this.#operationError(collectCommand, error, timeoutMs)
     }
     return collector
+  }
+
+  /**
+   * Names the session this page is, as the runner holds it: its id and the test, attempt and app that hold it. A page is
+   * one session for its whole life, so naming it again as another throws, and so does an id that is not the attempt's
+   * and the app's.
+   *
+   * @example page.identify(appPage.session)
+   */
+  identify(session: SessionIdentity): void {
+    const { sessionId, owner } = session
+    const expected = formatSessionId(owner.attemptId, owner.app)
+    if (sessionId !== expected) throw new Error(`A session of attempt ${owner.attemptId} and app ${owner.app} is ${expected}, not ${sessionId}.`)
+    const identity = { testId: owner.testId, attemptId: owner.attemptId, app: owner.app, sessionId }
+    const known = this.#identity
+    if (known !== undefined && !sameSession(known, identity)) throw new Error(`This page is session ${known.sessionId} of ${JSON.stringify(known.testId)}; it cannot become ${sessionId}.`)
+    this.#identity = identity
+  }
+
+  /**
+   * A frame source for the media process over this page's own session: Chrome's screencast of this page alone. Its
+   * frames carry the page's own identity, as `identify` named it. The caller names the session it means to record, and a
+   * page not yet named, or named as another session, gives a source that is unavailable and says why, so one page is
+   * never recorded as another's session. Nothing is captured until it starts. Sends no input.
+   */
+  frameSource(identity: RecordIdentity, options?: ChromiumCaptureOptions): ChromiumFrameSource {
+    const own = this.#identity
+    if (own === undefined) return new ChromiumFrameSource(this.#session, identity, options, `Retest has not named the session this page is, so it records nothing as ${identity.sessionId}.`)
+    if (!sameSession(own, identity)) {
+      const refused = `This page is session ${own.sessionId} of ${JSON.stringify(own.testId)}, not ${identity.sessionId} of ${JSON.stringify(identity.testId)}, so Retest records nothing of it as that session.`
+      return new ChromiumFrameSource(this.#session, own, options, refused)
+    }
+    return new ChromiumFrameSource(this.#session, own, options)
   }
 
   dispose(timeoutMs: number): Promise<void> {
@@ -791,12 +850,26 @@ export class ChromiumPage implements WebSession {
     if (frameId === this.#mainFrameId) this.#moveTo(url, undefined)
   }
 
+  // The main frame as a read found it, when no event told of the document it holds: its address is the page's from now
+  // on. No navigation is told for it, since nobody saw it commit.
+  #holdFrame(frame: { id: string; url: string }): void {
+    if (frame.id !== this.#mainFrameId) {
+      this.#mainFrameId = frame.id
+      this.#world.reset()
+    }
+    const url = URL.parse(frame.url) ?? undefined
+    if (url === undefined || url.href === this.#url?.href) return
+    this.#url = url
+    if (isWebUrl(url)) this.#origins.add(url.origin)
+  }
+
   // A new document, committed with its loader, is always news; within a document only a new path is, since a
   // fragment is never reported.
   #moveTo(address: string, loaderId: string | undefined): void {
     const url = URL.parse(address)
     if (url === null) throw new Error('The browser reported a main frame address that is not a URL')
     const previous = this.#url
+    this.#commits += 1
     this.#url = url
     if (isWebUrl(url)) this.#origins.add(url.origin)
     const path = originAndPath(url)
@@ -908,6 +981,11 @@ function selectionStayed(locator: LocatorRecipe, intent: Extract<ActionIntent, {
 
 function selectIntent(command: Extract<BrowserCommand, { kind: 'select' }>): Extract<ActionIntent, { action: 'select' }> {
   return { action: 'select', choices: command.choices, multiple: command.multiple === true, multiline: false }
+}
+
+// Two identities name one session when they name the same test, attempt, app and session id.
+function sameSession(first: RecordIdentity, second: RecordIdentity): boolean {
+  return first.testId === second.testId && first.attemptId === second.attemptId && first.app === second.app && first.sessionId === second.sessionId
 }
 
 function withTitle(title: string | undefined): { title?: string } {

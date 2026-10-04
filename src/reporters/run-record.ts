@@ -56,7 +56,9 @@ export class RunRecord {
   browser: EventOfType<'browser.started'> | undefined
   /** Every browser the run started, in order. */
   readonly browsers: EventOfType<'browser.started'>[] = []
+  readonly natives: EventOfType<'native.started'>[] = []
   finished: EventOfType<'run.finished'> | undefined
+  outcome: EventOfType<'run.outcome'> | undefined
   /** How `test.only` narrowed the run, when it did. */
   narrowed: EventOfType<'run.narrowed'> | undefined
   last: RetestEvent | undefined
@@ -68,6 +70,7 @@ export class RunRecord {
 
   add(event: RetestEvent): void {
     this.last = event
+    if (event.type === 'native.started') this.natives.push(event)
     switch (event.type) {
       case 'run.started':
         this.started = event
@@ -79,6 +82,9 @@ export class RunRecord {
         return
       case 'run.finished':
         this.finished = event
+        return
+      case 'run.outcome':
+        this.outcome = event
         return
       case 'run.narrowed':
         this.narrowed = event

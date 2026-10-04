@@ -1,3 +1,4 @@
+import type { NativeNetworkDeclaration } from '../diagnostics/native-network.ts'
 import type { DiagnosticsPolicy } from '../diagnostics/policy.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
@@ -31,15 +32,39 @@ export type LoadedEngineTarget = LoadedWebSettings &
 export type LoadedWebTarget = LoadedChromiumTarget | LoadedEngineTarget
 
 /**
+ * An Electron app's target, which the Chromium driver runs over the app's own debugging pipe. `executablePath`,
+ * `appPath` and `userDataDir` are absolute; `args` are empty when the config gives none, and `userDataDir` is absent
+ * when each launch takes a new folder in the temporary folder, removed when the app quits. It never emulates a screen
+ * or goes through a proxy.
+ */
+export type LoadedElectronTarget = {
+  readonly name: string
+  readonly browser: 'electron'
+  readonly executablePath: string
+  readonly appPath: string
+  readonly args: readonly string[]
+  readonly userDataDir?: string
+  readonly emulate?: never
+  readonly proxy?: never
+}
+
+/**
+ * Where a native app's diagnostics come from: its standard output, unless `logs` is 'none', and the network file its
+ * `network` names, with an absolute path. A target whose config declares none has no `diagnostics`, which reads as
+ * standard output and no network source.
+ */
+export type LoadedNativeDiagnostics = { readonly logs: 'stdout' | 'none'; readonly network?: NativeNetworkDeclaration }
+
+/**
  * A native app's target, which no driver runs yet. `appPath` is absolute. It never emulates a screen or goes through
  * a proxy: those belong to browsers.
  */
-export type LoadedNativeTarget = { readonly name: string; readonly emulate?: never; readonly proxy?: never } & (
+export type LoadedNativeTarget = { readonly arguments?: readonly string[]; readonly environment?: Readonly<Record<string, string>>; readonly diagnostics?: LoadedNativeDiagnostics; readonly name: string; readonly emulate?: never; readonly proxy?: never } & (
   | { readonly platform: 'ios-simulator'; readonly appPath: string; readonly device: string; readonly runtime: string }
   | { readonly platform: 'macos'; readonly appPath: string }
 )
 
-export type LoadedTarget = LoadedWebTarget | LoadedNativeTarget
+export type LoadedTarget = LoadedWebTarget | LoadedElectronTarget | LoadedNativeTarget
 
 export type LoadedApp = {
   readonly name: string

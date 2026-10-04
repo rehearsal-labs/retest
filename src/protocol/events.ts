@@ -1,3 +1,5 @@
+import type { CaptureReference } from './evidence.ts'
+import type { NativeExecutionRecord } from './execution.ts'
 import { actionKindSchema, type ActionKind } from './commands.ts'
 import {
   diagnosticLimitsSchema,
@@ -16,6 +18,7 @@ import {
   cleanupRecordSchema,
   endingSchema,
   executionRecordSchema,
+  nativeExecutionIdentitySchema,
   preparationRecordSchema,
   requirementCheckSchema,
   type BundleRecord,
@@ -39,6 +42,7 @@ import {
   type HostCheckActual,
   type HostCheckRecord,
 } from './host-check.ts'
+import { captureSourceNameSchema, type CaptureSourceName } from './identity.ts'
 import { checkRecordSchema, type CheckRecord } from './locator-checks.ts'
 import { locatorRecipeSchema, type LocatorRecipe } from './locator.ts'
 import { observedRecordSchema, type ObservedRecord } from './observation-record.ts'
@@ -87,9 +91,38 @@ export type CollectedTest = {
 /**
  * A browser target: its name in its app and, for a target that emulates a screen, what it emulates and the
  * named device, if it is one. A target with `emulation` is always reported as emulated. `proxy` is the proxy
- * its pages' requests go through, and the hosts that go around it; never a user name or password.
+ * its pages' requests go through, and the hosts that go around it; never a user name or password. `electron` is
+ * set for an Electron app: its Electron release, read from the binary, and the Chromium it embeds, as
+ * `Browser.getVersion` reported it.
  */
-export type TargetInfo = { name: string; emulation?: Emulation; device?: string; proxy?: { server: string; bypass?: string[] } }
+export type TargetInfo = {
+  name: string
+  emulation?: Emulation
+  device?: string
+  proxy?: { server: string; bypass?: string[] }
+  electron?: { version: string; chromium: string }
+}
+
+/**
+ * What an attempt can hold before it acts, in the order every attempt acquires them: a named lock, the interactive
+ * desktop of the Mac Retest runs on, an iOS simulator device, an Electron app's named data folder, and its owner's
+ * browser sessions.
+ */
+export type ResourceKind = 'lock' | 'desktop' | 'device' | 'data-folder' | 'sessions'
+
+/**
+ * One part of a lease: what it holds, by kind and name, and the apps it serves. A lock serves no app. The desktop's
+ * name is `macos`, a device's its simulator and runtime, a data folder's its path, and sessions' their owner, with
+ * `count` sessions, one for each app.
+ */
+export type LeasePart = { kind: ResourceKind; name: string; apps?: string[]; count?: number }
+
+/**
+ * What an attempt holds while it runs, once it holds all of it: each part in the order it was acquired, when it was
+ * taken, and how long after the attempt lets go a desktop, a device or a data folder may take to come free before the
+ * lease expires: the cleanup budget.
+ */
+export type LeaseRecord = { covers: LeasePart[]; takenAt: string; releaseWithinMs: number }
 
 /**
  * Who reported an event. `parent` is a fact the parent process saw for itself; `child` is a claim the test
@@ -107,7 +140,10 @@ export type EventStamp = {
   origin: EventOrigin
 }
 
-/** `session` is the app the event concerns: `page` in milestone 1's mode, otherwise the app's name. */
+/**
+ * `session` is the app the event concerns: `page` in milestone 1's mode, otherwise the app's name. It is the `app` of
+ * the record identity in `identity.ts`; events keep the name they have always had.
+ */
 type Common = { session?: string }
 type TestScope = { testId: string; attemptId: string }
 /** Which run of the test an attempt is, when the run has a config. The parent adds it to every attempt's events. */
@@ -119,6 +155,8 @@ type StepScope = AttemptScope & { stepId?: string }
  * `location` is present only when it says something.
  */
 type ActionFields = StepScope & {
+  /** The session of the app's page the action went to. Absent in runs recorded before actions named it. */
+  sessionId?: string
   command: ActionKind
   locator?: LocatorRecipe
   pageUrl?: string
@@ -155,6 +193,8 @@ type ActionFields = StepScope & {
 /** A check the parent ran after the test's body. `session` is the app whose page it read. */
 type HostCheckFields = AttemptScope & {
   session: string
+  /** The session of the page it read. Absent in runs recorded before host checks named it. */
+  sessionId?: string
   check: HostCheckRecord
   actual: HostCheckActual
   attempts: number
@@ -176,15 +216,20 @@ type AssertionFields = TestScope & {
   pageTitle?: string
   /** The look a locator assertion's verdict rested on: its last. */
   observationId?: string
+  /**
+   * The session of the page a locator or page assertion looked at. The test process sends back the session of the
+   * look it names, as the look came; the parent writes the session it served that look in, or, when the assertion
+   * names no look, the session of the app it judged it on. A value assertion has none.
+   */
+  sessionId?: string
   /** From `expect.soft`: the test went on after it failed. */
   soft?: true
 }
 /**
  * A locator or page assertion as the test process sends it also carries its matcher and arguments whole, in `check`,
- * since `expected` is cut short, and the session of the look it names, in `sessionId`, as the look came. The parent
- * reads both and never writes them.
+ * since `expected` is cut short. The parent reads it and never writes it.
  */
-type SentAssertionFields = AssertionFields & { check?: CheckRecord; sessionId?: string }
+type SentAssertionFields = AssertionFields & { check?: CheckRecord }
 
 type StepEvent =
   | (TestScope & {
@@ -224,21 +269,32 @@ export type ChildEvent = Common &
  * that command's `stepId` and `location`, however late it committed; any other names the step the test was in when
  * it committed, and no location. A run from before milestone 3 has no `cause`, and an earlier one no `document`. The
  * browser's `pid` is also its process group, and so is an app server's. `browser.started` comes once for
- * each app target, the first time it is used; app targets that launch the same browser share its `pid`.
+ * each app target, the first time it is used; app targets that launch the same browser share its `pid`. An Electron
+ * app launches afresh for each test, so each further launch comes too, numbered in `instance`; its `product` is
+ * `Electron` and its `version` Electron's own.
  * `file.failed` is a collected file whose process failed outside its tests. The failure on `run.finished`
  * is the run's own, one that no single test explains, such as a browser that did not start or output that
- * could not be kept. State events never carry the state itself. An `observation` is a look the parent
+ * could not be kept. A failure during final reporter callbacks is kept in a later `run.outcome`; it changes only
+ * the outcome, and result reconstruction uses it after the facts in `run.finished`. State events never carry the state itself. An `observation` is a look the parent
  * served the test process, written before the answer; `observed` is what the test process received, redacted.
  * Host check events are always the parent's. `sessionId` names the session an app's page is in one attempt, as
- * `formatSessionId` writes it: a look and the evidence a session captured carry it. `lock.acquired` comes before
+ * `formatSessionId` writes it: a look, an action, a navigation, a locator or page assertion, a host check, a saved state
+ * and the evidence a session captured carry it, in runs recorded since each did. `lock.acquired` comes before
  * `test.started` for an attempt whose test holds locks, once it holds them all. `run.narrowed` comes after collection
  * when `test.only` kept part of the files' tests. A `skipped` test has a `test.finished` and no `test.started`.
  * `session.reserved` comes before `test.started` for an attempt of a run with session limits, once it holds a session
  * for each of its apps, and `session.released` when it gives them back: once its contexts are closed, or, when they could
- * not be closed, once their browsers have. `test.started` records the attempt's execution identity, and `test.finished` how it ended and,
+ * not be closed, once their browsers have. `resource.acquired` comes once an attempt holds the desktop, the devices and
+ * the data folders it needs, after its locks and before its sessions, and `lease.taken` once it holds everything, before
+ * `test.started`. `lease.expired` is a desktop, a device or a data folder that did not come free within the cleanup
+ * budget once the attempt let go, which comes after its `test.finished`. `test.started` records the attempt's execution identity, and `test.finished` how it ended and,
  * when its body loaded more of the project, the bundle it ran in the end. `preparation.finished` and `cleanup.finished`
  * are the host's preparation and cleanup of the attempt, as the parent saw them end.
  */
+export type NativeOutcomeRecord = { source: 'lifecycle' | 'input'; id: string; kind: string; generation: number; route?: string; input?: 'not_sent' | 'sent' | 'unknown'; failure?: Failure; reconciled?: { running?: boolean; pids?: number[]; problem?: string } }
+
+const nativeOutcomeRecordSchema: Schema<NativeOutcomeRecord> = s.object({ source: s.enum(['lifecycle', 'input']), id: s.string(), kind: s.string(), generation: s.number({ integer: true, min: 0 }), route: s.optional(s.string()), input: s.optional(s.enum(['not_sent', 'sent', 'unknown'])), failure: s.optional(failureSchema), reconciled: s.optional(s.object({ running: s.optional(s.boolean()), pids: s.optional(s.array(s.number({ integer: true, min: 1 }))), problem: s.optional(s.string()) })) })
+
 export type EventBody =
   | (Common & VariantScope & (StepEvent | AssertionEvent))
   | (Common &
@@ -292,9 +348,11 @@ export type EventBody =
             target?: TargetInfo
             /** On a target's first browser, when its tests are spread over several: how many. */
             instances?: number
-            /** On each further browser of a target: its number, from 2. */
+            /** On each further browser of a target, or each further launch of an Electron app: its number, from 2. */
             instance?: number
           }
+        | (AttemptScope & { type: 'native.started'; sessionId: string; app: string; target: string; product: string; identity: NativeExecutionRecord })
+        | (AttemptScope & { type: 'native.ended'; sessionId: string; unknownOutcomes: NativeOutcomeRecord[] })
         | { type: 'app.started'; app: string; ready: string; pid: number; durationMs: number }
         | { type: 'app.reused'; app: string; ready: string }
         | { type: 'app.failed'; app: string; ready: string; failure: Failure }
@@ -309,6 +367,22 @@ export type EventBody =
             waitedMs: number
             /** The tests that held one of them when it asked, when it had to wait. */
             heldBy?: string[]
+          })
+        | (AttemptScope & {
+            type: 'resource.acquired'
+            /** The desktop, devices and data folders the attempt holds from now until it lets go, in the acquisition order. */
+            resources: LeasePart[]
+            /** How long it waited for them, which no budget of the test counts. 0 when they were free. */
+            waitedMs: number
+            /** The tests of this run that held one of them when it asked. */
+            heldBy?: string[]
+            /** How many of them another run in the same process held when it asked; those runs' tests are not named. */
+            heldElsewhere?: number
+          })
+        | (AttemptScope & {
+            type: 'lease.taken'
+            /** Everything the attempt holds from now until it lets go. */
+            lease: LeaseRecord
           })
         | {
             type: 'run.narrowed'
@@ -331,6 +405,14 @@ export type EventBody =
             limits: { perOwner: number; host: number }
           })
         | (AttemptScope & {
+            type: 'lease.expired'
+            lease: LeaseRecord
+            /** What did not come free within `releaseWithinMs`, which stays held until it is. */
+            held: LeasePart[]
+            /** What the runner gave back besides. */
+            released: LeasePart[]
+          })
+        | (AttemptScope & {
             type: 'session.released'
             owner: string
             sessions: number
@@ -349,12 +431,14 @@ export type EventBody =
           })
         | (AttemptScope & { type: 'preparation.finished'; preparation: PreparationRecord })
         | (AttemptScope & { type: 'cleanup.finished'; cleanup: CleanupRecord })
-        | (AttemptScope & { type: 'state.saved'; state: string; app: string; target: string })
-        | (AttemptScope & { type: 'state.restored'; state: string; app: string; target: string })
+        | (AttemptScope & { type: 'state.saved'; state: string; app: string; target: string; sessionId?: string })
+        | (AttemptScope & { type: 'state.restored'; state: string; app: string; target: string; sessionId?: string })
         | (ActionFields & { type: 'action.completed' })
         | (ActionFields & { type: 'action.failed'; failure: Failure })
         | (StepScope & {
             type: 'navigation'
+            /** The session of the page that navigated. Absent in runs recorded before navigations named it. */
+            sessionId?: string
             url: string
             title?: string
             cause?: NavigationCause
@@ -370,6 +454,7 @@ export type EventBody =
             pageUrl?: string
             pageTitle?: string
             observed: ObservedRecord
+            native?: { generation: number; selected: boolean | null; element?: string }
             durationMs: number
             /** How long the look waited for the page to change before it read it. Absent when it did not wait. */
             waitedMs?: number
@@ -384,8 +469,15 @@ export type EventBody =
             /** The session that captured it, and when the capture came back. Absent in runs recorded before sessions had ids. */
             sessionId?: string
             capturedAt?: string
+            /** When the capture came back on the run's clock, in whole milliseconds, as `elapsedMs` counts. */
+            capturedElapsedMs?: number
+            /** What took it. */
+            source?: CaptureSourceName
+            captureReference?: CaptureReference
+            /** The look id the parent gave the capture when it served it to the test file's process as a look. */
+            observationId?: string
           })
-        | (AttemptScope & { type: 'evidence.failed'; kind: 'screenshot'; reason: 'failure'; message: string; sessionId?: string })
+        | (AttemptScope & { type: 'evidence.failed'; kind: 'screenshot'; reason: 'failure'; message: string; sessionId?: string; source?: CaptureSourceName })
         /**
          * The start marker of one session's diagnostics capture: what it covers, its limits, and the policy the run
          * judges it by, when anything is strict or required. Written once capture has started, before the page's first
@@ -417,11 +509,20 @@ export type EventBody =
           })
         | {
             type: 'run.finished'
+            resultFacts?: { startedAt: string; finishedAt: string; namedApps?: true }
             status: RunStatus
             exitCode: ExitCode
             complete: boolean
             counts: Counts
             durationMs: number
+            failure?: Failure
+          }
+        | {
+            /** Final outcome after reporter shutdown; clocks and test facts remain in run.finished. */
+            type: 'run.outcome'
+            status: RunStatus
+            exitCode: ExitCode
+            complete: boolean
             failure?: Failure
           }
       ))
@@ -450,6 +551,7 @@ export const targetInfoSchema: Schema<TargetInfo> = s.object({
   emulation: s.optional(emulationSchema),
   device: s.optional(s.string()),
   proxy: s.optional(s.object({ server: s.string(), bypass: s.optional(s.array(s.string())) })),
+  electron: s.optional(s.object({ version: s.string(), chromium: s.string() })),
 })
 
 const collectedTestSchema: Schema<CollectedTest> = s.object({
@@ -468,6 +570,15 @@ const collectedTestSchema: Schema<CollectedTest> = s.object({
   locks: names,
 })
 
+const resourceKindSchema: Schema<ResourceKind> = s.enum(['lock', 'desktop', 'device', 'data-folder', 'sessions'])
+const leasePartSchema: Schema<LeasePart> = s.object({
+  kind: resourceKindSchema,
+  name: s.string(),
+  apps: s.optional(s.array(s.string())),
+  count: s.optional(s.number({ integer: true, min: 1 })),
+})
+const leaseRecordSchema: Schema<LeaseRecord> = s.object({ covers: s.array(leasePartSchema), takenAt: s.string(), releaseWithinMs: s.number({ integer: true, min: 1 }) })
+
 const origin = s.enum(['parent', 'child'])
 const common = { session: s.optional(s.string()) }
 const envelope = {
@@ -485,6 +596,7 @@ const attemptScope = { ...testScope, ...variantScope }
 const stepScope = { ...attemptScope, stepId: s.optional(s.string()) }
 const actionFields = {
   ...stepScope,
+  sessionId: s.optional(s.string()),
   command: actionKindSchema,
   locator: s.optional(locatorRecipeSchema),
   pageUrl: s.optional(s.string()),
@@ -519,13 +631,15 @@ const assertionFields = {
   pageUrl: s.optional(s.string()),
   pageTitle: s.optional(s.string()),
   observationId: s.optional(s.string()),
+  sessionId: s.optional(s.string()),
   soft: s.optional(s.literal(true)),
 }
-const sentAssertionFields = { ...assertionFields, check: s.optional(checkRecordSchema), sessionId: s.optional(s.string()) }
-const stateFields = { ...attemptScope, state: s.string(), app: s.string(), target: s.string() }
+const sentAssertionFields = { ...assertionFields, check: s.optional(checkRecordSchema) }
+const stateFields = { ...attemptScope, state: s.string(), app: s.string(), target: s.string(), sessionId: s.optional(s.string()) }
 const hostCheckFields = {
   ...attemptScope,
   session: s.string(),
+  sessionId: s.optional(s.string()),
   check: hostCheckRecordSchema,
   actual: hostCheckActualSchema,
   attempts: count,
@@ -601,6 +715,8 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     instances: s.optional(s.number({ integer: true, min: 2 })),
     instance: s.optional(s.number({ integer: true, min: 2 })),
   }),
+  s.object({ ...envelope, ...attemptScope, type: s.literal('native.started'), sessionId: s.string(), app: s.string(), target: s.string(), product: s.string(), identity: nativeExecutionIdentitySchema }),
+  s.object({ ...envelope, ...attemptScope, type: s.literal('native.ended'), sessionId: s.string(), unknownOutcomes: s.array(nativeOutcomeRecordSchema) }),
   s.object({ ...envelope, type: s.literal('app.started'), app: s.string(), ready: s.string(), pid: processId, durationMs: duration }),
   s.object({ ...envelope, type: s.literal('app.reused'), app: s.string(), ready: s.string() }),
   s.object({ ...envelope, type: s.literal('app.failed'), app: s.string(), ready: s.string(), failure: failureSchema }),
@@ -622,6 +738,16 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
   }),
   s.object({
     ...envelope,
+    type: s.literal('resource.acquired'),
+    ...attemptScope,
+    resources: s.array(leasePartSchema),
+    waitedMs: duration,
+    heldBy: names,
+    heldElsewhere: s.optional(s.number({ integer: true, min: 1 })),
+  }),
+  s.object({ ...envelope, type: s.literal('lease.taken'), ...attemptScope, lease: leaseRecordSchema }),
+  s.object({
+    ...envelope,
     type: s.literal('run.narrowed'),
     only: s.array(sourceLocationSchema),
     kept: count,
@@ -636,6 +762,14 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     waitedMs: duration,
     active: s.object({ owner: count, host: count }),
     limits: s.object({ perOwner: s.number({ integer: true, min: 1 }), host: s.number({ integer: true, min: 1 }) }),
+  }),
+  s.object({
+    ...envelope,
+    type: s.literal('lease.expired'),
+    ...attemptScope,
+    lease: leaseRecordSchema,
+    held: s.array(leasePartSchema),
+    released: s.array(leasePartSchema),
   }),
   s.object({
     ...envelope,
@@ -668,6 +802,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     ...envelope,
     type: s.literal('navigation'),
     ...stepScope,
+    sessionId: s.optional(s.string()),
     url: s.string(),
     title: s.optional(s.string()),
     cause: s.optional(navigationCauseSchema),
@@ -684,6 +819,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     pageUrl: s.optional(s.string()),
     pageTitle: s.optional(s.string()),
     observed: observedRecordSchema,
+    native: s.optional(s.object({ generation: count, selected: s.nullable(s.boolean()), element: s.optional(s.string()) })),
     durationMs: duration,
     waitedMs: s.optional(duration),
   }),
@@ -700,6 +836,10 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     reason: s.literal('failure'),
     sessionId: s.optional(s.string()),
     capturedAt: s.optional(s.string()),
+    capturedElapsedMs: s.optional(count),
+    source: s.optional(captureSourceNameSchema),
+    captureReference: s.optional(s.object({ instance: s.string(), generation: s.number({ integer: true, min: 0 }), observationId: s.string() })),
+    observationId: s.optional(s.string()),
   }),
   s.object({
     ...envelope,
@@ -709,6 +849,8 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     reason: s.literal('failure'),
     message: s.string(),
     sessionId: s.optional(s.string()),
+    source: s.optional(captureSourceNameSchema),
+
   }),
   s.object({
     ...envelope,
@@ -737,11 +879,20 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
   s.object({
     ...envelope,
     type: s.literal('run.finished'),
+    resultFacts: s.optional(s.object({ startedAt: s.string(), finishedAt: s.string(), namedApps: s.optional(s.literal(true)) })),
     status: runStatusSchema,
     exitCode: exitCodeSchema,
     complete: s.boolean(),
     counts: countsSchema,
     durationMs: duration,
+    failure: s.optional(failureSchema),
+  }),
+  s.object({
+    ...envelope,
+    type: s.literal('run.outcome'),
+    status: runStatusSchema,
+    exitCode: exitCodeSchema,
+    complete: s.boolean(),
     failure: s.optional(failureSchema),
   }),
 ])

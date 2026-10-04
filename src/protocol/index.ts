@@ -13,6 +13,7 @@ export type {
   ConsoleLevel,
   ConsoleOrigin,
   ConsoleRecord,
+  DiagnosticIdentity,
   DiagnosticKind,
   DiagnosticLimits,
   DiagnosticLine,
@@ -31,11 +32,11 @@ export type {
   NetworkRequestRecord,
   NetworkResponseRecord,
   PendingReason,
-  RecordIdentity,
   RuntimeErrorRecord,
   ScopeArea,
   StackFrame,
 } from './diagnostics.ts'
+export type { DiagnosticIdentity as RecordIdentity } from './diagnostics.ts'
 export { emulationSchema } from './emulation.ts'
 export { evaluationRecordSchema } from './evaluation.ts'
 export type {
@@ -90,6 +91,8 @@ export type {
   StartingState,
 } from './execution.ts'
 export type { EvidenceReference } from './evidence.ts'
+export { captureSourceNameSchema } from './identity.ts'
+export type { CaptureSourceName, RecordIdentity as SessionRecordIdentity } from './identity.ts'
 export { failureSchema, sourceLocationSchema, truncatedTextSchema } from './failures.ts'
 export type { Failure, FailureClass, FailureDetail, SourceLocation, TruncatedText } from './failures.ts'
 export type { HostCheckActual, HostCheckRecord, HostCheckResult, HostCheckStatus } from './host-check.ts'

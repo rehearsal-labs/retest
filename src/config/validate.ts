@@ -2,7 +2,7 @@ import type { Failure } from '../protocol/failures.ts'
 import type { Path } from '../protocol/schema.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
-import type { LoadedApp, LoadedConfig } from './loaded.ts'
+import type { LoadedSecret, LoadedApp, LoadedConfig } from './loaded.ts'
 import type { ConfigIssue } from './problems.ts'
 import { dirname, resolve } from 'node:path'
 import { readDiagnostics } from '../diagnostics/policy.ts'
@@ -49,7 +49,7 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
   const apps = readApps(value['apps'], { problems, folder: dirname(file) })
   const defaultApp = readDefaultApp(value['defaultApp'], declaredApps, problems)
   const runs = readRuns(value['runs'], { declaredApps, apps, problems })
-  const secrets = readSecrets(value['secrets'], value['secretOrigins'], problems)
+  const secrets = readDestinationSecrets(value['secrets'], value['secretOrigins'], problems, [...apps.values()].some((app) => [...app.targets.values()].some((target) => 'platform' in target)))
   if (value['testIds'] !== undefined) problems.check(testIdsSchema, value['testIds'], ['testIds'])
   const tags = readNames(value['tags'], ['tags'], problems)
   for (const [index, tag] of (tags ?? []).entries()) {
@@ -164,4 +164,20 @@ function withoutUndefined(value: unknown, seen: WeakSet<object>): unknown {
   if (!isPlainObject(value)) return value
   const kept = Object.entries(value).filter(([, entry]) => entry !== undefined)
   return Object.fromEntries(kept.map(([key, entry]) => [key, withoutUndefined(entry, seen)]))
+}
+
+// Native destinations are exact bundle identifiers. HTTP origins keep the existing web validation.
+function readDestinationSecrets(sources: unknown, origins: unknown, problems: Problems, nativeTargets: boolean): Map<string, LoadedSecret> {
+  if (!nativeTargets || !isPlainObject(origins)) return readSecrets(sources, origins, problems)
+  const native = new Map<string, string[]>()
+  const web: Record<string, unknown> = {}
+  for (const [name, listed] of Object.entries(origins)) {
+    if (!Array.isArray(listed)) { web[name] = listed; continue }
+    const bundles = listed.filter((entry): entry is string => typeof entry === 'string' && /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(entry))
+    native.set(name, bundles)
+    web[name] = listed.filter((entry) => !bundles.includes(entry))
+  }
+  const loaded = readSecrets(sources, web, problems)
+  for (const [name, secret] of loaded) loaded.set(name, { ...secret, origins: [...secret.origins, ...(native.get(name) ?? [])] })
+  return loaded
 }

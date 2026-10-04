@@ -1,3 +1,8 @@
+import type { NativeExecutionIdentity } from '../native/identity.ts'
+import type { NativeAppSession, NativeSessionOptions, NativeCapture, UnknownOutcome } from '../native/session.ts'
+import type { NativeUnknownOutcome } from '../native/interaction-session.ts'
+import type { FrameSource } from '../media/capture.ts'
+import type { RecordIdentity } from '../protocol/identity.ts'
 import type { DiagnosticCollection, DiagnosticSink } from '../diagnostics/observations.ts'
 import type { CommandResult, PageCommand } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
@@ -14,10 +19,10 @@ export type { TextQuery } from '../protocol/host-check.ts'
 // simulator or a desktop app. A session is one app's page or window in one attempt. The runner acquires a target's
 // runtime from the driver its kind needs, opens a session for each app before the test's first action, sends each
 // session bounded commands, and keeps what it observes. `OwnedBrowser` and `OwnedPage` are the web runtime and
-// session as the runner holds them; `WebRuntime` and `WebSession` add what every driver states. Only Chromium has a
-// driver: the native capabilities below are types that nothing implements yet.
+// session as the runner holds them; `WebRuntime` and `WebSession` add what every driver states. Chromium and native drivers
+// share this contract; the runner supplies the native interaction layer for native sessions.
 
-/** The kinds of target a session runs on. Only `web` has a driver, and only for the Chromium engine. */
+/** The kinds of target a session runs on. The first web engine is Chromium; native targets use their own executor. */
 export type TargetKind = 'web' | 'ios-simulator' | 'macos'
 
 /** The native kinds of target: an app on an iOS simulator, and an app on the Mac Retest runs on. */
@@ -27,7 +32,7 @@ export type NativeKind = Exclude<TargetKind, 'web'>
 export type WebEngine = 'chromium' | 'firefox' | 'webkit'
 
 /**
- * The drivers a target can need: one for each web engine and one for each native kind. Only `chromium` exists. The
+ * The drivers a target can need: one for each web engine and one for each native kind. The
  * runner asks the driver a target needs for its runtime, and no other: a target whose driver does not exist fails
  * setup by name, and no driver stands in for another.
  */
@@ -50,9 +55,9 @@ export type WebRuntimeIdentity = {
 /**
  * What a native session runs on: the app's bundle id and version as its bundle states them, the absolute path of
  * the app that was installed or launched, the processes it owns, and for an iOS simulator, its device and runtime
- * as the simulator names them. No driver reports one yet.
+ * as the simulator names them. The runner embeds the execution identity read from the real target.
  */
-export type NativeRuntimeIdentity =
+export type NativeRuntimeIdentity = { readonly execution?: NativeExecutionIdentity } & (
   | {
       readonly kind: 'ios-simulator'
       readonly bundleId: string
@@ -63,6 +68,8 @@ export type NativeRuntimeIdentity =
       readonly processIds: readonly number[]
     }
   | { readonly kind: 'macos'; readonly bundleId: string; readonly appVersion?: string; readonly appPath: string; readonly processIds: readonly number[] }
+
+)
 
 export type RuntimeIdentity = WebRuntimeIdentity | NativeRuntimeIdentity
 
@@ -115,7 +122,8 @@ export type ObservationScope = { readonly sessionId: string; readonly generation
  * How to launch a browser. `hiddenVariables` are environment variables its process must not see, such as the ones AI
  * judges' credentials are read from; the browser inherits every other variable of this process.
  */
-export type LaunchOptions = { executablePath: string; logFile: string; headless: boolean; hiddenVariables?: readonly string[] }
+export type OutputRedactor = { write(text: string): string; end(): string }
+export type LaunchOptions = { executablePath: string; logFile: string; headless: boolean; hiddenVariables?: readonly string[]; redact?: (text: string) => string; redactStream?: () => OutputRedactor }
 
 /**
  * A browser context's proxy: Chrome's proxy server, `scheme://host:port`, and its bypass rules. Loopback
@@ -175,7 +183,7 @@ export type ResolvedFill = { kind: 'fill'; locator: LocatorRecipe; value: string
  * A page command as the page runs it: every `fill` carries the text to type, and every other command, `select`,
  * `check`, `uncheck` and `scroll` among them, is as the test sent it.
  */
-export type BrowserCommand = Exclude<PageCommand, { kind: 'fill' }> | ResolvedFill
+export type BrowserCommand = Exclude<PageCommand, { kind: 'fill' | 'swipe' | 'nativeKeyboard' | 'nativeAlert' }> | ResolvedFill
 
 /**
  * How long `close` waits for a browser's process group to go once it has been killed. A killed process takes a
@@ -192,6 +200,8 @@ export const closeGraceMs: number = 1000
 export interface SessionRuntime {
   readonly identity: RuntimeIdentity
   readonly connected: boolean
+  /** Settles after stdout/stderr, every issued log write and the log close; present on runtimes that own output. */
+  readonly outputSettled?: Promise<void>
   /** Returns a function that removes the listener. */
   onDisconnect(listener: (reason: string) => void): () => void
   /** Ends the runtime and everything it started within `timeoutMs`. A second call waits for the first. */
@@ -209,6 +219,10 @@ export interface Session<Command> {
   dispatch(command: Command, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand>
   /** A PNG of what the session shows, within `timeoutMs`. Sends no input. */
   screenshot(timeoutMs: number): Promise<Uint8Array>
+  capture?(timeoutMs: number): Promise<{ readonly ok: true; readonly capture: SessionCapture } | { readonly ok: false; readonly failure: Failure }>
+  cancel?(reason: Failure): void
+  reconcile?(timeoutMs: number): Promise<readonly SessionUnknownOutcome[]>
+  readonly unknownOutcomes?: readonly SessionUnknownOutcome[]
   dispose(timeoutMs: number): Promise<void>
 }
 
@@ -263,6 +277,10 @@ export interface OwnedBrowser {
   /** The absolute path of the executable that was launched. */
   readonly executablePath: string
   readonly connected: boolean
+  /** Settles after every stdout/stderr log write and the log close, when this runtime owns output. */
+  readonly outputSettled?: Promise<void>
+  /** Process and output completion, independent of whether another cleanup step failed. */
+  readonly gone?: Promise<void>
   /** Opens a page in a new browser context within `timeoutMs`. */
   newPage(options: NewPageOptions, timeoutMs: number): Promise<OwnedPage>
   /** Returns a function that removes the listener. */
@@ -277,6 +295,7 @@ export interface OwnedBrowser {
 
 /** A web page as the runner holds it: its commands, navigation, storage state, a screenshot and disposal. */
 export interface OwnedPage extends NavigationCapability, StorageStateCapability {
+  identify?(session: SessionIdentity): void
   /**
    * Runs a command within `timeoutMs`, and answers as `Session.dispatch` does, without saying how far the input got.
    * Never throws for a page or application problem; the result carries the failure instead. Aborting `signal` stops
@@ -304,7 +323,10 @@ export interface OwnedPage extends NavigationCapability, StorageStateCapability 
 }
 
 /** A web session: the shared commands, with navigation and storage state. A Chromium page is one. */
-export interface WebSession extends Session<BrowserCommand>, OwnedPage {}
+export interface WebSession extends Session<BrowserCommand>, OwnedPage {
+  identify?(session: SessionIdentity): void
+  frameSource?(identity: RecordIdentity): FrameSource
+}
 
 /**
  * A web runtime: a browser whose every session opens in a new context of its own, with its storage state, proxy and
@@ -326,6 +348,11 @@ export function webRuntimeIdentity(browser: Pick<OwnedBrowser, 'product' | 'vers
 }
 
 /** A native app build to install or launch: the absolute path of its app bundle. */
+export type LaunchSpec = { readonly arguments: readonly string[]; readonly environment: Readonly<Record<string, string>> }
+
+export type SessionCapture = NativeCapture | { readonly png: Uint8Array; readonly source: 'chromium'; readonly reference: { readonly sessionId: string }; readonly capturedAt: string }
+export type SessionUnknownOutcome = UnknownOutcome | NativeUnknownOutcome
+
 export type AppBuild = { readonly appPath: string }
 
 /** Where a native app is: not running, or running in the background or in the foreground. */
@@ -349,7 +376,7 @@ export type RequestResult = { readonly ok: true } | { readonly ok: false; readon
 export type DispatchedRequest = { readonly result: RequestResult; readonly input: InputDispatch }
 
 /** Where an app is, or the failure that says why it could not be read. */
-export type AppStateReading = { readonly ok: true; readonly state: AppState } | { readonly ok: false; readonly failure: Failure }
+export type AppStateReading = { readonly ok: true; readonly state: AppState; readonly endedUnexpectedly?: boolean } | { readonly ok: false; readonly failure: Failure }
 
 /**
  * An app's lifecycle, a native capability: install a build, launch the app, bring it to the front, terminate it and
@@ -360,8 +387,8 @@ export type AppStateReading = { readonly ok: true; readonly state: AppState } | 
  */
 export interface AppLifecycleCapability {
   readonly resetPolicy: ResetPolicy
-  install(build: AppBuild, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
-  launch(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  install?(build: AppBuild, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  launch(timeoutMs: number, signal?: AbortSignal, spec?: LaunchSpec): Promise<DispatchedRequest>
   activate(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
   terminate(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
   /** Sends nothing to the app. */
@@ -373,12 +400,18 @@ export interface GestureCapability {
   gesture(gesture: Gesture, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
 }
 
-/** A native session: the shared commands, its app's lifecycle and gestures. No driver implements one yet. */
-export interface NativeSession<Command> extends Session<Command>, AppLifecycleCapability, GestureCapability {}
+/** A native session: commands, lifecycle, gestures, capture and its unresolved action outcomes. */
+export interface NativeSession<Command> extends Session<Command>, AppLifecycleCapability, GestureCapability {
+  capture(timeoutMs: number): Promise<{ readonly ok: true; readonly capture: NativeCapture } | { readonly ok: false; readonly failure: Failure }>
+  cancel(reason: Failure): void
+  reconcile(timeoutMs: number): Promise<readonly SessionUnknownOutcome[]>
+  readonly unknownOutcomes: readonly SessionUnknownOutcome[]
+}
 
-/** What native sessions open in: a simulator, or the Mac Retest runs on. No driver implements one yet. */
+/** What native sessions open in: a simulator, or the Mac Retest runs on. */
 export interface NativeRuntime extends SessionRuntime {
   readonly identity: NativeRuntimeIdentity
+  openSession(options: NativeSessionOptions, timeoutMs: number, signal?: AbortSignal): Promise<{ readonly ok: true; readonly session: NativeAppSession } | { readonly ok: false; readonly failure: Failure }>
 }
 
 /** Thrown when a browser cannot be launched. The message names the problem. */
@@ -386,8 +419,8 @@ export class LaunchError extends Error {
   override readonly name = 'LaunchError'
   readonly failure: Failure
 
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: ErrorOptions & { failureClass?: 'setup_failed' | 'cleanup_failed' }) {
     super(message, options)
-    this.failure = { class: 'setup_failed', message }
+    this.failure = { class: options?.failureClass ?? 'setup_failed', message }
   }
 }

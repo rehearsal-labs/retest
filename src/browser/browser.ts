@@ -37,10 +37,13 @@ export class ChromiumBrowser implements WebRuntime {
   readonly userAgent: string
   readonly pid: number
   readonly executablePath: string
+  readonly outputSettled: Promise<void>
+  readonly gone: Promise<void>
   readonly #process: ChromiumProcess
   readonly #connection: CdpConnection
   readonly #onListenerError: (error: unknown) => void
   readonly #disconnects: Listeners<string>
+  readonly #cleanupProblems: string[] = []
   #disconnectReason: string | undefined
   #closeRequested = false
   #closing: Promise<void> | undefined
@@ -51,6 +54,8 @@ export class ChromiumBrowser implements WebRuntime {
     this.userAgent = options.version.userAgent
     this.pid = options.process.pid
     this.executablePath = options.executablePath
+    this.outputSettled = options.process.outputSettled
+    this.gone = options.process.gone()
     this.#process = options.process
     this.#connection = options.connection
     this.#onListenerError = options.onListenerError
@@ -58,8 +63,10 @@ export class ChromiumBrowser implements WebRuntime {
     this.#connection.onDisconnect((reason) => this.#disconnected(reason))
     if (this.#connection.closeReason !== undefined) this.#disconnected(this.#connection.closeReason)
     void this.#process.exited.then((exit) => {
-      this.#disconnected(`the browser process ended with ${describeExit(exit)}`)
-      this.#connection.close()
+      try { this.#disconnected(`the browser process ended with ${describeExit(exit)}`) }
+      catch (error) { this.#cleanupProblems.push(`Could not report the browser's process exit: ${errorMessage(error)}`) }
+      try { this.#connection.close() }
+      catch (error) { this.#cleanupProblems.push(`Could not close the browser's debugging pipe: ${errorMessage(error)}`) }
     })
   }
 
@@ -123,6 +130,7 @@ export class ChromiumBrowser implements WebRuntime {
   // `closeGraceMs`, and the profile removed.
   async #close(timeoutMs: number): Promise<void> {
     this.#closeRequested = true
+    this.#process.recordDescendants()
     const deadline = new Deadline(timeoutMs)
     if (this.connected) {
       this.#connection.send('Browser.close', undefined, sendOptions(deadline)).catch(() => {
@@ -130,7 +138,9 @@ export class ChromiumBrowser implements WebRuntime {
       })
     }
     const problems = await this.#process.stop(0)
-    this.#connection.close()
+    try { this.#connection.close() }
+    catch (error) { problems.push(`Could not close the browser's debugging pipe: ${errorMessage(error)}`) }
+    problems.push(...this.#cleanupProblems)
     if (problems.length > 0) throw new BrowserError({ class: 'cleanup_failed', message: problems.join(' ') })
   }
 

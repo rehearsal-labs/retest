@@ -31,10 +31,11 @@ describe('test files on workers', () => {
     assert.equal(record.browsers.length, 2)
     assert.ok(record.browsers.every((browser) => browser.closed && browser.pages.length > 0), 'both browsers ran tests and were closed')
     assert.equal(eventsOfType(record.events, 'run.started')[0]?.options.browsers, 2)
-    assert.deepEqual(eventsOfType(record.events, 'browser.started').map((event) => [event.instances, event.instance]), [
-      [2, undefined],
-      [undefined, 2],
-    ])
+    // Each worker's browser launches once its test holds its lease, so either may start first: the first browser of the
+    // target says how many there are, and the other its number, in whichever order they started.
+    const browsers = eventsOfType(record.events, 'browser.started').map((event) => [event.instances, event.instance])
+    assert.equal(browsers.length, 2)
+    assert.deepEqual(new Set(browsers.map((pair) => JSON.stringify(pair))), new Set([JSON.stringify([2, undefined]), JSON.stringify([undefined, 2])]))
     assert.deepEqual(record.result.browser, { product: 'FakeChromium', version: '140.0.0.0', executablePath: '/fake/chromium' })
   })
 

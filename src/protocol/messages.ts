@@ -61,6 +61,8 @@ export type ChildMessage =
   | { type: 'collection-failed'; failure: Failure }
   | {
       type: 'command'
+      testId: string
+      attemptId: string
       id: number
       app: string
       command: PageCommand
@@ -71,7 +73,7 @@ export type ChildMessage =
     }
   | { type: 'event'; event: ChildEvent }
   /** `test.evaluate`: the check the parent runs and judges itself, never the evidence or a verdict. */
-  | { type: 'evaluate'; id: number; call: EvaluationCall; location?: SourceLocation; stepId?: string }
+  | { type: 'evaluate'; testId: string; attemptId: string; id: number; call: EvaluationCall; location?: SourceLocation; stepId?: string }
   | {
       type: 'test-finished'
       testId: string
@@ -123,6 +125,8 @@ export const childMessageSchema: Schema<ChildMessage> = s.discriminatedUnion('ty
   s.object({ type: s.literal('collection-failed'), failure: failureSchema }),
   s.object({
     type: s.literal('command'),
+    testId: s.string(),
+    attemptId: s.string(),
     id: count,
     app: s.string(),
     command: pageCommandSchema,
@@ -132,7 +136,7 @@ export const childMessageSchema: Schema<ChildMessage> = s.discriminatedUnion('ty
     callTimeoutMs: s.optional(s.number({ integer: true, min: 1 })),
   }),
   s.object({ type: s.literal('event'), event: childEventSchema }),
-  s.object({ type: s.literal('evaluate'), id: count, call: evaluationCallSchema, location: s.optional(sourceLocationSchema), stepId: s.optional(s.string()) }),
+  s.object({ type: s.literal('evaluate'), testId: s.string(), attemptId: s.string(), id: count, call: evaluationCallSchema, location: s.optional(sourceLocationSchema), stepId: s.optional(s.string()) }),
   s.object({
     type: s.literal('test-finished'),
     testId: s.string(),

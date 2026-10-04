@@ -199,7 +199,7 @@ describe('validateConfig: what it rejects', () => {
     assert.deepEqual(problems({ apps: { web: { targets: [] } } }), ['apps.web.targets: expected object, received array'])
     assert.deepEqual(problems({ apps: { web: { targets: { chromium: chromium() }, target: 1 } } }), ['apps.web.target: unknown key'])
     assert.deepEqual(problems({ apps: { web: { browser: 'safari' } } }), [
-      'apps.web.browser: expected one of "chromium", "chrome", "edge", "firefox", "webkit", received "safari"',
+      'apps.web.browser: expected one of "chromium", "chrome", "edge", "firefox", "webkit", "electron", received "safari"',
     ])
     assert.deepEqual(problems({ apps: { web: { baseUrl: 'http://127.0.0.1:4173' } } }), ['apps.web.browser: missing required key'])
     assert.deepEqual(problems({ apps: { web: { targets: { beta: { browser: 'chrome', channel: 'nightly' } } } } }), [
@@ -304,7 +304,7 @@ describe('validateConfig: what it rejects', () => {
       'defaultApp: expected one of "web", "phone", received "admin"',
     ])
     assert.deepEqual(problems({ apps: { web: { browser: 'safari' } }, defaultApp: 'web' }), [
-      'apps.web.browser: expected one of "chromium", "chrome", "edge", "firefox", "webkit", received "safari"',
+      'apps.web.browser: expected one of "chromium", "chrome", "edge", "firefox", "webkit", "electron", received "safari"',
     ])
   })
 

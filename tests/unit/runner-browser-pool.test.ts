@@ -3,6 +3,8 @@ import type { BrowserPoolOptions, StartedTarget } from '../../src/runner/browser
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { LaunchError } from '../../src/browser/contract.ts'
+import { BrowserError } from '../../src/browser/browser-error.ts'
+import { ProcessLaunchError } from '../../src/browser/chromium-process.ts'
 import { BrowserPool } from '../../src/runner/browser-pool.ts'
 import { fakeLauncher } from '../support/fake-browser.ts'
 import { fakeExecutable } from '../support/project.ts'
@@ -37,6 +39,65 @@ function pool(overrides: Partial<BrowserPoolOptions> = {}): { pool: BrowserPool;
 }
 
 describe('BrowserPool', () => {
+  test('a pipe disconnect holds the browser lease until its close succeeds', async () => {
+    const { pool: browsers, launched } = pool()
+    const ready = await browsers.ensure(appOf('web', stable), stable)
+    assert.ok(ready.ok)
+    let free = false
+    const proof = browsers.whenFree(ready.value.browser).then(() => { free = true })
+    launched.browsers[0]?.disconnect('the pipe closed before the process stopped')
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(free, false)
+    await browsers.close()
+    await proof
+    assert.equal(free, true)
+  })
+
+  test('a failed browser cleanup is reported and its free proof stays pending', async () => {
+    const { pool: browsers, launched } = pool()
+    const ready = await browsers.ensure(appOf('web', stable), stable)
+    assert.ok(ready.ok)
+    const browser = launched.browsers[0]
+    assert.ok(browser !== undefined)
+    browser.close = async () => { throw new BrowserError({ class: 'cleanup_failed', message: 'The owned process could not be stopped.' }) }
+    let free = false
+    void browsers.whenFree(browser).then(() => { free = true })
+    await assert.rejects(browsers.close(), (error: unknown) => error instanceof BrowserError && error.failure.class === 'cleanup_failed')
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(free, false)
+  })
+
+  test('a runtime process proof frees the lease even when closing reports another cleanup failure', async () => {
+    const { pool: browsers, launched } = pool()
+    const ready = await browsers.ensure(appOf('web', stable), stable)
+    assert.ok(ready.ok)
+    const browser = launched.browsers[0]
+    assert.ok(browser !== undefined)
+    const gone = Promise.withResolvers<void>()
+    Object.defineProperty(browser, 'gone', { value: gone.promise })
+    browser.close = async () => { throw new BrowserError({ class: 'cleanup_failed', message: 'The process stopped but closing its log failed.' }) }
+    let free = false
+    const proof = browsers.whenFree(browser).then(() => { free = true })
+    await assert.rejects(browsers.close(), /closing its log failed/)
+    assert.equal(free, false)
+    gone.resolve()
+    await proof
+    assert.equal(free, true)
+  })
+
+  test('a rejected Chromium launch stays in cleanup while its owned processes remain', async () => {
+    const gone = Promise.withResolvers<void>()
+    const { pool: browsers } = pool({
+      launch: async () => { throw new ProcessLaunchError('The launch failed and its process remained.', gone.promise, { failureClass: 'cleanup_failed' }) },
+      timeouts: { setup: 100, cleanup: 10 },
+    })
+    const ready = await browsers.ensure(appOf('web', stable), stable)
+    assert.ok(!ready.ok)
+    assert.equal(ready.failure.class, 'cleanup_failed')
+    await assert.rejects(browsers.close(), /abandoned browser or Electron launch did not finish cleanup/)
+    gone.resolve()
+  })
+
   test('launches each distinct target once, and tells of each app target the first time it is used', async () => {
     const { pool: browsers, started, launched } = pool()
     const web = appOf('web', stable, beta)

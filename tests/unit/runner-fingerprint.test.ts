@@ -162,6 +162,24 @@ describe('the configuration fingerprint', () => {
     assert.equal(fingerprint(elsewhere), base, 'where the app and the browser are does not change how the test runs')
   })
 
+  test("an Electron app's arguments are part of it, and where its binary, its app and its data folder are is not", () => {
+    const desktop = { browser: 'electron', executablePath: '/opt/Electron.app/Contents/MacOS/Electron', appPath: 'desktop', args: ['--tasks=3'] }
+    const withDesktop = (target: Record<string, unknown>) => ({ apps: { desktop: target }, locks: ['records'] })
+    const alone = { test: planned({ apps: ['desktop'] }) }
+    const base = fingerprint(withDesktop(desktop), alone)
+    const settings = executionSettings(settingsFor(withDesktop(desktop), alone))
+    assert.deepEqual(settings.apps, { desktop: { target: 'electron', kind: 'web', browser: 'electron', args: { count: 1, sha256: sha256Hex(canonicalJson(['--tasks=3'])) } } })
+    // An argument may carry what nobody should read, so the record keeps its count and the list's hash, never its text.
+    const token = { ...desktop, args: ['--token=tok-5f2e9a1c'] }
+    assert.equal(JSON.stringify(configurationRecord(executionSettings(settingsFor(withDesktop(token), alone)), keep)).includes('tok-5f2e9a1c'), false)
+    assert.notEqual(fingerprint(withDesktop({ ...desktop, args: ['--tasks=3', '--theme=dark'] }), alone), base, 'an added argument')
+    assert.notEqual(fingerprint(withDesktop({ ...desktop, args: ['--tasks=4'] }), alone), base, 'a changed argument')
+    assert.notEqual(fingerprint(withDesktop({ ...desktop, args: [] }), alone), base, 'no arguments')
+    // A named data folder changes where the app starts from, which the attempt's starting state records.
+    const moved = { ...desktop, executablePath: '/elsewhere/Electron', appPath: '../desktop', userDataDir: '.data/desktop' }
+    assert.equal(fingerprint(withDesktop(moved), alone), base, 'where the binary, the app and its data are does not change how the test runs')
+  })
+
   test('holds only the judges the test’s own host AI checks name, so another judge or a secret it never types changes nothing', () => {
     const otherJudge = { ...baseConfig, evaluation: { ...baseConfig.evaluation, judges: { ...judgesConfig, words: { ...judgesConfig.words, options: { model: 'words-b' } } } } }
     assert.equal(fingerprint(otherJudge), fingerprint(baseConfig), 'a test with no host AI check is not held to any judge')

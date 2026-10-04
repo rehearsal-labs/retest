@@ -389,6 +389,14 @@ function appSettings(target: LoadedTarget, headless: boolean): AppSettings {
       ? { target: target.name, kind: 'ios-simulator', simulator: { device: target.device, runtime: target.runtime } }
       : { target: target.name, kind: 'macos' }
   }
+  // An Electron app's binary and app folder say where things are on this machine, as a browser's executable does; the
+  // release it runs is in `sessions`. Its arguments change how it runs, and may hold what nobody should read, so they
+  // are kept as their count and the SHA-256 of the list, never their text. It shows its own windows, so it has no
+  // headless setting.
+  if (target.browser === 'electron') {
+    const args = target.args.length === 0 ? {} : { args: { count: target.args.length, sha256: sha256Hex(canonicalJson(target.args)) } }
+    return { target: target.name, kind: 'web', browser: 'electron', ...args }
+  }
   const { emulate, proxy } = target
   return {
     target: target.name,

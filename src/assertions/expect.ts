@@ -1,6 +1,6 @@
 import type { LocatorTarget, PageTarget } from '../api/app-page.ts'
 import type { Scope } from '../api/context.ts'
-import type { Locator, NativeLocator, Page } from '../api/page.ts'
+import type { ElectronPage, Locator, NativeLocator, Page } from '../api/page.ts'
 import type { RetestTypeError } from '../config/register.ts'
 import type { ExpectedText, LocatorCheckRecord, PageCheckRecord } from '../protocol/locator-checks.ts'
 import type { ValueCheck } from './value-checks.ts'
@@ -26,6 +26,7 @@ const misplaced = {
   toMatch: 'toMatch is for values. Use toHaveText on a locator.',
   toBeVisible: 'toBeVisible is for locators. Use toBe on a value.',
   toBeHidden: 'toBeHidden is for locators. Use toBe on a value.',
+  toBeSelected: 'toBeSelected is for native locators. Use toBe on a value.',
   toBeChecked: 'toBeChecked is for locators. Use toBe on a value.',
   toBeEnabled: 'toBeEnabled is for locators. Use toBe on a value.',
   toBeDisabled: 'toBeDisabled is for locators. Use toBe on a value.',
@@ -128,6 +129,15 @@ export interface LocatorAssertions extends LocatorMatchers {
 }
 
 /** A locator's matchers after `.not`. */
+export interface NativeLocatorAssertions extends LocatorMatchers {
+  toBeSelected(options?: AssertionOptions): Promise<void>
+  readonly not: NativeNegatedLocatorAssertions
+}
+export interface NativeNegatedLocatorAssertions extends LocatorMatchers {
+  toBeSelected(options?: AssertionOptions): Promise<void>
+  readonly not: RetestTypeError<Misplaced['twice']>
+}
+
 export interface NegatedLocatorAssertions extends LocatorMatchers {
   readonly not: RetestTypeError<Misplaced['twice']>
 }
@@ -226,9 +236,11 @@ type IsAny<T> = 0 extends 1 & T ? true : false
 export type Assertions<Actual> =
   IsAny<Actual> extends true
     ? RetestTypeError<'expect() received a value typed any. Write expect<T>(value) with its type.'>
-    : [Actual] extends [Locator | NativeLocator]
+    : [Actual] extends [NativeLocator]
+      ? NativeLocatorAssertions
+      : [Actual] extends [Locator]
       ? LocatorAssertions
-      : [Actual] extends [Page]
+      : [Actual] extends [Page | ElectronPage]
         ? PageAssertions
       : [Actual] extends [PromiseLike<unknown>]
         ? RetestTypeError<'Await the promise before expect().'>
@@ -338,6 +350,8 @@ class LocatorExpectation {
   toBeHidden(options?: unknown): Promise<void> {
     return this.#assert({ matcher: 'toBeHidden' }, options)
   }
+
+  toBeSelected(options?: unknown): Promise<void> { return this.#assert({ matcher: 'toBeSelected' }, options) }
 
   toBeChecked(options?: unknown): Promise<void> {
     return this.#assert({ matcher: 'toBeChecked' }, options)
@@ -499,6 +513,8 @@ class ValueExpectation {
   toBeHidden(): never {
     throw misuse(misplaced.toBeHidden, this.#scope.run)
   }
+
+  toBeSelected(): never { throw misuse(misplaced.toBeSelected, this.#scope.run) }
 
   toBeChecked(): never {
     throw misuse(misplaced.toBeChecked, this.#scope.run)

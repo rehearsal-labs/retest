@@ -2,7 +2,7 @@ export type { AppHandle, Apps, TestBody, TestContext } from './api/apps.ts'
 export type { CallOptions } from './api/call-options.ts'
 export type { EvaluateCheck, EvaluateOptions, EvidenceFor, RecordingEvidence, ScreenshotEvidence, TextEvidence } from './api/evaluate.ts'
 export type { KeyArgument } from './api/key-argument.ts'
-export type { Finders, Keyboard, Locator, NativeLocator, NativePage, OptionChoice, Page, RoleOptions, ScrollDelta, TextOptions } from './api/page.ts'
+export type { ElectronPage, Finders, Keyboard, Locator, NativeLocator, NativePage, OptionChoice, Page, RoleOptions, ScrollDelta, TextOptions } from './api/page.ts'
 export { secret } from './api/secret.ts'
 export type { Secret } from './api/secret.ts'
 export { test } from './api/test.ts'
@@ -23,7 +23,7 @@ export type {
   PollOptions,
   ValueAssertions,
 } from './assertions/expect.ts'
-export { app, chrome, chromium, defineConfig, edge, env } from './config/define.ts'
+export { app, chrome, chromium, defineConfig, edge, electron, env } from './config/define.ts'
 export type { DeviceName } from './config/devices.ts'
 export type {
   AppKind,
@@ -46,6 +46,8 @@ export type {
   Channel,
   ChromiumOptions,
   CustomEmulation,
+  ElectronOptions,
+  ElectronTarget,
   EvaluationConfig,
   FirefoxTarget,
   IosSimulatorTarget,

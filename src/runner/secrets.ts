@@ -19,6 +19,11 @@ export type FillContext = {
   pageUrl: string | undefined
   /** The origins of the base URLs of the test's apps. */
   appOrigins: readonly string[]
+  /**
+   * The bundle id of the native app the fill types into, as the installed app's Info.plist names it. A native app has
+   * no address, so this id is its destination, and `pageUrl` and `appOrigins` play no part.
+   */
+  bundleId?: string
   timeoutMs: number
   /** Aborted, with a `Failure` as its reason, when the fill is stopped, as when its test is. */
   signal: AbortSignal
@@ -77,7 +82,8 @@ export function secretVariables(secrets: ReadonlyMap<string, LoadedSecret>): str
  * Turns a secret fill into the text the page types. The page's origin is checked first, so a secret is never
  * read, let alone typed, for a page it does not belong to: the origins of the test's apps' base URLs, and the
  * ones `secretOrigins` lists for it. The page checks its origin again as it types, since a page can move after
- * its last navigation was seen, so the fill carries the same origins. Every value read is taught to the
+ * its last navigation was seen, so the fill carries the same origins. A native app's destination is its bundle
+ * id, which `secretOrigins` must name exactly; no base URL stands for it. Every value read is taught to the
  * redactor before it goes anywhere.
  */
 export class SecretFiller {
@@ -96,12 +102,24 @@ export class SecretFiller {
     const name = command.value.secret
     const secret = this.#secrets.get(name)
     if (secret === undefined) return refused('usage', `secret(${JSON.stringify(name)}) is not one of the config's secrets.`)
+    if (context.bundleId !== undefined) return this.#resolveNative(command, secret, context.bundleId, context)
     const allowedOrigins = [...new Set([...context.appOrigins, ...(this.#declared.get(name)?.origins ?? [])])]
     const origin = originOf(context.pageUrl)
     if (origin === undefined || !allowedOrigins.includes(origin)) return refused('not_actionable', wrongOrigin(name, origin, allowedOrigins), { origin: origin ?? null })
     const value = await this.#read(name, secret, context)
     if (typeof value !== 'string') return { ok: false, failure: value }
     return { ok: true, command: { kind: 'fill', locator: command.locator, value, secret: name, allowedOrigins } }
+  }
+
+  // The bundle id is checked before the value is read, as an origin is. The fill carries the one id it was checked
+  // against, so the native page can refuse a fill that reaches another app.
+  async #resolveNative(command: SecretFill, secret: ResolvedSecret, bundleId: string, context: FillContext): Promise<FillResolution> {
+    const name = command.value.secret
+    const declared = this.#declared.get(name)?.origins ?? []
+    if (!declared.includes(bundleId)) return refused('not_actionable', wrongBundle(name, bundleId, declared), { bundleId })
+    const value = await this.#read(name, secret, context)
+    if (typeof value !== 'string') return { ok: false, failure: value }
+    return { ok: true, command: { kind: 'fill', locator: command.locator, value, secret: name, allowedOrigins: [bundleId] } }
   }
 
   // A function source is told, through its signal, when Retest stops waiting for its value: the fill's time ran
@@ -161,4 +179,11 @@ function wrongOrigin(name: string, origin: string | undefined, allowed: readonly
   const where = origin === undefined ? 'the page has not opened a web address yet' : `the page is on ${origin}`
   const permitted = allowed.length === 0 ? 'no origin, since no app it uses has a base URL' : allowed.join(', ')
   return `Retest did not type the secret ${JSON.stringify(name)}: ${where}, and it may be typed only on ${permitted}. Add the origin to secretOrigins if it belongs there.`
+}
+
+// Only the bundle ids among a secret's destinations are named: a web origin can never be a native app's.
+function wrongBundle(name: string, bundleId: string, declared: readonly string[]): string {
+  const bundles = declared.filter((destination) => !destination.includes('://'))
+  const permitted = bundles.length === 0 ? 'no native app, since secretOrigins names no bundle id for it' : bundles.join(', ')
+  return `Retest did not type the secret ${JSON.stringify(name)}: the app is ${bundleId}, and it may be typed only into ${permitted}. Add the app's bundle id to secretOrigins if it belongs there.`
 }

@@ -97,7 +97,29 @@ export type WebTargetConfig = ChromiumTarget | ChromeTarget | EdgeTarget | Firef
  * Retest has no iOS driver yet: the config accepts the target, and a run refuses every test that needs it before
  * starting anything for that test.
  */
-export type IosSimulatorTarget = {
+export type NativeLaunchSettings = {
+  readonly arguments?: readonly string[] | undefined
+  readonly environment?: Readonly<Record<string, string>> | undefined
+}
+
+/**
+ * Where a native app's diagnostics come from, the same for each of its runs. `logs: 'stdout'`, the default, keeps the
+ * app's standard output: Retest launches the app itself with a pipe on that output, through `simctl launch --console`
+ * on a simulator and at the app's executable on macOS. `logs: 'none'` leaves the launch to the executor and keeps no
+ * app log. `network` names a file of request metadata the app's backend writes, one versioned JSON line per request,
+ * relative to the config's folder, and the client name its records give this app: Retest reads only the lines appended
+ * while a test runs, and only that client's. Without `network`, the app has no network source. A file and client
+ * belong to one app: the records cannot tell two apps, or two simulators that run at once, apart.
+ */
+export type NativeAppDiagnostics = {
+  readonly logs?: 'stdout' | 'none' | undefined
+  readonly network?: { readonly path: string; readonly client: 'ios' | 'macos' } | undefined
+}
+
+/** What every native target takes besides its platform's own keys. */
+export type NativeTargetSettings = NativeLaunchSettings & { readonly diagnostics?: NativeAppDiagnostics | undefined }
+
+export type IosSimulatorTarget = NativeTargetSettings & {
   readonly platform: 'ios-simulator'
   readonly appPath: string
   readonly device: string
@@ -109,7 +131,7 @@ export type IosSimulatorTarget = {
  * macOS driver yet: the config accepts the target, and a run refuses every test that needs it before starting
  * anything for that test.
  */
-export type MacosTarget = { readonly platform: 'macos'; readonly appPath: string }
+export type MacosTarget = NativeTargetSettings & { readonly platform: 'macos'; readonly appPath: string }
 
 /** A native app's target: a native app has no address, so it never takes `baseUrl`. */
 export type NativeTargetConfig = IosSimulatorTarget | MacosTarget
@@ -118,10 +140,28 @@ export type NativeTargetConfig = IosSimulatorTarget | MacosTarget
 export type NativePlatform = NativeTargetConfig['platform']
 
 /**
- * A target: a browser, or a native app. The targets of one app are all browsers, all iOS simulators or all macOS
- * apps, since a test's handle on the app offers what its targets can do.
+ * An Electron app. `executablePath` is the Electron binary, inside Electron.app on macOS, and `appPath` the app's
+ * folder or its entry file; both are relative to the config's folder. `args` reach the app after its path.
+ * `userDataDir`, relative to the config's folder, is where the app keeps its data from one launch to the next, and no
+ * other Electron target may name the same folder; without it, each launch gets a new folder in the temporary folder,
+ * removed when the app quits. Retest launches the app afresh for each test and quits it when the test ends, and the
+ * first window the app opens is the test's page. A secret never goes in `args`: give it through `secrets`.
  */
-export type TargetConfig = WebTargetConfig | NativeTargetConfig
+export type ElectronOptions = {
+  readonly executablePath: string
+  readonly appPath: string
+  readonly args?: readonly string[] | undefined
+  readonly userDataDir?: string | undefined
+}
+
+/** An Electron app's target. It has no address, so it never takes `baseUrl`, and it emulates no screen. */
+export type ElectronTarget = ElectronOptions & { readonly browser: 'electron' }
+
+/**
+ * A target: a browser, an Electron app or a native app. The targets of one app are all browsers, all Electron apps,
+ * all iOS simulators or all macOS apps, since a test's handle on the app offers what its targets can do.
+ */
+export type TargetConfig = WebTargetConfig | ElectronTarget | NativeTargetConfig
 
 type WithoutAppSettings = { readonly baseUrl?: undefined; readonly start?: undefined }
 
@@ -132,6 +172,9 @@ export type AppConfig = AppSettings & {
 
 /** A native target that stands for an app of its own: it may carry the app's `start`, and never a `baseUrl`. */
 type NativeApp = NativeTargetConfig & { readonly baseUrl?: undefined; readonly start?: StartCommand | undefined }
+
+/** An Electron target that stands for an app of its own: it may carry the app's `start`, and never a `baseUrl`. */
+type ElectronApp = ElectronTarget & { readonly baseUrl?: undefined; readonly start?: StartCommand | undefined }
 
 /** A secret read from the parent's environment, once, when the run starts. */
 export type EnvSecret = { readonly env: string }
@@ -206,7 +249,8 @@ export type DiagnosticsConfig = {
  * The default export of `retest.config.ts`.
  *
  * - `apps`: each app is `app({ targets })`, or a target on its own, which may carry the app's settings. A target is
- *   a browser, or a native app: `{ platform: 'ios-simulator', ... }` or `{ platform: 'macos', ... }`.
+ *   a browser, an Electron app, `electron({ executablePath, appPath })`, or a native app:
+ *   `{ platform: 'ios-simulator', ... }` or `{ platform: 'macos', ... }`.
  * - `defaultApp`: the app a test without `apps` uses; the only app, when there is one.
  * - `runs`: app to target name, one entry per combination a test with several multi-target apps runs.
  * - `secrets` and `secretOrigins`: a secret may be typed only on the origins of the test's apps' base URLs,
@@ -218,7 +262,7 @@ export type DiagnosticsConfig = {
  *   nothing in it fails a test.
  */
 export type RetestConfig = {
-  readonly apps: Readonly<Record<string, AppConfig | (WebTargetConfig & AppSettings) | NativeApp>>
+  readonly apps: Readonly<Record<string, AppConfig | (WebTargetConfig & AppSettings) | ElectronApp | NativeApp>>
   readonly defaultApp?: string | undefined
   readonly runs?: readonly Readonly<Record<string, string>>[] | undefined
   readonly secrets?: Readonly<Record<string, SecretSource>> | undefined

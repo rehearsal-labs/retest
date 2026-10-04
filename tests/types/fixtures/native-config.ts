@@ -16,3 +16,7 @@ export const unknownPlatform = defineConfig({ apps: { phone: { platform: 'androi
 export const withoutDevice = defineConfig({ apps: { phone: { platform: 'ios-simulator', appPath: 'build/Tasks.app', runtime: '26.0' } } }) // type-error TS2322 Property 'device' is missing
 export const nativeAddress = defineConfig({ apps: { mac: { platform: 'macos', appPath: 'build/Tasks.app', baseUrl: 'http://127.0.0.1:4173' } } }) // type-error TS2353 Object literal may only specify known properties
 export const unknownBrowser = defineConfig({ apps: { web: { browser: 'safari' } } }) // type-error TS2322 Type '"safari"' is not assignable to type
+
+export const nativeLaunch = defineConfig({ apps: { desk: { platform: 'macos', appPath: 'build/TaskDesk.app', arguments: ['-reset'], environment: { FIXTURE_MODE: 'test' } } } })
+export const badNativeArguments = defineConfig({ apps: { desk: { platform: 'macos', appPath: 'build/TaskDesk.app', arguments: [false] } } }) // type-error TS2322 Type 'boolean' is not assignable to type 'string'
+export const badNativeEnvironment = defineConfig({ apps: { desk: { platform: 'macos', appPath: 'build/TaskDesk.app', environment: { FLAG: 1 } } } }) // type-error TS2322 Type 'number' is not assignable to type 'string'

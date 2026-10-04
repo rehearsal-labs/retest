@@ -53,3 +53,46 @@ test('uses the default app', async ({ page }) => {
   await page.getByTestId('save-task').tap()
   await page.goto('/') // type-error TS2349 A native app has no address. goto() is for web apps.
 })
+
+test('native scoped recipes and selected checks', { apps: ['iphone', 'mac'] }, async ({ iphone, mac }) => {
+  await iphone.getByRole('list').getByRole('button').first().tap({ timeout: 1000 })
+  await mac.getByRole('list').getByRole('button').last().click()
+  await expect(mac.getByRole('button').nth(0)).not.toBeSelected()
+  await expect(iphone.getByRole('button')).toBeSelected()
+  await mac.reload() // type-error TS2339 Property 'reload' does not exist on type
+  await iphone.url() // type-error TS2339 Property 'url' does not exist on type
+  await mac.title() // type-error TS2339 Property 'title' does not exist on type
+  await iphone.getByPlaceholder('Title') // type-error TS2339 Property 'getByPlaceholder' does not exist on type
+})
+
+test('native helpers: locator steps, swipes, the software keyboard and alerts', { apps: ['iphone', 'mac', 'web'] }, async ({ iphone, mac, web }) => {
+  await iphone.locator({ by: 'testId', value: 'task-title' }).fill('Release checklist')
+  await iphone.locator({ by: 'role', role: 'button', name: /Save/, pick: 'last' }).tap({ timeout: 1000 })
+  await iphone.getByRole('list').locator({ by: 'text', text: 'Release checklist', exact: false }).swipe('left')
+  await mac.locator({ by: 'label', text: 'Title' }).click()
+  await expect(mac.locator({ by: 'testId', value: 'task-status', pick: 0 })).toHaveText('Completed')
+  await iphone.swipe('up', { timeout: 2000 })
+  await iphone.keyboard.wait()
+  await iphone.keyboard.dismissFirstRunCard()
+  await iphone.keyboard.dismiss({ timeout: 2000 })
+  await iphone.keyboard.press('Enter')
+  await iphone.alert.accept('Allow')
+  await mac.alert.dismiss('Cancel', { timeout: 1000 })
+  await mac.keyboard.press('Enter')
+  await mac.swipe('up') // type-error TS2349 A macOS app takes no swipe. Use scroll().
+  await mac.getByTestId('task-title').swipe('left') // type-error TS2349 A macOS app takes no swipe. Use scroll().
+  await mac.keyboard.wait() // type-error TS2349 A macOS app has no software keyboard.
+  await mac.keyboard.dismiss() // type-error TS2349 A macOS app has no software keyboard.
+  await mac.keyboard.dismissFirstRunCard() // type-error TS2349 A macOS app has no software keyboard.
+  await iphone.swipe('sideways') // type-error TS2345 Argument of type '"sideways"' is not assignable to parameter of type 'SwipeDirection'
+  await iphone.locator('.task') // type-error TS2345 Argument of type 'string' is not assignable to parameter of type 'NativeLocatorStep'
+  await iphone.locator({ by: 'css', selector: '.task' }) // type-error TS2322 Type '"css"' is not assignable
+  await iphone.locator({ by: 'placeholder', text: 'Title' }) // type-error TS2322 Type '"placeholder"' is not assignable
+  await iphone.locator({ by: 'testId', value: 'sav-task' }) // type-error TS2820 Type '"sav-task"' is not assignable
+  await iphone.alert.accept() // type-error TS2554 Expected 1-2 arguments, but got 0.
+  await web.swipe('up') // type-error TS2339 Property 'swipe' does not exist on type
+  await web.getByTestId('save-task').swipe('up') // type-error TS2339 Property 'swipe' does not exist on type
+  await web.keyboard.dismiss() // type-error TS2339 Property 'dismiss' does not exist on type 'Keyboard'.
+  await web.alert.accept('OK') // type-error TS2339 Property 'alert' does not exist on type
+  await web.locator({ by: 'testId', value: 'save-task' }) // type-error TS2345 is not assignable to parameter of type 'string'.
+})

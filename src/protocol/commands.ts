@@ -36,6 +36,9 @@ export type PageCommand =
   | { kind: 'check'; locator: LocatorRecipe }
   | { kind: 'uncheck'; locator: LocatorRecipe }
   | { kind: 'scroll'; locator?: LocatorRecipe; x: number; y: number }
+  | { kind: 'swipe'; locator?: LocatorRecipe; direction: 'up' | 'down' | 'left' | 'right' }
+  | { kind: 'nativeKeyboard'; operation: 'dismiss' | 'dismissFirstRunCard' | 'wait' }
+  | { kind: 'nativeAlert'; operation: 'accept' | 'dismiss'; button?: string }
   | { kind: 'observe'; locator: LocatorRecipe; after?: ObserveAfter }
   | { kind: 'observePage'; after?: ObserveAfter }
 
@@ -81,6 +84,7 @@ export type Observation = {
   value: string | null
   checked: boolean | null
   enabled: boolean | null
+  selected?: boolean | null
   items: ObservedItem[]
   itemsTruncated: boolean
   emptyStep?: EmptyStep
@@ -110,7 +114,7 @@ export type PageObservation = { url: string | null; title: string | null; cut?: 
  */
 export type CommandResult =
   | { ok: true; kind: NavigationKind; url: string; page?: PageFacts }
-  | { ok: true; kind: 'fill' | 'click' | 'tap' | 'hover' | 'press' | 'scroll'; page?: PageFacts }
+  | { ok: true; kind: 'fill' | 'click' | 'tap' | 'hover' | 'press' | 'scroll' | 'swipe' | 'nativeKeyboard' | 'nativeAlert'; page?: PageFacts }
   | { ok: true; kind: 'select'; changed: boolean; page?: PageFacts }
   | { ok: true; kind: 'check' | 'uncheck'; changed: boolean; via?: 'label'; page?: PageFacts }
   | {
@@ -159,6 +163,9 @@ export const pageCommandSchema: Schema<PageCommand> = s.discriminatedUnion('kind
   s.object({ kind: s.literal('check'), locator: locatorRecipeSchema }),
   s.object({ kind: s.literal('uncheck'), locator: locatorRecipeSchema }),
   s.object({ kind: s.literal('scroll'), locator: s.optional(locatorRecipeSchema), x: s.number(), y: s.number() }),
+  s.object({ kind: s.literal('swipe'), locator: s.optional(locatorRecipeSchema), direction: s.enum(['up', 'down', 'left', 'right']) }),
+  s.object({ kind: s.literal('nativeKeyboard'), operation: s.enum(['dismiss', 'dismissFirstRunCard', 'wait']) }),
+  s.object({ kind: s.literal('nativeAlert'), operation: s.enum(['accept', 'dismiss']), button: s.optional(s.string()) }),
   s.object({ kind: s.literal('observe'), locator: locatorRecipeSchema, after }),
   s.object({ kind: s.literal('observePage'), after }),
 ])
@@ -177,6 +184,9 @@ export const actionKindSchema: Schema<ActionKind> = s.enum([
   'check',
   'uncheck',
   'scroll',
+  'swipe',
+  'nativeKeyboard',
+  'nativeAlert',
 ])
 
 export const observationSchema: Schema<Observation> = s.object({
@@ -186,6 +196,7 @@ export const observationSchema: Schema<Observation> = s.object({
   value: s.nullable(s.string()),
   checked: s.nullable(s.boolean()),
   enabled: s.nullable(s.boolean()),
+  selected: s.optional(s.nullable(s.boolean())),
   items: s.array(s.object({ text: s.string(), visible: s.boolean() })),
   itemsTruncated: s.boolean(),
   emptyStep: s.optional(emptyStepSchema),
@@ -204,7 +215,7 @@ const page = s.optional(pageFactsSchema)
 
 export const commandResultSchema: Schema<CommandResult> = s.union([
   s.object({ ok: s.literal(true), kind: s.enum(['goto', 'reload', 'goBack', 'goForward']), url: s.string(), page }),
-  s.object({ ok: s.literal(true), kind: s.enum(['fill', 'click', 'tap', 'hover', 'press', 'scroll']), page }),
+  s.object({ ok: s.literal(true), kind: s.enum(['fill', 'click', 'tap', 'hover', 'press', 'scroll', 'swipe', 'nativeKeyboard', 'nativeAlert']), page }),
   s.object({ ok: s.literal(true), kind: s.literal('select'), changed: s.boolean(), page }),
   s.object({ ok: s.literal(true), kind: s.enum(['check', 'uncheck']), changed: s.boolean(), via: s.optional(s.literal('label')), page }),
   s.object({
@@ -266,6 +277,12 @@ export function describeCommand(command: PageCommand): string {
       const target = command.locator === undefined ? 'page' : describeLocator(command.locator)
       return `${target}.scroll(${describeScrollDelta(command)})`
     }
+    case 'swipe':
+      return `${command.locator === undefined ? 'page' : describeLocator(command.locator)}.swipe(${stringLiteral(command.direction)})`
+    case 'nativeKeyboard':
+      return `page.keyboard.${command.operation}()`
+    case 'nativeAlert':
+      return `page.alert.${command.operation}()`
     case 'observe':
       return `a look at ${describeLocator(command.locator)}`
     case 'observePage':

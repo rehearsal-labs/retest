@@ -170,6 +170,34 @@ const parentEvents: EventBody[] = [
     app: 'web',
     target: { name: 'hosted', proxy: { server: 'http://127.0.0.1:8080', bypass: ['<-loopback>', '*.internal'] } },
   },
+  {
+    type: 'native.started',
+    ...scope,
+    session: 'desk',
+    app: 'desk',
+    sessionId: 'attempt-1:desk',
+    target: 'macos',
+    product: 'TaskDesk',
+    identity: {
+      platform: 'macos',
+      app: { bundleId: 'dev.retest.fixtures.taskdesk', path: '/work/build/TaskDesk.app', sha256: 'a'.repeat(64) },
+      os: { name: 'macOS', version: '26.5', build: '25F71' },
+      executor: { name: 'appium-mac2-driver', version: '4.3.6', commit: 'b'.repeat(40), commitVerified: true, productsSha256: 'c'.repeat(64), codeDirectoryHash: 'd'.repeat(40), origin: 'built' },
+      xcode: { version: '26.5', build: '17F42' },
+    },
+  },
+  { type: 'native.ended', ...scope, session: 'desk', sessionId: 'attempt-1:desk', unknownOutcomes: [] },
+  {
+    type: 'native.ended',
+    ...scope,
+    ...variant,
+    session: 'mobile',
+    sessionId: 'attempt-1:mobile',
+    unknownOutcomes: [
+      { source: 'lifecycle', id: 'launch-1', kind: 'launch', generation: 0, failure: { class: 'outcome_unknown', message: 'The launch request had no answer.' }, reconciled: { problem: 'ps did not answer' } },
+      { source: 'input', id: 'input-2', kind: 'swipe', generation: 1, route: 'POST /session/:session/actions', input: 'unknown', reconciled: { running: true, pids: [4242] } },
+    ],
+  },
   { type: 'app.started', app: 'web', ready: 'http://127.0.0.1:4173/health', pid: 5151, durationMs: 2100 },
   { type: 'app.reused', app: 'web', ready: 'http://127.0.0.1:4173/health' },
   { type: 'app.failed', app: 'web', ready: 'http://127.0.0.1:4173/health', failure: { class: 'setup_failed', message: 'Nothing answered.' } },
@@ -196,6 +224,29 @@ const parentEvents: EventBody[] = [
   { type: 'lock.acquired', ...scope, ...variant, locks: ['inbox', 'account'], waitedMs: 2100, heldBy: ['tests/archive.retest.ts > archives a task'] },
   { type: 'session.reserved', ...scope, ...variant, owner: 'agent-1', sessions: 2, waitedMs: 350, active: { owner: 2, host: 3 }, limits: { perOwner: 4, host: 8 } },
   { type: 'session.released', ...scope, ...variant, owner: 'agent-1', sessions: 2, after: 'browser_closed' },
+  {
+    type: 'resource.acquired',
+    ...scope,
+    ...variant,
+    resources: [{ kind: 'data-folder', name: '/work/.data/desk', apps: ['desk'] }],
+    waitedMs: 700,
+    heldBy: ['tests/desk.retest.ts > keeps the folder'],
+    heldElsewhere: 1,
+  },
+  {
+    type: 'lease.taken',
+    ...scope,
+    ...variant,
+    lease: { covers: [{ kind: 'lock', name: 'inbox' }, { kind: 'sessions', name: 'agent-1', apps: ['web'], count: 1 }], takenAt: '2026-10-04T10:00:00.000Z', releaseWithinMs: 10_000 },
+  },
+  {
+    type: 'lease.expired',
+    ...scope,
+    ...variant,
+    lease: { covers: [{ kind: 'lock', name: 'inbox' }, { kind: 'desktop', name: 'macos', apps: ['mac'] }], takenAt: '2026-10-04T10:00:00.000Z', releaseWithinMs: 10_000 },
+    held: [{ kind: 'desktop', name: 'macos', apps: ['mac'] }],
+    released: [{ kind: 'lock', name: 'inbox' }],
+  },
   {
     type: 'test.started',
     ...scope,
@@ -447,6 +498,7 @@ const parentEvents: EventBody[] = [
     durationMs: 12,
     failure: { class: 'setup_failed', message: 'No browser at /opt/chromium.' },
   },
+  { type: 'run.outcome', status: 'error', exitCode: 2, complete: false, failure: { class: 'reporting_failed', message: 'The final reporter failed.' } },
 ]
 
 // A child event as the parent writes it: a passed assertion gains the parent's mark.
@@ -551,7 +603,7 @@ describe('events', () => {
     assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), command: 'drag' }), [
       {
         path: '$.command',
-        message: 'expected one of "goto", "reload", "goBack", "goForward", "fill", "click", "tap", "hover", "press", "select", "check", "uncheck", "scroll", received "drag"',
+        message: 'expected one of "goto", "reload", "goBack", "goForward", "fill", "click", "tap", "hover", "press", "select", "check", "uncheck", "scroll", "swipe", "nativeKeyboard", "nativeAlert", received "drag"',
       },
     ])
     assert.deepEqual(issues(retestEventSchema, { ...sample('action.completed'), input: 'keyboard', via: 'control', touch: false }), [
@@ -698,6 +750,13 @@ describe('commands', () => {
     { kind: 'scroll', x: 0, y: 600 },
     { kind: 'scroll', locator: { by: 'testId', value: 'terms' }, x: -40.5, y: 1200 },
     { kind: 'scroll', x: 0, y: 0 },
+    { kind: 'swipe', direction: 'up' },
+    { kind: 'swipe', locator: { by: 'testId', value: 'task-list' }, direction: 'left' },
+    { kind: 'nativeKeyboard', operation: 'wait' },
+    { kind: 'nativeKeyboard', operation: 'dismiss' },
+    { kind: 'nativeKeyboard', operation: 'dismissFirstRunCard' },
+    { kind: 'nativeAlert', operation: 'accept', button: 'Allow' },
+    { kind: 'nativeAlert', operation: 'dismiss', button: 'Not Now' },
     { kind: 'observe', locator },
     { kind: 'observe', locator: { by: 'text', text: 'Saved' } },
   ]
@@ -711,6 +770,9 @@ describe('commands', () => {
     { ok: true, kind: 'tap' },
     { ok: true, kind: 'press' },
     { ok: true, kind: 'scroll', page: { url: pageUrl, title: 'Terms' } },
+    { ok: true, kind: 'swipe' },
+    { ok: true, kind: 'nativeKeyboard' },
+    { ok: true, kind: 'nativeAlert' },
     { ok: true, kind: 'select', changed: true, page: { url: pageUrl, title: 'Sign up' } },
     { ok: true, kind: 'select', changed: false },
     { ok: true, kind: 'check', changed: true, via: 'label' },
@@ -734,7 +796,7 @@ describe('commands', () => {
       {
         path: '$.kind',
         message:
-          'expected one of "goto", "reload", "goBack", "goForward", "fill", "click", "tap", "hover", "press", "select", "check", "uncheck", "scroll", "observe", "observePage", received "drag"',
+          'expected one of "goto", "reload", "goBack", "goForward", "fill", "click", "tap", "hover", "press", "select", "check", "uncheck", "scroll", "swipe", "nativeKeyboard", "nativeAlert", "observe", "observePage", received "drag"',
       },
     ])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'reload', url: '/' }), [{ path: '$.url', message: 'unknown key' }])
@@ -756,6 +818,9 @@ describe('commands', () => {
     assert.deepEqual(issues(pageCommandSchema, { kind: 'uncheck' }), [{ path: '$.locator', message: 'missing required key' }])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'scroll', y: 600 }), [{ path: '$.x', message: 'missing required key' }])
     assert.deepEqual(issues(pageCommandSchema, { kind: 'scroll', x: '0', y: 600 }), [{ path: '$.x', message: 'expected number, received "0"' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'swipe', direction: 'sideways' }), [{ path: '$.direction', message: 'expected one of "up", "down", "left", "right", received "sideways"' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'nativeKeyboard', operation: 'type' }), [{ path: '$.operation', message: 'expected one of "dismiss", "dismissFirstRunCard", "wait", received "type"' }])
+    assert.deepEqual(issues(pageCommandSchema, { kind: 'nativeAlert', operation: 'accept', button: 'OK', locator }), [{ path: '$.locator', message: 'unknown key' }])
     assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'select' }), [{ path: '$.changed', message: 'missing required key' }])
     assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'click', changed: true }), [{ path: '$.changed', message: 'unknown key' }])
     assert.deepEqual(issues(commandResultSchema, { ok: true, kind: 'select', changed: false, via: 'label' }), [{ path: '$.via', message: 'unknown key' }])
@@ -837,6 +902,14 @@ describe('commands', () => {
     assert.equal(describeCommand({ kind: 'scroll', locator: { by: 'testId', value: 'terms' }, x: -40.5, y: 1200 }), "getByTestId('terms').scroll({ x: -40.5, y: 1200 })")
     assert.equal(describeCommand({ kind: 'scroll', x: 0, y: 0 }), 'page.scroll({ x: 0, y: 0 })')
   })
+
+  test('swipes and the software keyboard are named as a test writes them', () => {
+    assert.equal(describeCommand({ kind: 'swipe', direction: 'up' }), "page.swipe('up')")
+    assert.equal(describeCommand({ kind: 'swipe', locator: { by: 'testId', value: 'task-list' }, direction: 'left' }), "getByTestId('task-list').swipe('left')")
+    assert.equal(describeCommand({ kind: 'nativeKeyboard', operation: 'wait' }), 'page.keyboard.wait()')
+    assert.equal(describeCommand({ kind: 'nativeKeyboard', operation: 'dismiss' }), 'page.keyboard.dismiss()')
+    assert.equal(describeCommand({ kind: 'nativeKeyboard', operation: 'dismissFirstRunCard' }), 'page.keyboard.dismissFirstRunCard()')
+  })
 })
 
 describe('recorded URLs', () => {
@@ -890,13 +963,13 @@ describe('messages', () => {
     },
     { type: 'collected', tests: [] },
     { type: 'collection-failed', failure: { class: 'collection_failed', message: 'Two tests are named "saves a task".' } },
-    { type: 'command', id: 1, app: 'page', command: { kind: 'goto', url: '/' }, timeoutMs: 30_000 },
-    { type: 'command', id: 2, app: 'page', command: { kind: 'click', locator }, location, timeoutMs: 0 },
-    { type: 'command', id: 3, app: 'owner', command: { kind: 'observe', locator }, location, stepId: 'step-2', timeoutMs: 300 },
-    { type: 'command', id: 4, app: 'member', command: { kind: 'fill', locator, value: { secret: 'password' } }, timeoutMs: 300 },
-    { type: 'command', id: 5, app: 'page', command: { kind: 'select', locator, choices: [{ label: 'Canada' }] }, timeoutMs: 300 },
-    { type: 'command', id: 6, app: 'page', command: { kind: 'scroll', x: 0, y: 600 }, stepId: 'step-1', timeoutMs: 300 },
-    { type: 'command', id: 7, app: 'page', command: { kind: 'select', locator, choices: [{ value: 'b' }], multiple: true }, timeoutMs: 300 },
+    { type: 'command', ...scope, id: 1, app: 'page', command: { kind: 'goto', url: '/' }, timeoutMs: 30_000 },
+    { type: 'command', ...scope, id: 2, app: 'page', command: { kind: 'click', locator }, location, timeoutMs: 0 },
+    { type: 'command', ...scope, id: 3, app: 'owner', command: { kind: 'observe', locator }, location, stepId: 'step-2', timeoutMs: 300 },
+    { type: 'command', ...scope, id: 4, app: 'member', command: { kind: 'fill', locator, value: { secret: 'password' } }, timeoutMs: 300 },
+    { type: 'command', ...scope, id: 5, app: 'page', command: { kind: 'select', locator, choices: [{ label: 'Canada' }] }, timeoutMs: 300 },
+    { type: 'command', ...scope, id: 6, app: 'page', command: { kind: 'scroll', x: 0, y: 600 }, stepId: 'step-1', timeoutMs: 300 },
+    { type: 'command', ...scope, id: 7, app: 'page', command: { kind: 'select', locator, choices: [{ value: 'b' }], multiple: true }, timeoutMs: 300 },
     ...childEvents.map((event): ChildMessage => ({ type: 'event', event })),
     { type: 'test-finished', ...scope, status: 'passed', assertionCount: 2, durationMs: 120 },
     { type: 'test-finished', ...scope, status: 'failed', failure, assertionCount: 0, durationMs: 5 },
@@ -918,7 +991,7 @@ describe('messages', () => {
     assert.deepEqual(issues(parentMessageSchema, { type: 'run', ...scope, timeouts: defaultTimeouts }), [
       { path: '$.apps', message: 'missing required key' },
     ])
-    assert.deepEqual(issues(childMessageSchema, { type: 'command', id: 1, command: { kind: 'goto', url: '/' }, timeoutMs: 1 }), [
+    assert.deepEqual(issues(childMessageSchema, { type: 'command', ...scope, id: 1, command: { kind: 'goto', url: '/' }, timeoutMs: 1 }), [
       { path: '$.app', message: 'missing required key' },
     ])
     assert.deepEqual(issues(childMessageSchema, { type: 'collected', tests: [{ name: 'x', location, setup: false }] }), [
@@ -934,7 +1007,7 @@ describe('messages', () => {
     assert.deepEqual(issues(childMessageSchema, { type: 'collected', tests: [{ name: 'x', location, timeout: 0 }] }), [
       { path: '$.tests[0].timeout', message: 'expected integer >= 1, received 0' },
     ])
-    assert.deepEqual(issues(childMessageSchema, { type: 'command', id: 1.5, app: 'page', command: { kind: 'goto', url: '/' }, timeoutMs: 1 }), [
+    assert.deepEqual(issues(childMessageSchema, { type: 'command', ...scope, id: 1.5, app: 'page', command: { kind: 'goto', url: '/' }, timeoutMs: 1 }), [
       { path: '$.id', message: 'expected integer >= 0, received 1.5' },
     ])
     assert.deepEqual(

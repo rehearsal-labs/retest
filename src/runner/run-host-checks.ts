@@ -14,6 +14,7 @@ import { bounded } from './bounded.ts'
 import { notRunHostChecks } from './host-checks.ts'
 import { isOurs } from './outcome.ts'
 import { abortGraceMs } from './running-test.ts'
+import { timerMs } from './timer.ts'
 
 /**
  * Every check's result, in order, and the test's failure: a failure of ours if there is one, as when the browser
@@ -77,7 +78,7 @@ async function runCheck(context: PagesContext, page: AppPage | undefined, { chec
   let unread: Failure | undefined
   for (;;) {
     const delay = smallestBudget(lookDelays[Math.min(attempts, lookDelays.length - 1)] ?? 0, deadline.remainingMs)
-    if (delay > 0 && (await bounded(sleep(delay), delay + abortGraceMs, context.stopped)).status === 'stopped') return stopped(context)
+    if (delay > 0 && (await bounded(sleep(delay), timerMs(delay + abortGraceMs), context.stopped)).status === 'stopped') return stopped(context)
     const read = await readOnce(context, page, app, queries, deadline)
     attempts++
     if (read.status === 'stopped') return stopped(context)
@@ -90,7 +91,9 @@ async function runCheck(context: PagesContext, page: AppPage | undefined, { chec
   const lost = unread ?? (last === undefined ? failure('session_lost', `The page of ${app} did not answer a host check within ${timeoutMs} ms, so Retest could not read it.`) : undefined)
   const problem = passes(check, last) ? undefined : (lost ?? checkFailure({ check, app, last, looked, redact: context.redact }))
   const record = hostCheckRecord(check)
-  const fields = { testId: context.testId, attemptId: context.attemptId, session: app, check: record, actual: actualOf(check, last), ...looked, durationMs: elapsedMs(startedAt) }
+  // The session of the page it read; a check of an app the test does not have read no page and names no session.
+  const session = page === undefined ? {} : { sessionId: page.session.sessionId }
+  const fields = { testId: context.testId, attemptId: context.attemptId, session: app, ...session, check: record, actual: actualOf(check, last), ...looked, durationMs: elapsedMs(startedAt) }
   if (problem === undefined) {
     context.emit({ type: 'host_check.passed', ...fields })
     return { kind: 'done', result: { check: record, app, status: 'passed' }, stops: false }
@@ -104,7 +107,7 @@ async function readOnce(context: PagesContext, page: AppPage | undefined, app: s
   if (page === undefined) return { status: 'unread', failure: failure('test_error', `The host check reads the page of ${app}, which this test does not have.`) }
   if (!context.connected(page.browser)) return { status: 'unread', failure: failure('session_lost', `The browser of ${app} was gone, so Retest could not run the host check.`) }
   const timeoutMs = deadline.commandTimeoutMs
-  const read = await bounded(page.page.readPage(queries, timeoutMs), timeoutMs + abortGraceMs, context.stopped)
+  const read = await bounded(page.page.readPage(queries, timeoutMs), timerMs(timeoutMs + abortGraceMs), context.stopped)
   if (read.status === 'stopped') return { status: 'stopped' }
   if (read.status === 'done') return { status: 'read', reading: read.value }
   if (read.status === 'timed_out') return { status: 'late' }

@@ -11,7 +11,8 @@ import { describeLocator } from '../../protocol/locator.ts'
 import { secretPlaceholder } from '../../protocol/secret.ts'
 import { formatLocation } from '../../protocol/location.ts'
 import { actionNotes, describeWrittenAction, type ActionEvent } from '../../reporters/actions.ts'
-import { describeCleanup, describeLocks, describePage, describePreparation, describeSessions, describeSessionsReleased, describeStateEvent, formatDuration, plural, printable, statusLabel, testTitle } from '../../reporters/format.ts'
+import { describeCleanup, describeLeaseExpired, describeLocks, describePage, describePreparation, describeResources, describeSessions, describeSessionsReleased, describeStateEvent, formatDuration, plural, printable, statusLabel, testTitle } from '../../reporters/format.ts'
+import { describeLeaseParts } from '../../runner/resources.ts'
 import { describeHostCheck, hostCheckPage } from '../../reporters/host-checks.ts'
 import { visibleLength } from '../../reporters/style.ts'
 import { describeVariant } from '../../reporters/targets.ts'
@@ -89,6 +90,10 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
   const { style } = options
   const { event } = entry
   switch (event.type) {
+    case 'native.started':
+      return [`${event.product} on ${event.identity.platform === 'macos' ? 'macOS' : `iOS Simulator ${event.identity.os.version}`}`, `session ${event.sessionId}`, `${event.identity.app.bundleId} · build ${event.identity.app.build ?? 'unavailable'} · sha256 ${event.identity.app.sha256}`, `${event.identity.executor.name} ${event.identity.executor.version} · Xcode ${event.identity.xcode.version} (${event.identity.xcode.build})`]
+    case 'native.ended':
+      return ['native session ended', ...(event.unknownOutcomes.length === 0 ? [] : [`${event.unknownOutcomes.length} unknown outcomes were retained`])]
     case 'test.started':
       return ['started']
     case 'lock.acquired':
@@ -97,6 +102,12 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       return [describeSessions(event)]
     case 'session.released':
       return [describeSessionsReleased(event)]
+    case 'resource.acquired':
+      return [describeResources(event)]
+    case 'lease.taken':
+      return [style.dim(`lease taken: ${describeLeaseParts(event.lease.covers, event.variant)}`)]
+    case 'lease.expired':
+      return [describeLeaseExpired(event)]
     case 'preparation.finished':
       return [describePreparation(event.preparation)]
     case 'cleanup.finished':
@@ -128,7 +139,7 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
     case 'assertion.failed':
       return describeAssertion(event, entry.looks, style)
     case 'evidence.captured':
-      return [`screenshot ${join(options.runFolder, event.path)}`]
+      return [describeScreenshot(event, options)]
     case 'evidence.failed':
       return [style.yellow(`screenshot not saved: ${event.message}`)]
     case 'evaluation.finished':
@@ -142,6 +153,18 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       return [`${statusLabel(event.status).toLowerCase()}${duration}`]
     }
   }
+}
+
+// A screenshot: its file, then, as far as its event says, what took it and the session and look it came from. A run
+// recorded before screenshots named them shows the file alone.
+function describeScreenshot(event: EventOfType<'evidence.captured'>, options: TimelineOptions): string {
+  const facts = [
+    ...(event.source === undefined ? [] : [event.source]),
+    ...(event.sessionId === undefined ? [] : [`session ${event.sessionId}`]),
+    ...(event.observationId === undefined ? [] : [`look ${event.observationId}`]),
+  ]
+  const shown = `screenshot ${join(options.runFolder, event.path)}`
+  return facts.length === 0 ? shown : `${shown}  ${options.style.dim(facts.join(', '))}`
 }
 
 // An AI check: its verdict, the judge and model that answered, then its criteria, what the judge said and its evidence.

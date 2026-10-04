@@ -115,6 +115,14 @@ export interface Page<Touch extends boolean = boolean> extends Finders<Touch> {
   scroll(delta: ScrollDelta, options?: CallOptions): Promise<void>
 }
 
+/**
+ * An Electron app's page in a test: the first window the app opens. It finds, acts and checks as a web page does, and
+ * reloads and moves through its history, but it has no address to go to.
+ */
+export type ElectronPage = Omit<Page<false>, 'goto'> & {
+  readonly goto: RetestTypeError<'An Electron app has no address. Its page is the first window the app opens.'>
+}
+
 /** An app's keyboard. Await each press, because an app takes one command at a time. */
 export interface Keyboard {
   /**
@@ -218,40 +226,115 @@ export interface Locator<Touch extends boolean = boolean> extends Finders<Touch>
 }
 
 /**
- * A native app's handle in a test: an app on an iOS simulator, or a macOS app. It finds elements as a web page does,
- * by test id, which is the element's accessibility identifier, by role, label and text, and it has a keyboard and a
- * scroll. It has no address and no browser storage. Retest has no native driver yet: a run refuses every test that
- * needs a native target before starting anything for it, so no test body receives one.
+ * One step of a native locator written as data, as `locator(step)` takes it: the step `getByTestId`, `getByRole`,
+ * `getByLabel` or `getByText` makes, read by that finder's rules, and with `pick` the match `first()`, `last()` or
+ * `nth(index)` would keep. CSS and placeholder steps are for web pages.
  */
-export interface NativePage<Platform extends NativePlatform = NativePlatform> {
-  readonly goto: RetestTypeError<'A native app has no address. goto() is for web apps.'>
-  /** Finds the element whose accessibility identifier equals `id` exactly. */
+export type NativeLocatorStep =
+  | { readonly by: 'testId'; readonly value: TestIdValue; readonly pick?: NativeStepPick | undefined }
+  | { readonly by: 'role'; readonly role: AriaRole; readonly name?: string | RegExp | undefined; readonly exact?: boolean | undefined; readonly pick?: NativeStepPick | undefined }
+  | { readonly by: 'label' | 'text'; readonly text: string | RegExp; readonly exact?: boolean | undefined; readonly pick?: NativeStepPick | undefined }
+
+/** The match a step keeps: the first, the last, or the one at an index from 0, counted from the end when negative. */
+export type NativeStepPick = 'first' | 'last' | number
+
+/** Which way a swipe moves across the screen. */
+export type SwipeDirection = 'up' | 'down' | 'left' | 'right'
+
+/** Finders scoped to the owned native tree; identifiers are accessibility identifiers. */
+export interface NativeFinders<Platform extends NativePlatform> {
   getByTestId(id: TestIdValue): NativeLocator<Platform>
-  /** Finds the element with this role and, when given, this name. */
   getByRole(role: AriaRole, options?: RoleOptions): NativeLocator<Platform>
-  /** Finds the field whose label is this text. */
-  getByLabel(text: string, options?: TextOptions): NativeLocator<Platform>
-  /** Finds the element whose whole text is this text. */
-  getByText(text: string, options?: TextOptions): NativeLocator<Platform>
-  /** The app's keyboard. It presses keys on whatever holds the keyboard focus. */
-  readonly keyboard: Keyboard
-  /** Scrolls the app's window by `x` and `y` points. */
-  scroll(delta: ScrollDelta): Promise<void>
+  getByLabel(text: string | RegExp, options?: TextOptions): NativeLocator<Platform>
+  getByText(text: string | RegExp, options?: TextOptions): NativeLocator<Platform>
+  /**
+   * Finds elements by one step written as data, as the finder it names finds them.
+   *
+   * @example await phone.locator({ by: 'role', role: 'button', name: 'Save', pick: 'last' }).tap()
+   */
+  locator(step: NativeLocatorStep): NativeLocator<Platform>
 }
 
 /**
- * A way to find elements in a native app. An iOS app's elements take `tap()`, and a macOS app's `click()`. The
- * methods of a web page's form controls, `select`, `check` and `uncheck`, are not here.
+ * A native app's keyboard. `press` works on both platforms. The software keyboard's own controls are an iOS app's,
+ * since a macOS app has none; each waits within the action's time.
  */
-export interface NativeLocator<Platform extends NativePlatform = NativePlatform> {
-  /** Replaces the field's value by typing. A secret is typed by the process that runs Retest. */
-  fill(value: string | Secret): Promise<void>
-  /** Presses a key on the element and releases it. */
-  press<const K extends string>(key: KeyArgument<K>): Promise<void>
-  /** Scrolls over the element by `x` and `y` points. */
-  scroll(delta: ScrollDelta): Promise<void>
-  readonly tap: Platform extends 'ios-simulator' ? () => Promise<void> : RetestTypeError<'A macOS app has no touch screen. Use click().'>
-  readonly click: Platform extends 'macos' ? () => Promise<void> : RetestTypeError<'An iOS app takes taps. Use tap().'>
+export interface NativeKeyboard<Platform extends NativePlatform = NativePlatform> extends Keyboard {
+  /**
+   * Waits for the software keyboard to come up. It presses nothing.
+   *
+   * @example await phone.keyboard.wait()
+   */
+  readonly wait: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no software keyboard.'>
+  /**
+   * Dismisses the software keyboard by pressing its return key once, after the first-run card about sliding to type
+   * when it shows, and waits for the keyboard to go. A keyboard that is not up passes and presses nothing; one whose
+   * return key leaves it up fails, and nothing more is pressed.
+   *
+   * @example await phone.keyboard.dismiss()
+   */
+  readonly dismiss: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no software keyboard.'>
+  /**
+   * Presses Continue once on the keyboard's first-run card about sliding to type, when it shows, and waits for the card
+   * to go. Without the card it passes and presses nothing.
+   *
+   * @example await phone.keyboard.dismissFirstRunCard()
+   */
+  readonly dismissFirstRunCard: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no software keyboard.'>
+}
+
+/**
+ * The alert in front of a native app. An answer presses the one button whose label is exactly this text, once, and
+ * waits for the alert to close. With no alert open, or with no button or several carrying the label, it fails and
+ * presses nothing.
+ */
+export interface Alert {
+  /**
+   * Presses the named button through the alert's accept route on iOS; on macOS it clicks the button.
+   *
+   * @example await phone.alert.accept('Allow')
+   */
+  accept(button: string, options?: CallOptions): Promise<void>
+  /**
+   * Presses the named button through the alert's dismiss route on iOS; on macOS it clicks the button.
+   *
+   * @example await phone.alert.dismiss('Not Now')
+   */
+  dismiss(button: string, options?: CallOptions): Promise<void>
+}
+
+/** A native app's handle. Web commands are absent; forged commands are refused by the parent. */
+export interface NativePage<Platform extends NativePlatform = NativePlatform> extends NativeFinders<Platform> {
+  readonly goto: RetestTypeError<'A native app has no address. goto() is for web apps.'>
+  readonly keyboard: NativeKeyboard<Platform>
+  /** The alert in front of the app. */
+  readonly alert: Alert
+  scroll(delta: ScrollDelta, options?: CallOptions): Promise<void>
+  /**
+   * Swipes once from the centre of the app's window: one touch drag a third of the window's extent in the direction.
+   *
+   * @example await phone.swipe('up')
+   */
+  readonly swipe: Platform extends 'ios-simulator' ? (direction: SwipeDirection, options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app takes no swipe. Use scroll().'>
+}
+
+/** A recipe looked up afresh for each action and check in the owned app's tree. */
+export interface NativeLocator<Platform extends NativePlatform = NativePlatform> extends NativeFinders<Platform> {
+  first(): NativeLocator<Platform>
+  last(): NativeLocator<Platform>
+  nth(index: number): NativeLocator<Platform>
+  fill(value: string | Secret, options?: CallOptions): Promise<void>
+  press<const K extends string>(key: KeyArgument<K>, options?: CallOptions): Promise<void>
+  scroll(delta: ScrollDelta, options?: CallOptions): Promise<void>
+  /**
+   * Swipes once from the element's centre, once it is visible, stable and not covered: one touch drag a third of its
+   * extent in the direction.
+   *
+   * @example await phone.getByTestId('task-list').swipe('left')
+   */
+  readonly swipe: Platform extends 'ios-simulator' ? (direction: SwipeDirection, options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app takes no swipe. Use scroll().'>
+  readonly tap: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no touch screen. Use click().'>
+  readonly click: Platform extends 'macos' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'An iOS app takes taps. Use tap().'>
   readonly select: RetestTypeError<"select() is for a web page's <select>. A native app has none.">
   readonly check: RetestTypeError<'check() is for a web page. Tap or click the native control instead.'>
   readonly uncheck: RetestTypeError<'uncheck() is for a web page. Tap or click the native control instead.'>

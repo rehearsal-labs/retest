@@ -2,14 +2,17 @@ import type { PageObservation } from '../protocol/commands.ts'
 import type { SourceLocation } from '../protocol/failures.ts'
 import type { LocatorDialect, LocatorRecipe } from '../protocol/locator.ts'
 import type { BuiltRecipe } from './locator-recipes.ts'
-import type { Keyboard, Locator, Page } from './page.ts'
+import type { Alert, Locator, NativeKeyboard, NativeLocatorStep, Page, SwipeDirection } from './page.ts'
 import type { TestRun } from './test-run.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { withLocation } from '../protocol/failures.ts'
 import { parseKey } from '../protocol/keys.ts'
 import { pageAddress } from '../protocol/locator-checks.ts'
 import { recordedTitle } from '../protocol/page-facts.ts'
+import { isPlainObject } from '../protocol/schema.ts'
+import { listWords } from '../shared/list-words.ts'
 import { readScrollArgument, readSelectArgument } from './action-arguments.ts'
+import { readCallOptions } from './call-options.ts'
 import { formatValue } from './format-value.ts'
 import { cssRecipe, pickedRecipe, roleRecipe, scopedRecipe, testIdRecipe, textRecipe } from './locator-recipes.ts'
 import { misuse } from './misuse.ts'
@@ -34,11 +37,15 @@ let pageByPlaywrightRules: ((page: AppPage) => AppPage) | undefined
 // While another document is on its way the page's title is unknown; `title()` looks again this often until it is known.
 const titlePauseMs = 50
 
-// Types decide which apps offer `tap()`; at run time every page has it, and a page without a touch screen refuses it.
+const swipeDirections: ReadonlySet<unknown> = new Set<SwipeDirection>(['up', 'down', 'left', 'right'])
+
+// Types decide which apps offer `tap()`, and a native app's `swipe()`, keyboard controls, alerts and locator steps; at
+// run time every page has them all, and the parent refuses what the app's page cannot do.
 
 /** An app's page as a test drives it: every command it sends names the app. */
 export class AppPage implements Page<true> {
   readonly keyboard: AppKeyboard
+  readonly alert: AppAlert
   readonly #run: TestRun
   readonly #app: string
   readonly #dialect: LocatorDialect | undefined
@@ -53,6 +60,7 @@ export class AppPage implements Page<true> {
     this.#app = app
     this.#dialect = dialect
     this.keyboard = new AppKeyboard({ run, app })
+    this.alert = new AppAlert({ run, app })
   }
 
 
@@ -82,8 +90,8 @@ export class AppPage implements Page<true> {
     return this.#locator(textRecipe('placeholder', text, options))
   }
 
-  locator(selector: string): AppLocator {
-    return this.#locator(cssRecipe(selector))
+  locator(selector: string | NativeLocatorStep): AppLocator {
+    return this.#locator(selectorRecipe(selector))
   }
 
   reload(options?: unknown): Promise<void> {
@@ -115,6 +123,10 @@ export class AppPage implements Page<true> {
 
   scroll(delta: unknown, options?: unknown): Promise<void> {
     return scroll({ run: this.#run, app: this.#app }, delta, options)
+  }
+
+  swipe(direction: unknown, options?: unknown): Promise<void> {
+    return swipe({ run: this.#run, app: this.#app }, direction, options)
   }
 
   #locator(built: BuiltRecipe): AppLocator {
@@ -200,8 +212,8 @@ export class AppLocator implements Locator<true> {
     return this.#inside(textRecipe('placeholder', text, options))
   }
 
-  locator(selector: string): AppLocator {
-    return this.#inside(cssRecipe(selector))
+  locator(selector: string | NativeLocatorStep): AppLocator {
+    return this.#inside(selectorRecipe(selector))
   }
 
   first(): AppLocator {
@@ -247,6 +259,10 @@ export class AppLocator implements Locator<true> {
     return run.action(app, { kind: 'tap', locator: recipe }, run.location(), options)
   }
 
+  swipe(direction: unknown, options?: unknown): Promise<void> {
+    return swipe(this.#target, direction, options)
+  }
+
   // A finder on a locator looks inside the elements it keeps.
   #inside(built: BuiltRecipe): AppLocator {
     if ('problem' in built) throw misuse(built.problem, this.#target.run)
@@ -259,8 +275,11 @@ export class AppLocator implements Locator<true> {
   }
 }
 
-/** An app's keyboard, which presses keys on whatever holds the focus in its page. */
-export class AppKeyboard implements Keyboard {
+/**
+ * An app's keyboard, which presses keys on whatever holds the focus in its page, and on an iOS app waits for and
+ * dismisses the software keyboard.
+ */
+export class AppKeyboard implements NativeKeyboard<'ios-simulator'> {
   readonly #target: InputTarget
 
   constructor(target: InputTarget) {
@@ -269,6 +288,53 @@ export class AppKeyboard implements Keyboard {
 
   press(key: unknown, options?: unknown): Promise<void> {
     return press(this.#target, key, options)
+  }
+
+  wait(options?: unknown): Promise<void> {
+    return this.#native('wait', options)
+  }
+
+  dismiss(options?: unknown): Promise<void> {
+    return this.#native('dismiss', options)
+  }
+
+  dismissFirstRunCard(options?: unknown): Promise<void> {
+    return this.#native('dismissFirstRunCard', options)
+  }
+
+  #native(operation: 'wait' | 'dismiss' | 'dismissFirstRunCard', options: unknown): Promise<void> {
+    const { run, app } = this.#target
+    const location = run.location()
+    refuseOptions(`keyboard.${operation}`, options, run)
+    return run.action(app, { kind: 'nativeKeyboard', operation }, location, options)
+  }
+}
+
+/** The alert in front of a native app's page, answered by pressing one button it names exactly. */
+export class AppAlert implements Alert {
+  readonly #target: InputTarget
+
+  constructor(target: InputTarget) {
+    this.#target = target
+  }
+
+  accept(button: unknown, options?: unknown): Promise<void> {
+    return this.#answer('accept', button, options)
+  }
+
+  dismiss(button: unknown, options?: unknown): Promise<void> {
+    return this.#answer('dismiss', button, options)
+  }
+
+  // A label with nothing but spaces names no button, so it is refused at the call rather than sent to look for one.
+  #answer(operation: 'accept' | 'dismiss', button: unknown, options: unknown): Promise<void> {
+    const { run, app } = this.#target
+    const location = run.location()
+    if (typeof button !== 'string' || button.trim() === '') {
+      throw misuse(`alert.${operation}() takes the label of the button to press, word for word, received ${formatValue(button)}.`, run)
+    }
+    refuseOptions(`alert.${operation}`, options, run)
+    return run.action(app, { kind: 'nativeAlert', operation, button }, location, options)
   }
 }
 
@@ -306,4 +372,59 @@ function scroll({ run, app, recipe }: InputTarget, delta: unknown, options: unkn
   const read = readScrollArgument(delta)
   if (!read.ok) throw run.fail(withLocation(read.failure, location))
   return run.action(app, { kind: 'scroll', ...(recipe === undefined ? {} : { locator: recipe }), ...read.value }, location, options)
+}
+
+function swipe({ run, app, recipe }: InputTarget, direction: unknown, options: unknown): Promise<void> {
+  const location = run.location()
+  if (!isSwipeDirection(direction)) throw misuse(`swipe() takes 'up', 'down', 'left' or 'right', received ${formatValue(direction)}.`, run)
+  return run.action(app, { kind: 'swipe', ...(recipe === undefined ? {} : { locator: recipe }), direction }, location, options)
+}
+
+function isSwipeDirection(value: unknown): value is SwipeDirection {
+  return swipeDirections.has(value)
+}
+
+// The run reads an action's options under its command's kind, which for the keyboard's controls and the alert answers
+// is not what the test wrote, so they are read first under the call's own name.
+function refuseOptions(call: string, options: unknown, run: TestRun): void {
+  const read = readCallOptions(call, options)
+  if (!read.ok) throw misuse(read.problem, run)
+}
+
+// A string is a CSS selector. An object is a native step written as data, read by the rules of the finder it names and
+// of the pick it carries, so it finds what that finder finds. Anything else goes to the CSS reader, which refuses it.
+function selectorRecipe(selector: unknown): BuiltRecipe {
+  if (typeof selector === 'string' || !isPlainObject(selector)) return cssRecipe(selector)
+  const { pick, ...step } = selector
+  const built = stepRecipe(step, selector)
+  if ('problem' in built || pick === undefined) return built
+  if (pick === 'first') return pickedRecipe(built.recipe, 'first()')
+  if (pick === 'last') return pickedRecipe(built.recipe, 'last()')
+  if (typeof pick === 'number') return pickedRecipe(built.recipe, 'nth(index)', pick)
+  return { problem: `A locator step's pick is 'first', 'last' or an index from 0, received ${formatValue(pick)}.` }
+}
+
+function stepRecipe(step: Record<string, unknown>, written: Record<string, unknown>): BuiltRecipe {
+  const { by, ...rest } = step
+  const unknownKey = (allowed: readonly string[]): BuiltRecipe | undefined => {
+    if (Object.keys(rest).every((key) => allowed.includes(key))) return undefined
+    return { problem: `A locator step by ${String(by)} takes only ${listWords([...allowed, 'pick'], 'and')}, received ${formatValue(written)}.` }
+  }
+  switch (by) {
+    case 'testId':
+      return unknownKey(['value']) ?? testIdRecipe(rest['value'])
+    case 'role':
+      return unknownKey(['role', 'name', 'exact']) ?? roleRecipe(rest['role'], definedOptions({ name: rest['name'], exact: rest['exact'] }))
+    case 'label':
+    case 'text':
+      return unknownKey(['text', 'exact']) ?? textRecipe(by, rest['text'], definedOptions({ exact: rest['exact'] }))
+    default:
+      return { problem: `locator() takes a CSS selector, or on a native app a step by testId, role, label or text, received ${formatValue(written)}.` }
+  }
+}
+
+// A finder's options say only what the step gave, as a test would write them.
+function definedOptions(options: Record<string, unknown>): Record<string, unknown> | undefined {
+  const given = Object.entries(options).filter(([, value]) => value !== undefined)
+  return given.length === 0 ? undefined : Object.fromEntries(given)
 }

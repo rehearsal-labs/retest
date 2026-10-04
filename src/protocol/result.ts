@@ -1,3 +1,6 @@
+import type { CaptureReference } from './evidence.ts'
+import type { NativeExecutionRecord } from './execution.ts'
+import { nativeExecutionIdentitySchema } from './execution.ts'
 import { diagnosticsSummarySchema, type DiagnosticsSummary } from './diagnostics.ts'
 import {
   countsSchema,
@@ -24,15 +27,28 @@ import {
 } from './execution.ts'
 import { failureSchema, sourceLocationSchema, type Failure, type SourceLocation } from './failures.ts'
 import { hostCheckResultSchema, type HostCheckResult } from './host-check.ts'
+import { captureSourceNameSchema, type CaptureSourceName } from './identity.ts'
 import { s, type Schema } from './schema.ts'
 import { variantSchema, type Variant } from './variant.ts'
 
 /**
  * A file saved during the test. `path` is relative to the run folder; `app` is the app it shows, when the run has a
  * config. `sessionId`, `attemptId` and `capturedAt` say which session of which attempt captured it, and when, as its
- * `EvidenceReference` does. A run recorded before sessions had ids has none of the three.
+ * `EvidenceReference` does. A run recorded before sessions had ids has none of the three. `capturedElapsedMs`, `source`
+ * and `observationId` are the reference's too, each present only when the reference has it.
  */
-export type Evidence = { kind: 'screenshot'; path: string; app?: string; sessionId?: string; attemptId?: string; capturedAt?: string }
+export type Evidence = {
+  kind: 'screenshot'
+  path: string
+  app?: string
+  sessionId?: string
+  attemptId?: string
+  capturedAt?: string
+  capturedElapsedMs?: number
+  source?: CaptureSourceName
+  captureReference?: CaptureReference
+  observationId?: string
+}
 
 /**
  * One attempt at a test. A test that runs once per target has one result per variant, so a result is unique by
@@ -89,6 +105,8 @@ export type Narrowed = { only: SourceLocation[]; kept: number; collected: number
  * one that no single test explains; tests it kept from running carry it too. `narrowed` is present when `test.only`
  * kept part of the files' tests, so the run checked less than they hold.
  */
+export type NativeInfo = { app: string; target: string; product: string; sessionId: string; identity: NativeExecutionRecord }
+
 export type RunResult = {
   schemaVersion: 1
   runId: string
@@ -101,6 +119,7 @@ export type RunResult = {
   durationMs: number
   browser: BrowserInfo | null
   browsers?: BrowserInfo[]
+  natives?: NativeInfo[]
   counts: Counts
   failure?: Failure
   narrowed?: Narrowed
@@ -140,6 +159,10 @@ const testResultSchema = s.object({
       sessionId: s.optional(s.string()),
       attemptId: s.optional(s.string()),
       capturedAt: s.optional(s.string()),
+      capturedElapsedMs: s.optional(count),
+      source: s.optional(captureSourceNameSchema),
+    captureReference: s.optional(s.object({ instance: s.string(), generation: s.number({ integer: true, min: 0 }), observationId: s.string() })),
+      observationId: s.optional(s.string()),
     }),
   ),
 })
@@ -164,6 +187,7 @@ export const runResultSchema: Schema<RunResult> = s.object({
   durationMs: duration,
   browser: s.nullable(browserInfoSchema),
   browsers: s.optional(s.array(browserInfoSchema)),
+  natives: s.optional(s.array(s.object({ app: s.string(), target: s.string(), product: s.string(), sessionId: s.string(), identity: nativeExecutionIdentitySchema }))),
   counts: countsSchema,
   failure: s.optional(failureSchema),
   narrowed: s.optional(
