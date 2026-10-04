@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import type { Readable } from 'node:stream'
 import type { LoadedStart } from '../config/loaded.ts'
 import type { Failure } from '../protocol/failures.ts'
@@ -12,10 +13,11 @@ import { dirname } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { closeGraceMs } from '../browser/contract.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
-import { errorMessage, failure } from '../protocol/failures.ts'
+import { errorMessage, failure, withAlso } from '../protocol/failures.ts'
 import { isWebUrl, withoutCredentials } from '../protocol/url.ts'
 import { errorCode } from '../shared/error-code.ts'
 import { describeExit } from '../shared/process-exit.ts'
+import { OwnedProcessGroup } from '../shared/process-ownership.ts'
 import { bounded } from './bounded.ts'
 
 export type AppServerOptions = {
@@ -34,7 +36,7 @@ export type AppServerOptions = {
 
 /**
  * A server `start` made ready. One that already answered is `reused` and never stopped. One Retest `started` has
- * the process id of its shell, which leads its own process group; `stop` ends that whole group.
+ * the process id of its shell. `stop` ends only processes whose launch ancestry and exact identity Retest recorded.
  */
 export type AppServerHandle =
   | { readonly status: 'reused'; readonly durationMs: number; stop(timeoutMs: number): Promise<void> }
@@ -53,7 +55,7 @@ export class AppServerError extends Error {
 
 const probeLimitMs = 1000
 const pollIntervalMs = 100
-const liveGroups = new Set<number>()
+const liveGroups = new Set<OwnedProcessGroup>()
 let exitHookInstalled = false
 
 /**
@@ -81,7 +83,7 @@ export function probeReady(url: string, timeoutMs: number): Promise<boolean> {
  * Makes an app's server ready within `timeoutMs`. When `ready` already answers, that server is reused. Otherwise
  * `command` runs in a shell, as its own process group, with its output in `logFile`, until `ready` answers. A
  * server that exits first, or never answers, is stopped and throws `AppServerError`. The parent's exit also ends
- * every group still running, as a last resort.
+ * every recorded process still running, after checking its exact identity again.
  *
  * @example const server = await startAppServer({ name: 'web', start, logFile }, 60_000); await server.stop(1000)
  */
@@ -118,30 +120,76 @@ type Launched = {
 async function launch({ name, start, logFile, redactor, hiddenVariables }: AppServerOptions): Promise<Launched> {
   const folder = checkFolder(name, start.cwd)
   mkdirSync(dirname(logFile), { recursive: true })
+  const log = openSync(logFile, 'a')
   const hidden = new Set(hiddenVariables)
   const env = Object.fromEntries(Object.entries(process.env).filter(([variable]) => !hidden.has(variable)))
-  const child = spawn(start.command, { shell: true, cwd: folder, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
-  const { pid } = child
-  if (pid === undefined) {
-    const [error] = await once(child, 'error')
-    throw new AppServerError(failure('setup_failed', `The server for ${name} could not start: ${errorMessage(error)}`))
-  }
-  own(pid)
-  const log = openSync(logFile, 'a')
-  let exit: ProcessExit | undefined
-  child.on('exit', (code, signal) => (exit ??= { code, signal }))
-  const closed = Promise.all([copyTo(child.stdout, log, redactor), copyTo(child.stderr, log, redactor)]).then(() => closeSync(log))
-  const stop = async (timeoutMs: number): Promise<void> => {
-    await stopGroup(pid, timeoutMs)
-    // A process that left the group may still hold the output open; the log is closed without it.
-    await bounded(closed, closeGraceMs)
-    child.stdout?.destroy()
-    child.stderr?.destroy()
-  }
-  const fail = async (problem: Failure): Promise<never> => {
-    await stop(closeGraceMs)
+  let child: ChildProcess
+  try {
+    child = spawn(start.command, { shell: true, cwd: folder, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (error) {
+    const problem = failure('setup_failed', `The server for ${name} could not start: ${outputErrorMessage(error, redactor)}`)
+    try {
+      closeSync(log)
+    } catch (closeError) {
+      throw new AppServerError(withAlso(problem, [failure('cleanup_failed', `The server's log could not close: ${outputErrorMessage(closeError, redactor)}`)]))
+    }
     throw new AppServerError(problem)
   }
+  const { pid } = child
+  if (pid === undefined) {
+    const failed = once(child, 'error')
+    let logFailure: Failure | undefined
+    try {
+      closeSync(log)
+    } catch (error) {
+      logFailure = failure('cleanup_failed', `The server's log could not close: ${outputErrorMessage(error, redactor)}`)
+    }
+    const [error] = await failed
+    const problem = failure('setup_failed', `The server for ${name} could not start: ${outputErrorMessage(error, redactor)}`)
+    throw new AppServerError(logFailure === undefined ? problem : withAlso(problem, [logFailure]))
+  }
+  const ownership = new OwnedProcessGroup(pid)
+  const ownershipProblems = ownership.capture()
+  own(ownership)
+  let exit: ProcessExit | undefined
+  child.on('exit', (code, signal) => (exit ??= { code, signal }))
+  const closed = Promise.allSettled([copyTo(child.stdout, log, redactor), copyTo(child.stderr, log, redactor)]).then((outputs) => {
+    const problems = outputs.flatMap((output) => output.status === 'rejected' ? [errorMessage(output.reason)] : [])
+    try {
+      closeSync(log)
+    } catch (error) {
+      problems.push(`The server's log could not close: ${outputErrorMessage(error, redactor)}`)
+    }
+    if (problems.length > 0) throw new Error(problems.join(' '))
+  })
+  // A server can fail its output before stop is called. Keep that rejection for stop without an unhandled rejection.
+  void closed.catch(() => undefined)
+  let stopping: Promise<void> | undefined
+  const stop = (timeoutMs: number): Promise<void> => {
+    stopping ??= (async () => {
+      const problems = [...ownershipProblems, ...await stopGroup(ownership, timeoutMs)]
+      const output = await bounded(closed, closeGraceMs)
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      if (output.status === 'timed_out') problems.push("The server's output did not close; cleanup completion is unknown.")
+      if (output.status === 'failed') problems.push(`The server's output could not close: ${errorMessage(output.error)}`)
+      // A process whose ownership could not be read must not keep the reporting process open indefinitely.
+      if (ownership.remains()) child.unref()
+      problems.push(...ownership.readProblems)
+      if (problems.length > 0) throw new AppServerError(failure('cleanup_failed', `Retest could not stop the server for ${name}: ${[...new Set(problems)].join(' ')}`))
+    })()
+    return stopping
+  }
+  const fail = async (problem: Failure): Promise<never> => {
+    try {
+      await stop(closeGraceMs)
+    } catch (error) {
+      const cleanup = error instanceof AppServerError ? error.failure : failure('cleanup_failed', errorMessage(error))
+      throw new AppServerError(withAlso(problem, [cleanup]))
+    }
+    throw new AppServerError(problem)
+  }
+  if (ownershipProblems.length > 0) return fail(failure('setup_failed', `The server for ${name} started, but Retest could not record its process ownership: ${ownershipProblems.join(' ')}`))
   return {
     pid,
     get exit() {
@@ -164,59 +212,85 @@ function checkFolder(name: string, cwd: string): string {
 // A stream holds back a tail that may be the start of a secret until it knows, and writes it when it closes.
 function copyTo(stream: Readable | null, log: number, redactor: Redactor | undefined): Promise<void> {
   if (stream === null) return Promise.resolve()
-  const redacted = redactor?.stream()
-  stream.setEncoding('utf8')
-  stream.on('data', (text: string) => writeSync(log, redacted === undefined ? text : redacted.write(text)))
-  stream.on('error', (error) => writeSync(log, `Retest could not read the server's output: ${errorMessage(error)}\n`))
-  const { promise, resolve } = Promise.withResolvers<void>()
-  stream.once('close', () => {
-    if (redacted !== undefined) writeSync(log, redacted.end())
-    resolve()
+  const { promise, resolve, reject } = Promise.withResolvers<void>()
+  let redacted: ReturnType<Redactor['stream']> | undefined
+  let problem: Error | undefined
+  const failOutput = (error: unknown): void => {
+    problem ??= new Error(`The server's output could not be saved: ${outputErrorMessage(error, redactor)}`)
+    // A failed write or redaction discards pending output, so a partial secret cannot be flushed afterwards.
+    try {
+      stream.destroy()
+    } catch {
+      // stop still has a bounded wait for a stream that could not be closed.
+    }
+  }
+  stream.on('data', (text: string) => {
+    if (problem !== undefined) return
+    try {
+      writeSync(log, redacted === undefined ? text : redacted.write(text))
+    } catch (error) {
+      failOutput(error)
+    }
   })
+  stream.on('error', failOutput)
+  stream.once('close', () => {
+    if (problem === undefined && redacted !== undefined) {
+      try {
+        writeSync(log, redacted.end())
+      } catch (error) {
+        problem = new Error(`The server's final output could not be saved: ${outputErrorMessage(error, redactor)}`)
+      }
+    }
+    if (problem === undefined) resolve()
+    else reject(problem)
+  })
+  try {
+    redacted = redactor?.stream()
+    stream.setEncoding('utf8')
+  } catch (error) {
+    failOutput(error)
+  }
   return promise
 }
 
-async function stopGroup(pid: number, timeoutMs: number): Promise<void> {
-  signalGroup(pid, 'SIGTERM')
-  if (!(await groupGoneWithin(pid, timeoutMs))) {
-    signalGroup(pid, 'SIGKILL')
-    await groupGoneWithin(pid, closeGraceMs)
+// A failed redactor must never turn a cleanup error containing a known value into an unredacted report.
+function outputErrorMessage(error: unknown, redactor: Redactor | undefined): string {
+  try {
+    const message = errorMessage(error)
+    return redactor === undefined ? message : redactor.redact(message)
+  } catch {
+    return 'The error could not be safely described.'
   }
-  liveGroups.delete(pid)
 }
 
-async function groupGoneWithin(pid: number, timeoutMs: number): Promise<boolean> {
+async function stopGroup(ownership: OwnedProcessGroup, timeoutMs: number): Promise<string[]> {
+  const problems = ownership.signal('SIGTERM')
+  let gone = await groupGoneWithin(ownership, timeoutMs)
+  if (!gone) {
+    problems.push(...ownership.signal('SIGKILL'))
+    gone = await groupGoneWithin(ownership, closeGraceMs)
+  }
+  if (gone) liveGroups.delete(ownership)
+  else problems.push('Recorded server processes or processes with unknown ownership are still running after cleanup.')
+  problems.push(...ownership.readProblems)
+  return problems
+}
+
+async function groupGoneWithin(ownership: OwnedProcessGroup, timeoutMs: number): Promise<boolean> {
   const deadline = new Deadline(timeoutMs)
-  while (groupAlive(pid)) {
+  while (ownership.remains()) {
     if (deadline.expired) return false
     await sleep(smallestBudget(20, deadline.remainingMs))
   }
   return true
 }
 
-function groupAlive(pid: number): boolean {
-  try {
-    process.kill(-pid, 0)
-    return true
-  } catch (error) {
-    return errorCode(error) === 'EPERM'
-  }
-}
-
-function signalGroup(pid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-pid, signal)
-  } catch (error) {
-    if (errorCode(error) !== 'ESRCH') throw error
-  }
-}
-
-function own(pid: number): void {
-  liveGroups.add(pid)
+function own(ownership: OwnedProcessGroup): void {
+  liveGroups.add(ownership)
   if (exitHookInstalled) return
   exitHookInstalled = true
-  // Runs synchronously as the parent exits, whatever ended it short of SIGKILL.
+  // Runs synchronously as the parent exits, with the same exact identity checks as ordinary cleanup.
   process.on('exit', () => {
-    for (const group of liveGroups) signalGroup(group, 'SIGKILL')
+    for (const group of liveGroups) group.signalNow('SIGKILL')
   })
 }

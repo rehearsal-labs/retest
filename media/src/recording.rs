@@ -1,4 +1,4 @@
-//! One recording: its queue, its encoder's process group, the thread that feeds one to the other, and a
+//! One recording: its queue, its owned encoder processes, the thread that feeds one to the other, and a
 //! watchdog.
 //!
 //! The encoder writes to a `.partial` file. Only an encoder that exits successfully makes it the video, through
@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use crate::encoder::{self, Capabilities, Codec, EncoderFailure, StderrTail};
 use crate::frame;
+use crate::process_ownership::Ownership;
 use crate::protocol::{
     EncoderExit, EndStatus, Ended, FrameCounts, FrameHeader, Gap, MAX_LISTED_GAPS, Reply, Started,
 };
@@ -27,11 +28,11 @@ use crate::timeline::{Placement, Timeline};
 
 /// How often an idle encoder thread checks that its encoder is still running.
 const IDLE_CHECK: Duration = Duration::from_millis(100);
-/// How long an encoder that broke its pipe, or was told to stop, gets to exit before its group is killed.
+/// How long an encoder that broke its pipe, or was told to stop, gets to confirm its exit.
 const EXIT_GRACE: Duration = Duration::from_secs(2);
 /// How often the watchdog looks at the deadline and the stall clock.
 const WATCH_INTERVAL: Duration = Duration::from_millis(20);
-/// How long the encoder's stderr reader may go on once the encoder's group is gone.
+/// How long the encoder's stderr reader may go on after cleanup.
 const STDERR_GRACE: Duration = Duration::from_secs(1);
 
 /// Everything a recording needs, checked by the server.
@@ -134,8 +135,9 @@ struct Shared {
     plan: RecordingPlan,
     queue: FrameQueue,
     child: Mutex<Child>,
-    /// The encoder's process group, whose id is the encoder's pid.
-    group: u32,
+    ownership: Mutex<Ownership>,
+    cleanup_problems: Mutex<Vec<String>>,
+    last_capture: Mutex<Instant>,
     ending: Mutex<Ending>,
     ending_changed: Condvar,
     receipt: Mutex<Receipt>,
@@ -174,12 +176,24 @@ impl Recording {
                 message: format!("{} could not be started: {error}", ffmpeg.display()),
                 exit: None,
             })?;
-        let group = child.id();
-        let (Some(stdin), Some(stderr)) = (child.stdin.take(), child.stderr.take()) else {
-            encoder::kill_group(group);
-            let _ = child.wait();
+        let encoder_pid = child.id();
+        let mut ownership = Ownership::new(encoder_pid);
+        let mut problems = ownership.capture();
+        if !problems.is_empty() {
+            drop(child.stdin.take());
+            let _ = encoder::wait_until(&mut child, &mut ownership, Instant::now() + EXIT_GRACE, &mut problems);
+            problems.extend(ownership.cleanup(EXIT_GRACE));
             return Err(EncoderFailure {
-                message: "the encoder's pipes could not be opened".to_owned(),
+                message: format!("encoder launch ownership was unknown; cleanup failed: {}", problems.join("; ")),
+                exit: None,
+            });
+        }
+        let (Some(stdin), Some(stderr)) = (child.stdin.take(), child.stderr.take()) else {
+            problems.extend(ownership.stop());
+            let _ = encoder::wait_until(&mut child, &mut ownership, Instant::now() + EXIT_GRACE, &mut problems);
+            problems.extend(ownership.cleanup(EXIT_GRACE));
+            return Err(EncoderFailure {
+                message: format!("the encoder's pipes could not be opened{}", cleanup_suffix(&problems)),
                 exit: None,
             });
         };
@@ -191,7 +205,7 @@ impl Recording {
             container: plan.codec.container().to_owned(),
             encoder: plan.codec.encoder().to_owned(),
             encoder_version: capabilities.version.clone(),
-            encoder_pid: group,
+            encoder_pid,
             path: plan.path.to_string_lossy().into_owned(),
             width: plan.width,
             height: plan.height,
@@ -206,7 +220,9 @@ impl Recording {
             queue: FrameQueue::new(plan.queue_frames, plan.queue_bytes),
             plan,
             child: Mutex::new(child),
-            group,
+            ownership: Mutex::new(ownership),
+            cleanup_problems: Mutex::new(Vec::new()),
+            last_capture: Mutex::new(Instant::now()),
             ending: Mutex::new(Ending::default()),
             ending_changed: Condvar::new(),
             receipt: Mutex::new(Receipt::default()),
@@ -221,7 +237,7 @@ impl Recording {
         if let Err(error) = watchdog {
             shared.abandon();
             return Err(EncoderFailure {
-                message: format!("the recording's watchdog could not start: {error}"),
+                message: shared.cleanup_message(format!("the recording's watchdog could not start: {error}")),
                 exit: None,
             });
         }
@@ -239,7 +255,7 @@ impl Recording {
             Err(error) => {
                 shared.abandon();
                 Err(EncoderFailure {
-                    message: format!("the encoder thread could not start: {error}"),
+                    message: shared.cleanup_message(format!("the encoder thread could not start: {error}")),
                     exit: None,
                 })
             }
@@ -302,7 +318,7 @@ impl Recording {
     }
 
     /// Finishes the recording: the encoder takes every queued frame and writes the container, all within the
-    /// recording's deadline, after which the watchdog stops the encoder's group.
+    /// recording's deadline, after which the watchdog stops verified encoder processes.
     pub fn finish(&mut self, end_timestamp_us: Option<u64>) {
         if self.finishing {
             return;
@@ -321,7 +337,7 @@ impl Recording {
     }
 
     /// Waits for the recording's thread and returns how the recording ended. A thread that failed before its
-    /// `ended` reply leaves the encoder's group killed and an `ended` reply that says so.
+    /// `ended` reply stops recorded encoder processes and reports any unknown cleanup.
     pub fn join(mut self, replies: &Replies) -> EndStatus {
         let status = self.thread.take().and_then(|thread| thread.join().ok());
         if let Some(status) = status {
@@ -330,9 +346,9 @@ impl Recording {
         self.shared.abandon();
         if !self.is_over() {
             self.shared.over.store(true, Ordering::Release);
-            let message =
-                "the recording failed inside the media process; its frame counts are lost"
-                    .to_owned();
+            let message = self.shared.cleanup_message(
+                "the recording failed inside the media process; its frame counts are lost".to_owned()
+            );
             replies.send(&Reply::Ended(ended_before_start(
                 &self.shared.plan.id,
                 EndStatus::EncoderFailed,
@@ -345,9 +361,8 @@ impl Recording {
 }
 
 impl Shared {
-    // Watches for a missed finishing deadline and a stalled write until the recording is done. Acting kills the
-    // encoder's whole group, which also breaks any write blocked on it; a reason is recorded only while the
-    // encoder still runs, since one that already exited ends by its own status.
+    // Watches for a missed deadline or a stalled write. Only recorded processes with a freshly verified
+    // identity are stopped; an unreadable status is unknown and is retained as a cleanup failure.
     fn watch(&self) {
         let mut ending = lock(&self.ending);
         while !ending.done {
@@ -355,7 +370,7 @@ impl Shared {
                 if ending.reason.is_none() && self.encoder_running() {
                     ending.reason = Some(reason);
                 }
-                encoder::kill_group(self.group);
+                self.stop_encoder();
                 return;
             }
             ending = match self.ending_changed.wait_timeout(ending, WATCH_INTERVAL) {
@@ -384,41 +399,101 @@ impl Shared {
             if ending.reason.is_none() && self.encoder_running() {
                 ending.reason = Some(reason);
             }
-            encoder::kill_group(self.group);
+            self.stop_encoder();
         }
         drop(ending);
         self.queue.close();
     }
 
-    // Ends a recording whose threads could not start or failed: its watchdog stops, its encoder's group is
-    // killed, and its unfinished file goes.
+    // Ends a recording whose threads could not start or failed. An uncertain cleanup keeps its partial file.
     fn abandon(&self) {
         self.mark_done();
-        encoder::kill_group(self.group);
-        let _ = lock(&self.child).wait();
+        self.stop_encoder();
+        let _ = self.wait_for_encoder(Some(EXIT_GRACE));
+        self.finish_cleanup();
         self.queue.close();
-        let _ = fs::remove_file(self.plan.partial_path());
+        if lock(&self.cleanup_problems).is_empty() {
+            let _ = fs::remove_file(self.plan.partial_path());
+        }
+    }
+
+    fn note_cleanup(&self, problems: Vec<String>) {
+        let mut kept = lock(&self.cleanup_problems);
+        for problem in problems {
+            if !kept.contains(&problem) {
+                kept.push(problem);
+            }
+        }
+    }
+
+    fn capture_encoder(&self) {
+        let mut captured = lock(&self.last_capture);
+        if captured.elapsed() < IDLE_CHECK {
+            return;
+        }
+        *captured = Instant::now();
+        drop(captured);
+        let problems = lock(&self.ownership).capture();
+        self.note_cleanup(problems);
+    }
+
+    fn stop_encoder(&self) {
+        let problems = lock(&self.ownership).stop();
+        self.note_cleanup(problems);
+    }
+
+    fn finish_cleanup(&self) {
+        let problems = lock(&self.ownership).cleanup(EXIT_GRACE);
+        self.note_cleanup(problems);
+    }
+
+    fn cleanup_message(&self, message: String) -> String {
+        format!("{message}{}", cleanup_suffix(&lock(&self.cleanup_problems)))
     }
 
     fn encoder_running(&self) -> bool {
-        matches!(lock(&self.child).try_wait(), Ok(None))
+        match lock(&self.child).try_wait() {
+            Ok(None) => true,
+            Ok(Some(_)) => false,
+            Err(_) => {
+                self.note_cleanup(vec!["the encoder exit could not be read; completion is unknown".to_owned()]);
+                true
+            }
+        }
     }
 
     fn encoder_status(&self) -> Option<ExitStatus> {
-        lock(&self.child).try_wait().ok().flatten()
+        self.capture_encoder();
+        match lock(&self.child).try_wait() {
+            Ok(status) => status,
+            Err(_) => {
+                self.note_cleanup(vec!["the encoder exit could not be read; completion is unknown".to_owned()]);
+                None
+            }
+        }
     }
 
-    // Waits for the encoder to exit. With a `limit`, kills its group once the limit passes; without one, the
-    // watchdog or a shutdown is what stops it.
+    // A failed status reading ends the wait. After a stop, the exit grace is bounded and no numeric group
+    // or unbounded Child::wait can turn an unanswered cleanup into success.
     fn wait_for_encoder(&self, limit: Option<Duration>) -> Option<ExitStatus> {
         let start = Instant::now();
+        let limit = limit.unwrap_or(self.plan.deadline.saturating_add(EXIT_GRACE));
+        let mut stopped_at = None;
         loop {
             if let Some(status) = self.encoder_status() {
                 return Some(status);
             }
-            if limit.is_some_and(|limit| start.elapsed() >= limit) {
-                encoder::kill_group(self.group);
-                return lock(&self.child).wait().ok();
+            if lock(&self.cleanup_problems).iter().any(|problem| problem.starts_with("the encoder exit could not be read")) {
+                return None;
+            }
+            if let Some(stopped_at) = stopped_at {
+                if Instant::now().duration_since(stopped_at) >= EXIT_GRACE {
+                    self.note_cleanup(vec!["the encoder did not confirm an exit after cleanup".to_owned()]);
+                    return None;
+                }
+            } else if start.elapsed() >= limit {
+                self.stop_encoder();
+                stopped_at = Some(Instant::now());
             }
             thread::sleep(Duration::from_millis(5));
         }
@@ -442,6 +517,14 @@ impl Shared {
     }
 }
 
+fn cleanup_suffix(problems: &[String]) -> String {
+    if problems.is_empty() {
+        String::new()
+    } else {
+        format!("; cleanup failed or completion is unknown: {}", problems.join("; "))
+    }
+}
+
 // A test sets this to prove a recording whose thread fails still ends promptly. Release builds have no hook.
 #[cfg(debug_assertions)]
 fn fail_if_a_test_asks() {
@@ -457,7 +540,7 @@ fn fail_if_a_test_asks() {}
 fn feed_encoder(
     shared: &Shared,
     stdin: ChildStdin,
-    stderr_thread: JoinHandle<()>,
+    stderr_thread: JoinHandle<Result<(), String>>,
     replies: &Replies,
 ) -> EndStatus {
     let plan = &shared.plan;
@@ -543,20 +626,22 @@ fn feed_encoder(
     let status = match flow {
         Flow::Closed => shared.wait_for_encoder(None),
         Flow::NoFrames => {
-            encoder::kill_group(shared.group);
+            shared.stop_encoder();
             shared.wait_for_encoder(Some(EXIT_GRACE))
         }
         Flow::WriteFailed | Flow::EncoderExited | Flow::Interrupted => {
             shared.wait_for_encoder(Some(EXIT_GRACE))
         }
     };
-    // Anything the encoder left running goes with it. The group's id stays reserved while any member lives, so
-    // this reaches only the encoder's own processes, and once they are gone its stderr closes. The recording is
-    // marked done before the stderr wait, so neither the watchdog nor a shutdown signals the group again once
-    // it may be empty and its id free for another process.
-    encoder::kill_group(shared.group);
+    // Recorded descendants retain their launch identities after their parent exits. A group number alone
+    // never authorizes cleanup, and a reader that remains open makes completion unknown.
+    shared.finish_cleanup();
     let ending = shared.mark_done();
-    let _ = encoder::join_within(stderr_thread, STDERR_GRACE);
+    match encoder::join_within(stderr_thread, STDERR_GRACE) {
+        Some(Ok(())) => {}
+        Some(Err(error)) => shared.note_cleanup(vec![error]),
+        None => shared.note_cleanup(vec!["the encoder stderr did not close; cleanup completion is unknown".to_owned()]),
+    }
     shared.queue.close();
     let ended = conclude(shared, flow, status, &ending, progress);
     let end_status = ended.status;
@@ -606,7 +691,8 @@ fn conclude(
     };
     let described = status.map_or_else(|| "an unknown status".to_owned(), encoder::describe_status);
     let mut kept_partial = None;
-    let (end_status, message) = match (ending.reason, flow) {
+    let problems = lock(&shared.cleanup_problems).clone();
+    let (mut end_status, mut message) = match (ending.reason, flow) {
         (Some(StopReason::Deadline), _) => {
             let message = format!(
                 "finishing took longer than {} ms; the encoder was stopped",
@@ -629,7 +715,7 @@ fn conclude(
             EndStatus::NoFrames,
             "no frame could be shown, so there is no video".to_owned(),
         ),
-        (None, Flow::Closed) if status.is_some_and(|status| status.success()) => {
+        (None, Flow::Closed) if status.is_some_and(|status| status.success()) && problems.is_empty() => {
             let placed = place_video(plan);
             kept_partial = placed.kept_partial;
             (placed.status, placed.message)
@@ -647,7 +733,16 @@ fn conclude(
             format!("the encoder ended with {described} before the recording finished"),
         ),
     };
-    if end_status != EndStatus::Ok && kept_partial.is_none() {
+    if !problems.is_empty() {
+        if end_status == EndStatus::Ok || end_status == EndStatus::NoFrames {
+            end_status = EndStatus::EncoderFailed;
+        }
+        message.push_str(&cleanup_suffix(&problems));
+        if plan.partial_path().exists() {
+            kept_partial = Some(plan.partial_path().to_string_lossy().into_owned());
+        }
+    }
+    if end_status != EndStatus::Ok && kept_partial.is_none() && problems.is_empty() {
         let _ = fs::remove_file(plan.partial_path());
     }
     let receipt = lock(&shared.receipt);

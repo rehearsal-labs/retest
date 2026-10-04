@@ -1,6 +1,5 @@
 import type { ResolveFnOutput, ResolveHookContext, ResolveHookSync } from 'node:module'
 import type { PathAlias, ProjectPaths, TsconfigRead } from './tsconfig.ts'
-import { existsSync } from 'node:fs'
 import { dirname, extname, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { errorCode } from '../shared/error-code.ts'
@@ -13,11 +12,12 @@ export const playwrightArgument: string = '--playwright'
 export const playwrightSpecifiers: ReadonlySet<string> = new Set(['@playwright/test', 'playwright/test'])
 
 // Tried in order after a relative import that names no file, as TypeScript and Playwright's own loader resolve it.
-const suffixes = ['.ts', '.js', '.mts', '.mjs', '/index.ts', '/index.js']
-const indexes = ['/index.ts', '/index.js']
-// tsc reads an import of a .js file as the .ts source beside it, when there is one, as `module: nodenext` writes them.
+const suffixes = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx']
+const indexes = ['/index.ts', '/index.tsx', '/index.js', '/index.jsx']
+// tsc reads a .js import as its .ts or .tsx source before JavaScript; a JSX source is refused when found.
 const sourceExtensions: readonly (readonly [string, string])[] = [
   ['.js', '.ts'],
+  ['.js', '.tsx'],
   ['.mjs', '.mts'],
 ]
 const jsxExtensions = ['.tsx', '.jsx']
@@ -40,9 +40,10 @@ export type ResolverOptions = {
 
 /**
  * The resolve hook for a project's files. A relative import written without its extension, or a folder, resolves to the
- * file or the folder's index; one written with `.js` resolves to the `.ts` source beside it when there is one, as `tsc`
- * reads it. A bare import that a `paths` pattern of the importing file's tsconfig matches resolves to the first of its
- * targets that is a file, and otherwise as Node resolves it. An import that cannot be found says which tsconfig governed
+ * file or the folder's index; one written with `.js` resolves to the `.ts` or `.tsx` source beside it when there is one,
+ * as `tsc` reads it. A JSX source is refused before any JavaScript sibling can be loaded. A bare import that a `paths`
+ * pattern of the importing file's tsconfig matches resolves to the first of its targets that is a file, and otherwise
+ * as Node resolves it. An import that cannot be found says which tsconfig governed
  * it. In a run of Playwright test files, `@playwright/test` resolves to Retest's own subpath. Imports from node_modules
  * and from Retest's own modules resolve as Node resolves them.
  *
@@ -59,9 +60,10 @@ export function projectResolver(options: ResolverOptions): ResolveHookSync {
     if (tsconfig !== undefined && !tsconfig.ok) throw new Error(tsconfig.failure.message)
     const paths = tsconfig?.paths
     try {
-      return resolveImport({ specifier, importer, paths, rootFolder: options.rootFolder }, context, nextResolve)
+      return resolveImport({ specifier, importer, paths }, context, nextResolve)
     } catch (error) {
-      throw paths === undefined ? error : namingTsconfig(error, paths.file)
+      const problem = error instanceof JsxFileError ? jsxFailure(specifier, error.path, options.rootFolder) : error
+      throw paths === undefined ? problem : namingTsconfig(problem, paths.file)
     }
   }
 }
@@ -100,10 +102,10 @@ export function isRelative(specifier: string): boolean {
   return specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../')
 }
 
-type ProjectImport = { specifier: string; importer: string; paths: ProjectPaths | undefined; rootFolder: string | undefined }
+type ProjectImport = { specifier: string; importer: string; paths: ProjectPaths | undefined }
 
-function resolveImport({ specifier, importer, paths, rootFolder }: ProjectImport, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput {
-  if (isRelative(specifier)) return resolveRelative(specifier, context, nextResolve, rootFolder)
+function resolveImport({ specifier, importer, paths }: ProjectImport, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput {
+  if (isRelative(specifier)) return resolveFile(specifier, context, nextResolve)
   const match = paths !== undefined && isBare(specifier) ? matchAlias(paths.aliases, specifier) : undefined
   if (match === undefined || paths === undefined) return nextResolve(specifier, context)
   return resolveAlias({ specifier, match, tsconfig: paths.file, importer }, context, nextResolve)
@@ -116,37 +118,26 @@ function projectImporter(parentUrl: string | undefined, ownFolderUrl: string): s
   return path.split(sep).includes('node_modules') ? undefined : path
 }
 
-function resolveRelative(specifier: string, context: ResolveHookContext, nextResolve: NextResolve, rootFolder: string | undefined): ResolveFnOutput {
-  try {
-    return resolveFile(specifier, context, nextResolve)
-  } catch (error) {
-    const jsx = isNotFound(error) ? jsxFileFor(specifier, context.parentURL) : undefined
-    if (jsx === undefined) throw error
-    const shown = rootFolder !== undefined && isInside(jsx, rootFolder) ? relativePosixPath(rootFolder, jsx) : jsx
-    throw Object.assign(new Error(`${specifier} names ${shown}, a ${extname(jsx)} file. Retest does not load JSX.`), { code: 'ERR_MODULE_NOT_FOUND' })
-  }
-}
-
-// The .ts source a .js names, when there is one; then the specifier as written; then, for an import that names no
+// The .ts or .tsx source a .js names, when there is one; then the specifier as written; then, for an import that names no
 // file, each suffix, or for a folder, its index. A failure other than a missing file is the import's own, thrown at once.
 function resolveFile(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput {
   for (const [written, source] of sourceExtensions) {
     if (!specifier.endsWith(written)) continue
     try {
-      return nextResolve(`${specifier.slice(0, -written.length)}${source}`, context)
+      return resolveCandidate(`${specifier.slice(0, -written.length)}${source}`, context, nextResolve)
     } catch (error) {
       if (!isNotFound(error)) throw error
     }
   }
   try {
-    return nextResolve(specifier, context)
+    return resolveCandidate(specifier, context, nextResolve)
   } catch (error) {
     if (!isNotFound(error)) throw error
     for (const candidate of candidates(specifier)) {
       try {
-        return nextResolve(candidate, context)
-      } catch {
-        // The next candidate may name the file.
+        return resolveCandidate(candidate, context, nextResolve)
+      } catch (error) {
+        if (!isNotFound(error)) throw error
       }
     }
     throw error
@@ -189,15 +180,28 @@ function namingTsconfig(error: unknown, tsconfig: string): unknown {
   return Object.assign(new Error(message), { code: errorCode(error) })
 }
 
-// The JSX file beside the importer that an import without its extension names, which Retest does not load.
-function jsxFileFor(specifier: string, parentUrl: string | undefined): string | undefined {
-  if (parentUrl === undefined) return undefined
-  const base = new URL(specifier, parentUrl)
-  for (const extension of jsxExtensions) {
-    const file = fileURLToPath(`${base.href}${extension}`)
-    if (existsSync(file)) return file
+// Kept distinct from a missing file: an alias must never skip an unsupported source for a later target.
+class JsxFileError extends Error {
+  readonly path: string
+
+  constructor(path: string) {
+    super('Retest does not load JSX.')
+    this.path = path
   }
-  return undefined
+}
+
+function resolveCandidate(specifier: string, context: ResolveHookContext, nextResolve: NextResolve): ResolveFnOutput {
+  const resolved = nextResolve(specifier, context)
+  if (resolved.url.startsWith('file:')) {
+    const path = fileURLToPath(resolved.url)
+    if (jsxExtensions.includes(extname(path))) throw new JsxFileError(path)
+  }
+  return resolved
+}
+
+function jsxFailure(specifier: string, path: string, rootFolder: string | undefined): Error {
+  const shown = rootFolder !== undefined && isInside(path, rootFolder) ? relativePosixPath(rootFolder, path) : path
+  return Object.assign(new Error(`${specifier} names ${shown}, a ${extname(path)} file. Retest does not load JSX.`), { code: 'ERR_MODULE_NOT_FOUND' })
 }
 
 function isNotFound(error: unknown): boolean {

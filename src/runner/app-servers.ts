@@ -43,9 +43,10 @@ export class AppServers {
     return ready
   }
 
-  /** Stops every server the run started: SIGTERM to its group, then SIGKILL after the close grace. */
-  async stop(): Promise<void> {
-    await Promise.all(this.#started.splice(0).map((server) => server.stop(closeGraceMs)))
+  /** Stops every server the run started, retaining every cleanup failure after all stops settle. */
+  async stop(): Promise<Failure[]> {
+    const stopped = await Promise.allSettled(this.#started.splice(0).map((server) => server.stop(closeGraceMs)))
+    return stopped.flatMap((entry): Failure[] => entry.status === 'fulfilled' ? [] : [entry.reason instanceof AppServerError ? entry.reason.failure : failure('cleanup_failed', `Stopping an app server: ${errorMessage(entry.reason)}`)])
   }
 
   async #start({ name, start }: LoadedApp): Promise<Failure | undefined> {

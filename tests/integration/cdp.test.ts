@@ -18,12 +18,14 @@ import { CdpClosedError, CdpDisconnectedError } from '../../src/browser/cdp/erro
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
+import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 
 const DEFAULT_BROWSER = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
 type Browser = {
   child: ChildProcess
   pid: number
+  ownership: OwnedProcessGroup
   profile: string
   connection: CdpConnection
   diagnostics: CdpDiagnostic[]
@@ -61,8 +63,10 @@ async function launch(t: TestContext): Promise<Browser> {
   const exited = once(child, 'exit')
   const { pid } = child
   assert.ok(pid !== undefined)
+  const ownership = new OwnedProcessGroup(pid)
+  assert.deepEqual(ownership.capture(), [])
   t.after(async () => {
-    await stopGroup(pid, exited)
+    await stopGroup(pid, exited, ownership)
     await rm(profile, { recursive: true, force: true })
   })
   t.diagnostic(`browser pid and process group ${pid}, profile ${profile}`)
@@ -78,11 +82,11 @@ async function launch(t: TestContext): Promise<Browser> {
     onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
   })
   t.after(() => connection.close())
-  return { child, pid, profile, connection, diagnostics, exited, stderr: () => log }
+  return { child, pid, ownership, profile, connection, diagnostics, exited, stderr: () => log }
 }
 
-async function stopGroup(pid: number, exited: Promise<unknown>): Promise<void> {
-  signalGroup(pid, 'SIGKILL')
+async function stopGroup(pid: number, exited: Promise<unknown>, ownership: OwnedProcessGroup): Promise<void> {
+  assert.deepEqual(ownership.signal('SIGKILL'), [])
   await exited
   await until(() => !processGroupExists(pid), 5000, `process group ${pid} to end`)
 }
@@ -198,7 +202,7 @@ test('drives Chrome over the debugging pipe, and a killed browser rejects its pe
   await session.send('Runtime.evaluate', { expression: '1 + 1', returnByValue: true })
   const disconnected = new Promise<string>((resolve) => connection.onDisconnect(resolve))
   const detached = new Promise<string>((resolve) => session.onDetach(resolve))
-  process.kill(-browser.pid, 'SIGKILL')
+  assert.deepEqual(browser.ownership.signal('SIGKILL'), [])
 
   const error = await hanging
   assert.ok(error instanceof CdpDisconnectedError, String(error))

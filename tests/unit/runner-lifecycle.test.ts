@@ -590,7 +590,7 @@ describe('the child process', () => {
     const record = await runSupportFiles(['foreign-event.retest.ts'])
     const test = testNamed(record.result, 'reports a step of another test')
     assert.equal(test.failure?.class, 'test_error')
-    assert.match(test.failure?.message ?? '', /^The process for this file sent step\.started for "someone else" \(attempt attempt-0\) while ".*reports a step of another test" \(attempt [a-z0-9]{10}\) was running\.$/)
+    assert.equal(test.failure?.message, 'The process for this file sent step.started for an inactive test attempt.')
     assert.equal(testNamed(record.result, 'never gets a turn').status, 'not_run')
     assert.equal(eventsOfType(record.events, 'step.started').length, 0, 'the event is not recorded')
     assert.ok(performance.now() - started < 2000, 'the test did not wait for its timeout')

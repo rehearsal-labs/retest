@@ -8,7 +8,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import type { Failure } from '../../src/protocol/failures.ts'
 import { BrowserError } from '../../src/browser/browser-error.ts'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
+import { signalGroup, signalRecordedProcess } from '../../src/browser/chromium-process.ts'
+import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { closeGraceMs } from '../../src/browser/contract.ts'
 import {
   assertOk,
@@ -133,7 +134,7 @@ test('a killed browser tells each disconnect listener once, including one added 
   })
   const removed = browser.onDisconnect(() => reasons.push('removed'))
   removed()
-  process.kill(-browser.pid, 'SIGKILL')
+  signalGroup(browser.pid, 'SIGKILL')
   await within(heard.promise, 5000, 'the listener never heard of the disconnect')
   assert.equal(browser.connected, false)
   const late = new Promise<string>((resolve) => browser.onDisconnect(resolve))
@@ -151,7 +152,7 @@ test('killing the browser while an action waits for its element fails as a lost 
   assertOk(await goto(page, '/'))
   const clicking = timed(click(page, 'far', 10_000))
   await awaitPosts(site, '/looked', 1)
-  process.kill(-browser.pid, 'SIGKILL')
+  signalGroup(browser.pid, 'SIGKILL')
   const { value, ms } = await clicking
   const failure = failureOf(value)
   assert.equal(failure.class, 'session_lost')
@@ -166,7 +167,7 @@ test('killing the browser after the press was sent leaves the outcome unknown', 
   assertOk(await goto(page, '/'))
   const clicking = click(page, 'freeze', 10_000)
   await awaitPosts(site, '/pressed', 1)
-  process.kill(-browser.pid, 'SIGKILL')
+  signalGroup(browser.pid, 'SIGKILL')
   const failure = failureOf(await clicking)
   assert.equal(failure.class, 'outcome_unknown')
   assert.match(failure.message, /^Retest lost the page after it began to click getByTestId\('freeze'\), so it cannot tell/)
@@ -260,7 +261,7 @@ test('once the browser is gone, commands fail at once, new pages are refused and
   const browser = await launch(t)
   const profile = await profileOf(browser.pid)
   const page = await openPage(t, browser)
-  process.kill(-browser.pid, 'SIGKILL')
+  signalGroup(browser.pid, 'SIGKILL')
   await waitForGroupEnd(browser.pid)
   await within(new Promise((resolve) => browser.onDisconnect(resolve)), 5000, 'the browser never reported the disconnect')
   const { value, ms } = await timed(observe(page, 'anything').catch(() => undefined))
@@ -320,7 +321,7 @@ test('a page whose renderer crashes fails the command waiting on it at once, and
     .filter((line) => line.includes('--type=renderer'))
     .map((line) => Number(line.trim().split(/\s+/)[0]))
   assert.ok(renderers.length > 0, 'the page has a renderer process')
-  for (const pid of renderers) process.kill(pid, 'SIGKILL')
+  for (const pid of renderers) signalRecordedProcess(browser.pid, pid, 'SIGKILL')
 
   const { value, ms } = await reading
   assert.ok(ms < 5000, `the read waiting on the crashed page should fail at once, took ${ms} ms of 10000`)
@@ -385,17 +386,23 @@ async function launchInChild(t: TestContext, mode: 'exit' | 'wait') {
     env: { ...process.env, RETEST_BROWSER: browserPath(), RETEST_LOG: join(folder, 'browser.log'), RETEST_MODE: mode },
   })
   const exited = once(child, 'exit')
-  t.after(() => child.kill('SIGKILL'))
+  assert.ok(child.pid !== undefined)
+  const ownership = new OwnedProcessGroup(child.pid)
+  assert.deepEqual(ownership.capture(), [])
+  t.after(() => assert.deepEqual(ownership.signal('SIGKILL'), []))
   const [line] = await once(child.stdout, 'data')
   const pid = Number(String(line).trim())
   assert.ok(Number.isInteger(pid) && pid > 0, `the child printed ${String(line)}`)
+  assert.deepEqual(ownership.capture(), [])
+  const browserOwnership = ownership.groupFor(pid)
+  assert.ok(browserOwnership !== undefined, 'the reported browser was recorded as a descendant of the launched child')
   const profile = await profileOf(pid)
   t.after(async () => {
-    signalGroup(pid, 'SIGKILL')
+    assert.deepEqual(browserOwnership.signal('SIGKILL'), [])
     await rm(profile, { recursive: true, force: true })
   })
   t.diagnostic(`child ${child.pid} launched browser ${pid} with profile ${profile}`)
-  return { child, exited, pid, profile }
+  return { child, exited, pid, profile, ownership }
 }
 
 test('when the owning process exits without closing the browser, the browser group is killed', async (t) => {
@@ -408,15 +415,16 @@ test('when the owning process exits without closing the browser, the browser gro
   assert.equal(existsSync(profile), false)
 })
 
-test('when the owning process is killed outright, the browser exits because its pipe closed, and the next launch removes its profile', async (t) => {
-  const { child, exited, pid, profile } = await launchInChild(t, 'wait')
+test('when the owning process is killed outright, the browser exits because its pipe closed, and the next launch retains its profile', async (t) => {
+  const { child, exited, pid, profile, ownership } = await launchInChild(t, 'wait')
   assert.match(profile, new RegExp(`/retest-profile-${child.pid}-[A-Za-z0-9]+$`), 'the profile names the process that owns it')
+  assert.ok(child.pid !== undefined && ownership.verifiedIdentity(child.pid) !== undefined, 'the launched Retest process still has its recorded identity')
   child.kill('SIGKILL')
   await exited
   await waitForGroupEnd(pid, 10_000)
   assert.deepEqual(await processesUsing(profile), [])
   assert.equal(existsSync(profile), true, 'nothing was left to remove it')
   const next = await launch(t)
-  assert.equal(existsSync(profile), false, 'the next launch removed the profile of the process that is gone')
+  assert.equal(existsSync(profile), true, 'a later launch cannot prove the old profile is still disposable')
   assert.match(await profileOf(next.pid), new RegExp(`/retest-profile-${process.pid}-[A-Za-z0-9]+$`))
 })

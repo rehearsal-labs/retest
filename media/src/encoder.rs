@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::process_ownership::Ownership;
 use crate::protocol::EncoderExit;
 
 /// How many of the encoder's last lines a failure carries, and how long each may be.
@@ -26,7 +27,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How much of a listing is kept. ffmpeg's encoder list is about 25 kB; the rest of a longer one is read and
 /// thrown away, so the encoder never blocks on a full pipe.
 const LISTING_BYTES: usize = 1024 * 1024;
-/// How long reading an encoder's output may go on after the encoder's group was killed.
+/// How long an encoder or its output reader gets to finish after cleanup.
 const READER_GRACE: Duration = Duration::from_secs(2);
 
 /// What the encoder can do, as it told us.
@@ -174,8 +175,7 @@ pub fn encode_arguments(
     arguments
 }
 
-/// Starts the encoder as the leader of a process group of its own, so a stop reaches anything it started too,
-/// such as the real ffmpeg behind a wrapper script.
+/// Starts the encoder in its own process group. Ownership is recorded separately before any cleanup signal.
 pub fn spawn_in_group(
     ffmpeg: &Path,
     arguments: &[OsString],
@@ -189,20 +189,6 @@ pub fn spawn_in_group(
         .stdout(stdout)
         .stderr(Stdio::piped())
         .spawn()
-}
-
-/// Kills every process in the group `group` leads. A group that is already gone needs nothing.
-pub fn kill_group(group: u32) {
-    let Ok(group) = libc::pid_t::try_from(group) else {
-        return;
-    };
-    if group <= 1 {
-        return;
-    }
-    // SAFETY: kill(2) takes plain integers and touches no memory of ours; a negative pid names a process group.
-    unsafe {
-        libc::kill(-group, libc::SIGKILL);
-    }
 }
 
 /// Waits up to `limit` for a thread to finish, and joins it if it did. A thread still running is left to end
@@ -266,22 +252,25 @@ fn listing(ffmpeg: &Path, arguments: &[&str], asked: &str) -> Result<Listing, En
                 exit: None,
             }
         })?;
-    let group = child.id();
+    let mut ownership = Ownership::new(child.id());
+    let mut problems = ownership.capture();
     let stdout = child.stdout.take().map(read_bounded);
     let stderr = child.stderr.take().map(read_bounded);
-    let status = wait_until(&mut child, Instant::now() + PROBE_TIMEOUT);
-    kill_group(group);
-    let stdout = stdout
-        .and_then(|reader| join_within(reader, READER_GRACE))
-        .unwrap_or_default();
-    let stderr = stderr
-        .and_then(|reader| join_within(reader, READER_GRACE))
-        .unwrap_or_default();
+    let status = wait_until(&mut child, &mut ownership, Instant::now() + PROBE_TIMEOUT, &mut problems);
+    problems.extend(ownership.cleanup(READER_GRACE));
+    let stdout = read_listing(stdout, "standard output", &mut problems);
+    let stderr = read_listing(stderr, "standard error", &mut problems);
     let exit = EncoderExit {
         exit_code: status.and_then(|status| status.code()),
         signal: status.and_then(signal_of),
         stderr: last_lines(&stderr),
     };
+    if !problems.is_empty() {
+        return Err(EncoderFailure {
+            message: format!("{} could not safely answer for {asked}: cleanup or output was unknown: {}", ffmpeg.display(), problems.join("; ")),
+            exit: Some(exit),
+        });
+    }
     match status {
         Some(status) if status.success() => Ok(Listing {
             stdout,
@@ -352,9 +341,8 @@ pub fn lists_format(listing: &str, format: &str) -> FormatSupport {
     support
 }
 
-// Reads a stream to its end, keeping its first `LISTING_BYTES`. A broken pipe ends the listing; what arrived
-// before it is still the answer.
-fn read_bounded(mut stream: impl Read + Send + 'static) -> JoinHandle<String> {
+// Reads a stream to its end, keeping its first `LISTING_BYTES`; a failed reading is never a complete answer.
+fn read_bounded(mut stream: impl Read + Send + 'static) -> JoinHandle<Result<String, String>> {
     thread::spawn(move || {
         let mut kept = Vec::new();
         let mut chunk = [0u8; 8192];
@@ -366,25 +354,57 @@ fn read_bounded(mut stream: impl Read + Send + 'static) -> JoinHandle<String> {
                     kept.extend_from_slice(&chunk[..read.min(room)]);
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => break,
+                Err(_) => return Err("the encoder output could not be read to its end".to_owned()),
             }
         }
-        String::from_utf8_lossy(&kept).into_owned()
+        Ok(String::from_utf8_lossy(&kept).into_owned())
     })
 }
 
-/// Waits for `child` until `deadline`, then kills it. Returns its status, or none if it would not even die.
-pub fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+fn read_listing(
+    reader: Option<JoinHandle<Result<String, String>>>,
+    stream: &str,
+    problems: &mut Vec<String>,
+) -> String {
+    match reader.and_then(|reader| join_within(reader, READER_GRACE)) {
+        Some(Ok(text)) => text,
+        Some(Err(error)) => { problems.push(error); String::new() }
+        None => {
+            problems.push(format!("the encoder's {stream} did not close; completion is unknown"));
+            String::new()
+        }
+    }
+}
+
+/// Waits until the deadline, then stops only recorded processes and gives them a bounded exit grace.
+pub fn wait_until(
+    child: &mut Child,
+    ownership: &mut Ownership,
+    deadline: Instant,
+    problems: &mut Vec<String>,
+) -> Option<ExitStatus> {
+    let mut stop_deadline = None;
+    let mut captured = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
-            Ok(None) => {
-                kill_group(child.id());
-                return child.wait().ok();
-            }
-            Err(_) => return None,
+            Err(_) => { problems.push("the encoder exit could not be read".to_owned()); return None; }
+            Ok(None) => {}
         }
+        if captured.elapsed() >= Duration::from_millis(100) {
+            problems.extend(ownership.capture());
+            captured = Instant::now();
+        }
+        if let Some(stop_deadline) = stop_deadline {
+            if Instant::now() >= stop_deadline {
+                problems.push("the encoder did not confirm an exit after cleanup".to_owned());
+                return None;
+            }
+        } else if Instant::now() >= deadline {
+            problems.extend(ownership.stop());
+            stop_deadline = Some(Instant::now() + READER_GRACE);
+        }
+        thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -435,7 +455,7 @@ pub struct StderrTail {
 impl StderrTail {
     /// Reads `stream` until it ends, keeping its last lines. A line longer than the clip is cut as it arrives,
     /// so a stream with no line breaks costs no more memory than one line.
-    pub fn follow(&self, mut stream: impl Read + Send + 'static) -> JoinHandle<()> {
+    pub fn follow(&self, mut stream: impl Read + Send + 'static) -> JoinHandle<Result<(), String>> {
         let lines = Arc::clone(&self.lines);
         thread::spawn(move || {
             let keep = |line: &[u8]| {
@@ -459,7 +479,7 @@ impl StderrTail {
                     Ok(0) => break,
                     Ok(read) => read,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
+                    Err(_) => return Err("the encoder stderr could not be read to its end".to_owned()),
                 };
                 for &byte in &chunk[..read] {
                     if byte == b'\n' || byte == b'\r' {
@@ -471,6 +491,7 @@ impl StderrTail {
                 }
             }
             keep(&line);
+            Ok(())
         })
     }
 
@@ -612,7 +633,8 @@ mod tests {
         let endless = std::io::repeat(b'x').take(10 * 1024 * 1024);
         tail.follow(endless.chain(&b"\nlast line\n"[..]))
             .join()
-            .expect("the reader ends");
+            .expect("the reader ends")
+            .expect("the output is complete");
         let lines = tail.lines();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].chars().count(), TAIL_LINE_CHARACTERS);

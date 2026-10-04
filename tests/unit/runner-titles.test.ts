@@ -29,7 +29,7 @@ function bodies<Type extends EventBody['type']>(run: ScriptedTest, type: Type): 
 
 // A command sent from inside a step, as the test process sends it.
 function commandIn(run: ScriptedTest, id: number, command: PageCommand, stepId: string): Promise<CommandResult> {
-  run.process.deliver({ type: 'command', id, app: scriptedApp, command, timeoutMs: 500, stepId })
+  run.process.deliver({ type: 'command', ...run.process.scope, id, app: scriptedApp, command, timeoutMs: 500, stepId })
   return run.process.answer(id)
 }
 
@@ -134,7 +134,7 @@ describe('the command that started a navigation', () => {
   const at = (line: number) => ({ file: 'tests/a.retest.ts', line, column: 3 })
 
   function commandAt(run: ScriptedTest, id: number, command: PageCommand, stepId: string, line: number): Promise<CommandResult> {
-    run.process.deliver({ type: 'command', id, app: scriptedApp, command, timeoutMs: 500, stepId, location: at(line) })
+    run.process.deliver({ type: 'command', ...run.process.scope, id, app: scriptedApp, command, timeoutMs: 500, stepId, location: at(line) })
     return run.process.answer(id)
   }
 

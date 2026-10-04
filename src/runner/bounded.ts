@@ -1,3 +1,5 @@
+import { timerMs } from './timer.ts'
+
 /** How waiting for work within a budget ended. */
 export type Bounded<T> =
   | { status: 'done'; value: T }
@@ -13,7 +15,7 @@ export type Bounded<T> =
  */
 export function bounded<T>(work: Promise<T>, timeoutMs: number, stop?: Promise<unknown>): Promise<Bounded<T>> {
   const { promise, resolve } = Promise.withResolvers<Bounded<T>>()
-  const timer = setTimeout(() => resolve({ status: 'timed_out' }), timeoutMs)
+  const timer = setTimeout(() => resolve({ status: 'timed_out' }), timerMs(timeoutMs))
   work.then(
     (value) => resolve({ status: 'done', value }),
     (error: unknown) => resolve({ status: 'failed', error }),

@@ -34,6 +34,13 @@ export class ScriptedProcess implements TestProcess {
     return this.#closed.promise
   }
 
+  /** The ownership carried by commands from the currently running test. */
+  get scope(): { testId: string; attemptId: string } {
+    const run = this.sent.findLast((message) => message.type === 'run')
+    if (run === undefined) throw new Error('No test was asked to run.')
+    return { testId: run.testId, attemptId: run.attemptId }
+  }
+
   listen(listener: ((event: ProcessEvent) => void) | undefined): void {
     this.#listener = listener
   }
@@ -146,7 +153,7 @@ export async function scriptedTest(options: ScriptedTestOptions = {}): Promise<S
     testId,
     attemptId,
     command: (id, command) => {
-      process.deliver({ type: 'command', id, app: scriptedApp, command, timeoutMs: 500 })
+      process.deliver({ type: 'command', testId, attemptId, id, app: scriptedApp, command, timeoutMs: 500 })
       return process.answer(id)
     },
     event: (event) => process.deliver({ type: 'event', event }),

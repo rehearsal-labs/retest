@@ -22,7 +22,8 @@ type Delivery = { reporter: Reporter; broken: boolean }
 /**
  * The run's only writer of events. It stamps each event with the next sequence number and the time,
  * writes it to `events.jsonl` at once, then hands it to each reporter in order. A reporter that throws
- * is not called again, and the run is told. Every failure to keep the output is kept, each once.
+ * is not called again, and the run is told. Each reporter receives its own snapshot, so it cannot change parent
+ * facts or another reporter's input. Every failure to keep the output is kept, each once.
  */
 export class EventLog {
   readonly #options: EventLogOptions
@@ -44,6 +45,18 @@ export class EventLog {
 
   /** Stamps and writes an event. `origin` is `child` for one the test file's process reported. */
   emit(body: EventBody, origin: EventOrigin = 'parent'): RetestEvent {
+    const event = this.#record(body, origin)
+    this.#queue = this.#queue.then(() => this.#deliver(event))
+    return event
+  }
+
+  /** Persists the settled outcome after all reporters have ended, without calling closed reporters again. */
+  recordOutcome(result: RunResult): void {
+    const { status, exitCode, complete, failure } = result
+    this.#record({ type: 'run.outcome', status, exitCode, complete, ...(failure === undefined ? {} : { failure }) }, 'parent')
+  }
+
+  #record(body: EventBody, origin: EventOrigin): RetestEvent {
     const stamped: RetestEvent = {
       schemaVersion: 1,
       runId: this.#options.runId,
@@ -55,7 +68,6 @@ export class EventLog {
     }
     const event = this.#options.redact?.(stamped) ?? stamped
     this.#write(event)
-    this.#queue = this.#queue.then(() => this.#deliver(event))
     return event
   }
 
@@ -75,7 +87,7 @@ export class EventLog {
     for (const delivery of this.#deliveries) {
       if (delivery.broken) continue
       try {
-        await delivery.reporter.onRunEnd(result)
+        await delivery.reporter.onRunEnd(structuredClone(result))
       } catch (error) {
         this.#brokeOn(delivery, 'the end of the run', error)
       }
@@ -96,7 +108,7 @@ export class EventLog {
     for (const delivery of this.#deliveries) {
       if (delivery.broken) continue
       try {
-        await delivery.reporter.onEvent(event)
+        await delivery.reporter.onEvent(structuredClone(event))
       } catch (error) {
         this.#brokeOn(delivery, event.type, error)
       }

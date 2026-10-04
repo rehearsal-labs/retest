@@ -22,7 +22,7 @@ describe('a call that gives itself a timeout', () => {
     const scripted = await scriptedTest({ timeouts: { action: 5000, test: 10_000 } })
     const startedAt = performance.now()
     // A forged message: it claims the whole action budget while saying the call asked for 300 ms.
-    scripted.process.deliver({ type: 'command', id: 1, app: scriptedApp, command: missing, timeoutMs: 5000, callTimeoutMs: 300 })
+    scripted.process.deliver({ type: 'command', ...scripted.process.scope, id: 1, app: scriptedApp, command: missing, timeoutMs: 5000, callTimeoutMs: 300 })
     const answer = await scripted.process.answer(1)
     const tookMs = performance.now() - startedAt
     assert.equal(answer.ok, false)
@@ -38,7 +38,7 @@ describe('a call that gives itself a timeout', () => {
 
   test("is cut to the test's time left, and the card says the call's longer timeout was not the limit", async () => {
     const scripted = await scriptedTest({ timeouts: { action: 5000, test: 400 } })
-    scripted.process.deliver({ type: 'command', id: 1, app: scriptedApp, command: missing, timeoutMs: 2000, callTimeoutMs: 2000 })
+    scripted.process.deliver({ type: 'command', ...scripted.process.scope, id: 1, app: scriptedApp, command: missing, timeoutMs: 2000, callTimeoutMs: 2000 })
     const answer = await scripted.process.answer(1)
     assert.equal(answer.ok, false)
     // The test ran out of time, so the parent ends its process; the page's own answer to the click comes after.
@@ -58,7 +58,7 @@ describe('a call that gives itself a timeout', () => {
 
   test('a call that gives no timeout records none, and its card shows no limit of its own', async () => {
     const scripted = await scriptedTest({ timeouts: { action: 300 } })
-    scripted.process.deliver({ type: 'command', id: 1, app: scriptedApp, command: missing, timeoutMs: 300 })
+    scripted.process.deliver({ type: 'command', ...scripted.process.scope, id: 1, app: scriptedApp, command: missing, timeoutMs: 300 })
     await scripted.process.answer(1)
     const event = failedAction(scripted.events)
     assert.deepEqual([event.timeoutMs, event.callTimeoutMs], [undefined, undefined])

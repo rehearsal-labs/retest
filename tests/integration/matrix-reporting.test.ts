@@ -113,13 +113,15 @@ test('report interruption: a run killed mid-test is inspected as incomplete, nev
   assert.match(inspected.stderr, /result\.json is missing/)
 })
 
-test('report interruption: the profile a killed run left is removed when the next run starts', async (t) => {
+test('report interruption: the profile a killed run left is retained when the next run starts', async (t) => {
   const killed = await killMidTest(t)
+  const retained = profilesIn(killed.tmp)
+  assert.ok(retained.length > 0)
   const app = await openApp(t)
   const next = await runRetest(t, { files: [exampleFile], baseUrl: app.url, tmp: killed.tmp })
 
   assert.equal(next.exit.code, 0)
-  assert.deepEqual(profilesIn(killed.tmp), [])
+  assert.deepEqual(profilesIn(killed.tmp), retained)
 })
 
 test('interrupt: SIGINT stops the run, releases the browser, records an interrupted run and exits 130', async (t) => {

@@ -4,10 +4,11 @@
 //! recording becomes a video written by an ffmpeg the host provides. The protocol is in `protocol.rs`.
 
 #[cfg(not(unix))]
-compile_error!("retest-media runs on Unix: it stops each encoder by its process group");
+compile_error!("retest-media runs on Unix: it verifies each encoder process before stopping it");
 
 mod encoder;
 mod frame;
+mod process_ownership;
 mod protocol;
 mod queue;
 mod recording;

@@ -31,11 +31,14 @@ function from(parentURL: string | undefined): ResolveHookContext {
 }
 
 /** A resolver that knows `known` specifiers and answers the rest as Node does a missing module. */
-function resolving(known: readonly string[]) {
+function resolving(known: readonly string[], parentUrl?: string) {
   const asked: string[] = []
   const next = (specifier: string): ResolveFnOutput => {
     asked.push(specifier)
-    if (known.includes(specifier)) return { url: specifier.startsWith('file:') ? specifier : `file:///resolved/${specifier}` }
+    if (known.includes(specifier)) {
+      const url = parentUrl === undefined ? `file:///resolved/${specifier}` : new URL(specifier, parentUrl).href
+      return { url: specifier.startsWith('file:') ? specifier : url }
+    }
     throw Object.assign(new Error(`Cannot find module ${specifier}`), { code: 'ERR_MODULE_NOT_FOUND' })
   }
   return { asked, next }
@@ -91,7 +94,7 @@ describe('projectResolver', () => {
     assert.deepEqual(both.asked, ['./labels.ts'], 'the .ts wins over a .js beside it')
     const javascript = resolving(['./legacy.js'])
     assert.equal(hook('./legacy.js', fromTestFile, javascript.next).url, 'file:///resolved/./legacy.js')
-    assert.deepEqual(javascript.asked, ['./legacy.ts', './legacy.js'])
+    assert.deepEqual(javascript.asked, ['./legacy.ts', './legacy.tsx', './legacy.js'])
     const mjs = resolving(['../lib/clock.mts', '../lib/clock.mjs'])
     assert.equal(hook('../lib/clock.mjs', fromTestFile, mjs.next).url, 'file:///resolved/../lib/clock.mts')
     assert.deepEqual(mjs.asked, ['../lib/clock.mts'])
@@ -103,7 +106,7 @@ describe('projectResolver', () => {
     assert.deepEqual(parent.asked, ['..', '../index.ts'], 'the * alias is never tried')
     const here = resolving(['./index.js'])
     assert.equal(hook('.', fromTestFile, here.next).url, 'file:///resolved/./index.js')
-    assert.deepEqual(here.asked, ['.', './index.ts', './index.js'])
+    assert.deepEqual(here.asked, ['.', './index.ts', './index.tsx', './index.js'])
   })
 
   test('a folder import resolves to its index, after a file of the same name, as tsc reads it', () => {
@@ -156,8 +159,57 @@ describe('projectResolver', () => {
     writeFileSync(join(root, 'view.tsx'), 'export const view = <p />\n')
     const parent = pathToFileURL(join(root, 'tests/a.retest.ts')).href
     const named = projectResolver({ ownUrl: own, ownFolderUrl, rootFolder: root })
-    assert.throws(() => named('../view', from(parent), resolving([]).next), { message: '../view names view.tsx, a .tsx file. Retest does not load JSX.', code: 'ERR_MODULE_NOT_FOUND' })
+    assert.throws(() => named('../view', from(parent), resolving(['../view.tsx'], parent).next), { message: '../view names view.tsx, a .tsx file. Retest does not load JSX.', code: 'ERR_MODULE_NOT_FOUND' })
     const unnamed = projectResolver({ ownUrl: own, ownFolderUrl })
-    assert.throws(() => unnamed('../view', from(parent), resolving([]).next), { message: `../view names ${join(root, 'view.tsx')}, a .tsx file. Retest does not load JSX.` })
+    assert.throws(() => unnamed('../view', from(parent), resolving(['../view.tsx'], parent).next), { message: `../view names ${join(root, 'view.tsx')}, a .tsx file. Retest does not load JSX.` })
+  })
+
+  test('a TSX source is refused before its JavaScript sibling, for written and extensionless imports', () => {
+    const named = projectResolver({ ownUrl: own, ownFolderUrl, rootFolder: '/work' })
+    for (const specifier of ['../view.js', '../view']) {
+      const files = resolving(['../view.tsx', '../view.js'], fromTestFile.parentURL)
+      assert.throws(() => named(specifier, fromTestFile, files.next), {
+        message: `${specifier} names view.tsx, a .tsx file. Retest does not load JSX.`,
+        code: 'ERR_MODULE_NOT_FOUND',
+      })
+      assert.equal(files.asked.includes('../view.js'), false, 'the compiled sibling is never chosen')
+    }
+    const supported = resolving(['../view.ts', '../view.tsx', '../view.js'], fromTestFile.parentURL)
+    assert.equal(named('../view.js', fromTestFile, supported.next).url, 'file:///work/view.ts')
+    assert.deepEqual(supported.asked, ['../view.ts'], 'a supported TypeScript source still wins')
+  })
+
+  test('an alias never skips a TSX source for JavaScript, a later target or a package', () => {
+    const files = resolving(['file:///work/support/view.tsx', 'file:///work/support/view.js', 'file:///work/generated/view.js', '@support/view'])
+    assert.throws(() => hook('@support/view', fromTestFile, files.next), {
+      message: '@support/view names /work/support/view.tsx, a .tsx file. Retest does not load JSX. Imports from that file follow /work/tsconfig.json.',
+      code: 'ERR_MODULE_NOT_FOUND',
+    })
+    assert.deepEqual(files.asked, ['file:///work/support/view', 'file:///work/support/view.ts', 'file:///work/support/view.tsx'])
+  })
+
+  test('a folder index written in JSX is refused before a JavaScript index', () => {
+    const named = projectResolver({ ownUrl: own, ownFolderUrl, rootFolder: '/work' })
+    for (const specifier of ['../views', '../views/']) {
+      const files = resolving(['../views/index.tsx', '../views/index.js'], fromTestFile.parentURL)
+      assert.throws(() => named(specifier, fromTestFile, files.next), {
+        message: `${specifier} names views/index.tsx, a .tsx file. Retest does not load JSX.`,
+        code: 'ERR_MODULE_NOT_FOUND',
+      })
+      assert.equal(files.asked.includes('../views/index.js'), false)
+    }
+    const jsx = resolving(['../views/index.jsx'], fromTestFile.parentURL)
+    assert.throws(() => named('../views/', fromTestFile, jsx.next), /a \.jsx file\. Retest does not load JSX\./)
+  })
+
+  test('a candidate that fails for a reason other than a missing file never falls back to JavaScript', () => {
+    const problem = Object.assign(new Error('The package configuration is unreadable.'), { code: 'ERR_INVALID_PACKAGE_CONFIG' })
+    const files = resolving(['../view.js'])
+    const next = (specifier: string): ResolveFnOutput => {
+      if (specifier === '../view.ts') throw problem
+      return files.next(specifier)
+    }
+    assert.throws(() => hook('../view', fromTestFile, next), (error: unknown) => error === problem)
+    assert.equal(files.asked.includes('../view.js'), false)
   })
 })

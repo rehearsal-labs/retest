@@ -1,10 +1,21 @@
-import type { Dirent } from 'node:fs'
-import { readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { errorMessage } from '../protocol/failures.ts'
-import { errorCode } from '../shared/error-code.ts'
 
-const ownedProfile = /^retest-profile-(\d+)-[A-Za-z0-9]+$/
+const ownershipFile = '.retest-profile-owner.json'
+
+/** Creates an exclusive temporary profile and records its owner before any app can use it. */
+export async function createTemporaryProfile(folder: string, pid: number = process.pid): Promise<string> {
+  const root = await realpath(folder)
+  const path = await mkdtemp(join(root, profilePrefix(pid)))
+  try {
+    await writeFile(join(path, ownershipFile), JSON.stringify({ version: 1, pid, path }), { flag: 'wx', mode: 0o600 })
+    return path
+  } catch (error) {
+    await rm(path, { recursive: true, force: true })
+    throw error
+  }
+}
 
 /**
  * How the temporary profile folders of a process begin, so a later run can tell whose each one was.
@@ -16,38 +27,17 @@ export function profilePrefix(pid: number): string {
 }
 
 /**
- * Removes the Retest profile folders in `folder` whose owning process no longer exists, as a run that was
- * killed outright leaves them. A profile whose owner is alive, or may be, is kept. Resolves with what could
- * not be removed.
+ * Checks the folder where earlier launches left profiles, retaining every entry. A dead creator and a marker
+ * cannot prove a folder is still disposable: a later app may use it as persistent storage. Only a launch's own
+ * process record permits removing its temporary profile once its processes are confirmed gone.
  *
  * @example const problems = await removeStaleProfiles(tmpdir())
  */
 export async function removeStaleProfiles(folder: string): Promise<string[]> {
-  let entries: Dirent[]
   try {
-    entries = await readdir(folder, { withFileTypes: true })
+    await readdir(folder)
   } catch (error) {
     return [`Could not look for stale browser profiles in ${folder}: ${errorMessage(error)}`]
   }
-  const stale = entries.filter((entry) => entry.isDirectory() && ownerIsGone(entry.name))
-  const problems: string[] = []
-  for (const entry of stale) {
-    const path = join(folder, entry.name)
-    await rm(path, { recursive: true, force: true, maxRetries: 3 }).catch((error: unknown) => {
-      problems.push(`Could not remove the stale browser profile ${path}: ${errorMessage(error)}`)
-    })
-  }
-  return problems
-}
-
-// Signal 0 only asks whether a process exists. EPERM means it does, and belongs to someone else.
-function ownerIsGone(name: string): boolean {
-  const pid = Number(ownedProfile.exec(name)?.[1])
-  if (!Number.isSafeInteger(pid) || pid < 1) return false
-  try {
-    process.kill(pid, 0)
-    return false
-  } catch (error) {
-    return errorCode(error) === 'ESRCH'
-  }
+  return []
 }

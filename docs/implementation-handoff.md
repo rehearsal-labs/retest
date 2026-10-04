@@ -96,7 +96,7 @@ Other decisions the implementation made:
 - A file that declares no tests fails collection with `collection_failed`, so a run of it exits 2.
 - `run.finished` and `result.json` carry an optional run-level `failure` for problems no single test explains, such as a browser that did not start or a file with no tests.
 - `browser.started` carries `pid`, which is also the browser's process group, and `executablePath`.
-- Profiles are named `retest-profile-<pid>-*` in the system temporary folder. Each launch first removes profiles whose owning process is gone, which is what a killed run leaves.
+- Profiles are named `retest-profile-<pid>-*` in the system temporary folder. Each launch removes only its own temporary profile after its processes are confirmed gone. Earlier launch leftovers are retained; a dead creator and a marker cannot prove a folder is still disposable.
 - The failure screenshot shares the cleanup budget. Screenshots are named `<test slug, up to 40 characters>-<10-character attempt id>-failure.png`.
 - The tests left in a file after a timeout become `not_run` with a `timeout` failure that names the test that timed out.
 - `inspect` gives a result it rebuilt from events a run-level failure: `interrupted` "The run stopped before it finished." when there is no `run.finished`, or `reporting_failed` when the run finished without writing `result.json`.
@@ -228,7 +228,7 @@ After every `retest` command it starts, the harness checks four things. It start
 3. No running process mentions that `TMPDIR` in its command line. Every Chrome process carries its profile path.
 4. The process group of every `browser.started` event is gone.
 
-SIGKILL is the exception, checked on its own. The test file process and the browser end by themselves within the bound, the profile stays, and the next launch removes it. Fixture servers run inside the test process and close after each test. Should a check fail midway, the harness kills only the process groups it started and the browser groups those runs reported.
+SIGKILL is the exception, checked on its own. The test file process and the browser end by themselves within the bound and the profile stays. The earlier next-launch removal has since been disabled: an old temporary profile may have become persistent app storage. Fixture servers run inside the test process and close after each test. Should a check fail midway, the harness ends only processes whose launch and current identity it recorded.
 
 Unit tests make their folders through `tests/support/temp-folder.ts`, under one `retest-tests-*` root per test process that is removed when that process exits. Before this, the runner, store and event-log tests left about 1,800 folders in the temporary folder over this session. Those were removed, and a full unit run now leaves none.
 
@@ -288,7 +288,7 @@ Most important first.
 10. A test file's stdout and stderr share one log without stream labels. Order across the two is not kept, and an unterminated stdout line runs into the next stderr text. The human report prints what a file writes while loading above the `retest` header.
 11. The published declaration maps point into `src/`, and the `retest-source` export condition names `./src/index.ts`; neither is in the tarball.
 12. A browser that refuses to close a context is covered only by the fake browser.
-13. Stale-profile removal trusts the process id in the folder name. A reused id keeps a stale profile, which is the safe direction.
+13. Earlier launch profiles are retained. Neither the folder's name nor an ownership marker and a dead creator proves that a later app is not using it as persistent storage.
 14. `list --json` has no published JSON Schema. Events and results do.
 15. Screenshots and page text are not redacted, and the test file process is not a sandbox for hostile code.
 16. A test that did not run, whose page would not close, keeps that cleanup failure in `result.json` and its `test.finished` event. The terminal reports list only its not-run reason.
@@ -473,7 +473,7 @@ Most important first. Items marked *fixed after the review* were closed by the r
 2. Only macOS arm64 was exercised, with Google Chrome 154 and Chrome for Testing 153. `edge()`, Chrome's beta, dev and canary channels, Linux and CI runners never ran. Windows cannot work, because Retest signals POSIX process groups. `--headed` and `headless: false` never ran.
 3. Screenshots are not redacted. A secret the page shows appears in its failure screenshot.
 4. A function source's value is hidden only once a fill has read it. Page text the test read before that reached the test process as it was. *After the review*, every log is read again when the run ends, so a value printed before the first read is hidden from the run folder; the events and the terminal output written before it are not.
-5. After SIGKILL, nothing stops a server Retest started, and the saved state, with its session cookies, stays in the run folder, readable only by its owner. The browser profile is removed by the next launch.
+5. After SIGKILL, nothing stops a server Retest started, and the saved state, with its session cookies, stays in the run folder, readable only by its owner. The browser profile is retained by later launches.
 6. Emulation is desktop Chrome with a device's screen, touch and user agent. An emulated iPhone or iPad still runs Blink, not WebKit. The device sizes come from published specifications.
 7. Locators search the top-level document only: no shadow DOM and no frames.
 8. A test file is loaded once to collect its tests and again for each visit that runs them, so top-level code runs two or more times. A file whose setup runs before other files' tests is visited, and loaded, once more.
