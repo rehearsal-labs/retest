@@ -48,18 +48,45 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
     exitCode: 2,
     durationMs: Math.max(0, last.elapsedMs - started.elapsedMs),
     browser,
+    ...(record.natives.length === 0 ? {} : { natives: record.natives.map(({ app, target, product, sessionId, identity }) => ({ app, target, product, sessionId, identity })) }),
     ...(browsers.some((info) => info.app !== undefined) ? { browsers } : {}),
     counts: countTests(files),
-    failure: missingResult(finished),
+    failure: missingResult(finished, record.outcome),
     ...narrowed,
     files,
   }
 }
 
-function missingResult(finished: EventOfType<'run.finished'> | undefined): Failure {
+/**
+ * Reconstructs the parent-recorded result for comparison with an existing result.json. It does not prove that the
+ * file was written. Readers of a missing result must keep using rebuildResult, which always reports that loss.
+ * Older events lack the exact result clock fields and cannot be reconstructed this way.
+ */
+export function rebuildRecordedResult(events: readonly RetestEvent[]): RunResult {
+  const { finished, outcome } = recordEvents(events)
+  if (finished?.resultFacts === undefined) throw new RunFolderReadError('The events have no exact final result facts; only an incomplete result can be rebuilt.')
+  const incomplete = rebuildResult(events)
+  if ((['passed', 'failed', 'error', 'notRun', 'inconclusive'] as const).some((key) => incomplete.counts[key] !== finished.counts[key]) || (incomplete.counts.skipped ?? 0) !== (finished.counts.skipped ?? 0)) throw new RunFolderReadError('The final counts do not agree with the recorded tests.')
+  const { failure: _missing, browsers, ...facts } = incomplete
+  const settled = outcome ?? finished
+  return {
+    ...facts,
+    startedAt: finished.resultFacts.startedAt,
+    finishedAt: finished.resultFacts.finishedAt,
+    durationMs: finished.durationMs,
+    complete: settled.complete,
+    status: settled.status,
+    exitCode: settled.exitCode,
+    ...(finished.resultFacts.namedApps === true ? { browsers: browsers ?? [] } : {}),
+    ...(settled.failure === undefined ? {} : { failure: settled.failure }),
+  }
+}
+
+function missingResult(finished: EventOfType<'run.finished'> | undefined, outcome: EventOfType<'run.outcome'> | undefined): Failure {
   if (finished === undefined) return stopped('The run stopped before it finished.')
   const missing = failure('reporting_failed', `The run finished without writing ${resultFile}.`)
-  return finished.failure === undefined ? missing : withAlso(finished.failure, [missing])
+  const problem = outcome?.failure ?? finished.failure
+  return problem === undefined ? missing : withAlso(problem, [missing])
 }
 
 // A run that finished gave every attempt it chose a test.finished, so a collected test with neither a start nor an end
@@ -101,13 +128,20 @@ function testResult(test: TestRecord, endMs: number): TestResult {
     ...(setup === undefined ? {} : { setup }),
   }
   // A test with a variant ran with a config, where each screenshot's session names its app. A screenshot names the
-  // session that captured it, and when, in runs recorded since sessions had ids.
+  // session that captured it, and when, in runs recorded since sessions had ids, and what took it, when on the run's
+  // clock and the look it is, each as its event recorded it.
   const evidence = test.events.flatMap((event) => {
     if (event.type !== 'evidence.captured') return []
     const app = variant === undefined ? undefined : event.session
-    const { sessionId, attemptId, capturedAt } = event
+    const { sessionId, attemptId, capturedAt, capturedElapsedMs, source, observationId, captureReference } = event
     const captured = sessionId === undefined ? {} : { sessionId, attemptId, ...(capturedAt === undefined ? {} : { capturedAt }) }
-    return [{ kind: event.kind, path: event.path, ...(app === undefined ? {} : { app }), ...captured }]
+    const identity = {
+      ...(capturedElapsedMs === undefined ? {} : { capturedElapsedMs }),
+      ...(source === undefined ? {} : { source }),
+      ...(captureReference === undefined ? {} : { captureReference }),
+      ...(observationId === undefined ? {} : { observationId }),
+    }
+    return [{ kind: event.kind, path: event.path, ...(app === undefined ? {} : { app }), ...captured, ...identity }]
   })
   const { started, finished } = test
   const recorded = recordedHostChecks(test.events)

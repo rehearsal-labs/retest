@@ -118,8 +118,13 @@ test('a setup signs in once per target, its dependents start signed in, a failed
     ['signed-in', 'chrome'],
     ['signed-in', 'testing'],
   ])
+  // A saved state names the session of the setup's page it was read from, and a restored one the session of the
+  // dependent test's own page it was put into: identities, never the state.
+  assert.deepEqual(saved.map((event) => event.sessionId === `${event.attemptId}:web`), [true, true])
+  const dependents = resultsNamed(run, 'starts signed in').map((each) => `${each.attemptId}:web`)
+  assert.deepEqual(restored.map((event) => event.sessionId).sort(), dependents.sort())
   for (const event of [...saved, ...restored]) {
-    assert.deepEqual(Object.keys(event).filter((key) => !['state', 'app', 'target', 'testId', 'attemptId', 'variant', 'variantKey'].includes(key)).sort(), [
+    assert.deepEqual(Object.keys(event).filter((key) => !['state', 'app', 'target', 'testId', 'attemptId', 'sessionId', 'variant', 'variantKey'].includes(key)).sort(), [
       'elapsedMs',
       'origin',
       'runId',

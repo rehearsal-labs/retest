@@ -90,8 +90,14 @@ export type CollectorLoss = { kind: 'page_crashed' | 'connection_lost'; reason: 
 export interface DiagnosticSink {
   observe(observation: Observation): void
   unreadable(method: string): void
+  /** Events the collector refused because its own tracking limit was reached, independently of artifact limits. */
+  limited?(method: string, count: number): void
   lost(loss: CollectorLoss): void
 }
 
-/** A collector that runs: what it covers, and `stop`, which removes its listeners at once and is safe to repeat. */
-export type DiagnosticCollection = { readonly scope: DiagnosticScope; stop(): void }
+/**
+ * A collector that runs: what it covers, and `stop`, which removes its listeners at once and is safe to repeat.
+ * `startedLate` says why it did not hear its page from the page's start, as for a page that was already running when
+ * capture began; every kind it covers is then partial, for that reason.
+ */
+export type DiagnosticCollection = { readonly scope: DiagnosticScope; readonly startedLate?: string; stop(): void }

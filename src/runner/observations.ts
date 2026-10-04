@@ -24,10 +24,10 @@ export type ServedObservation =
   | { app: string; sessionId: string; page: PageLook }
 
 /**
- * Where an assertion looked, as the parent knows it: its app, and the document the parent last saw that app's page
- * commit, with its title when it has one.
+ * Where an assertion looked, as the parent knows it: its app, the session of that app's page in this attempt, and the
+ * document the parent last saw that page commit, with its title when it has one.
  */
-export type AssertionPage = PageFields & { app: string | undefined }
+export type AssertionPage = PageFields & { app: string | undefined; sessionId?: string }
 
 type SentAssertion = Extract<ChildEvent, { type: 'assertion.passed' | 'assertion.failed' }>
 type AssertionBody = Extract<EventBody, { type: 'assertion.passed' | 'assertion.failed' }>
@@ -65,9 +65,10 @@ export class ServedObservations {
    * Checks an assertion the test process sent, and writes it as the parent's own record. A locator assertion
    * must carry its check, and a passed one must name a look this attempt served, for its app and locator, on
    * which that check passes; an assertion that names a look must send back the session that served it. Its matcher,
-   * expected text and comparison come from the check, its actual value and page from the look it names. A value
-   * assertion names neither; its pass is the test process's claim, though a pass of a locator or page matcher that
-   * names no look is refused. A page address or title the test process sent is never kept.
+   * expected text and comparison come from the check, its actual value, page and session from the look it names; one
+   * that names no look is written with the session of the app it looked at. A value assertion names neither, and no
+   * session; its pass is the test process's claim, though a pass of a locator or page matcher that names no look is
+   * refused. A page address or title the test process sent is never kept.
    *
    * @example observations.judge(event, { app: 'web', pageUrl: 'http://127.0.0.1:4173/' })
    */
@@ -95,7 +96,7 @@ export class ServedObservations {
     if (observationId === undefined) {
       if (sessionId !== undefined) return refused(`sent the session ${quoteText(sessionId)} of a look without the look's id`)
       if (kept.type === 'assertion.passed') return refused(`sent assertion.passed for ${describeLocator(locator)} without naming the look it rested on`)
-      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle) } }
+      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle), ...sessionOf(page) } }
     }
     if (sessionId === undefined) return refused(`named the look ${quoteText(observationId)} without the session that served it`)
     const served = this.#served.get(observationId)
@@ -112,7 +113,7 @@ export class ServedObservations {
       return refused(`sent assertion.passed for expect(${describeLocator(locator)}).${rule.matcher}(), which fails on ${observationId}, the look it named, where ${matched(observation.count)}`)
     }
     const actual = recorded.actual(this.#redactor?.redactObservation(observation) ?? observation)
-    const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle) }
+    const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle), sessionId: served.sessionId }
     return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
   }
 
@@ -127,7 +128,7 @@ export class ServedObservations {
     if (observationId === undefined) {
       if (sessionId !== undefined) return refused(`sent the session ${quoteText(sessionId)} of a look without the look's id`)
       if (kept.type === 'assertion.passed') return refused(`sent assertion.passed for expect(page).${rule.matcher}() without naming the look it rested on`)
-      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle) } }
+      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle), ...sessionOf(page) } }
     }
     if (sessionId === undefined) return refused(`named the look ${quoteText(observationId)} without the session that served it`)
     const served = this.#served.get(observationId)
@@ -146,7 +147,7 @@ export class ServedObservations {
     const shown = { ...look, url: look.url === null ? null : this.#redactText(look.url), title: look.title === null ? null : this.#redactText(look.title) }
     const actual = recorded.actual(shown)
     const pageRead = pageFields(shown.url ?? undefined, shown.title === null || shown.title === '' ? undefined : recordedTitle(shown.title))
-    const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageRead }
+    const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageRead, sessionId: served.sessionId }
     return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
   }
 
@@ -161,6 +162,10 @@ export class ServedObservations {
 
 function refused(problem: string): Judged {
   return { ok: false, problem }
+}
+
+function sessionOf(page: AssertionPage): { sessionId?: string } {
+  return page.sessionId === undefined ? {} : { sessionId: page.sessionId }
 }
 
 /**

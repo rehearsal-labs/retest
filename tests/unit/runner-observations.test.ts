@@ -356,10 +356,12 @@ describe('claims the parent cannot accept', () => {
     other.event(claim(other, { locator: title, observationId: 'o1', check: { matcher: 'toBeVisible' } }))
     await violated(other, /named o1, a look at getByTestId\('save-task'\) on page, for an assertion on getByTestId\('task-title'\) on page/)
 
+    // An app the test does not have is refused before any look is judged; a look on another app the test has is refused
+    // by the judge, in runner-command-lanes.test.ts.
     const app = await scriptedTest()
     await app.command(1, { kind: 'observe', locator: title })
     app.event(claim(app, { locator: title, observationId: 'o1', check: { matcher: 'toBeVisible' }, session: 'admin' }))
-    await violated(app, /named o1, a look at getByTestId\('task-title'\) on page, for an assertion on getByTestId\('task-title'\) on admin/)
+    await violated(app, /sent assertion\.passed for the app "admin", which this test does not use/)
   })
 
   test('the same locator with its keys in another order is the same locator', async () => {

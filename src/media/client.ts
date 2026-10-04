@@ -5,7 +5,9 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { Socket } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
+import { errorMessage } from '../protocol/failures.ts'
 import { describeExit } from '../shared/process-exit.ts'
+import { OwnedProcessGroup } from '../shared/process-ownership.ts'
 import { encodeRequestHead, MAX_FRAME_BYTES, MAX_ID_CHARACTERS, MEDIA_PROTOCOL_VERSION, MediaProtocolError, ReplyReader } from './protocol.ts'
 
 export type { Bye, Ended, EndStatus, FrameCounts, FrameFormat, Gap, Hello, MediaError, Started, StartRecording } from './protocol.ts'
@@ -13,11 +15,11 @@ export { MAX_FRAME_BYTES, MAX_ID_CHARACTERS } from './protocol.ts'
 
 /** The most frame bytes left waiting in the pipe before a new frame is dropped here, unless told otherwise. */
 const defaultMaxPendingBytes = 32 * 1024 * 1024
-/** How long `close` waits for a killed process group to go. */
+/** How long `close` waits for recorded processes to go after signaling them. */
 const killGraceMs = 1000
 /**
  * How long an encoder whose media process died gets to finish its file on its own: its input has closed, which
- * is how ffmpeg is told to write the container. After that its process group is killed.
+ * is how ffmpeg is told to write the container. After that only its recorded, freshly verified processes are killed.
  */
 const orphanGraceMs = 1000
 // The process's stderr is for its own failures; this much of its end is enough to explain one.
@@ -49,7 +51,7 @@ export function mediaArguments(options: { ffmpeg?: string }): string[] {
   return options.ffmpeg === undefined ? [] : ['--ffmpeg', options.ffmpeg]
 }
 
-/** How the media process ended. `forced` is true when `close` had to kill its process group. */
+/** How the media process ended. `forced` is true when `close` had to signal recorded processes. */
 export type MediaExit = ProcessExit & { forced: boolean; bye: Bye | undefined }
 
 /** A recording began, or ended before it could: its encoder was missing, failed or lacked a codec. */
@@ -79,7 +81,7 @@ export class MediaProcessError extends Error {
 
 /**
  * The media process ended before this recording did. Its encoder was given a moment to finish its file and then
- * its process group was killed; `partialPath` names the unfinished or unnamed file it left, when there is one.
+ * its recorded processes were stopped where ownership could be verified; `partialPath` names any unfinished file.
  * Nothing says that file is a complete video.
  */
 export class MediaRecordingLostError extends MediaProcessError {
@@ -114,14 +116,31 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject }
 }
 
-type Running = { recording: Recording; ended: Deferred<Ended> }
+type Running = { recording: Recording; ended: Deferred<Ended>; ownership: EncoderOwnership }
+
+/** The encoder ownership recorded when a verified media worker reports its start. */
+export type EncoderOwnership = { owner: OwnedProcessGroup | undefined; problems: string[] }
+
+/** A reply's pid alone grants no ownership, even when a process with that pid or group exists. */
+export function captureEncoderOwnership(worker: OwnedProcessGroup, encoderPid: number): EncoderOwnership {
+  const problems = worker.capture()
+  if (worker.verifiedIdentity() === undefined) {
+    problems.push('The media worker could not be verified when its encoder start arrived; encoder ownership and cleanup are unknown.')
+    return { owner: undefined, problems }
+  }
+  const owner = worker.groupFor(encoderPid)
+  if (owner === undefined) problems.push(`Encoder ${encoderPid} was not recorded under the launched media worker; it was left alone and its completion is unknown.`)
+  else problems.push(...owner.capture())
+  return { owner, problems }
+}
+
 
 /**
  * Retest's media process, `retest-media`, run as a child in a process group of its own; each encoder it starts
  * leads a group of its own too. Frames go to it over a pipe with their bytes untouched; each recording ends with
  * exactly one `Ended` from the process. The client never invents an outcome: if the process ends before a
- * recording does, the client stops that recording's encoder group and the recording's promise rejects with how
- * the process ended and any file the encoder left.
+ * recording does, the client stops only the encoder processes whose launch ownership it recorded, and the promise
+ * rejects with how the process ended and any file left. Unreadable or changed ownership is a cleanup failure.
  *
  * The process holds this one open only while a recording runs or a start is unanswered. A `close` forgotten on
  * an idle process does not keep Node alive: when this process exits, however it exits, the media process reads
@@ -140,6 +159,8 @@ export class MediaProcess {
   readonly exited: Promise<ProcessExit>
   readonly #child: ChildProcessWithoutNullStreams
   readonly #maxPendingBytes: number
+  readonly #ownership: OwnedProcessGroup
+  readonly #ownershipProblems: string[] = []
   readonly #starts = new Map<string, Deferred<RecordingStart>>()
   readonly #recordings = new Map<string, Running>()
   // Starts that timed out here and have not been answered. A late `started` for one becomes a recording the
@@ -148,15 +169,17 @@ export class MediaProcess {
   readonly #errors: MediaError[] = []
   readonly #traffic: MediaTraffic = { framesSent: 0, framesDropped: 0, frameBytes: 0, headerBytes: 0 }
   // The encoders of recordings the process left running when it ended, being stopped. `close` waits for them.
-  readonly #reclaims: Promise<void>[] = []
+  readonly #reclaims: Promise<string[]>[] = []
   #bye: Bye | undefined
   #exit: ProcessExit | undefined
   #failure: Error | undefined
   #pipeBroken: Error | undefined
   #stderr = ''
   #closing: Promise<MediaExit> | undefined
+  #released = false
 
-  private constructor(child: ChildProcessWithoutNullStreams, hello: Hello, exited: Promise<ProcessExit>, maxPendingBytes: number) {
+  private constructor(child: ChildProcessWithoutNullStreams, hello: Hello, exited: Promise<ProcessExit>, maxPendingBytes: number, ownership: OwnedProcessGroup) {
+    this.#ownership = ownership
     this.#child = child
     this.hello = hello
     this.pid = child.pid ?? 0
@@ -167,6 +190,8 @@ export class MediaProcess {
   /** Starts the process and waits for its greeting. Throws `MediaProcessError` when either fails. */
   static async start(options: MediaProcessOptions): Promise<MediaProcess> {
     const child = spawn(options.executable, options.args ?? [], { stdio: 'pipe', detached: true })
+    const ownership = child.pid === undefined ? undefined : new OwnedProcessGroup(child.pid)
+    const ownershipProblems = ownership?.capture() ?? []
     const reader = new ReplyReader()
     const greeting = deferred<Hello>()
     const exited = deferred<ProcessExit>()
@@ -188,7 +213,7 @@ export class MediaProcess {
         const failure = error instanceof Error ? error : new MediaProtocolError(String(error))
         greeting.reject(failure)
         if (instance !== undefined) instance.#fail(failure)
-        signalGroup(child.pid, 'SIGKILL')
+        else ownershipProblems.push(...(ownership?.signal('SIGKILL') ?? []))
         return
       }
       for (const reply of replies) {
@@ -219,18 +244,21 @@ export class MediaProcess {
     let hello: Hello
     try {
       hello = await greeting.promise
+      if (ownership === undefined || ownershipProblems.length > 0) throw new MediaProcessError(`${options.executable} started without verified process ownership: ${ownershipProblems.join(' ')}`)
+      if (hello.protocol !== MEDIA_PROTOCOL_VERSION) throw new MediaProcessError(`${options.executable} speaks media protocol ${hello.protocol}; this client speaks ${MEDIA_PROTOCOL_VERSION}`)
     } catch (error) {
-      // A process that is already gone has nothing to kill, and its reaped pid may already name another group.
-      if (!closed) signalGroup(child.pid, 'SIGKILL')
+      // A reaped or reused pid is never signaled by its number alone.
+      if (!closed) ownershipProblems.push(...(ownership?.signal('SIGKILL') ?? []))
+      if (ownership !== undefined && !(await groupGoneWithin(ownership, killGraceMs))) ownershipProblems.push('The media process could not be confirmed stopped; cleanup is unknown.')
+      ownershipProblems.push(...(ownership?.readProblems ?? []))
+      releaseReferences(child)
+      if (ownershipProblems.length > 0) throw new MediaProcessError(`${errorMessage(error)}; media cleanup failed: ${[...new Set(ownershipProblems)].join(' ')}`, { cause: error })
       throw error
     } finally {
       clearTimeout(timer)
     }
-    if (hello.protocol !== MEDIA_PROTOCOL_VERSION) {
-      signalGroup(child.pid, 'SIGKILL')
-      throw new MediaProcessError(`${options.executable} speaks media protocol ${hello.protocol}; this client speaks ${MEDIA_PROTOCOL_VERSION}`)
-    }
-    instance = new MediaProcess(child, hello, exited.promise, options.maxPendingBytes ?? defaultMaxPendingBytes)
+    if (ownership === undefined) throw new MediaProcessError('The media process has no recorded launch ownership.')
+    instance = new MediaProcess(child, hello, exited.promise, options.maxPendingBytes ?? defaultMaxPendingBytes, ownership)
     instance.#stderr = stderr
     instance.#pipeBroken = pipeBroken
     instance.#attend()
@@ -280,8 +308,8 @@ export class MediaProcess {
   /**
    * Shuts the process down: every unfinished recording ends `stopped`, every finishing one completes within its
    * deadline, then the process says bye and exits. A process that has not exited within `timeoutMs` has its
-   * group killed, and the encoder of every recording it left running is stopped before this resolves, so
-   * nothing of the process outlives the call. A second call waits for the first. Frames sent once it begins are
+   * recorded processes stopped, and each owned encoder is reclaimed before this resolves. Unknown ownership or
+   * a process still running rejects the close; no unrecorded process is signaled. A second call waits for the first. Frames sent once it begins are
    * `not_sent`.
    */
   close(timeoutMs: number): Promise<MediaExit> {
@@ -296,16 +324,29 @@ export class MediaProcess {
   }
 
   async #close(timeoutMs: number): Promise<MediaExit> {
+    this.#ownershipProblems.push(...this.#ownership.capture())
     let exit = await settleWithin(this.exited, timeoutMs)
     let forced = false
     if (exit === undefined) {
-      signalGroup(this.pid, 'SIGKILL')
+      this.#ownershipProblems.push(...this.#ownership.signal('SIGKILL'))
       exit = await settleWithin(this.exited, killGraceMs)
-      if (exit === undefined) throw new MediaProcessError(`process group ${this.pid} did not end within ${killGraceMs} ms of being killed`)
       forced = true
+      if (exit === undefined) this.#loseRecordings('The media process did not end after cleanup; its outcome is unknown.')
     }
-    // The exit handler has begun stopping the encoders of recordings the process left running.
-    await Promise.all(this.#reclaims)
+    // The exit handler has begun stopping only encoder processes recorded before the worker ended.
+    const problems = [...this.#ownershipProblems, ...(await Promise.all(this.#reclaims)).flat()]
+    if (this.#ownership.remains()) {
+      problems.push(...this.#ownership.signal('SIGKILL'))
+      forced = true
+      if (!(await groupGoneWithin(this.#ownership, killGraceMs))) problems.push('Recorded media processes or processes with unknown ownership are still running after cleanup.')
+    }
+    problems.push(...this.#ownership.readProblems)
+    if (exit === undefined || problems.length > 0) {
+      this.#released = true
+      releaseReferences(this.#child)
+      const reason = exit === undefined ? `The media process did not end within ${killGraceMs} ms of cleanup; its outcome is unknown.` : 'Media cleanup failed.'
+      throw new MediaProcessError(`${reason}${problems.length === 0 ? '' : ` ${[...new Set(problems)].join(' ')}`}`)
+    }
     return { ...exit, forced, bye: this.#bye }
   }
 
@@ -358,7 +399,7 @@ export class MediaProcess {
   // unanswered start. The child and each of its three pipes count on their own; the pipes are typed as plain
   // streams but are the sockets Node opens for `stdio: 'pipe'`, and only a socket can be let go of.
   #attend(): void {
-    const busy = this.#recordings.size > 0 || this.#starts.size > 0
+    const busy = !this.#released && (this.#recordings.size > 0 || this.#starts.size > 0)
     const pipes = [this.#child.stdin, this.#child.stdout, this.#child.stderr].filter((pipe) => pipe instanceof Socket)
     for (const handle of [this.#child, ...pipes]) {
       if (busy) handle.ref()
@@ -389,7 +430,9 @@ export class MediaProcess {
     this.#starts.delete(reply.recordingId)
     const ended = deferred<Ended>()
     const recording = new Recording(this, reply, ended.promise)
-    this.#recordings.set(reply.recordingId, { recording, ended })
+    const ownership = captureEncoderOwnership(this.#ownership, reply.encoderPid)
+    this.#ownershipProblems.push(...ownership.problems)
+    this.#recordings.set(reply.recordingId, { recording, ended, ownership })
     this.#attend()
     // Nobody waits for a start that timed out, but its encoder is now running: it is finished at once and kept
     // until its `Ended`, so a process that dies first still has this encoder stopped.
@@ -409,7 +452,9 @@ export class MediaProcess {
     if (running === undefined) return this.#fail(new MediaProtocolError(`the media process ended ${reply.recordingId}, which never started`))
     this.#recordings.delete(reply.recordingId)
     this.#attend()
-    running.ended.resolve(reply)
+    if (running.ownership.problems.length > 0) {
+      running.ended.reject(new MediaRecordingLostError(`Recording ${reply.recordingId} has unknown process cleanup: ${running.ownership.problems.join(' ')}`, reply.recordingId, reply.partialPath))
+    } else running.ended.resolve(reply)
   }
 
   #refused(reply: MediaError): void {
@@ -427,7 +472,7 @@ export class MediaProcess {
 
   #fail(error: Error): void {
     this.#failure ??= error
-    signalGroup(this.pid, 'SIGKILL')
+    this.#ownershipProblems.push(...this.#ownership.signal('SIGKILL'))
   }
 
   // The process is gone and reaped, so its own group needs no signal and its pid is not ours to name again.
@@ -437,6 +482,10 @@ export class MediaProcess {
     this.#exit = exit
     const cause = this.#failure === undefined ? '' : ` after ${this.#failure.message}`
     const reason = `the media process ended with ${describeExit(exit)}${cause}${stderrNote(this.#stderr)}`
+    this.#loseRecordings(reason)
+  }
+
+  #loseRecordings(reason: string): void {
     for (const answer of this.#starts.values()) answer.reject(new MediaProcessError(reason))
     this.#starts.clear()
     this.#abandoned.clear()
@@ -445,24 +494,28 @@ export class MediaProcess {
   }
 }
 
-// Stops the encoder of a recording whose media process died, after giving it `orphanGraceMs` to finish its file,
-// and rejects the recording with what it left. The group is killed whenever anything is left in it, so a wrapper
-// whose leader exits on its own cannot leave the real encoder behind. A group that is already empty is not
-// signalled: its id could name a process that is not ours.
-async function reclaim({ recording, ended }: Running, reason: string): Promise<void> {
-  const { encoderPid, path, recordingId } = recording.started
-  const exitedAlone = await processGoneWithin(encoderPid, orphanGraceMs)
-  let encoder = 'its encoder exited on its own'
-  if (groupExists(encoderPid)) {
-    signalGroup(encoderPid, 'SIGKILL')
-    const gone = await groupGoneWithin(encoderPid, killGraceMs)
-    const killed = `its encoder's process group ${encoderPid} was killed${gone ? '' : ` but has not gone within ${killGraceMs} ms`}`
-    encoder = exitedAlone ? `its encoder exited on its own, and ${killed}` : killed
+// Ownership was captured at started, while the worker was verified. Reclaim never claims a pid from a dead worker.
+async function reclaim({ recording, ended, ownership }: Running, reason: string): Promise<string[]> {
+  const { path, recordingId } = recording.started
+  const problems = [...ownership.problems]
+  let encoder = 'its encoder ownership and completion are unknown; unrecorded processes were left alone'
+  if (ownership.owner !== undefined) {
+    const goneAlone = await groupGoneWithin(ownership.owner, orphanGraceMs)
+    encoder = 'its recorded encoder processes exited on their own'
+    if (!goneAlone) {
+      problems.push(...ownership.owner.signal('SIGKILL'))
+      const gone = await groupGoneWithin(ownership.owner, killGraceMs)
+      encoder = gone ? 'its recorded encoder processes were stopped' : 'its encoder could not be confirmed stopped'
+      if (!gone) problems.push('Recorded encoder processes or processes with unknown ownership are still running after cleanup.')
+    }
+    problems.push(...ownership.owner.readProblems)
   }
   const partial = `${path}.partial`
   const partialPath = existsSync(partial) ? partial : undefined
   const left = partialPath === undefined ? 'no file was left' : `it left ${partialPath}`
-  ended.reject(new MediaRecordingLostError(`${reason}; recording ${recordingId} did not end: ${encoder}, and ${left}`, recordingId, partialPath))
+  const cleanup = problems.length === 0 ? '' : `; cleanup failed: ${[...new Set(problems)].join(' ')}`
+  ended.reject(new MediaRecordingLostError(`${reason}; recording ${recordingId} did not end: ${encoder}, and ${left}${cleanup}`, recordingId, partialPath))
+  return problems
 }
 
 /** One running recording. Its `ended` settles with the process's `Ended`, whether the client finished it or not. */
@@ -583,13 +636,8 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<
   }
 }
 
-// Whether a process this one did not start has gone within `timeoutMs`. Only its existence can be asked.
-async function processGoneWithin(pid: number, timeoutMs: number): Promise<boolean> {
-  return pollUntil(() => !processExists(pid), timeoutMs)
-}
-
-async function groupGoneWithin(pgid: number, timeoutMs: number): Promise<boolean> {
-  return pollUntil(() => !groupExists(pgid), timeoutMs)
+async function groupGoneWithin(ownership: OwnedProcessGroup, timeoutMs: number): Promise<boolean> {
+  return pollUntil(() => !ownership.remains(), timeoutMs)
 }
 
 async function pollUntil(condition: () => boolean, timeoutMs: number): Promise<boolean> {
@@ -601,31 +649,8 @@ async function pollUntil(condition: () => boolean, timeoutMs: number): Promise<b
   return true
 }
 
-function processExists(pid: number): boolean {
-  return canSignal(pid)
-}
-
-// Whether any process is left in the group `pgid` leads. The id stays reserved while any member lives.
-function groupExists(pgid: number): boolean {
-  return pgid > 1 && canSignal(-pgid)
-}
-
-function canSignal(target: number): boolean {
-  try {
-    process.kill(target, 0)
-    return true
-  } catch (error) {
-    // EPERM means it exists but is not ours to signal.
-    return error instanceof Error && 'code' in error && error.code === 'EPERM'
-  }
-}
-
-// Signals every process of the group `pid` leads. A group that is already gone needs no signal.
-function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
-  if (pid === undefined || pid <= 1) return
-  try {
-    process.kill(-pid, signal)
-  } catch {
-    // Nothing is left in the group.
-  }
+// An unowned process may remain, but a failed cleanup must still let its caller report and exit.
+function releaseReferences(child: ChildProcessWithoutNullStreams): void {
+  const pipes = [child.stdin, child.stdout, child.stderr].filter((pipe) => pipe instanceof Socket)
+  for (const handle of [child, ...pipes]) handle.unref()
 }

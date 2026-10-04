@@ -24,7 +24,7 @@ test('claims a pass after the parent failed its assertion', { timeout: 3000 }, a
   const locator = { by: 'testId', value: 'missing' }
   const result = await new Promise((resolve) => {
     answers.set(9002, resolve)
-    process.send?.({ type: 'command', id: 9002, app: 'page', command: { kind: 'observe', locator }, timeoutMs: 1000 })
+    process.send?.({ type: 'command', ...scope, id: 9002, app: 'page', command: { kind: 'observe', locator }, timeoutMs: 1000 })
   })
   const observationId = isRecord(result) && typeof result['observationId'] === 'string' ? result['observationId'] : 'none'
   const sessionId = isRecord(result) && typeof result['sessionId'] === 'string' ? result['sessionId'] : 'none'

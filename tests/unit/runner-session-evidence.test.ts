@@ -39,8 +39,17 @@ describe('a failure screenshot carries its evidence reference', async () => {
 
   test('its entry in the result says the same, and names no app without a config', () => {
     assert.ok(captured)
+    assert.ok(captured.capturedElapsedMs !== undefined)
     assert.deepEqual(failed.evidence, [
-      { kind: 'screenshot', path: captured.path, sessionId: captured.sessionId, attemptId: failed.attemptId, capturedAt: captured.capturedAt },
+      {
+        kind: 'screenshot',
+        path: captured.path,
+        sessionId: captured.sessionId,
+        attemptId: failed.attemptId,
+        capturedAt: captured.capturedAt,
+        capturedElapsedMs: captured.capturedElapsedMs,
+        source: 'chromium',
+      },
     ])
   })
 

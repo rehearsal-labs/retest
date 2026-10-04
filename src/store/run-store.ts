@@ -5,6 +5,7 @@ import type { StorageState } from '../protocol/storage-state.ts'
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { redactArtifactText } from '../diagnostics/artifact.ts'
+import { monotonicClock } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { diagnosticsFolder, eventsFile, logsFolder, resultFile, statesFolder } from '../protocol/run-folder.ts'
 import { parse } from '../protocol/schema.ts'
@@ -33,6 +34,9 @@ export class RunStore {
   #resultWritten = false
   #closed = false
   #removeStatesOnExit: (() => void) | undefined
+  // Where the run's clock stands at zero on the host's monotonic clock, as the events written so far place it.
+  #clockZero: number | undefined
+  #clock: (() => number) | undefined
 
   private constructor(directory: string, events: number) {
     this.directory = directory
@@ -62,7 +66,20 @@ export class RunStore {
    * can end the last write early at a page boundary and cut that one line off; `inspect` leaves such a line out.
    */
   appendEvent(event: RetestEvent): void {
+    // Each event is stamped a moment before it is written, so the earliest zero any event places is the closest to the
+    // event log's own.
+    const zero = monotonicClock() - event.elapsedMs
+    if (this.#clockZero === undefined || zero < this.#clockZero) this.#clockZero = zero
     writeAll(this.#events, `${JSON.stringify(event)}\n`)
+  }
+
+  /** Supplies the run's clock to capture writers. Older callers retain the clock inferred from events. */
+  setClock(clock: () => number): void { this.#clock = clock }
+
+  /** Whole milliseconds on the supplied clock, or the event clock fallback before a caller supplies one. */
+  elapsedMs(): number | undefined {
+    if (this.#clock !== undefined) return this.#clock()
+    return this.#clockZero === undefined ? undefined : Math.max(0, Math.round(monotonicClock() - this.#clockZero))
   }
 
   /** Appends text to a log file named by a path relative to the run folder. */
@@ -81,14 +98,18 @@ export class RunStore {
    * fill read it, is only hidden by this pass.
    */
   redactLogs(redact: (text: string) => string): void {
-    const folder = this.#path(logsFolder)
-    for (const entry of readdirSync(folder, { withFileTypes: true })) {
-      if (!entry.isFile()) continue
-      const path = join(folder, entry.name)
-      const text = readFileSync(path, 'utf8')
-      const redacted = redact(text)
-      if (redacted !== text) writeFileSync(path, redacted)
+    const visit = (folder: string): void => {
+      for (const entry of readdirSync(folder, { withFileTypes: true })) {
+        const path = join(folder, entry.name)
+        if (entry.isDirectory()) { visit(path); continue }
+        // A link in a run folder never authorizes rewriting its target outside that folder.
+        if (!entry.isFile()) continue
+        const text = readFileSync(path, 'utf8')
+        const redacted = redact(text)
+        if (redacted !== text) writeFileSync(path, redacted)
+      }
     }
+    visit(this.#path(logsFolder))
   }
 
   /**
