@@ -1,3 +1,4 @@
+import type { RecordIdentity } from './identity.ts'
 import { truncatedTextSchema, type TruncatedText } from './failures.ts'
 import { s, type Schema } from './schema.ts'
 
@@ -21,7 +22,8 @@ export type DiagnosticKind = 'console' | 'network'
 /**
  * Where records can come from. `same_process_frames` are embedded frames the browser renders in the page's own
  * process, same-origin frames among them; `out_of_process_frames` are frames of another site, which run in a process
- * of their own.
+ * of their own. `main_process` and `other_windows` are an Electron app's main process and the windows other than the
+ * test's page.
  */
 export type ScopeArea =
   | 'top_level_document'
@@ -30,6 +32,10 @@ export type ScopeArea =
   | 'dedicated_workers'
   | 'shared_workers'
   | 'service_workers'
+  | 'main_process'
+  | 'other_windows'
+  | 'owned_process'
+  | 'app_network_source'
 
 /** The areas one kind of record covers, and the areas it does not. */
 export type KindScope = { covered: ScopeArea[]; notCovered: ScopeArea[] }
@@ -37,9 +43,10 @@ export type KindScope = { covered: ScopeArea[]; notCovered: ScopeArea[] }
 /**
  * What a session's capture covers: the engine, the source of its records, the test's own page target, and for each
  * kind, which areas it covers. Capture starts before the page's first navigation and ends once the body and the
- * parent's checks are over, before a failure screenshot and before the page closes.
+ * parent's checks are over, before a failure screenshot and before the page closes. `reason` says why areas particular
+ * to the target are out of reach, as an Electron app's main process and other windows are.
  */
-export type DiagnosticScope = { engine: string; source: 'page_target'; console: KindScope; network: KindScope }
+export type DiagnosticScope = { engine: string; source: 'page_target' | 'owned_app'; console: KindScope; network: KindScope; reason?: string }
 
 /**
  * The bounds of one attempt's capture, shared by its sessions. `consoleEntries` counts console messages and runtime
@@ -73,13 +80,16 @@ export type ConsoleLevel = 'debug' | 'info' | 'warning' | 'error'
  * the browser forwards to the page with their level only; or the browser itself, such as a failed resource or a
  * security warning.
  */
-export type ConsoleOrigin = 'page' | 'worker' | 'browser'
+export type ConsoleOrigin = 'page' | 'worker' | 'browser' | 'native'
 
 /** The frame a record came from: the page's main frame, or an embedded one. */
 export type FrameRole = 'main' | 'child'
 
-/** Whose a record is: the test, attempt, app and session, and the target the app ran on in a run with variants. */
-export type RecordIdentity = { testId: string; attemptId: string; app: string; sessionId: string; target?: string }
+/**
+ * Whose a record is: the record identity every session's record shares, the test, attempt, app and session, and the
+ * target the app ran on in a run with variants. A diagnostics record rests on no look, so it names none.
+ */
+export type DiagnosticIdentity = Omit<RecordIdentity, 'observationId'> & { target?: string }
 
 /**
  * A console message. `consoleType` is the type as the browser gave it, such as `log`, `table` or `assert`, or a
@@ -89,13 +99,15 @@ export type RecordIdentity = { testId: string; attemptId: string; app: string; s
  * `column` are where the browser says it came from, lines and columns from 1. `requestId` names the request a
  * browser entry is about, when Retest recorded it.
  */
-export type ConsoleRecord = RecordIdentity & {
+export type ConsoleRecord = DiagnosticIdentity & {
   type: 'console'
   id: string
   consoleType: string
   level: ConsoleLevel
   origin: ConsoleOrigin
   source?: string
+  /** The owned native process whose stdout or stderr this line came from. */
+  processId?: number
   text: TruncatedText
   time: string
   url?: string
@@ -114,7 +126,7 @@ export type StackFrame = { function?: string; url?: string; line: number; column
  * `framesDropped` says how many more there were. `handledLater` marks a rejection the page handled after the
  * browser reported it.
  */
-export type RuntimeErrorRecord = RecordIdentity & {
+export type RuntimeErrorRecord = DiagnosticIdentity & {
   type: 'runtime_error'
   id: string
   kind: 'uncaught' | 'unhandled_rejection'
@@ -133,7 +145,9 @@ export type RuntimeErrorRecord = RecordIdentity & {
  * A request hop as the page sent it. Each hop of a redirect is a request of its own, with its own `requestId`;
  * `redirectedFrom` names the hop before it. `url` is cleaned, and `urlTruncated` marks one cut to the text limit.
  */
-export type NetworkRequestRecord = RecordIdentity & {
+export type NativeNetworkProvenance = { source?: 'app-network-file'; client?: 'ios' | 'macos' }
+
+export type NetworkRequestRecord = DiagnosticIdentity & NativeNetworkProvenance & {
   type: 'network.request'
   requestId: string
   method: string
@@ -156,7 +170,7 @@ export type CacheSource = 'disk' | 'memory' | 'prefetch' | 'none'
  * parameters. `redirectedTo` names the hop a redirect led to. `serviceWorker` says whether a service worker answered,
  * when the browser said.
  */
-export type NetworkResponseRecord = RecordIdentity & {
+export type NetworkResponseRecord = DiagnosticIdentity & NativeNetworkProvenance & {
   type: 'network.response'
   requestId: string
   status: number
@@ -174,7 +188,7 @@ export type NetworkResponseRecord = RecordIdentity & {
  * request to the end; `transferredBytes` what the browser counted on the wire. Each is absent when the browser gave
  * nothing to measure it from, and never written as zero in its place.
  */
-export type NetworkFinishedRecord = RecordIdentity & {
+export type NetworkFinishedRecord = DiagnosticIdentity & NativeNetworkProvenance & {
   type: 'network.finished'
   requestId: string
   time: string
@@ -188,7 +202,7 @@ export type NetworkFinishedRecord = RecordIdentity & {
  * status is a response, never a failure; Chrome ends an error answer with no body with a failure after its response,
  * which counts once, as the HTTP error.
  */
-export type NetworkFailedRecord = RecordIdentity & {
+export type NetworkFailedRecord = DiagnosticIdentity & NativeNetworkProvenance & {
   type: 'network.failed'
   requestId: string
   time: string
@@ -206,7 +220,7 @@ export type NetworkFailedRecord = RecordIdentity & {
 export type PendingReason = 'attempt_ended' | 'run_interrupted' | 'page_crashed' | 'connection_lost' | 'out_of_scope'
 
 /** A hop whose end is not recorded, how far it had got (sent, answered, or receiving its body) and why. */
-export type NetworkPendingRecord = RecordIdentity & {
+export type NetworkPendingRecord = DiagnosticIdentity & {
   type: 'network.pending'
   requestId: string
   time: string
@@ -284,7 +298,7 @@ export type DiagnosticsPolicyRecord = {
 }
 
 /** The first line of an artifact: whose it is, what it covers, its bounds and when it started. */
-export type CaptureStartedLine = RecordIdentity & {
+export type CaptureStartedLine = DiagnosticIdentity & {
   type: 'capture.started'
   schemaVersion: 1
   scope: DiagnosticScope
@@ -293,7 +307,7 @@ export type CaptureStartedLine = RecordIdentity & {
 }
 
 /** The last line of an artifact: when capture ended and each kind's state. */
-export type CaptureFinishedLine = RecordIdentity & { type: 'capture.finished'; endedAt: string; console: ConsoleCapture; network: NetworkCapture }
+export type CaptureFinishedLine = DiagnosticIdentity & { type: 'capture.finished'; endedAt: string; console: ConsoleCapture; network: NetworkCapture }
 
 /** One line of a diagnostics artifact. */
 export type DiagnosticLine = CaptureStartedLine | DiagnosticRecord | CaptureFinishedLine
@@ -301,15 +315,16 @@ export type DiagnosticLine = CaptureStartedLine | DiagnosticRecord | CaptureFini
 const count = s.number({ integer: true, min: 0 })
 const position = s.number({ integer: true, min: 1 })
 const areas = s.array(
-  s.enum(['top_level_document', 'same_process_frames', 'out_of_process_frames', 'dedicated_workers', 'shared_workers', 'service_workers']),
+  s.enum(['top_level_document', 'same_process_frames', 'out_of_process_frames', 'dedicated_workers', 'shared_workers', 'service_workers', 'main_process', 'other_windows', 'owned_process', 'app_network_source']),
 )
 const kindScopeSchema: Schema<KindScope> = s.object({ covered: areas, notCovered: areas })
 
 export const diagnosticScopeSchema: Schema<DiagnosticScope> = s.object({
   engine: s.string(),
-  source: s.literal('page_target'),
+  source: s.enum(['page_target', 'owned_app']),
   console: kindScopeSchema,
   network: kindScopeSchema,
+  reason: s.optional(s.string()),
 })
 
 export const diagnosticLimitsSchema: Schema<DiagnosticLimits> = s.object({
@@ -397,8 +412,9 @@ const consoleRecordShape = {
   id: s.string(),
   consoleType: s.string(),
   level: s.enum(['debug', 'info', 'warning', 'error']),
-  origin: s.enum(['page', 'worker', 'browser']),
+  origin: s.enum(['page', 'worker', 'browser', 'native']),
   source: s.optional(s.string()),
+  processId: s.optional(position),
   text: truncatedTextSchema,
   time: s.string(),
   url: s.optional(s.string()),
@@ -422,7 +438,9 @@ const runtimeErrorShape = {
   framesDropped: s.optional(position),
   handledLater: s.optional(s.literal(true)),
 }
+const nativeNetworkProvenance = { source: s.optional(s.literal('app-network-file')), client: s.optional(s.enum(['ios', 'macos'])) }
 const requestShape = {
+  ...nativeNetworkProvenance,
   ...identity,
   type: s.literal('network.request'),
   requestId: s.string(),
@@ -435,6 +453,7 @@ const requestShape = {
   redirectedFrom: s.optional(s.string()),
 }
 const responseShape = {
+  ...nativeNetworkProvenance,
   ...identity,
   type: s.literal('network.response'),
   requestId: s.string(),
@@ -448,6 +467,7 @@ const responseShape = {
   redirectedTo: s.optional(s.string()),
 }
 const finishedShape = {
+  ...nativeNetworkProvenance,
   ...identity,
   type: s.literal('network.finished'),
   requestId: s.string(),
@@ -456,6 +476,7 @@ const finishedShape = {
   transferredBytes: s.optional(count),
 }
 const failedShape = {
+  ...nativeNetworkProvenance,
   ...identity,
   type: s.literal('network.failed'),
   requestId: s.string(),

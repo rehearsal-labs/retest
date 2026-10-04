@@ -23,7 +23,7 @@ export function diagnosticsCardLines(summaries: readonly DiagnosticsSummary[], r
   return summaries.flatMap((summary) => {
     const where = summary.path === undefined ? [] : [join(runFolder, summary.path)]
     const app = summary.app === undefined ? '' : `${summary.app}: `
-    const parts = bothDisabled(summary) ? ['capture disabled'] : [describeConsole(summary.console), describeNetwork(summary.network)]
+    const parts = bothDisabled(summary) ? ['capture disabled'] : [describeConsole(summary.console, summary.scope?.source === 'owned_app' ? 'app log' : 'console'), describeNetwork(summary.network)]
     const line = { label: 'Diagnostics', value: `${app}${[...parts, ...where].join(' · ')}` }
     return summary.scope === undefined || summary.path === undefined ? [line] : [line, { label: 'Scope', value: `${app}${describeScope(summary.scope)}` }]
   })
@@ -35,7 +35,8 @@ export function diagnosticsCardLines(summaries: readonly DiagnosticsSummary[], r
  * @example describeScope(chromiumScope) // 'console covers top level document, same process frames, dedicated workers; network covers top level document, same process frames'
  */
 export function describeScope(scope: DiagnosticScope): string {
-  return `console covers ${coveredAreas(scope.console)}; network covers ${coveredAreas(scope.network)}`
+  const covers = `${scope.source === 'owned_app' ? 'app log' : 'console'} covers ${coveredAreas(scope.console)}; network covers ${coveredAreas(scope.network)}`
+  return scope.reason === undefined ? covers : `${covers}. ${scope.reason}`
 }
 
 function coveredAreas(scope: KindScope): string {
@@ -91,9 +92,9 @@ export function diagnosticsLocation(runFolder: string): string {
  *
  * @example describeConsole({ state: 'complete', entries: 0, errors: 0, warnings: 0, runtimeErrors: 0, handledLater: 0, dropped: 0, truncated: 0, bytes: 0 }) // 'console empty'
  */
-export function describeConsole(capture: ConsoleCapture): string {
+export function describeConsole(capture: ConsoleCapture, name = 'console'): string {
   const counts = capturedCounts(capture)
-  if (counts === undefined) return stateOnly('console', capture)
+  if (counts === undefined) return stateOnly(name, capture)
   const parts = [
     `${counts.entries} ${counts.entries === 1 ? 'entry' : 'entries'}`,
     ...counted(counts.errors, 'error', 'errors'),
@@ -103,7 +104,7 @@ export function describeConsole(capture: ConsoleCapture): string {
     ...counted(counts.truncated, 'cut', 'cut'),
   ]
   const body = counts.entries === 0 && counts.runtimeErrors === 0 ? 'empty' : parts.join(', ')
-  return withState('console', body, capture)
+  return withState(name, body, capture)
 }
 
 /**

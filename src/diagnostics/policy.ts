@@ -211,6 +211,9 @@ const ruleKinds: Record<StrictMatch['rule'], 'console' | 'network'> = { runtimeE
 function unjudgedFailure(rules: StrictRules, summaries: readonly DiagnosticsSummary[]): Failure | undefined {
   const kinds = new Set(ruleOrder.filter((rule) => rules[rule]).map((rule) => ruleKinds[rule]))
   const gaps = summaries.flatMap((summary) => [...kinds].flatMap((kind) => (summary[kind].state === 'complete' ? [] : [`${summary.sessionId} ${kind} ${describeGap(summary[kind])}`])))
+  for (const summary of summaries) {
+    if (summary.scope?.source === 'owned_app' && (rules.runtimeErrors || rules.consoleErrors)) gaps.push(`${summary.sessionId} app stdout supplies no runtime-error or console-error classification`)
+  }
   if (gaps.length === 0) return undefined
   const message = `The diagnostics policy could not judge the test: its strict rules read capture that was not complete, so a record they would count may be missing: ${gaps.join('; ')}.`
   return { ...failure('reporting_failed', message), details: { policy: 'diagnostics.strict' } }

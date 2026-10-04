@@ -3,6 +3,7 @@ import type {
   ConsoleCapture,
   ConsoleCounts,
   ConsoleRecord,
+  DiagnosticIdentity,
   DiagnosticLimits,
   DiagnosticRecord,
   NetworkCapture,
@@ -10,7 +11,6 @@ import type {
   NetworkPendingRecord,
   NetworkResponseRecord,
   PendingReason,
-  RecordIdentity,
   RuntimeErrorRecord,
   StackFrame,
 } from '../protocol/diagnostics.ts'
@@ -50,7 +50,7 @@ export class AttemptBudget {
 }
 
 export type SessionCaptureOptions = {
-  identity: RecordIdentity
+  identity: DiagnosticIdentity
   budget: AttemptBudget
   redactor: TextRedactor
   /** When capture started, on the parent's clock. */
@@ -98,7 +98,7 @@ const preCutFactor = 4
  * are always kept, so a response never goes missing from the middle of a hop.
  */
 export class SessionCapture implements DiagnosticSink {
-  readonly #identity: RecordIdentity
+  readonly #identity: DiagnosticIdentity
   readonly #identityBytes: number
   readonly #budget: AttemptBudget
   readonly #redactor: TextRedactor
@@ -112,10 +112,12 @@ export class SessionCapture implements DiagnosticSink {
   readonly #console: ConsoleCounts = { entries: 0, errors: 0, warnings: 0, runtimeErrors: 0, handledLater: 0, dropped: 0, truncated: 0, bytes: 0 }
   readonly #network: NetworkCounts = { requests: 0, httpErrors: 0, transportFailures: 0, canceled: 0, pending: 0, outOfScope: 0, dropped: 0, truncated: 0, bytes: 0 }
   readonly #unreadable = { console: 0, network: 0 }
+  readonly #limited = { console: 0, network: 0 }
   #nextConsole = 1
   #nextError = 1
   #nextRequest = 1
   #loss: CollectorLoss | undefined
+  #late: string | undefined
   #finished: FinishedCapture | undefined
 
   constructor({ identity, budget, redactor, startedAt }: SessionCaptureOptions) {
@@ -157,6 +159,21 @@ export class SessionCapture implements DiagnosticSink {
     if (this.#finished !== undefined) return
     if (method.startsWith('Network.')) this.#unreadable.network += 1
     else this.#unreadable.console += 1
+  }
+
+  limited(method: string, count: number): void {
+    if (this.#finished !== undefined || !Number.isSafeInteger(count) || count < 1) return
+    const kind = method.startsWith('Network.') ? 'network' : 'console'
+    this.#limited[kind] = Math.min(Number.MAX_SAFE_INTEGER, this.#limited[kind] + count)
+  }
+
+  /**
+   * The page was already running before capture began, so what it did until then went unheard: each kind is partial,
+   * and names this reason first.
+   */
+  beganLate(reason: string): void {
+    if (this.#finished !== undefined) return
+    this.#late = reason
   }
 
   // The page or the connection ended: every hop still open stays open for good, marked with why, at that time.
@@ -445,13 +462,19 @@ export class SessionCapture implements DiagnosticSink {
   }
 
   #consoleCapture(): ConsoleCapture {
-    const reasons = [...this.#lossReason(), ...dropReason(this.#console.dropped, 'console message or runtime error', 'messages'), ...unreadReason(this.#unreadable.console, 'console')]
-    return reasons.length === 0 ? { state: 'complete', ...this.#console } : { state: 'partial', reason: reasons.join('; '), ...this.#console }
+    const reasons = [...this.#lateReason(), ...this.#lossReason(), ...dropReason(this.#console.dropped, 'console message or runtime error', 'messages'), ...unreadReason(this.#unreadable.console, 'console'), ...trackingReason(this.#limited.console, 'console event')]
+    const counts = { ...this.#console, dropped: this.#console.dropped + this.#limited.console }
+    return reasons.length === 0 ? { state: 'complete', ...counts } : { state: 'partial', reason: reasons.join('; '), ...counts }
   }
 
   #networkCapture(): NetworkCapture {
-    const reasons = [...this.#lossReason(), ...dropReason(this.#network.dropped, 'request', 'requests'), ...unreadReason(this.#unreadable.network, 'network')]
-    return reasons.length === 0 ? { state: 'complete', ...this.#network } : { state: 'partial', reason: reasons.join('; '), ...this.#network }
+    const reasons = [...this.#lateReason(), ...this.#lossReason(), ...dropReason(this.#network.dropped, 'request', 'requests'), ...unreadReason(this.#unreadable.network, 'network'), ...trackingReason(this.#limited.network, 'request')]
+    const counts = { ...this.#network, dropped: this.#network.dropped + this.#limited.network }
+    return reasons.length === 0 ? { state: 'complete', ...counts } : { state: 'partial', reason: reasons.join('; '), ...counts }
+  }
+
+  #lateReason(): string[] {
+    return this.#late === undefined ? [] : [this.#late]
   }
 
   #lossReason(): string[] {
@@ -470,6 +493,10 @@ function dropReason(dropped: number, one: string, many: string): string[] {
 function unreadReason(unread: number, kind: string): string[] {
   if (unread === 0) return []
   return [`${unread} ${kind} ${unread === 1 ? 'event' : 'events'} from the browser could not be read`]
+}
+
+function trackingReason(count: number, kind: string): string[] {
+  return count === 0 ? [] : [`${count} ${kind}${count === 1 ? '' : 's'} over the collector's tracking limit ${count === 1 ? 'was' : 'were'} dropped`]
 }
 
 function recordBytes(record: DiagnosticRecord): number {

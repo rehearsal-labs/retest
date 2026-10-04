@@ -89,6 +89,7 @@ function sessionLines(session: SessionDiagnostics, clock: TimelineClock, options
   if (summary.path !== undefined) lines.push(`  ${style.dim(`artifact ${join(options.runFolder, summary.path)}`)}`)
   if (summary.scope !== undefined) {
     lines.push(`  ${style.dim(`console covers ${describeScope(summary.scope.console)}`)}`, `  ${style.dim(`network covers ${describeScope(summary.scope.network)}`)}`)
+    if (summary.scope.reason !== undefined) lines.push(`  ${style.dim(summary.scope.reason)}`)
   }
   if (session.problem !== undefined) lines.push(`  ${style.yellow(`not shown: ${session.problem}`)}`)
   const records = session.lines ?? []

@@ -18,6 +18,8 @@ export type ChromiumCollectorOptions = {
   /** The page's main frame now, which a request or a message's frame is compared with. */
   mainFrameId: () => string
   sink: DiagnosticSink
+  /** Bounds in-flight request metadata even when the sink has already filled its artifact budget. */
+  maxTrackedRequests?: number
 }
 
 /**
@@ -135,12 +137,15 @@ export class ChromiumCollector implements DiagnosticCollection {
   readonly #stops: (() => void)[] = []
   readonly #contexts = new Map<number, Context>()
   readonly #hops = new Map<string, Hop>()
+  readonly #maxTrackedRequests: number
   #stopped = false
 
-  constructor({ session, mainFrameId, sink }: ChromiumCollectorOptions) {
+  constructor({ session, mainFrameId, sink, maxTrackedRequests = 1000 }: ChromiumCollectorOptions) {
+    if (!Number.isSafeInteger(maxTrackedRequests) || maxTrackedRequests < 1) throw new RangeError('The collector request limit must be a positive safe integer.')
     this.#session = session
     this.#mainFrameId = mainFrameId
     this.#sink = sink
+    this.#maxTrackedRequests = maxTrackedRequests
     this.#listen('Runtime.consoleAPICalled', consoleCalledSchema, (params) => this.#console(params))
     this.#listen('Runtime.exceptionThrown', exceptionSchema, (params) => this.#exception(params))
     this.#listen('Runtime.exceptionRevoked', revokedSchema, ({ exceptionId }) => this.#observe({ kind: 'revoked', key: String(exceptionId) }))
@@ -287,6 +292,11 @@ export class ChromiumCollector implements DiagnosticCollection {
   #requestSent(params: RequestSent): void {
     const { requestId, timestamp, wallTime, redirectResponse } = params
     const previous = this.#hops.get(requestId)
+    if (previous === undefined && this.#hops.size >= this.#maxTrackedRequests) {
+      if (this.#sink.limited !== undefined) this.#sink.limited('Network.requestWillBeSent', 1)
+      else this.#sink.unreadable('Network.requestWillBeSent')
+      return
+    }
     const number = previous === undefined ? 1 : previous.number + 1
     const hop: Hop = { key: `${requestId}#${number}`, number, frameId: params.frameId, startSeconds: timestamp, wallOffsetSeconds: wallTime - timestamp, servedFromCache: false }
     if (previous !== undefined && redirectResponse !== undefined) {

@@ -1,4 +1,4 @@
-import type { DiagnosticLimits, DiagnosticRecord, RecordIdentity } from '../../src/protocol/diagnostics.ts'
+import type { DiagnosticIdentity, DiagnosticLimits, DiagnosticRecord } from '../../src/protocol/diagnostics.ts'
 import type { Observation } from '../../src/diagnostics/observations.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
@@ -8,7 +8,7 @@ import { AttemptBudget, SessionCapture } from '../../src/diagnostics/session-cap
 import { defaultDiagnosticLimits } from '../../src/protocol/diagnostics.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 
-const identity: RecordIdentity = { testId: 'a.retest.ts > saves', attemptId: 'k3v9q0x2mb', app: 'web', sessionId: 'k3v9q0x2mb:web' }
+const identity: DiagnosticIdentity = { testId: 'a.retest.ts > saves', attemptId: 'k3v9q0x2mb', app: 'web', sessionId: 'k3v9q0x2mb:web' }
 const at = Date.UTC(2026, 9, 3)
 
 function capture(limits: Partial<DiagnosticLimits> = {}, redactor: Redactor = new Redactor(), budget?: AttemptBudget): SessionCapture {
@@ -245,6 +245,33 @@ class FakeSession {
 }
 
 describe('the Chromium collector', () => {
+  test('unfinished requests are bounded independently of what the artifact sink admits, and freed slots can be reused', async () => {
+    const session = new FakeSession()
+    const sink = capture({ requests: 1 })
+    const observed: Observation[] = []
+    const collector = new ChromiumCollector({ session, mainFrameId: () => 'MAIN', maxTrackedRequests: 2, sink: {
+      observe: (item) => { observed.push(item); sink.observe(item) },
+      unreadable: (method) => sink.unreadable(method),
+      limited: (method, count) => sink.limited(method, count),
+      lost: (loss) => sink.lost(loss),
+    } })
+    await collector.start(1000)
+    const request = (id: string): void => session.emit('Network.requestWillBeSent', { requestId: id, request: { method: 'GET', url: `http://app.test/${id}` }, timestamp: 1, wallTime: at / 1000, frameId: 'MAIN' })
+    request('first')
+    request('second')
+    for (let index = 0; index < 100; index += 1) request(`held-${index}`)
+    assert.equal(observed.filter((item) => item.kind === 'request').length, 2)
+    session.emit('Network.loadingFinished', { requestId: 'second', timestamp: 2 })
+    request('next')
+    assert.equal(observed.filter((item) => item.kind === 'request').length, 3)
+    const summary = sink.finish('attempt_ended', at + 1000).network
+    assert.ok(summary.state === 'partial')
+    assert.equal(summary.dropped, 102)
+    assert.match(summary.reason, /100 requests over the collector's tracking limit/)
+    assert.match(summary.reason, /2 requests over the attempt's limits/)
+    collector.stop()
+  })
+
   function collect(): { session: FakeSession; observed: Observation[]; unread: string[]; losses: string[]; collector: ChromiumCollector } {
     const session = new FakeSession()
     const observed: Observation[] = []
