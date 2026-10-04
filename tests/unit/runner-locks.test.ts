@@ -167,3 +167,111 @@ describe('SharedLocks', () => {
     assert.equal(locks.holders().size, 0)
   })
 })
+
+describe('SharedLocks with a bound', () => {
+  test('a waiter waits as long as the holder is inside its lease, past its bound', async () => {
+    const locks = new SharedLocks()
+    const held = await locks.reserve({ names: ['inbox'], position: 0, holder: 'holder' }, never)
+    assert.ok(held.ok)
+    const waiting = locks.reserve({ names: ['inbox'], position: 1, holder: 'waiter' }, never, { pastLeaseMs: 30 })
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    assert.equal(locks.waiting(), 1, 'four times its bound later, it still waits behind a live lease')
+    held.lease.release()
+    const granted = await waiting
+    assert.ok(granted.ok, 'it got the lock once the holder let go')
+    assert.deepEqual(granted.lease.heldBy, ['holder'])
+  })
+
+  test('behind an expired lease a waiter gives up after its bound, holding nothing and naming what it waited for and who held it', async () => {
+    const locks = new SharedLocks()
+    const held = await locks.reserve({ names: ['inbox', 'account'], position: 0, holder: 'holder' }, never)
+    assert.ok(held.ok)
+    const startedAt = performance.now()
+    const waiting = locks.reserve({ names: ['inbox', 'drafts'], position: 1, holder: 'waiter' }, never, { pastLeaseMs: 60 })
+    await settle()
+    held.lease.expire()
+    const refused = await waiting
+    assert.ok(!refused.ok)
+    assert.equal(refused.reason, 'timed_out')
+    assert.deepEqual([refused.waitingFor, refused.heldBy], [['inbox'], ['holder']])
+    assert.ok(performance.now() - startedAt >= 55, 'it waited its bound after the lease expired')
+    assert.deepEqual([...locks.holders()].sort(), [['account', 'holder'], ['inbox', 'holder']], 'the waiter took no part of what it asked for')
+    assert.equal(locks.waiting(), 0)
+  })
+
+  test('only the time behind an expired lease counts: a live holder pauses the count, and a free lock ends it', async () => {
+    const locks = new SharedLocks()
+    const first = await locks.reserve({ names: ['inbox'], position: 0, holder: 'first' }, never)
+    const second = await locks.reserve({ names: ['account'], position: 1, holder: 'second' }, never)
+    assert.ok(first.ok && second.ok)
+    const waiting = locks.reserve({ names: ['inbox', 'account'], position: 2, holder: 'waiter' }, never, { pastLeaseMs: 80 })
+    first.lease.expire()
+    // The account is held by a live lease, so the inbox's expired holder does not start the count.
+    await new Promise((resolve) => setTimeout(resolve, 160))
+    assert.equal(locks.waiting(), 1, 'still waiting, twice its bound later')
+    second.lease.release()
+    first.lease.releaseOne('inbox')
+    const granted = await waiting
+    assert.ok(granted.ok)
+  })
+
+  test('a waiter kept back only by an earlier waiter does not count, and is served when that one gives up', async () => {
+    const locks = new SharedLocks()
+    const holder = await locks.reserve({ names: ['inbox'], position: 0, holder: 'holder' }, never)
+    assert.ok(holder.ok)
+    const earlier = locks.reserve({ names: ['inbox', 'account'], position: 1, holder: 'earlier' }, never, { pastLeaseMs: 40 })
+    const later = locks.reserve({ names: ['account'], position: 2, holder: 'later' }, never, { pastLeaseMs: 10 })
+    await settle()
+    holder.lease.expire()
+    const gaveUp = await earlier
+    assert.equal(gaveUp.ok ? 'granted' : gaveUp.reason, 'timed_out')
+    const served = await later
+    assert.ok(served.ok, 'the later waiter, with the shorter bound, was served once the earlier one left')
+  })
+
+  test('locks are given back one at a time, and each frees its waiters as it goes', async () => {
+    const locks = new SharedLocks()
+    const held = await locks.reserve({ names: ['inbox', 'account'], position: 0, holder: 'holder' }, never)
+    assert.ok(held.ok)
+    const granted: string[] = []
+    void locks.reserve({ names: ['account'], position: 1, holder: 'account user' }, never).then((grant) => grant.ok && granted.push('account user'))
+    void locks.reserve({ names: ['inbox'], position: 2, holder: 'inbox user' }, never).then((grant) => grant.ok && granted.push('inbox user'))
+    held.lease.releaseOne('account')
+    await settle()
+    assert.deepEqual(granted, ['account user'])
+    assert.equal(locks.holders().get('inbox'), 'holder')
+    held.lease.releaseOne('account')
+    held.lease.release()
+    await settle()
+    assert.deepEqual(granted, ['account user', 'inbox user'])
+  })
+
+  test('a stopped run withdraws a bounded waiter at once, and names what it waited for', async () => {
+    const locks = new SharedLocks()
+    const held = await locks.reserve({ names: ['inbox'], position: 0, holder: 'holder' }, never)
+    assert.ok(held.ok)
+    const stop = Promise.withResolvers<void>()
+    const waiting = locks.reserve({ names: ['inbox'], position: 1, holder: 'waiter' }, stop.promise, { pastLeaseMs: 60_000 })
+    stop.resolve()
+    const withdrawn = await waiting
+    assert.ok(!withdrawn.ok)
+    assert.deepEqual([withdrawn.reason, withdrawn.waitingFor, withdrawn.heldBy], ['stopped', ['inbox'], ['holder']])
+    assert.equal(locks.waiting(), 0)
+  })
+})
+
+describe('SharedLocks shared by several runs', () => {
+  test("a record names only the holders of its own run, and counts the locks another run's tests held", async () => {
+    const locks = new SharedLocks()
+    const own = await locks.reserve({ names: ['desktop'], position: 0, holder: 'run one > first', scope: 'run-1' }, never)
+    const other = await locks.reserve({ names: ['folder'], position: 0, holder: 'run two > first', scope: 'run-2' }, never)
+    assert.ok(own.ok && other.ok)
+    const waiting = locks.reserve({ names: ['desktop', 'folder'], position: 0, holder: 'run one > second', scope: 'run-1' }, never)
+    own.lease.release()
+    other.lease.release()
+    const granted = await waiting
+    assert.ok(granted.ok)
+    assert.deepEqual([granted.lease.heldBy, granted.lease.heldElsewhere], [['run one > first'], 1])
+    assert.deepEqual(locks.waiters(), [])
+  })
+})

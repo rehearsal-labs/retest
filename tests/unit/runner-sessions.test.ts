@@ -197,3 +197,61 @@ describe('the sessions option', () => {
     assert.match(sessionOptionsProblem({ owner: 'two\nlines', budget })?.message ?? '', /^sessions\.owner: /)
   })
 })
+
+describe('who held the sessions a request waited for', () => {
+  test("a request held back by its own owner's limit names that owner's holders, and its refusal says what it waited for", async () => {
+    const budget = new SessionBudget({ perOwner: 1, host: 3 })
+    const granted: Granted[] = []
+    const ask = asker(budget, granted)
+    void ask('agent-1 first', 'agent-1', 1)
+    void ask('agent-2 first', 'agent-2', 1)
+    const waiting = ask('agent-1 second', 'agent-1', 1, { waitMs: 40 })
+    const refused = await waiting
+    assert.ok(!refused.ok)
+    assert.deepEqual(refused.heldBy, ['agent-1 first'], "only the owner's own holder kept it waiting")
+    const failure = sessionRefusal(refused, { owner: 'agent-1', count: 1, holder: 'agent-1 second', waitMs: 40 }, budget.limits)
+    assert.equal(failure.details?.['waitedFor'], '1 session of agent-1')
+    assert.equal(failure.details?.['heldBy'], 'agent-1 first')
+    assert.match(failure.message, /^Not run: 1 session for "agent-1" did not come free within 40 ms\./, 'the message reads as before')
+  })
+
+  test("a request held back by the host's limit names only its own owner's holders, and counts other owners' sessions without naming them", async () => {
+    const budget = new SessionBudget({ perOwner: 3, host: 3 })
+    const granted: Granted[] = []
+    const ask = asker(budget, granted)
+    void ask('own holder', 'agent-1', 1)
+    void ask('other holder', 'agent-2', 2)
+    const refused = await ask('waiter', 'agent-1', 1, { waitMs: 30 })
+    assert.ok(!refused.ok)
+    assert.deepEqual([refused.heldBy, refused.heldByOthers], [['own holder'], 2])
+    const failure = sessionRefusal(refused, { owner: 'agent-1', count: 1, holder: 'waiter', waitMs: 30 }, budget.limits)
+    assert.equal(failure.details?.['heldBy'], 'own holder')
+    assert.equal(failure.details?.['heldByOthers'], 2)
+    assert.ok(!JSON.stringify(failure).includes('other holder'), "another owner's test is never named")
+    release(granted, 'own holder')
+    const after = await ask('waiter again', 'agent-1', 2, { waitMs: 30 })
+    assert.ok(!after.ok)
+    assert.deepEqual([after.heldBy, after.heldByOthers], [[], 2], 'a holder that gave its sessions back is no longer named')
+  })
+
+  test('a request no limit could grant names no holder', async () => {
+    const budget = new SessionBudget({ perOwner: 1, host: 1 })
+    const refused = await budget.reserve({ owner: 'agent-1', count: 2, holder: 'two apps', waitMs: 10 }, never)
+    assert.ok(!refused.ok)
+    assert.deepEqual([refused.reason, refused.heldBy], ['too_many', []])
+  })
+})
+
+describe('two runs of one owner on one budget', () => {
+  test("a refusal names only its own run's holders, and counts the other run's sessions without naming them", async () => {
+    const budget = new SessionBudget({ perOwner: 2, host: 2 })
+    const first = await budget.reserve({ owner: 'agent-1', count: 1, holder: 'run one > holds', waitMs: 1000, scope: 'run-1' }, never)
+    const second = await budget.reserve({ owner: 'agent-1', count: 1, holder: 'run two > holds', waitMs: 1000, scope: 'run-2' }, never)
+    assert.ok(first.ok && second.ok)
+    const refused = await budget.reserve({ owner: 'agent-1', count: 1, holder: 'run one > waits', waitMs: 30, scope: 'run-1' }, never)
+    assert.ok(!refused.ok)
+    assert.deepEqual([refused.heldBy, refused.heldByOthers], [['run one > holds'], 1])
+    const failure = sessionRefusal(refused, { owner: 'agent-1', count: 1, holder: 'run one > waits', waitMs: 30, scope: 'run-1' }, budget.limits)
+    assert.ok(!JSON.stringify(failure).includes('run two'), "the other run's test is never named, though its owner is the same")
+  })
+})

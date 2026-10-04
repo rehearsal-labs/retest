@@ -135,7 +135,21 @@ export function notRunReason(result: RunResult, test: TestResult): Failure | und
 export function unshownDetails(card: FailureCard): [string, FailureDetail][] {
   const details = card.failure?.details ?? {}
   const shown = card.hostCheck === undefined ? shownByCall(card.call) : shownByHostChecks(card.hostCheck, card.alsoFailedChecks, details)
-  return Object.entries(details).filter(([key, value]) => !isDeepStrictEqual(shown.get(key), value))
+  const labels = card.failure?.class === 'setup_failed' ? reservationLabels : {}
+  return Object.entries(details)
+    .filter(([key, value]) => !isDeepStrictEqual(shown.get(key), value))
+    .map(([key, value]) => [labels[key] ?? key, value])
+}
+
+// A setup failure from a reservation names what the attempt waited for, the tests of its own run or owner that held it,
+// how much others held, whose tests are never named, and what the attempt had already taken and gave back, each under a
+// label a reader takes in at once.
+const reservationLabels: Readonly<Record<string, string>> = {
+  waitedFor: 'Waited for',
+  heldBy: 'Held by',
+  heldElsewhere: 'Other runs held',
+  heldByOthers: 'Others held',
+  held: 'Gave back',
 }
 
 function shownByHostChecks(

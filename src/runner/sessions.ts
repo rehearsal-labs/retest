@@ -4,6 +4,7 @@ import { elapsedMs, monotonicClock } from '../protocol/deadline.ts'
 import { failure } from '../protocol/failures.ts'
 import { describeValue, isPlainObject } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
+import { listWords } from '../shared/list-words.ts'
 
 /** The most sessions active at once: for any one owner, and on the whole host. */
 export type SessionLimits = { readonly perOwner: number; readonly host: number }
@@ -13,9 +14,11 @@ export type ActiveSessions = { readonly owner: number; readonly host: number }
 
 /**
  * What an attempt asks for: the owner its sessions count against, how many it needs at once, one for each of its apps,
- * the test it runs, which nothing decides on but a reader of the budget may name, and how long it may wait.
+ * the test it runs, which nothing decides on but a record of its own run may name, and how long it may wait. `scope`
+ * is the run it belongs to: a refusal names only holders of the same run. Without one, it names holders of the same
+ * owner that have none either.
  */
-export type SessionRequest = { readonly owner: string; readonly count: number; readonly holder: string; readonly waitMs: number }
+export type SessionRequest = { readonly owner: string; readonly count: number; readonly holder: string; readonly waitMs: number; readonly scope?: string | undefined }
 
 /** Sessions an attempt holds until it lets them go: how long it waited, and what was active once they were its. */
 export type SessionLease = { readonly waitedMs: number; readonly active: ActiveSessions; release(): void }
@@ -23,11 +26,19 @@ export type SessionLease = { readonly waitedMs: number; readonly active: ActiveS
 /**
  * The answer to a request: a lease, or why there is none, holding nothing. `too_many` is a request no limit could ever
  * grant; `timed_out` waited its whole time; `stopped` was withdrawn when the run stopped. `active` is what the owner
- * and the host held when the answer came.
+ * and the host held when the answer came. `heldBy` names the tests of the request's own run that held sessions then,
+ * and `heldByOthers` counts the sessions every other run held, whatever its owner; their tests are never named.
  */
 export type SessionGrant =
   | { readonly ok: true; readonly lease: SessionLease }
-  | { readonly ok: false; readonly reason: 'too_many' | 'timed_out' | 'stopped'; readonly waitedMs: number; readonly active: ActiveSessions }
+  | {
+      readonly ok: false
+      readonly reason: 'too_many' | 'timed_out' | 'stopped'
+      readonly waitedMs: number
+      readonly active: ActiveSessions
+      readonly heldBy: readonly string[]
+      readonly heldByOthers: number
+    }
 
 /**
  * A run's place in a session budget. `owner` is the identity the run's sessions count against, a worker or an agent as
@@ -42,6 +53,9 @@ type Waiter = {
   readonly startedAt: number
   readonly settle: (grant: SessionGrant) => void
 }
+
+/** Sessions granted and not yet given back: whose they are, how many, and the test that holds them. */
+type Held = { readonly owner: string; readonly scope: string | undefined; readonly count: number; readonly holder: string }
 
 /**
  * The browser sessions a host lets run at once, as a budget every run given it draws from. A session is one isolated
@@ -60,6 +74,7 @@ export class SessionBudget {
   readonly #owners = new Map<string, number>()
   readonly #waiting = new Set<Waiter>()
   readonly #peakOwners = new Map<string, number>()
+  readonly #held = new Set<Held>()
   #host = 0
   #peakHost = 0
   #arrivals = 0
@@ -81,7 +96,7 @@ export class SessionBudget {
     const { promise, resolve } = Promise.withResolvers<SessionGrant>()
     const startedAt = this.#clock()
     if (request.count > this.limits.perOwner || request.count > this.limits.host) {
-      resolve({ ok: false, reason: 'too_many', waitedMs: 0, active: this.#active(request.owner) })
+      resolve({ ok: false, reason: 'too_many', waitedMs: 0, active: this.#active(request.owner), heldBy: [], heldByOthers: 0 })
       return promise
     }
     let settled = false
@@ -101,7 +116,7 @@ export class SessionBudget {
     // A waiter that leaves frees its place, so those behind it are offered what it was keeping.
     const leave = (reason: 'timed_out' | 'stopped'): void => {
       if (settled) return
-      waiter.settle({ ok: false, reason, waitedMs: elapsedMs(startedAt, this.#clock), active: this.#active(request.owner) })
+      waiter.settle({ ok: false, reason, waitedMs: elapsedMs(startedAt, this.#clock), active: this.#active(request.owner), ...this.#holders(request) })
       this.#offer()
     }
     this.#waiting.add(waiter)
@@ -127,6 +142,16 @@ export class SessionBudget {
     return { owner: this.#owners.get(owner) ?? 0, host: this.#host }
   }
 
+  // The tests of the asking run that hold sessions, and how many sessions every other run holds. Another run's tests are
+  // its own business and may belong to another host's caller, so they are counted, never named. A request with no run
+  // is matched by its owner among holders with no run either.
+  #holders({ owner, scope }: SessionRequest): { heldBy: string[]; heldByOthers: number } {
+    const same = (held: Held): boolean => held.scope === scope && (scope !== undefined || held.owner === owner)
+    const own = [...this.#held].filter(same)
+    const others = [...this.#held].filter((held) => !same(held)).reduce((sum, held) => sum + held.count, 0)
+    return { heldBy: [...new Set(own.map((held) => held.holder))], heldByOthers: others }
+  }
+
   #offer(): void {
     let hostFree = this.limits.host - this.#host
     const heldBack = new Set<string>()
@@ -149,7 +174,9 @@ export class SessionBudget {
   }
 
   #take(waiter: Waiter): SessionLease {
-    const { owner, count } = waiter.request
+    const { owner, count, holder, scope } = waiter.request
+    const held: Held = { owner, scope, count, holder }
+    this.#held.add(held)
     this.#host += count
     this.#owners.set(owner, (this.#owners.get(owner) ?? 0) + count)
     this.#peakHost = Math.max(this.#peakHost, this.#host)
@@ -161,6 +188,7 @@ export class SessionBudget {
       release: () => {
         if (released) return
         released = true
+        this.#held.delete(held)
         this.#host -= count
         const left = (this.#owners.get(owner) ?? count) - count
         if (left > 0) this.#owners.set(owner, left)
@@ -211,5 +239,7 @@ export function sessionRefusal(grant: Extract<SessionGrant, { ok: false }>, requ
     return { ...failure('setup_failed', `Not run: the test needs ${needs} at once, more than ${limit}, so it could never start.`), details }
   }
   const held = `When it gave up, ${owner} held ${grant.active.owner} of ${limits.perOwner} and the host ${grant.active.host} of ${limits.host}.`
-  return { ...failure('setup_failed', `Not run: ${needs} for ${owner} did not come free within ${request.waitMs} ms. ${held}`), details: { ...details, waitedMs: grant.waitedMs } }
+  const holders = { ...(grant.heldBy.length === 0 ? {} : { heldBy: listWords(grant.heldBy, 'and') }), ...(grant.heldByOthers === 0 ? {} : { heldByOthers: grant.heldByOthers }) }
+  const waited = { waitedFor: `${needs} of ${request.owner}`, ...holders, waitedMs: grant.waitedMs }
+  return { ...failure('setup_failed', `Not run: ${needs} for ${owner} did not come free within ${request.waitMs} ms. ${held}`), details: { ...details, ...waited } }
 }

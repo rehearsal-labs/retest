@@ -19,8 +19,11 @@ import {
   countParts,
   describeAppEvent,
   describeBorrowedSetup,
+  describeHolders,
+  describeLeaseExpired,
   describeLocks,
   describeNarrowed,
+  describeResources,
   describeSessions,
   describeStateEvent,
   failureLabel,
@@ -89,6 +92,9 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
     onEvent(event) {
       record.add(event)
       switch (event.type) {
+        case 'native.started':
+          write(`  ${style.dim(`${event.product} on ${event.identity.platform === 'macos' ? 'macOS' : `iOS Simulator ${event.identity.os.version}`}`)}\n`)
+          break
         case 'browser.started': {
           // A target's further browsers are in the events; its first line says how many there are.
           if (event.instance !== undefined) return
@@ -178,13 +184,21 @@ function testLines(event: EventOfType<'test.finished'>, test: TestRecord | undef
   const states = (test?.events ?? []).flatMap((noted) => {
     if (noted.type === 'state.saved' || noted.type === 'state.restored') return [describeStateEvent(noted)]
     if (noted.type === 'session.reserved' && noted.attemptId === event.attemptId) return [describeSessions(noted)]
-    return noted.type === 'lock.acquired' && noted.attemptId === event.attemptId ? [describeLocks(noted)] : []
+    if (noted.type === 'lease.expired' && noted.attemptId === event.attemptId) return [describeLeaseExpired(noted)]
+    if (noted.type === 'resource.acquired' && noted.attemptId === event.attemptId) return waitNotes(describeResources(noted), noted)
+    return noted.type === 'lock.acquired' && noted.attemptId === event.attemptId ? waitNotes(describeLocks(noted), noted) : []
   })
   const notes = [...borrowed, ...states].map((note) => `      ${style.dim(note)}\n`)
   // An advisory AI check that did not pass is a warning, shown whatever the test's status.
   const warnings = (test?.events ?? []).flatMap((noted) => (noted.type === 'evaluation.finished' && noted.attemptId === event.attemptId && noted.evaluation.warning !== undefined ? [noted.evaluation.warning] : []))
   const warned = warnings.map((warning) => `      ${style.yellow('!')} ${warning}\n`)
   return `    ${marks[event.status]} ${name}${setup}${variant}  ${style.dim(after)}\n${notes.join('')}${warned.join('')}`
+}
+
+// What an attempt took and, when it had to wait, who held it as it asked: a line of its own under the first.
+function waitNotes(line: string, event: { waitedMs: number; heldBy?: readonly string[] | undefined; heldElsewhere?: number | undefined }): string[] {
+  const holders = event.waitedMs === 0 ? undefined : describeHolders(event)
+  return holders === undefined ? [line] : [line, holders]
 }
 
 function notRunLines(result: RunResult, targets: RunTargets, style: Style): string {

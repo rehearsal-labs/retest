@@ -1,8 +1,10 @@
-import type { Counts, RetestEvent, RunStatus, TestStatus } from '../protocol/events.ts'
+import type { Counts, LeasePart, RetestEvent, RunStatus, TestStatus } from '../protocol/events.ts'
 import type { CleanupRecord, PreparationRecord } from '../protocol/execution.ts'
 import type { Narrowed } from '../protocol/result.ts'
+import type { Variant } from '../protocol/variant.ts'
 import { truncateText, type FailureClass, type FailureDetail, type TruncatedText } from '../protocol/failures.ts'
 import { formatLine } from '../protocol/location.ts'
+import { describeLeaseParts } from '../runner/resources.ts'
 import { listWords } from '../shared/list-words.ts'
 
 /** How many characters of a recorded value a terminal report shows. `inspect --json` keeps them all. */
@@ -123,6 +125,36 @@ export function describeNarrowed(narrowed: Narrowed): string {
 export function describeLocks(event: { locks: readonly string[]; waitedMs: number }): string {
   const held = `holds ${event.locks.length === 1 ? 'lock' : 'locks'} ${listWords(event.locks, 'and')}`
   return event.waitedMs === 0 ? held : `${held}, after waiting ${formatDuration(event.waitedMs)}`
+}
+
+/**
+ * The desktop, devices and data folders an attempt took, and how long it waited for them.
+ *
+ * @example describeResources({ resources: [{ kind: 'desktop', name: 'macos', apps: ['mac'] }], waitedMs: 0, variant: { mac: 'macos' } }) // 'holds the desktop of mac=macos'
+ */
+export function describeResources(event: { resources: readonly LeasePart[]; waitedMs: number; variant?: Variant | undefined }): string {
+  const held = `holds ${describeLeaseParts(event.resources, event.variant)}`
+  return event.waitedMs === 0 ? held : `${held}, after waiting ${formatDuration(event.waitedMs)}`
+}
+
+/**
+ * Who held what an attempt waited for: the tests of its own run, and how many parts another run held.
+ *
+ * @example describeHolders({ heldBy: ['tests/a.retest.ts > first'] }) // 'held by tests/a.retest.ts > first'
+ */
+export function describeHolders(event: { heldBy?: readonly string[] | undefined; heldElsewhere?: number | undefined }): string | undefined {
+  const named = event.heldBy === undefined || event.heldBy.length === 0 ? [] : [listWords(event.heldBy, 'and')]
+  const elsewhere = event.heldElsewhere === undefined ? [] : ['another run in this process']
+  return named.length + elsewhere.length === 0 ? undefined : `held by ${[...named, ...elsewhere].join(' and ')}`
+}
+
+/**
+ * A lease the runner ended, because a part of it did not come free in time.
+ *
+ * @example describeLeaseExpired({ held: [{ kind: 'desktop', name: 'macos', apps: ['mac'] }] }) // 'lease expired: the desktop of mac did not come free within the cleanup budget'
+ */
+export function describeLeaseExpired(event: { held: readonly LeasePart[]; variant?: Variant | undefined }): string {
+  return `lease expired: ${describeLeaseParts(event.held, event.variant)} did not come free within the cleanup budget`
 }
 
 /**
