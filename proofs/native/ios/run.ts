@@ -12,16 +12,21 @@
  *   node --conditions=retest-source proofs/native/ios/run.ts [--port 8100] [--keep-device]
  *
  * Exit 0 when every step passed, 2 when the machine blocked it (no simulator runtime, a busy port), 1 when a step
- * failed. Builds, logs and artifacts go under ~/Library/Caches/retest-proofs.
+ * failed. WebDriverAgent is the pinned build in Retest's executor cache, made by `ensureExecutorBuild` when absent;
+ * logs and artifacts go under ~/Library/Caches/retest-proofs.
  */
 import type { ParseArgsConfig } from 'node:util'
 import type { KnownFailure } from '../shared/processes.ts'
 import type { JsonValue, Locator } from '../shared/webdriver.ts'
-import { access, readdir, readFile, writeFile } from 'node:fs/promises'
+import type { ExecutorBuild } from '../../../src/native/executors.ts'
+import { access, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
+import { ensureExecutorBuild } from '../../../src/native/executors.ts'
+import { systemTools } from '../../../src/native/processes.ts'
 import { Blocked, CACHE_ROOT, createRunFolders, inspectPng, ProofRecord, StepStopped } from '../shared/evidence.ts'
-import { capture, describeExit, isListening, logTail, processIds, RunnerProcess, RunnerStartError, runLogged } from '../shared/processes.ts'
+import { capture, describeExit, isListening, logTail, processIds, RunnerProcess, RunnerStartError } from '../shared/processes.ts'
 import { countTypes, observe, ownedWindowSource, readSource } from '../shared/source.ts'
 import { APP_STATE, describeError, isJsonObject, WebDriverClient, WebDriverSession } from '../shared/webdriver.ts'
 
@@ -30,8 +35,8 @@ const APP_NAME = 'Settings'
 const SEARCH_TEXT = 'Wallpaper'
 const HOST = '127.0.0.1'
 const WDA_ROOT = join(CACHE_ROOT, 'WebDriverAgent')
+const MAC2_ROOT = join(CACHE_ROOT, 'appium-mac2-driver')
 const PROJECT = join(WDA_ROOT, 'WebDriverAgent.xcodeproj')
-const DERIVED_DATA = join(CACHE_ROOT, 'derived', 'wda-ios')
 const RUNNER_PROCESS = 'WebDriverAgentRunner-Runner'
 const DEVICE_NAME = 'Retest proof iPhone'
 const DOWNLOAD_COMMAND = 'xcodebuild -downloadPlatform iOS'
@@ -120,13 +125,6 @@ async function appIsRunningOn(udid: string): Promise<boolean> {
   return (await simctl(['spawn', udid, 'launchctl', 'list'])).includes(`UIKitApplication:${BUNDLE_ID}`)
 }
 
-async function findXctestrun(): Promise<string | undefined> {
-  const products = join(DERIVED_DATA, 'Build', 'Products')
-  const names = await readdir(products).catch(() => [])
-  const name = names.find((candidate) => /^WebDriverAgentRunner_iphonesimulator.*\.xctestrun$/.test(candidate))
-  return name === undefined ? undefined : join(products, name)
-}
-
 const KNOWN_FAILURES: KnownFailure[] = [
   {
     pattern: /is not installed\. Please download and install the platform|No available simulator runtimes/i,
@@ -173,6 +171,8 @@ async function main(): Promise<number> {
   }
   const folders = await createRunFolders('ios')
   const runnerLog = join(folders.logs, `wda-ios-runner-${folders.stamp}.log`)
+  // xcodebuild's result bundle for the runner's one test; nothing in it is evidence, so it is removed at the end.
+  const resultBundle = join(tmpdir(), `retest-ios-proof-${folders.stamp}.xcresult`)
   const client = new WebDriverClient(`http://${HOST}:${port}`, 60_000)
   const record = new ProofRecord('Native iOS simulator screen through WebDriverAgent')
   record.facts['port'] = port
@@ -242,23 +242,21 @@ async function main(): Promise<number> {
       note(`state ${String(await deviceState(target.udid))}`)
     })
 
-    await record.step('build WebDriverAgent for testing', async (note) => {
-      const existing = await findXctestrun()
-      if (existing !== undefined) {
-        note(`reused ${existing}`)
-        return
-      }
-      const logPath = join(folders.logs, `wda-ios-build-for-testing-${folders.stamp}.log`)
-      const args = ['build-for-testing', '-project', PROJECT, '-scheme', 'WebDriverAgentRunner', '-destination', `platform=iOS Simulator,id=${target.udid}`, '-derivedDataPath', DERIVED_DATA, 'COMPILER_INDEX_STORE_ENABLE=NO']
-      const exit = await runLogged('xcodebuild', args, { logPath, cwd: WDA_ROOT, timeoutMs: 20 * 60_000 })
-      if (exit.exitCode !== 0) throw new Error(`xcodebuild build-for-testing ended with ${describeExit(exit)}; see ${logPath}`)
-      note(`built; log ${logPath}`)
+    // The pinned build, made once by Retest's build step into its executor cache, as Retest's own runtime uses it.
+    const build = await record.step('find or build the pinned WebDriverAgent', async (note): Promise<ExecutorBuild> => {
+      const logFile = join(folders.logs, `wda-ios-build-${folders.stamp}.log`)
+      const ensured = await ensureExecutorBuild({ executor: 'webdriveragent', sources: { webdriveragent: WDA_ROOT, mac2: MAC2_ROOT }, adoptFrom: [join(CACHE_ROOT, 'derived', 'wda-ios')], logFile, timeoutMs: 30 * 60_000, tools: systemTools })
+      if (!ensured.ok) throw new Error(ensured.failure.message)
+      record.facts['executorBuild'] = { action: ensured.action, origin: ensured.build.origin, productsSha256: ensured.build.productsSha256, codeDirectoryHash: ensured.build.codeDirectoryHash ?? null, xctestrun: ensured.build.xctestrun }
+      note(`${ensured.action}; products ${ensured.build.productsSha256.slice(0, 16)}; ${ensured.build.xctestrun}`)
+      return ensured.build
     })
 
     runner = await record.step('start the runner on the simulator', async (note) => {
-      const args = ['test-without-building', '-project', PROJECT, '-scheme', 'WebDriverAgentRunner', '-destination', `platform=iOS Simulator,id=${target.udid}`, '-derivedDataPath', DERIVED_DATA, 'COMPILER_INDEX_STORE_ENABLE=NO']
+      // The port and interface reach the runner through xcodebuild's TEST_RUNNER_ prefix; the build left them empty.
+      const args = ['test-without-building', '-xctestrun', build.xctestrun, '-destination', `platform=iOS Simulator,id=${target.udid}`, '-resultBundlePath', resultBundle]
       try {
-        const started = await RunnerProcess.start({ args, cwd: WDA_ROOT, environment: { USE_PORT: String(port) }, logPath: runnerLog, client, readyTimeoutMs: 240_000, knownFailures: KNOWN_FAILURES })
+        const started = await RunnerProcess.start({ args, cwd: WDA_ROOT, environment: { TEST_RUNNER_USE_PORT: String(port), TEST_RUNNER_USE_IP: HOST }, logPath: runnerLog, client, readyTimeoutMs: 240_000, knownFailures: KNOWN_FAILURES })
         note(`xcodebuild pid ${String(started.pid)} serves http://${HOST}:${port}; ${JSON.stringify(started.status['os'])}`)
         return started
       } catch (error) {
@@ -291,12 +289,14 @@ async function main(): Promise<number> {
     })
 
     await record.step('find General by label and tap it', async (note) => {
-      const general = await active.findOne(predicate("label == 'General' AND (elementType == 75 OR elementType == 9)"))
-      note(`exactly one match, elementType ${JSON.stringify(await active.attribute(general, 'elementType'))}, identifier ${JSON.stringify(await active.attribute(general, 'identifier'))}`)
+      // WebDriverAgent's predicates name the element type as `type`, a string, and the identifier as `name`; the macOS
+      // runner's use XCTest's `elementType` number and `identifier`.
+      const general = await active.findOne(predicate("label == 'General' AND (type == 'XCUIElementTypeCell' OR type == 'XCUIElementTypeButton')"))
+      note(`exactly one match, type ${JSON.stringify(await active.attribute(general, 'type'))}, identifier ${JSON.stringify(await active.attribute(general, 'name'))}`)
       await active.click(general)
       const opened = await observe(async () => ({
-        bar: (await active.findAll(predicate("elementType == 21 AND (identifier == 'General' OR label == 'General')"))).length,
-        about: (await active.findAll(predicate("label == 'About' AND (elementType == 75 OR elementType == 9)"))).length,
+        bar: (await active.findAll(predicate("type == 'XCUIElementTypeNavigationBar' AND (name == 'General' OR label == 'General')"))).length,
+        about: (await active.findAll(predicate("label == 'About' AND (type == 'XCUIElementTypeCell' OR type == 'XCUIElementTypeButton')"))).length,
       }), (value) => value.bar === 1 || value.about === 1, 5000)
       note(`General screen: ${opened.value.bar} navigation bar(s) named General, ${opened.value.about} About row(s)`)
       if (!opened.met) throw new Error('the General screen did not open')
@@ -305,8 +305,8 @@ async function main(): Promise<number> {
     await record.step('go back to the main list', async (note) => {
       const bar = await active.findOne(role('XCUIElementTypeNavigationBar'))
       // Chosen by what it is, never by position: a bar's first button is not necessarily its back button.
-      const back = await active.findOneWithin(bar, predicate("elementType == 9 AND (identifier == 'BackButton' OR label == 'Settings' OR label == 'Back')"))
-      note(`back button labelled ${JSON.stringify(await active.attribute(back, 'label'))}, identifier ${JSON.stringify(await active.attribute(back, 'identifier'))}`)
+      const back = await active.findOneWithin(bar, predicate("type == 'XCUIElementTypeButton' AND (name == 'BackButton' OR label == 'Settings' OR label == 'Back')"))
+      note(`back button labelled ${JSON.stringify(await active.attribute(back, 'label'))}, identifier ${JSON.stringify(await active.attribute(back, 'name'))}`)
       await active.click(back)
       const listed = await observe(async () => (await active.findAll(role('XCUIElementTypeSearchField'))).length, (count) => count === 1, 5000)
       if (!listed.met) throw new Error(`the main list came back with ${listed.value} search fields; exactly one is required`)
@@ -367,6 +367,7 @@ async function main(): Promise<number> {
     }
   } finally {
     await cleanUp({ record, client, port, device, createdDevice, bootedDevice, keepDevice: values['keep-device'], runner, session, appMayBeRunning })
+    await rm(resultBundle, { recursive: true, force: true })
   }
   await record.finish(folders.artifacts)
   return record.exitCode

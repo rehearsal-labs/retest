@@ -24,7 +24,8 @@ import { countChangedPixels, createRunFolders, decodePng, inspectPng, ProofRecor
 import { describeExit, processIds, RunnerProcess, runLogged } from '../shared/processes.ts'
 import { countTypes, observe, ownedWindowSource, readSource } from '../shared/source.ts'
 import { APP_STATE, describeError, WebDriverClient, WebDriverSession } from '../shared/webdriver.ts'
-import { APP_NAME, BUNDLE_ID, checkMachine, COMMAND_KEY, DERIVED_DATA, findXctestrun, HOST, launchTextEdit, PROJECT, PROJECT_ROOT, SHIFT_KEY, startRunner, tearDown, TYPED_TEXT, waitUntilSteady } from './mac2.ts'
+import type { OwnProcess } from './mac2.ts'
+import { APP_NAME, BUNDLE_ID, checkMachine, COMMAND_KEY, DERIVED_DATA, findOwnRunnerApp, findXctestrun, HOST, launchTextEdit, PROJECT, PROJECT_ROOT, SHIFT_KEY, startRunner, tearDown, TYPED_TEXT, waitUntilSteady } from './mac2.ts'
 
 // Launch arguments land in TextEdit's argument domain for this launch only. The first opens an untitled document
 // instead of the open panel, the second skips restoring windows from an earlier run.
@@ -108,7 +109,8 @@ async function main(): Promise<number> {
 
   let runner: RunnerProcess | undefined
   let session: WebDriverSession | undefined
-  let launchedPid: number | undefined
+  let launched: OwnProcess | undefined
+  let runnerApp: OwnProcess | undefined
   let appMayBeRunning = false
 
   const saveWindowTree = async (active: WebDriverSession, name: string): Promise<ReturnType<typeof readSource>> => {
@@ -138,13 +140,19 @@ async function main(): Promise<number> {
     })
 
     runner = await record.step('start the runner', (note) => startRunner({ record, note, client, port, logPath: runnerLog, xcodeHelper }))
+    runnerApp = await record.step('record the runner app this runner started', async (note) => {
+      const found = await findOwnRunnerApp(port)
+      if (found === undefined) throw new Error(`no single runner app listens on ${HOST}:${port}`)
+      note(`pid ${found.pid}, the one process listening on ${HOST}:${port}`)
+      return found
+    })
 
     session = await record.step(`create a session that launches ${APP_NAME}`, async (note) => {
       appMayBeRunning = true
-      const launched = await launchTextEdit(client, { bundleId: BUNDLE_ID, arguments: LAUNCH_ARGUMENTS, environment: {}, noReset: false, skipAppKill: false })
-      launchedPid = launched.pid
-      note(`session ${launched.session.id}; ${APP_NAME} pid ${launched.pid}, checked absent right before the launch`)
-      return launched.session
+      const started = await launchTextEdit(client, { bundleId: BUNDLE_ID, arguments: LAUNCH_ARGUMENTS, environment: {}, noReset: false, skipAppKill: false })
+      launched = started.launched
+      note(`session ${started.session.id}; ${APP_NAME} pid ${started.launched.pid}, checked absent right before the launch`)
+      return started.session
     })
     const active = session
 
@@ -328,11 +336,11 @@ async function main(): Promise<number> {
 
     await record.step(`terminate the ${APP_NAME} this proof launched`, async (note) => {
       const running = await processIds({ name: APP_NAME })
-      if (running.length !== 1 || running[0] !== launchedPid) throw new Error(`the running ${APP_NAME} is not only pid ${String(launchedPid)} (found ${running.join(', ') || 'none'}); not terminating by bundle id`)
+      if (running.length !== 1 || running[0] !== launched?.pid) throw new Error(`the running ${APP_NAME} is not only pid ${String(launched?.pid)} (found ${running.join(', ') || 'none'}); not terminating by bundle id`)
       const terminated = await active.terminateApp(BUNDLE_ID)
       const state = await observe(() => active.appState(BUNDLE_ID), (value) => value === 1, 5000)
-      const gone = await observe(() => processIds({ name: APP_NAME }), (pids) => !pids.includes(launchedPid ?? -1), 5000)
-      note(`terminate answered ${String(terminated)}; state ${state.value} (${APP_STATE[state.value] ?? 'unknown'}); pid ${String(launchedPid)} ${gone.met ? 'gone' : 'still running'}`)
+      const gone = await observe(() => processIds({ name: APP_NAME }), (pids) => !pids.includes(launched?.pid ?? -1), 5000)
+      note(`terminate answered ${String(terminated)}; state ${state.value} (${APP_STATE[state.value] ?? 'unknown'}); pid ${String(launched?.pid)} ${gone.met ? 'gone' : 'still running'}`)
       if (!terminated || !state.met || !gone.met) throw new Error(`${APP_NAME} is still running`)
       appMayBeRunning = false
     })
@@ -342,7 +350,7 @@ async function main(): Promise<number> {
       record.facts['unexpectedError'] = describeError(error)
     }
   } finally {
-    await tearDown({ record, client, port, runner, session, launchedPid, appMayBeRunning })
+    await tearDown({ record, client, port, runner, runnerApp, session, launched, appMayBeRunning })
   }
   await record.finish(folders.artifacts)
   return record.exitCode

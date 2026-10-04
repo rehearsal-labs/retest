@@ -17,7 +17,8 @@ import { createRunFolders, ProofRecord, StepStopped } from '../shared/evidence.t
 import { processIds, RunnerProcess } from '../shared/processes.ts'
 import { observe } from '../shared/source.ts'
 import { describeError, WebDriverClient, WebDriverSession } from '../shared/webdriver.ts'
-import { APP_NAME, BUNDLE_ID, checkMachine, findXctestrun, HOST, launchTextEdit, startRunner, tearDown, TYPED_TEXT, waitUntilSteady } from './mac2.ts'
+import type { OwnProcess } from './mac2.ts'
+import { APP_NAME, BUNDLE_ID, checkMachine, findOwnRunnerApp, findXctestrun, HOST, launchTextEdit, startRunner, tearDown, TYPED_TEXT, waitUntilSteady } from './mac2.ts'
 
 const USAGE = `Usage: node --conditions=retest-source proofs/native/macos/clean-textedit-leftovers.ts --title "Untitled 3" [--title …] [--port 10100]
 
@@ -62,8 +63,9 @@ async function main(): Promise<number> {
   record.facts['titles'] = [...titles]
 
   let runner: RunnerProcess | undefined
+  let runnerApp: OwnProcess | undefined
   let session: WebDriverSession | undefined
-  let launchedPid: number | undefined
+  let launched: OwnProcess | undefined
   let appMayBeRunning = false
 
   try {
@@ -74,12 +76,18 @@ async function main(): Promise<number> {
       note(existing)
     })
     runner = await record.step('start the runner', (note) => startRunner({ record, note, client, port, logPath: join(folders.logs, `mac2-clean-textedit-leftovers-${folders.stamp}.log`), xcodeHelper }))
+    runnerApp = await record.step('record the runner app this runner started', async (note) => {
+      const found = await findOwnRunnerApp(port)
+      if (found === undefined) throw new Error(`no single runner app listens on ${HOST}:${port}`)
+      note(`pid ${found.pid}`)
+      return found
+    })
     session = await record.step(`launch ${APP_NAME} so it reopens its autosaved documents`, async (note) => {
       appMayBeRunning = true
-      const launched = await launchTextEdit(client, { bundleId: BUNDLE_ID, arguments: ['-NSShowAppCentricOpenPanelInsteadOfUntitledFile', 'NO'], environment: {}, noReset: false, skipAppKill: false })
-      launchedPid = launched.pid
-      note(`${APP_NAME} pid ${launched.pid}`)
-      return launched.session
+      const started = await launchTextEdit(client, { bundleId: BUNDLE_ID, arguments: ['-NSShowAppCentricOpenPanelInsteadOfUntitledFile', 'NO'], environment: {}, noReset: false, skipAppKill: false })
+      launched = started.launched
+      note(`${APP_NAME} pid ${started.launched.pid}`)
+      return started.session
     })
     const active = session
 
@@ -113,10 +121,10 @@ async function main(): Promise<number> {
 
     await record.step(`terminate the ${APP_NAME} this script launched`, async (note) => {
       const running = await processIds({ name: APP_NAME })
-      if (running.length !== 1 || running[0] !== launchedPid) throw new Error(`the running ${APP_NAME} is not only pid ${String(launchedPid)}; not terminating by bundle id`)
+      if (running.length !== 1 || running[0] !== launched?.pid) throw new Error(`the running ${APP_NAME} is not only pid ${String(launched?.pid)}; not terminating by bundle id`)
       const terminated = await active.terminateApp(BUNDLE_ID)
-      const gone = await observe(() => processIds({ name: APP_NAME }), (pids) => !pids.includes(launchedPid ?? -1), 5000)
-      note(`terminate answered ${String(terminated)}; pid ${String(launchedPid)} ${gone.met ? 'gone' : 'still running'}`)
+      const gone = await observe(() => processIds({ name: APP_NAME }), (pids) => !pids.includes(launched?.pid ?? -1), 5000)
+      note(`terminate answered ${String(terminated)}; pid ${String(launched?.pid)} ${gone.met ? 'gone' : 'still running'}`)
       if (!terminated || !gone.met) throw new Error(`${APP_NAME} is still running`)
       appMayBeRunning = false
     })
@@ -126,7 +134,7 @@ async function main(): Promise<number> {
       record.facts['unexpectedError'] = describeError(error)
     }
   } finally {
-    await tearDown({ record, client, port, runner, session, launchedPid, appMayBeRunning })
+    await tearDown({ record, client, port, runner, runnerApp, session, launched, appMayBeRunning })
   }
   await record.finish(folders.artifacts)
   return record.exitCode

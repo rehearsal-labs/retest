@@ -4,7 +4,7 @@ import type { JsonObject } from '../shared/webdriver.ts'
 import { access, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Blocked, CACHE_ROOT } from '../shared/evidence.ts'
-import { capture, describeExit, isAlive, isListening, logTail, processIds, RunnerProcess, RunnerStartError } from '../shared/processes.ts'
+import { capture, describeExit, isListening, logTail, processIds, RunnerProcess, RunnerStartError } from '../shared/processes.ts'
 import { observe } from '../shared/source.ts'
 import { describeError, WebDriverClient, WebDriverSession } from '../shared/webdriver.ts'
 import { readAutomationModeStart } from './automation-mode.ts'
@@ -130,21 +130,22 @@ export async function startRunner(options: { readonly record: ProofRecord; reado
 }
 
 /**
- * Creates a session that launches TextEdit and returns it with the pid it launched. TextEdit is checked again right
- * before the launch, because XCTest's launch terminates a running copy and this script must never touch one it did
- * not start. Exactly one TextEdit must be running afterwards.
+ * Creates a session that launches TextEdit and returns it with the process it launched, pid and command line. TextEdit
+ * is checked again right before the launch, because XCTest's launch terminates a running copy and this script must
+ * never touch one it did not start. Exactly one TextEdit must be running afterwards.
  */
-export async function launchTextEdit(client: WebDriverClient, capabilities: JsonObject): Promise<{ readonly session: WebDriverSession; readonly pid: number }> {
+export async function launchTextEdit(client: WebDriverClient, capabilities: JsonObject): Promise<{ readonly session: WebDriverSession; readonly launched: OwnProcess }> {
   const before = await processIds({ name: APP_NAME })
   if (before.length > 0) throw new Blocked(`${APP_NAME} was opened while this was starting (pid ${before.join(', ')}). Quit it first; XCTest's launch would terminate it.`)
   const session = await WebDriverSession.create(client, capabilities, 120_000)
   const after = await processIds({ name: APP_NAME })
   const [pid] = after
-  if (pid === undefined || after.length !== 1) {
+  const command = pid === undefined ? '' : (await capture('/bin/ps', ['-ww', '-o', 'args=', '-p', String(pid)])).stdout.trim()
+  if (pid === undefined || after.length !== 1 || command.length === 0) {
     await session.end().catch(() => undefined)
-    throw new Error(`expected exactly one ${APP_NAME} process after the launch, found ${after.length}`)
+    throw new Error(`expected exactly one ${APP_NAME} process with a command line after the launch, found ${after.length}`)
   }
-  return { session, pid }
+  return { session, launched: { pid, command } }
 }
 
 /**
@@ -163,46 +164,86 @@ export async function waitUntilSteady(session: WebDriverSession, element: string
   return steady.met
 }
 
-/** What teardown needs: the record, the runner, and the one TextEdit process this script launched. */
+/** A process this script recorded as its own: its pid and its command line as `ps` showed it. */
+export type OwnProcess = { readonly pid: number; readonly command: string }
+
+/**
+ * Whether a recorded process still runs under its pid with its recorded command line. `gone` covers a pid that is free
+ * and one another process has now; a `ps` that failed is `unreadable`, never taken for either.
+ */
+export async function recordedState(entry: OwnProcess): Promise<'running' | 'gone' | 'unreadable'> {
+  const shown = await capture('/bin/ps', ['-ww', '-o', 'args=', '-p', String(entry.pid)])
+  if (shown.exitCode === 0) return shown.stdout.trim() === entry.command ? 'running' : 'gone'
+  // ps answers 1 and prints nothing, not even to stderr, when no process has the pid.
+  if (shown.exitCode === 1 && shown.stdout.trim() === '' && shown.stderr.trim() === '') return 'gone'
+  return 'unreadable'
+}
+
+// Sends SIGTERM to a recorded process only while it is still the recorded one, read right before the signal.
+async function signalRecorded(entry: OwnProcess): Promise<'sent' | 'gone' | 'unreadable'> {
+  const state = await recordedState(entry)
+  if (state !== 'running') return state
+  process.kill(entry.pid, 'SIGTERM')
+  return 'sent'
+}
+
+/**
+ * The runner app this script's runner started: the one process listening on the script's port, with its command line.
+ * macOS launches the runner app with launchd for its parent, so the port is what ties it to this script.
+ */
+export async function findOwnRunnerApp(port: number): Promise<OwnProcess | undefined> {
+  const listening = await capture('/usr/sbin/lsof', ['-nP', `-iTCP@${HOST}:${port}`, '-sTCP:LISTEN', '-Fp'])
+  const pids = listening.stdout.split('\n').filter((line) => /^p\d+$/.test(line)).map((line) => Number(line.slice(1)))
+  const [pid] = pids
+  if (pid === undefined || pids.length !== 1) return undefined
+  const command = (await capture('/bin/ps', ['-ww', '-o', 'args=', '-p', String(pid)])).stdout.trim()
+  return command.includes(RUNNER_PROCESS) ? { pid, command } : undefined
+}
+
+/** What teardown needs: the record, the runner and its runner app, and the one TextEdit process this script launched. */
 export type TearDown = {
   readonly record: ProofRecord
   readonly client: WebDriverClient
   readonly port: number
   readonly runner: RunnerProcess | undefined
+  readonly runnerApp: OwnProcess | undefined
   readonly session: WebDriverSession | undefined
-  readonly launchedPid: number | undefined
+  readonly launched: OwnProcess | undefined
   readonly appMayBeRunning: boolean
 }
 
 /**
- * Ends what this script started, each as its own cleanup step: the TextEdit pid it launched, the session, the
- * runner. Then it checks that none of them is left. A TextEdit with any other pid is never touched.
+ * Ends what this script started, each as its own cleanup step: the TextEdit it launched, the session, the runner. Then
+ * it checks that none of them is left. A process is ended only by the pid and command line this script recorded for
+ * it; a TextEdit it did not record is never touched.
  */
 export async function tearDown(state: TearDown): Promise<void> {
-  const { record, client, port, runner, session, launchedPid } = state
+  const { record, client, port, runner, runnerApp, session, launched } = state
   if (state.appMayBeRunning) {
     await record.cleanup(`terminate the ${APP_NAME} this script launched`, async (note) => {
-      if (launchedPid === undefined) {
+      if (launched === undefined) {
         const running = await processIds({ name: APP_NAME })
-        note(`the launch never named a pid; ${running.length} ${APP_NAME} process(es) running, none touched`)
+        note(`the launch never named a process; ${running.length} ${APP_NAME} process(es) running, none touched`)
         if (running.length > 0) throw new Error(`a ${APP_NAME} may have been left running; it was not touched because its owner is unknown`)
         return
       }
-      if (!isAlive(launchedPid)) {
-        note(`pid ${launchedPid} already gone`)
+      const before = await recordedState(launched)
+      if (before === 'unreadable') throw new Error(`could not read whether pid ${launched.pid} is still the ${APP_NAME} this script launched`)
+      if (before === 'gone') {
+        note(`pid ${launched.pid} already gone`)
         return
       }
       const running = await processIds({ name: APP_NAME })
       // XCTest terminates by bundle id, so it is used only while the running copy is still the launched one.
-      if (session !== undefined && running.length === 1 && running[0] === launchedPid) {
+      if (session !== undefined && running.length === 1 && running[0] === launched.pid) {
         note(`terminate answered ${String(await session.terminateApp(BUNDLE_ID).catch((error: unknown) => describeError(error)))}`)
       }
-      const gone = await observe(async () => isAlive(launchedPid), (alive) => !alive, 5000)
+      const gone = await observe(() => recordedState(launched), (left) => left === 'gone', 5000)
       if (!gone.met) {
-        process.kill(launchedPid, 'SIGTERM')
-        throw new Error(`sent SIGTERM to pid ${launchedPid}, the ${APP_NAME} this script launched`)
+        const signalled = await signalRecorded(launched)
+        throw new Error(signalled === 'sent' ? `sent SIGTERM to pid ${launched.pid}, the ${APP_NAME} this script launched` : `pid ${launched.pid} was ${signalled} when this script went to end it`)
       }
-      note(`pid ${launchedPid} ended`)
+      note(`pid ${launched.pid} ended`)
     })
   }
   if (session !== undefined) {
@@ -220,12 +261,16 @@ export async function tearDown(state: TearDown): Promise<void> {
     })
   }
   await record.cleanup('check that nothing this script started is running', async (note) => {
-    const runnerPids = await observe(() => processIds({ pattern: RUNNER_PROCESS }), (pids) => pids.length === 0, 10_000)
-    const appLeft = launchedPid !== undefined && isAlive(launchedPid)
+    // Only the runner app this script recorded is looked for and ended, and only while its command line is the
+    // recorded one: a runner of any other start, Retest's own among them, is never touched. A runner whose app was
+    // never recorded leaves no way to tell that nothing of it is left, so the check fails rather than passing.
+    const runnerLeft = runnerApp === undefined ? undefined : (await observe(() => recordedState(runnerApp), (left) => left === 'gone', 10_000)).value
+    const appLeft = launched === undefined ? 'gone' : await recordedState(launched)
     const listening = await isListening(HOST, port)
-    note(`${runnerPids.value.length} runner processes, launched ${APP_NAME} ${appLeft ? 'still running' : 'gone'}, port ${port} ${listening ? 'still listening' : 'closed'}`)
-    // The preflight saw no runner, so a runner left now was started by this script.
-    for (const pid of runnerPids.value) process.kill(pid, 'SIGTERM')
-    if (runnerPids.value.length > 0 || appLeft || listening) throw new Error('something this script started is still running')
+    note(`runner app ${runnerApp === undefined ? 'never recorded' : `pid ${runnerApp.pid} ${runnerLeft ?? 'unknown'}`}, launched ${APP_NAME} ${appLeft}, port ${port} ${listening ? 'still listening' : 'closed'}`)
+    const signalled = runnerApp !== undefined && runnerLeft === 'running' ? await signalRecorded(runnerApp) : undefined
+    if (runner !== undefined && runnerApp === undefined) throw new Error('the runner started and its runner app was never recorded, so this script cannot tell whether one it started is still running')
+    if (runnerLeft === 'unreadable' || appLeft === 'unreadable') throw new Error('this script could not read whether what it started is still running')
+    if (runnerLeft === 'running' || appLeft === 'running' || listening) throw new Error(`something this script started is still running${signalled === 'sent' ? '; the runner app was sent SIGTERM' : ''}`)
   })
 }
