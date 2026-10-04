@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+    <title>Tasks</title>
+    <style>
+      body { font: 15px system-ui, sans-serif; margin: 24px; }
+      li { display: flex; gap: 12px; align-items: center; margin: 4px 0; }
+      .done [data-testid="task-name"] { text-decoration: line-through; }
+    </style>
+  </head>
+  <body>
+    <h1>Tasks</h1>
+    <form data-testid="task-form">
+      <label for="title">Title</label>
+      <input id="title" data-testid="task-title" autocomplete="off">
+      <button type="submit" data-testid="add-task">Add task</button>
+    </form>
+    <ul data-testid="task-list"></ul>
+    <p data-testid="task-total">0 tasks</p>
+    <p>Shown wrong on purpose: <span data-testid="wrong-total">1 tasks</span></p>
+    <p>
+      <button type="button" data-testid="open-second-window">Open second window</button>
+      <button type="button" data-testid="close-window">Close this window</button>
+      <a href="about.html" data-testid="about-link">About</a>
+    </p>
+    <h2>Environment</h2>
+    <ul data-testid="variables"></ul>
+    <script src="renderer.js"></script>
+  </body>
+</html>

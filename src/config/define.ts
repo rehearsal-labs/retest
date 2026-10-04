@@ -4,8 +4,10 @@ import type {
   BrandedOptions,
   BrowserName,
   ChromiumOptions,
+  ElectronOptions,
   EnvSecret,
   RetestConfig,
+  StartCommand,
 } from './types.ts'
 
 // Each function keeps every name its argument holds as a literal type, which the Register types read. None of
@@ -73,6 +75,22 @@ export function edge<const Options extends BrandedOptions & AppSettings = {}>(
   options?: Options & NoExtraKeys<Options, BrandedOptions & AppSettings>,
 ): Options & { readonly browser: 'edge' } {
   return tagged(options, 'edge')
+}
+
+/** What an Electron app on its own may carry of its app's settings: a server to start, and never a base URL. */
+type ElectronAppSettings = { readonly start?: StartCommand | undefined }
+
+/**
+ * An Electron app, launched afresh for each test from `executablePath`, the Electron binary, with `appPath`, the
+ * app's folder or entry file. The first window the app opens is the test's page; it has no address, so it takes no
+ * `baseUrl`.
+ *
+ * @example electron({ executablePath: 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron', appPath: 'desktop' })
+ */
+export function electron<const Options extends ElectronOptions & ElectronAppSettings>(
+  options: Options & NoExtraKeys<Options, ElectronOptions & ElectronAppSettings>,
+): Options & { readonly browser: 'electron' } {
+  return Object.assign({}, options, { browser: 'electron' as const })
 }
 
 /**

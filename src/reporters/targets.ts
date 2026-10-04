@@ -1,5 +1,5 @@
 import type { Counts } from '../protocol/events.ts'
-import type { BrowserInfo, RunResult } from '../protocol/result.ts'
+import type { BrowserInfo, NativeInfo, RunResult } from '../protocol/result.ts'
 import type { RunRecord } from './run-record.ts'
 import { withoutCredentials } from '../protocol/url.ts'
 import { variantKey, variantPairs, type Variant } from '../protocol/variant.ts'
@@ -11,6 +11,7 @@ import { printable } from './format.ts'
  * each app the targets its tests used.
  */
 export type RunTargets = {
+  natives?: ReadonlyMap<string, NativeInfo>
   browsers: ReadonlyMap<string, BrowserInfo>
   apps: ReadonlyMap<string, ReadonlySet<string>>
 }
@@ -29,7 +30,9 @@ export function runTargets(record: RunRecord, result?: RunResult): RunTargets {
   for (const { variant } of [...record.tests.values(), ...results]) {
     for (const [app, target] of Object.entries(variant ?? {})) apps.set(app, (apps.get(app) ?? new Set()).add(target))
   }
-  return { browsers: targetBrowsers(record, result), apps }
+  const natives = new Map<string, NativeInfo>()
+  for (const native of [...(result?.natives ?? []), ...record.natives]) natives.set(variantKey({ [native.app]: native.target }), native)
+  return { browsers: targetBrowsers(record, result), natives, apps }
 }
 
 /**
@@ -48,28 +51,39 @@ function targetBrowsers(record: RunRecord, result?: RunResult): ReadonlyMap<stri
 }
 
 /**
- * A variant as a report line names it: the targets that tell this run of a test from its others, and any
- * target that emulates a device, which is always marked. Undefined when there is nothing to say.
+ * A variant as a report line names it: the targets that tell this run of a test from its others, any target that
+ * emulates a device, which is always marked, and any Electron app, which is always named. Undefined when there is
+ * nothing to say.
  *
  * @example variantLabel({ web: 'pixel', api: 'default' }, targets) // 'web=pixel (emulated)'
  */
 export function variantLabel(variant: Variant | undefined, targets: RunTargets): string | undefined {
   const pairs = variantPairs(variant).flatMap((pair) => {
-    const emulated = targets.browsers.get(pair)?.target?.emulation !== undefined
-    if (emulated) return [`${pair} (emulated)`]
+    const marked = markedPair(pair, targets)
+    if (marked !== pair) return [marked]
     return (targets.apps.get(pair.slice(0, pair.indexOf('=')))?.size ?? 0) > 1 ? [pair] : []
   })
   return pairs.length === 0 ? undefined : pairs.join(', ')
 }
 
 /**
- * Every target of a variant, each emulated one marked, for a view of one test. Undefined for a test with none.
+ * Every target of a variant, each emulated one and each Electron app marked, for a view of one test. Undefined for a
+ * test with none.
  *
- * @example describeVariant({ web: 'pixel' }, targets) // 'web=pixel (emulated)'
+ * @example describeVariant({ web: 'pixel', desktop: 'electron' }, targets) // 'web=pixel (emulated), desktop=electron (Electron)'
  */
-export function describeVariant(variant: Variant | undefined, targets: Pick<RunTargets, 'browsers'>): string | undefined {
-  const pairs = variantPairs(variant).map((pair) => (targets.browsers.get(pair)?.target?.emulation === undefined ? pair : `${pair} (emulated)`))
+export function describeVariant(variant: Variant | undefined, targets: Pick<RunTargets, 'browsers' | 'natives'>): string | undefined {
+  const pairs = variantPairs(variant).map((pair) => markedPair(pair, targets))
   return pairs.length === 0 ? undefined : pairs.join(', ')
+}
+
+// A target that emulates a screen is marked as emulated, and an Electron app as one, since neither is a plain browser.
+function markedPair(pair: string, targets: Pick<RunTargets, 'browsers' | 'natives'>): string {
+  const native = targets.natives?.get(pair)
+  if (native !== undefined) return `${pair} (${describeNative(native)})`
+  const target = targets.browsers.get(pair)?.target
+  if (target?.emulation !== undefined) return `${pair} (emulated)`
+  return target?.electron === undefined ? pair : `${pair} (Electron)`
 }
 
 /**
@@ -84,13 +98,16 @@ export function namingTargets(variant: Variant | undefined, targets: RunTargets)
 }
 
 /**
- * A browser as a person reads it: its name and version, and what it emulates.
+ * A browser as a person reads it: its name and version, what it emulates, and for an Electron app the Chromium it
+ * embeds.
  *
  * @example describeBrowser(browser) // 'Chrome 140.0.7339.80 as Pixel 9 · emulated'
+ * @example describeBrowser(app) // 'Electron 44.5.1 · Chromium 152.0.7977.130'
  */
 export function describeBrowser(browser: Pick<BrowserInfo, 'product' | 'version' | 'target'>): string {
   const name = browser.product.includes(browser.version) ? browser.product : `${browser.product} ${browser.version}`
   const { target } = browser
+  if (target?.electron !== undefined) return `${name} · Chromium ${target.electron.chromium}`
   if (target?.emulation === undefined) return name
   return target.device === undefined ? `${name} · emulated` : `${name} as ${target.device} · emulated`
 }
@@ -138,6 +155,8 @@ function variantBrowser(variant: Variant, targets: RunTargets): string {
   const pairs = variantPairs(variant)
   const described = pairs.flatMap((pair) => {
     const browser = targets.browsers.get(pair)
+    const native = targets.natives?.get(pair)
+    if (native !== undefined) return [pairs.length === 1 ? describeNative(native) : `${pair.slice(0, pair.indexOf('='))}: ${describeNative(native)}`]
     if (browser === undefined) return []
     return [pairs.length === 1 ? describeBrowser(browser) : `${pair.slice(0, pair.indexOf('='))}: ${describeBrowser(browser)}`]
   })
@@ -148,3 +167,8 @@ function noCounts(): Counts {
   return { passed: 0, failed: 0, error: 0, notRun: 0, inconclusive: 0 }
 }
 
+
+/** The app and operating system the native executor exercised. */
+export function describeNative(native: Pick<NativeInfo, 'product' | 'identity'>): string {
+  return `${native.product} on ${native.identity.platform === 'macos' ? 'macOS' : `iOS Simulator ${native.identity.os.version}`}`
+}

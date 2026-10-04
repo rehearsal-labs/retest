@@ -4,9 +4,8 @@ import type { PipeStreams, Transport } from './cdp/transport.ts'
 import type { LaunchOptions, WebRuntime } from './contract.ts'
 import type { BrowserVersion } from './browser.ts'
 import { appendFileSync } from 'node:fs'
-import { mkdtemp, open, stat } from 'node:fs/promises'
+import { open, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { s } from '../protocol/schema.ts'
@@ -16,10 +15,10 @@ import { CdpConnection } from './cdp/connection.ts'
 import { CdpClosedError, CdpDisconnectedError, CdpTimeoutError } from './cdp/errors.ts'
 import { PipeTransport } from './cdp/transport.ts'
 import { request, sendOptions } from './cdp-results.ts'
-import { ChromiumProcess } from './chromium-process.ts'
+import { ChromiumProcess, ProcessLaunchError } from './chromium-process.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { checkExecutable } from './executable.ts'
-import { profilePrefix, removeStaleProfiles } from './profiles.ts'
+import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
 import { explainStartFailure } from './start-failure.ts'
 
 const launchTimeoutMs = 30_000
@@ -30,8 +29,8 @@ const versionSchema = s.object({ product: s.string(), userAgent: s.string() })
 
 /**
  * Starts a Chromium browser this run owns, in a process group of its own, with a temporary profile and a
- * private debugging pipe. The profile is named after this process, and profiles that processes no longer
- * running left behind are removed first. Every failure is a `LaunchError` that names the problem. `transport`
+ * private debugging pipe. The profile is named after this process; profiles from earlier launches are retained.
+ * Every failure is a `LaunchError` that names the problem. `transport`
  * makes the connection's transport from the pipe; a test passes one that watches or holds messages.
  *
  * @example const browser = await launchBrowser({ executablePath, logFile: 'logs/browser.log', headless: true })
@@ -44,21 +43,25 @@ export async function launchBrowser(
   const deadline = new Deadline(timeoutMs)
   const executable = await checkExecutable(options.executablePath)
   const staleProfileProblems = await removeStaleProfiles(tmpdir())
-  const profile = await mkdtemp(join(tmpdir(), profilePrefix(process.pid))).catch((error: unknown) => {
+  const profile = await createTemporaryProfile(tmpdir()).catch((error: unknown) => {
     throw new LaunchError(`Cannot create a temporary browser profile: ${errorMessage(error)}`, { cause: error })
   })
   const args = chromiumArguments(profile, options.headless)
   const outputStart = await logLength(options.logFile)
   const hidden = options.hiddenVariables === undefined ? {} : { hiddenVariables: options.hiddenVariables }
-  const chromium = await ChromiumProcess.start({ executable, args, profile, logFile: options.logFile, ...hidden })
-  const log = logWriter(options.logFile)
-  for (const problem of staleProfileProblems) log(problem)
-  // Every command Retest sends names its own timeout; the launch budget bounds any that would not.
-  const connection = new CdpConnection(transport(chromium.pipe), {
-    timeoutMs,
-    onDiagnostic: (diagnostic) => log(describeDiagnostic(diagnostic)),
-  })
+  const redacting = options.redact === undefined ? {} : { redact: options.redact }
+  const streaming = options.redactStream === undefined ? {} : { redactStream: options.redactStream }
+  const chromium = await ChromiumProcess.start({ executable, args, profile, logFile: options.logFile, ...hidden, ...redacting, ...streaming })
+  let connection: CdpConnection | undefined
   try {
+    const write = logWriter(options.logFile)
+    const log = options.redact === undefined ? write : (line: string) => write(options.redact?.(line) ?? line)
+    for (const problem of staleProfileProblems) log(problem)
+    // Every command Retest sends names its own timeout; the launch budget bounds any that would not.
+    connection = new CdpConnection(transport(chromium.pipe), {
+      timeoutMs,
+      onDiagnostic: (diagnostic) => log(describeDiagnostic(diagnostic)),
+    })
     const version = await handshake(connection, deadline)
     const onListenerError = (error: unknown) => log(`a listener failed: ${errorMessage(error)}`)
     return new ChromiumBrowser({ process: chromium, executablePath: executable, connection, version, onListenerError })
@@ -66,12 +69,13 @@ export async function launchBrowser(
     const ended = error instanceof CdpDisconnectedError || error instanceof CdpClosedError
     // A program that closed its pipe is usually exiting; how it exits is the best explanation there is.
     const exit = ended ? await chromium.waitForExit(Math.min(deadline.remainingMs, closeGraceMs)) : undefined
-    connection.close()
-    const problems = await chromium.stop(0)
+    const problems: string[] = []
+    try { connection?.close() } catch (closeError) { problems.push(`Could not close the browser's debugging pipe: ${errorMessage(closeError)}`) }
+    problems.push(...await chromium.stop(0))
     const output = await launchOutput(options.logFile, outputStart)
     const message = handshakeFailure(error, { executable, exit, logFile: options.logFile, timeoutMs, output })
     const cleanup = problems.length === 0 ? '' : ` Cleaning up also failed: ${problems.join(' ')}`
-    throw new LaunchError(`${message}${cleanup}`, { cause: error })
+    throw new ProcessLaunchError(`${message}${cleanup}`, chromium.gone(), { cause: error, failureClass: problems.length > 0 ? 'cleanup_failed' : 'setup_failed' }, chromium.outputSettled)
   }
 }
 
@@ -89,7 +93,12 @@ function chromiumArguments(profile: string, headless: boolean): string[] {
   ]
 }
 
-async function handshake(connection: CdpConnection, deadline: Deadline): Promise<BrowserVersion> {
+/**
+ * Asks the browser what it is, and splits its product into a name and a version.
+ *
+ * @example await handshake(connection, deadline) // { product: 'Chrome', version: '152.0.7977.130', userAgent }
+ */
+export async function handshake(connection: CdpConnection, deadline: Deadline): Promise<BrowserVersion> {
   const { product, userAgent } = await request(connection, 'Browser.getVersion', undefined, versionSchema, sendOptions(deadline))
   const slash = product.indexOf('/')
   if (slash === -1) return { product, version: 'unknown', userAgent }
@@ -108,8 +117,8 @@ function handshakeFailure(error: unknown, { executable, exit, logFile, timeoutMs
   return `${executable} answered, but not as a Chromium browser: ${errorMessage(error)}. ${advice}`
 }
 
-// Where this launch's output begins in a log that may already hold another's.
-async function logLength(logFile: string): Promise<number> {
+/** Where a launch's output begins in a log that may already hold another's. */
+export async function logLength(logFile: string): Promise<number> {
   try {
     return (await stat(logFile)).size
   } catch {
@@ -118,9 +127,11 @@ async function logLength(logFile: string): Promise<number> {
   }
 }
 
-// What the browser printed during this launch, up to its last `launchOutputLimit` bytes. A log that cannot be read
-// explains nothing, and the failure still points to it.
-async function launchOutput(logFile: string, from: number): Promise<string> {
+/**
+ * What the program printed during a launch, from `from`, up to its last 64 KiB. A log that cannot be read explains
+ * nothing, and the failure still points to it.
+ */
+export async function launchOutput(logFile: string, from: number): Promise<string> {
   try {
     const handle = await open(logFile, 'r')
     try {
@@ -137,7 +148,8 @@ async function launchOutput(logFile: string, from: number): Promise<string> {
   }
 }
 
-function describeDiagnostic(diagnostic: CdpDiagnostic): string {
+/** A connection's diagnostic as a line of the browser log. */
+export function describeDiagnostic(diagnostic: CdpDiagnostic): string {
   switch (diagnostic.kind) {
     case 'malformed-message':
       return `a message from the browser could not be read: ${diagnostic.problem}`
@@ -150,7 +162,8 @@ function describeDiagnostic(diagnostic: CdpDiagnostic): string {
   }
 }
 
-function logWriter(logFile: string): (line: string) => void {
+/** Adds Retest's own lines to a browser log, each marked `[retest]`; a line that cannot be added is dropped. */
+export function logWriter(logFile: string): (line: string) => void {
   return (line) => {
     try {
       appendFileSync(logFile, `[retest] ${line}\n`)

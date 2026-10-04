@@ -3,7 +3,7 @@ import type { CliDependencies } from '../../src/cli/command.ts'
 import type { LoadedConfig } from '../../src/config/loaded.ts'
 import type { AppServerOptions } from '../../src/runner/app-server.ts'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import { LaunchError } from '../../src/browser/contract.ts'
@@ -21,9 +21,9 @@ const found: CliDependencies['resolveExecutable'] = () => ({ ok: true, path: chr
 const doctorLogs = join(project, '.retest', 'doctor')
 
 // A browser writes its log as it starts, which makes the folder the log is in.
-function writeLog(logFile: string): void {
+function writeLog(logFile: string, text = 'browser output\n'): void {
   mkdirSync(dirname(logFile), { recursive: true })
-  writeFileSync(logFile, 'browser output\n')
+  writeFileSync(logFile, text)
 }
 
 type Calls = { launches: LaunchOptions[]; starts: AppServerOptions[]; stops: number; probes: string[] }
@@ -221,6 +221,87 @@ describe('doctor', () => {
     const [start] = calls.starts
     assert.ok(start?.redactor !== undefined, 'the server writes its log through a redactor')
     assert.equal(start.redactor.redact('PASSWORD=hunter2 TOKEN=abcd-1234 CODE=code'), 'PASSWORD={{password}} TOKEN={{token}} CODE=code')
+  })
+
+  test('redacts a command, ready address, browser description and executable path before printing them', async () => {
+    const password = 'doctor-password a+/&'
+    const token = 'doctor-token-1234'
+    const address = `${ready}/?token=${encodeURIComponent(password)}`
+    const command = `PASSWORD=${password} node server.js`
+    const executablePath = `/browser/${token}/chrome`
+    const config = loadedConfig(project, {
+      apps: { web: chrome({ baseUrl: address, start: { command, ready: address } }) },
+      secrets: { password: env('TEST_PASSWORD'), token: env('API_TOKEN') },
+    })
+    const { code, stdout, calls } = await doctor({
+      config,
+      env: { TEST_PASSWORD: password, API_TOKEN: token },
+      resolveExecutable: () => ({ ok: true, path: executablePath }),
+      launchBrowser: async (launch) => {
+        writeLog(launch.logFile)
+        return fakeBrowser(launch.executablePath, `Chrome ${token}`)
+      },
+    })
+    assert.equal(code, 0)
+    for (const value of [password, encodeURIComponent(password), token]) assert.equal(stdout.includes(value), false)
+    assert.ok(stdout.includes('PASSWORD={{password}} node server.js'))
+    assert.ok(stdout.includes('token={{password}}'))
+    assert.ok(stdout.includes('/browser/{{token}}/chrome'))
+    assert.deepEqual(calls.starts.map((start) => [start.start.command, start.start.ready]), [[command, address]], 'only display text is rewritten')
+  })
+
+  test('a failed browser launch receives a redactor before writing the log that doctor keeps', async () => {
+    const password = 'doctor-password a+/&'
+    const encoded = encodeURIComponent(password)
+    const config = loadedConfig(project, {
+      apps: { web: chromium() },
+      secrets: { password: env('TEST_PASSWORD') },
+    })
+    let logFile = ''
+    const { code, stdout } = await doctor({
+      config,
+      env: { TEST_PASSWORD: password },
+      launchBrowser: async (launch) => {
+        assert.ok(launch.redact !== undefined, 'the process receives a redactor before it starts')
+        logFile = launch.logFile
+        writeLog(logFile, launch.redact(`PASSWORD=${password} URL=${encoded}\n`))
+        throw new LaunchError(`The browser printed ${password} and did not start.`)
+      },
+    })
+    assert.equal(code, 2)
+    assert.ok(existsSync(logFile), 'a reported browser failure keeps its log')
+    assert.equal(readFileSync(logFile, 'utf8'), 'PASSWORD={{password}} URL={{password}}\n')
+    assert.equal(stdout.includes(password), false)
+    assert.match(stdout, /The browser printed \{\{password\}\} and did not start\./)
+  })
+
+  test('prints base and ready addresses without URL credentials while checking the original address', async () => {
+    const address = 'http://doctor-user:doctor-password@localhost:3000/ready'
+    const baseOnly = loadedConfig(project, { apps: { web: chromium({ baseUrl: address }) } })
+    const checked = await doctor({ config: baseOnly })
+    assert.deepEqual(checked.calls.probes, [address])
+    assert.match(checked.stdout, /http:\/\/localhost:3000\/ready/)
+    assert.doesNotMatch(checked.stdout, /doctor-user|doctor-password/)
+    const withStart = loadedConfig(project, { apps: { web: chromium({ start: { command: 'node server.js', ready: address } }) } })
+    const started = await doctor({ config: withStart })
+    assert.doesNotMatch(started.stdout, /doctor-user|doctor-password/)
+    assert.equal(started.calls.starts[0]?.start.ready, address)
+    const refused = await doctor({
+      config: withStart,
+      startAppServer: async () => { throw new AppServerError({ class: 'setup_failed', message: `No answer at ${address}.` }) },
+    })
+    assert.equal(refused.code, 2)
+    assert.match(refused.stdout, /No answer at http:\/\/localhost:3000\/ready\./)
+    assert.doesNotMatch(refused.stdout, /doctor-user|doctor-password/)
+    const cleanup = await doctor({
+      config: withStart,
+      startAppServer: async () => ({
+        status: 'started', pid: 5151, durationMs: 1,
+        stop: async () => { throw new Error(`Could not stop ${address}.`) },
+      }),
+    })
+    assert.equal(cleanup.code, 2)
+    assert.doesNotMatch(cleanup.stdout, /doctor-user|doctor-password/)
   })
 
   test('an interrupt stops the checks, removes their logs and exits 130', async () => {

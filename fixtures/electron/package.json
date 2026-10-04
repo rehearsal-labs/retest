@@ -1,0 +1,6 @@
+{
+  "name": "retest-electron-fixture",
+  "private": true,
+  "description": "A small Electron app Retest's own tests drive. Its tasks live in the main process's memory.",
+  "main": "main.mjs"
+}

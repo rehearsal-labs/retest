@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+    <title>Tasks on the service</title>
+    <style>
+      body { font: 15px system-ui, sans-serif; margin: 24px; }
+      li { display: flex; gap: 12px; margin: 4px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Tasks on the service</h1>
+    <form data-testid="sign-in-form">
+      <label for="account">Account</label>
+      <input id="account" data-testid="account" autocomplete="off">
+      <label for="password">Password</label>
+      <input id="password" type="password" data-testid="password" autocomplete="off">
+      <button type="submit" data-testid="sign-in">Sign in</button>
+      <p data-testid="sign-in-error"></p>
+    </form>
+    <section data-testid="signed-in" hidden>
+      <p>Signed in as <span data-testid="signed-in-account"></span></p>
+      <form data-testid="create-form">
+        <label for="title">Title</label>
+        <input id="title" data-testid="new-task-title" autocomplete="off">
+        <button type="submit" data-testid="create-task">Create task</button>
+      </form>
+      <p data-testid="create-error"></p>
+      <p data-testid="created" hidden>Created <span data-testid="created-task-id"></span></p>
+      <ul data-testid="task-list"></ul>
+    </section>
+    <script src="/electron/service.js"></script>
+  </body>
+</html>
