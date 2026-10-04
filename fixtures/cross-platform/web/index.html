@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tasks</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="bar">
+  <h1>Tasks</h1>
+  <p class="service" role="status" data-testid="service-status"></p>
+  <div class="who" data-testid="session-bar" hidden>
+    <span>Signed in as <strong data-testid="signed-in-account"></strong> <span class="quiet" data-testid="signed-in-name"></span></span>
+    <button type="button" data-testid="sign-out">Sign out</button>
+  </div>
+</header>
+<main>
+  <section id="sign-in-view" class="panel narrow" aria-labelledby="sign-in-heading">
+    <h2 id="sign-in-heading">Sign in</h2>
+    <form id="sign-in-form" data-testid="sign-in-form">
+      <label for="account">Account</label>
+      <input id="account" name="account" data-testid="account" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" data-testid="password" autocomplete="current-password" required>
+      <button type="submit" data-testid="sign-in">Sign in</button>
+    </form>
+    <p class="error" role="alert" data-testid="sign-in-error"></p>
+  </section>
+
+  <div id="tasks-view" class="columns" hidden>
+    <div class="column">
+      <section class="panel" aria-labelledby="create-heading">
+        <h2 id="create-heading">New task</h2>
+        <form id="create-form" data-testid="create-form">
+          <label for="new-task-title">Title</label>
+          <input id="new-task-title" data-testid="new-task-title" autocomplete="off" maxlength="200" required>
+          <button type="submit" data-testid="create-task">Create task</button>
+        </form>
+        <p class="error" role="alert" data-testid="create-error"></p>
+        <p class="created" data-testid="created" hidden>Created <code data-testid="created-task-id"></code></p>
+      </section>
+
+      <section class="panel" aria-labelledby="open-heading">
+        <h2 id="open-heading">Open a task by id</h2>
+        <form id="open-form" data-testid="open-form">
+          <label for="open-task-id">Task id</label>
+          <input id="open-task-id" data-testid="open-task-id" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+          <button type="submit" data-testid="open-task">Open</button>
+        </form>
+        <p class="error" role="alert" data-testid="open-error"></p>
+      </section>
+
+      <section id="editor" class="panel" aria-labelledby="editor-heading" data-testid="editor" hidden>
+        <h2 id="editor-heading">Task <code data-testid="selected-task-id"></code></h2>
+        <dl class="facts">
+          <dt>Title</dt><dd data-testid="selected-task-title"></dd>
+          <dt>State</dt><dd data-testid="selected-task-state"></dd>
+          <dt>Revision</dt><dd data-testid="selected-task-revision"></dd>
+        </dl>
+        <form id="edit-form" data-testid="edit-form">
+          <label for="edit-title">Title</label>
+          <input id="edit-title" data-testid="edit-title" autocomplete="off" maxlength="200" required>
+          <label class="check"><input id="edit-done" type="checkbox" data-testid="edit-done"> Done</label>
+          <div class="actions">
+            <button type="submit" data-testid="save-task">Save</button>
+            <button type="button" class="secondary" data-testid="close-task">Close</button>
+          </div>
+        </form>
+        <p role="status" data-testid="save-status"></p>
+        <p class="error" role="alert" data-testid="save-error"></p>
+      </section>
+    </div>
+
+    <section class="panel column" aria-labelledby="list-heading">
+      <h2 id="list-heading">Your tasks</h2>
+      <p class="quiet"><span role="status" data-testid="task-count"></span> <span data-testid="list-status"></span></p>
+      <table data-testid="task-table">
+        <thead>
+          <tr><th scope="col">Id</th><th scope="col">Title</th><th scope="col">State</th><th scope="col"><span class="hidden-label">Open</span></th></tr>
+        </thead>
+        <tbody data-testid="task-list"></tbody>
+      </table>
+    </section>
+  </div>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
