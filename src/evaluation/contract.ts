@@ -1,4 +1,4 @@
-import type { CriterionVerdict, EvidenceKind } from '../protocol/evaluation.ts'
+import type { CriterionVerdict, EvidenceKind, SamplingSetting } from '../protocol/evaluation.ts'
 
 // The contract between Retest and a judge. The parent process owns everything around a call: it captures and bounds
 // the evidence, resolves the credentials, reserves the call, enforces the deadline and checks the answer. An evaluator
@@ -56,14 +56,17 @@ export type EvaluationRequest = {
  * A judge's answer. Every criterion of the request appears once, with `pass`, `fail` or `inconclusive` and the ids of
  * the evidence the verdict rests on; a pass or a fail cites at least one. `justification` is a short account of what
  * the judge saw, not its reasoning. `modelRevision` is the exact model the provider says answered, and `usage` the
- * tokens it counted, when it says. The parent checks every part: an answer with a missing, repeated or unknown
- * criterion, an unknown key, a cited id it never supplied, or a justification over the limit is an evaluation error.
+ * tokens it counted, when it says. `samplingNotSent` names each sampling setting, of the identity's or the request's
+ * `maxOutputTokens`, that this call did not send as given, with the reason the provider gave; the record then leaves it
+ * out of what was sent. The parent checks every part: an answer with a missing, repeated or unknown criterion, an
+ * unknown key, a cited id it never supplied, or a justification over the limit is an evaluation error.
  */
 export type JudgeAnswer = {
   readonly criteria: readonly { readonly id: string; readonly verdict: CriterionVerdict; readonly citations: readonly string[] }[]
   readonly justification: string
   readonly modelRevision?: string
   readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number; readonly totalTokens?: number }
+  readonly samplingNotSent?: readonly { readonly setting: SamplingSetting; readonly reason: string }[]
 }
 
 /**

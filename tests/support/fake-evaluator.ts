@@ -2,6 +2,8 @@ import type { EvaluationRequest, EvaluatorIdentity, EvaluatorSetup, JudgeAnswer 
 import { appendFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { createHash } from 'node:crypto'
+import { decodePng } from '../../src/native/png.ts'
 
 /**
  * How the fake answers a request. It reads the behaviour from the request's first criterion id, so a test file picks
@@ -19,6 +21,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
  *   `late-answered` once it has answered, which a test file's process can wait for.
  * - `slow`: waits `options.delayMs`, 200 by default, then passes. `slow-fail` waits the same, then fails.
  * - `echo-revision`: passes, naming as its model revision a string that quotes its API key, as a proxy might.
+ * - `pixel-hash`: decodes PNG pixels and looks up their SHA-256 in `options.pixelHashes`; text cannot change it.
  */
 export type FakeBehaviour =
   | 'pass'
@@ -36,6 +39,7 @@ export type FakeBehaviour =
   | 'slow'
   | 'slow-fail'
   | 'echo-revision'
+  | 'pixel-hash'
 
 /** One request as the fake saw it. `tag` is the judge's `options.tag`, which tells apart runs that share this process. */
 export type FakeCall = {
@@ -68,7 +72,7 @@ export type FakeEvaluator = { identity: EvaluatorIdentity; evaluate: (request: E
 /** The setups the fake's factory received in this process: the judge's name, its credential names and values, and its options. */
 export type FakeSetup = { tag: string | undefined; judge: string; credentials: Record<string, string>; options: Record<string, unknown> }
 
-const behaviours: readonly FakeBehaviour[] = ['pass', 'fail', 'inconclusive', 'mixed', 'malformed', 'missing', 'cite-unknown', 'confidence', 'throw', 'echo-secret', 'hang', 'late', 'slow', 'slow-fail', 'echo-revision']
+const behaviours: readonly FakeBehaviour[] = ['pass', 'fail', 'inconclusive', 'mixed', 'malformed', 'missing', 'cite-unknown', 'confidence', 'throw', 'echo-secret', 'hang', 'late', 'slow', 'slow-fail', 'echo-revision', 'pixel-hash']
 
 /** Every call the fake answered or was asked in this process, in order. A test that runs in-process reads it directly. */
 export const fakeCalls: FakeCall[] = []
@@ -131,7 +135,7 @@ function createFakeEvaluator(setup: EvaluatorSetup): FakeEvaluator {
       record({ call })
       if (behaviour === 'late') mark('late-received')
       try {
-        const answered = await answer(behaviour, request, { apiKey, delayMs, holdLate, call, record })
+        const answered = await answer(behaviour, request, { apiKey, delayMs, holdLate, call, record, pixelHashes: options['pixelHashes'] })
         call.answeredAt = Date.now()
         if (call.lateReply === true) mark('late-answered')
         return answered
@@ -144,13 +148,26 @@ function createFakeEvaluator(setup: EvaluatorSetup): FakeEvaluator {
 
 export default createFakeEvaluator
 
-type AnswerContext = { apiKey: string; delayMs: number; holdLate: boolean; call: FakeCall; record: (entry: object) => void }
+type AnswerContext = { apiKey: string; delayMs: number; holdLate: boolean; call: FakeCall; record: (entry: object) => void; pixelHashes: EvaluatorSetup['options'][string] | undefined }
 
 // Each answer is what a provider adapter might return; the parent decides whether it keeps the contract.
 async function answer(behaviour: FakeBehaviour, request: EvaluationRequest, context: AnswerContext): Promise<unknown> {
   const verdicts = (verdict: 'pass' | 'fail' | 'inconclusive'): JudgeAnswer['criteria'] =>
     request.criteria.map(({ id }) => ({ id, verdict, citations: verdict === 'inconclusive' ? [] : ['e1'] }))
   switch (behaviour) {
+    case 'pixel-hash': {
+      const hashes = context.pixelHashes
+      const known = hashes !== null && typeof hashes === 'object' && !Array.isArray(hashes) ? new Map(Object.entries(hashes)) : new Map<string, EvaluatorSetup['options'][string]>()
+      const images = request.evidence.filter((item) => item.kind === 'image')
+      const verdicts = images.map((image) => {
+        const pixels = decodePng(image.data)
+        const hash = createHash('sha256').update(pixels.pixels).digest('hex')
+        const verdict = known.get(hash)
+        return verdict === 'pass' || verdict === 'fail' ? verdict : 'inconclusive'
+      })
+      const verdict = verdicts.includes('fail') ? 'fail' : images.length === 0 || verdicts.includes('inconclusive') ? 'inconclusive' : 'pass'
+      return { criteria: request.criteria.map(({ id }) => ({ id, verdict, citations: verdict === 'inconclusive' ? [] : images.map((image) => image.id) })), justification: 'Judged the decoded pixel hashes against the declared samples.' }
+    }
     case 'pass':
     case 'fail':
     case 'inconclusive':

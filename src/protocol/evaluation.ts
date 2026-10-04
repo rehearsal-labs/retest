@@ -1,6 +1,9 @@
 import type { Failure, SourceLocation } from './failures.ts'
+import type { CaptureSourceName } from './identity.ts'
+import type { CaptureReference } from './evidence.ts'
 import type { Path } from './schema.ts'
 import { failureSchema, sourceLocationSchema } from './failures.ts'
+import { captureSourceNameSchema } from './identity.ts'
 import { isName } from './names.ts'
 import { describeValue, formatPath, isArray, isPlainObject, parse, s, type Schema } from './schema.ts'
 import { maxTimeout } from './timeouts.ts'
@@ -72,16 +75,23 @@ export type EvaluationAnswer = {
 /**
  * One piece of evidence as a record keeps it: what identifies it, never its bytes or its text. `id` is how the judge
  * cites it. A screenshot names the app, the session and attempt that captured it, when it came back, and its file in
- * the run folder. `sha256` and `bytes` are of what the judge received: a screenshot's PNG, or the text as UTF-8 after
- * redaction.
+ * the run folder; with `testId`, `attemptId`, `app` and `sessionId` it carries the record identity every session's
+ * record shares. `capturedElapsedMs` is when it came back on the run's clock, and `source` what took it, each present
+ * only when the writer knew it. `sha256` and `bytes` are of what the judge received: a screenshot's PNG, or the text as
+ * UTF-8 after redaction. `testId` is absent in runs recorded before records named it.
  */
 export type EvidenceRecord = {
   id: string
   kind: 'screenshot' | 'text'
+  testId?: string
   app?: string
   sessionId?: string
   attemptId: string
   capturedAt: string
+  capturedElapsedMs?: number
+  source?: CaptureSourceName
+  /** Native launch and capture reference, separate from a parent's observation id. */
+  captureReference?: CaptureReference
   path?: string
   label?: string
   sha256: string
@@ -93,10 +103,18 @@ export type EvidenceRecord = {
 /** A criterion as a record keeps it, with the judge's verdict and the evidence it cited, when the judge gave them. */
 export type CriterionRecord = { id: string; requirement: string; verdict?: CriterionVerdict; citations?: string[] }
 
+/** A sampling setting a call may carry, as an evaluator record names it. */
+export type SamplingSetting = 'temperature' | 'topP' | 'seed' | 'maxOutputTokens'
+
+/** A sampling setting a call did not send as the evaluator was given it, with the reason its provider gave. */
+export type UnsentSetting = { setting: SamplingSetting; reason: string }
+
 /**
  * Who judged, as far as the evaluator says: the provider and model it named when it was set up, the model revision
  * the provider reported for this call, the evaluator's own version and the version of Retest's instructions, the
- * sampling settings it used, how long the call took and the tokens the provider counted, when it counted them.
+ * sampling settings the call sent, how long the call took and the tokens the provider counted, when it counted them.
+ * A setting the evaluator was given that the call did not send as given is left out of `sampling` and named in
+ * `samplingNotSent`, with the reason.
  */
 export type EvaluatorRecord = {
   provider: string
@@ -105,6 +123,7 @@ export type EvaluatorRecord = {
   evaluatorVersion: string
   promptVersion: string
   sampling?: { temperature?: number; topP?: number; seed?: number; maxOutputTokens?: number }
+  samplingNotSent?: UnsentSetting[]
   latencyMs?: number
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number }
 }
@@ -196,10 +215,14 @@ export const evaluationAnswerSchema: Schema<EvaluationAnswer> = s.object({
 const evidenceRecordSchema: Schema<EvidenceRecord> = s.object({
   id: s.string(),
   kind: s.enum(['screenshot', 'text']),
+  testId: s.optional(s.string()),
   app: s.optional(s.string()),
   sessionId: s.optional(s.string()),
   attemptId: s.string(),
   capturedAt: s.string(),
+  capturedElapsedMs: s.optional(count),
+  source: s.optional(captureSourceNameSchema),
+  captureReference: s.optional(s.object({ instance: s.string(), generation: count, observationId: s.string() })),
   path: s.optional(s.string()),
   label: s.optional(s.string()),
   sha256: s.string(),
@@ -215,6 +238,11 @@ const criterionRecordSchema: Schema<CriterionRecord> = s.object({
   citations: s.optional(s.array(s.string())),
 })
 
+// The sampling settings a record can name.
+const samplingSettings = ['temperature', 'topP', 'seed', 'maxOutputTokens'] as const satisfies readonly SamplingSetting[]
+
+export const unsentSettingSchema: Schema<UnsentSetting> = s.object({ setting: s.enum(samplingSettings), reason: s.string() })
+
 const evaluatorRecordSchema: Schema<EvaluatorRecord> = s.object({
   provider: s.string(),
   model: s.string(),
@@ -229,6 +257,7 @@ const evaluatorRecordSchema: Schema<EvaluatorRecord> = s.object({
       maxOutputTokens: s.optional(count),
     }),
   ),
+  samplingNotSent: s.optional(s.array(unsentSettingSchema)),
   latencyMs: s.optional(s.number({ min: 0 })),
   usage: s.optional(s.object({ inputTokens: s.optional(count), outputTokens: s.optional(count), totalTokens: s.optional(count) })),
 })

@@ -1,4 +1,5 @@
-import type { CriterionVerdict } from '../protocol/evaluation.ts'
+import type { CriterionVerdict, UnsentSetting } from '../protocol/evaluation.ts'
+import { unsentSettingSchema } from '../protocol/evaluation.ts'
 import { parse, s, type Schema } from '../protocol/schema.ts'
 
 /** The longest justification an answer may give, in UTF-16 code units. A longer one breaks the contract. */
@@ -7,12 +8,16 @@ export const maxJustificationLength = 2000
 /** The longest model revision an answer may name. */
 const maxRevisionLength = 200
 
+/** The longest reason an answer may give for a sampling setting it did not send. */
+const maxUnsentReasonLength = 500
+
 /** An answer that passed every check, in the request's criterion order. */
 export type CheckedAnswer = {
   criteria: { id: string; verdict: CriterionVerdict; citations: string[] }[]
   justification: string
   modelRevision?: string
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+  samplingNotSent?: UnsentSetting[]
 }
 
 const count = s.number({ integer: true, min: 0 })
@@ -24,6 +29,7 @@ const judgeAnswerSchema: Schema<CheckedAnswer> = s.object({
   justification: s.string(),
   modelRevision: s.optional(s.string()),
   usage: s.optional(s.object({ inputTokens: s.optional(count), outputTokens: s.optional(count), totalTokens: s.optional(count) })),
+  samplingNotSent: s.optional(s.array(unsentSettingSchema)),
 })
 
 /** What the request offered the judge: its criterion ids, in order, and the evidence ids it may cite. */
@@ -46,7 +52,7 @@ export function readAnswer(value: unknown, offered: Offered): AnswerReading {
     return refused(`it does not have the shape of an answer: ${first === undefined ? 'nothing was returned' : `${first.path} ${shapeProblem(first.message)}`}`)
   }
   const answer = parsed.value
-  const problem = criteriaProblem(answer.criteria, offered) ?? justificationProblem(answer.justification) ?? revisionProblem(answer.modelRevision)
+  const problem = criteriaProblem(answer.criteria, offered) ?? justificationProblem(answer.justification) ?? revisionProblem(answer.modelRevision) ?? unsentProblem(answer.samplingNotSent)
   if (problem !== undefined) return refused(problem)
   const order = new Map(offered.criteria.map((id, index) => [id, index]))
   const criteria = [...answer.criteria].sort((first, second) => (order.get(first.id) ?? 0) - (order.get(second.id) ?? 0))
@@ -89,6 +95,14 @@ function justificationProblem(justification: string): string | undefined {
 function revisionProblem(revision: string | undefined): string | undefined {
   if (revision === undefined || (revision !== '' && revision.length <= maxRevisionLength)) return undefined
   return 'its model revision is empty or too long'
+}
+
+function unsentProblem(unsent: UnsentSetting[] | undefined): string | undefined {
+  if (unsent === undefined) return undefined
+  const settings = unsent.map((each) => each.setting)
+  if (new Set(settings).size !== settings.length) return 'it names a sampling setting it did not send more than once'
+  if (unsent.some(({ reason }) => reason.trim() === '' || reason.length > maxUnsentReasonLength)) return 'its reason for a sampling setting it did not send is empty or too long'
+  return undefined
 }
 
 // A schema issue quotes short strings the judge wrote; only the expectation is kept.

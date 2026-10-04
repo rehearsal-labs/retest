@@ -2,11 +2,17 @@ import type { JudgedEvidence } from './contract.ts'
 import type { EvaluationLimits } from './budget.ts'
 import type { EvidenceRecord, EvidenceSelector } from '../protocol/evaluation.ts'
 import type { AppPage, PagesContext } from '../runner/test-pages.ts'
+import type { NativeCapture } from '../native/session.ts'
+import type { RecordIdentity } from '../protocol/identity.ts'
 import { createHash } from 'node:crypto'
+import { NativePageAdapter } from '../runner/native-pool.ts'
+import { decodePng } from '../native/png.ts'
+import { defaultEvaluationLimits } from './budget.ts'
 import { formatSessionId } from '../protocol/evidence.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { slug } from '../protocol/run-folder.ts'
 import { bounded } from '../runner/bounded.ts'
+import { screenshotSource } from '../runner/test-pages.ts'
 
 /** Evidence the parent holds for one check: what the judge receives, and what the record keeps of it. */
 export type HeldEvidence = { judged: JudgedEvidence; record: EvidenceRecord }
@@ -100,7 +106,8 @@ function textEvidence(id: string, selector: Extract<EvidenceSelector, { kind: 't
   const capturedAt = new Date().toISOString()
   const label = selector.label === undefined ? undefined : context.redact(selector.label)
   const judged: JudgedEvidence = { id, kind: 'text', text, ...(label === undefined ? {} : { label }) }
-  const record: EvidenceRecord = { id, kind: 'text', attemptId: context.attemptId, capturedAt, ...(label === undefined ? {} : { label }), sha256: sha256(text), bytes: Buffer.byteLength(text) }
+  const clock = capturedClock(context)
+  const record: EvidenceRecord = { id, kind: 'text', testId: context.testId, attemptId: context.attemptId, capturedAt, ...clock, ...(label === undefined ? {} : { label }), sha256: sha256(text), bytes: Buffer.byteLength(text) }
   return { ok: true, value: { judged, record } }
 }
 
@@ -114,12 +121,24 @@ async function screenshotEvidence(id: string, selector: Extract<EvidenceSelector
   const page = pages.find((each) => each.app === app)
   if (app === undefined || page === undefined) return refused(`The check names the app ${JSON.stringify(app ?? '')}, which this test does not use.`)
   if (!context.connected(page.browser)) return missing(`The browser of ${app} was gone, so Retest captured no screenshot.`)
+  if (page.page instanceof NativePageAdapter) {
+    if (page.session.owner.testId !== context.testId || page.session.owner.attemptId !== context.attemptId || page.session.owner.app !== app) return refused('The native page belongs to another test, attempt or app.')
+    const capture = await bounded(page.page.capture(timeoutMs), timeoutMs, stop)
+    if (capture.status === 'stopped') return missing('The check was stopped while Retest took its native screenshot.')
+    if (capture.status === 'timed_out') return missing(`Taking the native screenshot of ${app} took longer than ${timeoutMs} ms.`)
+    if (capture.status === 'failed') return missing(`Retest could not take a native screenshot of ${app}: ${context.redact(errorMessage(capture.error))}`)
+    if (!capture.value.ok) return missing(context.redact(capture.value.failure.message))
+    const identity = { testId: context.testId, attemptId: context.attemptId, app, sessionId: page.session.sessionId }
+    const held = freezeNativeScreenshot(id, capture.value.capture, identity, context, checkId, options.limits)
+    return held
+  }
   const shot = await bounded(page.page.screenshot(timeoutMs), timeoutMs, stop)
   if (shot.status === 'stopped') return missing('The check was stopped while Retest took its screenshot.')
   if (shot.status === 'timed_out') return missing(`Taking the screenshot of ${app} took longer than ${timeoutMs} ms.`)
   if (shot.status === 'failed') return missing(`Retest could not take a screenshot of ${app}: ${context.redact(errorMessage(shot.error))}`)
   const capturedAt = new Date().toISOString()
-  const data = shot.value
+  const clock = capturedClock(context)
+  const data = Uint8Array.from(shot.value)
   const size = pngSize(data)
   if (size === undefined) return missing(`The screenshot of ${app} is not a PNG Retest can read, so Retest did not send it.`)
   const path = evaluationScreenshotFile(context.testId, context.attemptId, app, checkId)
@@ -129,9 +148,38 @@ async function screenshotEvidence(id: string, selector: Extract<EvidenceSelector
     return refused(`Retest could not save the screenshot of ${app}, so it did not send it: ${errorMessage(error)}`)
   }
   const sessionId = formatSessionId(context.attemptId, app)
+  const source = screenshotSource(page.session.runtime)
   const judged: JudgedEvidence = { id, kind: 'image', mediaType: 'image/png', data, width: size.width, height: size.height, app, capturedAt }
-  const record: EvidenceRecord = { id, kind: 'screenshot', app, sessionId, attemptId: context.attemptId, capturedAt, path, sha256: sha256(data), bytes: data.byteLength, ...size }
+  const identity = { testId: context.testId, app, sessionId, attemptId: context.attemptId }
+  const captured = { capturedAt, ...clock, ...(source === undefined ? {} : { source }) }
+  const record: EvidenceRecord = { id, kind: 'screenshot', ...identity, ...captured, path, sha256: sha256(data), bytes: data.byteLength, ...size }
   return { ok: true, value: { judged, record } }
+}
+
+/** Freeze a parent-owned native capture as pixels. Text redaction does not alter PNGs. */
+export function freezeNativeScreenshot(id: string, capture: NativeCapture, identity: RecordIdentity, context: Pick<PagesContext, 'store' | 'testId' | 'attemptId' | 'redact'>, checkId: string, limits: EvaluationLimits = defaultEvaluationLimits): Held {
+  if (identity.testId !== context.testId || identity.attemptId !== context.attemptId || capture.reference.sessionId !== identity.sessionId || identity.sessionId !== formatSessionId(identity.attemptId, identity.app)) return refused('The native capture belongs to another test, attempt, app or session.')
+  const capturedElapsedMs = context.store.elapsedMs()
+  const data = Uint8Array.from(capture.png)
+  const size = pngSize(data)
+  if (size === undefined || size.width !== capture.width || size.height !== capture.height) return missing('The native screenshot has no matching PNG dimensions.')
+  if (size.width > limits.maxImageWidth || size.height > limits.maxImageHeight || data.byteLength > limits.maxInputBytes) return refused('The native screenshot exceeds the evaluation image or input limits.')
+  try { decodePng(data) } catch { return missing('The native screenshot has no readable PNG pixels.') }
+  if (!Number.isFinite(Date.parse(capture.capturedAt))) return missing('The native capture has no valid capture time.')
+  const path = evaluationScreenshotFile(identity.testId, identity.attemptId, identity.app, checkId)
+  if (capturedElapsedMs === undefined) return refused('The native capture has no run clock.')
+  try { context.store.writeArtifact(path, data) } catch (error) { return refused(`Retest could not save the native screenshot: ${context.redact(errorMessage(error))}`) }
+  const judged: JudgedEvidence = Object.freeze({ id, kind: 'image', mediaType: 'image/png', data, ...size, app: identity.app, capturedAt: capture.capturedAt })
+  const { instance, generation, observationId } = capture.reference
+  const captureReference = Object.freeze({ instance, generation, observationId })
+  const record: EvidenceRecord = Object.freeze({ id, kind: 'screenshot', testId: identity.testId, attemptId: identity.attemptId, app: identity.app, sessionId: identity.sessionId, capturedAt: capture.capturedAt, capturedElapsedMs, source: capture.source, captureReference, path, sha256: sha256(data), bytes: data.byteLength, ...size })
+  return { ok: true, value: Object.freeze({ judged, record }) }
+}
+
+// When evidence was taken on the run's clock, when the run has written an event to set it by.
+function capturedClock(context: PagesContext): { capturedElapsedMs?: number } {
+  const capturedElapsedMs = context.store.elapsedMs()
+  return capturedElapsedMs === undefined ? {} : { capturedElapsedMs }
 }
 
 function limitProblem({ bytes, images, held }: { bytes: number; images: number; held: EvidenceRecord }, limits: EvaluationLimits): string | undefined {

@@ -450,7 +450,7 @@ function evaluatorRecord(identity: Extract<PreparedJudge, { ok: true }>['identit
 
 // Every string an evaluator or its provider supplied is free text: a provider or a proxy may echo a key into any of them.
 function redactedEvaluator(evaluator: EvaluatorRecord, redact: (text: string) => string): EvaluatorRecord {
-  const { provider, model, modelRevision, evaluatorVersion, promptVersion: version } = evaluator
+  const { provider, model, modelRevision, evaluatorVersion, promptVersion: version, samplingNotSent } = evaluator
   return {
     ...evaluator,
     provider: redact(provider),
@@ -458,11 +458,23 @@ function redactedEvaluator(evaluator: EvaluatorRecord, redact: (text: string) =>
     ...(modelRevision === undefined ? {} : { modelRevision: redact(modelRevision) }),
     evaluatorVersion: redact(evaluatorVersion),
     promptVersion: redact(version),
+    ...(samplingNotSent === undefined ? {} : { samplingNotSent: samplingNotSent.map(({ setting, reason }) => ({ setting, reason: redact(reason) })) }),
   }
 }
 
+// The record keeps under `sampling` only what the call sent: a setting the answer says was not sent as given leaves it,
+// and is named beside it with the provider's reason.
 function withAnswer(evaluator: EvaluatorRecord, answer: CheckedAnswer): EvaluatorRecord {
-  return { ...evaluator, ...(answer.modelRevision === undefined ? {} : { modelRevision: answer.modelRevision }), ...(answer.usage === undefined ? {} : { usage: answer.usage }) }
+  const notSent = answer.samplingNotSent ?? []
+  const sampling = evaluator.sampling === undefined ? undefined : { ...evaluator.sampling }
+  if (sampling !== undefined) for (const { setting } of notSent) delete sampling[setting]
+  return {
+    ...evaluator,
+    ...(sampling === undefined ? {} : { sampling }),
+    ...(notSent.length === 0 ? {} : { samplingNotSent: notSent }),
+    ...(answer.modelRevision === undefined ? {} : { modelRevision: answer.modelRevision }),
+    ...(answer.usage === undefined ? {} : { usage: answer.usage }),
+  }
 }
 
 function stopReason(signal: AbortSignal): string {

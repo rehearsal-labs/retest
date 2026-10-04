@@ -67,11 +67,15 @@
   },
   "peerDependencies": {
     "@ai-sdk/anthropic": "^4.0.71",
+    "@ai-sdk/azure": "^4.0.90",
     "@ai-sdk/openai": "^4.0.83",
     "ai": "^7.0.127"
   },
   "peerDependenciesMeta": {
     "@ai-sdk/anthropic": {
+      "optional": true
+    },
+    "@ai-sdk/azure": {
       "optional": true
     },
     "@ai-sdk/openai": {

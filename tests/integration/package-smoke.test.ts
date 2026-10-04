@@ -98,7 +98,7 @@ describe('package smoke test', () => {
     const peers: unknown = Reflect.get(manifest, 'peerDependencies')
     const meta: unknown = Reflect.get(manifest, 'peerDependenciesMeta')
     assert.ok(typeof peers === 'object' && peers !== null && typeof meta === 'object' && meta !== null)
-    assert.deepEqual(Object.keys(peers).sort(), ['@ai-sdk/anthropic', '@ai-sdk/openai', 'ai'])
+    assert.deepEqual(Object.keys(peers).sort(), ['@ai-sdk/anthropic', '@ai-sdk/azure', '@ai-sdk/openai', 'ai'])
     for (const name of Object.keys(peers)) assert.deepEqual(Reflect.get(meta, name), { optional: true }, `${name} is an optional peer`)
   })
 
