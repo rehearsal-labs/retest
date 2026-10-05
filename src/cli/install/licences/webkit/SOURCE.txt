@@ -1,0 +1,42 @@
+WebKit 26.6, Playwright build 2359, macOS arm64
+
+WebKit source revision named by Playwright v1.63.0 UPSTREAM_CONFIG.sh:
+https://github.com/WebKit/WebKit/tree/4d05d732e5a84f32675bef4cc135a2e7a9269a87
+
+Playwright patches and build scripts:
+https://github.com/microsoft/playwright/tree/v1.63.0/browser_patches/webkit
+https://github.com/microsoft/playwright/blob/v1.63.0/browser_patches/webkit/UPSTREAM_CONFIG.sh
+Playwright patches are covered by Apache-2.0:
+https://github.com/microsoft/playwright/blob/v1.63.0/LICENSE
+
+The WebKit proof read this revision from the tag's UPSTREAM_CONFIG.sh and
+matched pw_run.sh byte for byte. It did not prove the exact source correspondence
+of the published build 2359. These pointers retain that distinction.
+
+Notice text provenance, inspected without a new download:
+- WebKit-LGPL-2.1.txt: the standard GNU LGPL 2.1 text in the cached
+  ms-playwright/ffmpeg-1011/COPYING.LGPLv2.1.
+- WebKit-BSD-2-Clause.txt: WKWebView.h's BSD header in the actual cached
+  webkit-2359/WebKit.framework/Versions/A/Headers, plus the complete collected
+  WebKit copyright and licence entry in Electron 44.5.1 LICENSES.chromium.html.
+- ANGLE-LICENSE.txt, WebRTC-LICENSE.txt, abseil-cpp-LICENSE.txt,
+  libvpx-LICENSE.txt: each named component's entry in that cached Electron
+  LICENSES.chromium.html, with all copyright notices and terms retained.
+- BoringSSL-LICENSE.txt: that cached BoringSSL entry, plus the historical
+  OpenSSL/SSLeay texts in the installed Xcode Acknowledgments.pdf and the
+  standard BoringSSL ISC notice for new code. The legacy ISC notice is
+  transcribed, not read from the binary's source checkout.
+- swiftCompatibilitySpan-LICENSE.txt: Swift's copyright and source pointer,
+  and the Runtime Library Exception, in the installed Xcode Acknowledgments.pdf,
+  with the full standard Apache-2.0 text.
+
+Upstream component source and licence locations within the named WebKit revision:
+Source/ThirdParty/ANGLE/LICENSE
+Source/ThirdParty/libwebrtc/Source/LICENSE
+Source/ThirdParty/libwebrtc/Source/third_party/boringssl/src/LICENSE
+Source/ThirdParty/libwebrtc/Source/third_party/abseil-cpp/LICENSE
+Source/ThirdParty/libwebrtc/Source/third_party/libvpx/source/libvpx/LICENSE
+Swift source and licence: https://github.com/swiftlang/swift and https://swift.org/LICENSE.txt
+
+WebKit's archive SHA-256 remains unpinned. Retest refuses to download or install
+this pin for that reason. The founder has not authorized an archive download.
