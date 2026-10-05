@@ -6,15 +6,21 @@ import { callerLocation } from '../api/source-location.ts'
 import { failure } from '../protocol/failures.ts'
 import { isPlainObject } from '../protocol/schema.ts'
 
+const rowNameHint =
+  "Chrome's accessibility tree gives a table row no name from its cells, where Playwright names it from them. Take the row by position with nth(), or find a cell by name."
+
 // What to use where Playwright has a member Retest leaves out on purpose, or has under another name.
 const hints: Readonly<Record<string, string>> = {
   'page.waitForTimeout': 'Wait for what the page shows instead, with an assertion such as toBeVisible().',
   'page.waitForURL': 'Check the address with expect(page).toHaveURL(), which looks again until it passes.',
   'page.url': 'Playwright reads it at once, and Retest has to ask the page. Check it with expect(page).toHaveURL().',
   'locator.filter': 'Find inside a locator with getByRole, getByText or locator(), or keep one match with first(), last() or nth().',
-  'locator.selectOption': 'Retest calls it select().',
   'locator.type': 'Use fill().',
   'locator.pressSequentially': 'Use fill().',
+  'locator.selectOption(text)':
+    "Playwright matches the text against each option's value and its label at once, and Retest has to know which. Name the option with { label } or { value }.",
+  'page.getByRole(row, { name })': rowNameHint,
+  'locator.getByRole(row, { name })': rowNameHint,
 }
 
 // Members Retest has under a name Playwright gives to something else, refused rather than mistaken for it.
@@ -51,12 +57,29 @@ const optionsOf: Readonly<Record<string, Readonly<Record<string, OptionsAt>>>> =
     uncheck: { index: 0, keys: timeout, call: 'uncheck(options)' },
     fill: { index: 1, keys: timeout, call: 'fill(value, options)' },
     press: { index: 1, keys: timeout, call: 'press(key, options)' },
+    selectOption: { index: 1, keys: timeout, call: 'selectOption(values, options)' },
     first: { index: 0, keys: [], call: 'first(options)' },
     last: { index: 0, keys: [], call: 'last(options)' },
     nth: { index: 1, keys: [], call: 'nth(index, options)' },
   },
   // Playwright's keyboard takes a delay, and Retest presses each key at once.
   'page.keyboard': { press: { index: 1, keys: [], call: 'press(key, options)' } },
+}
+
+/** A member Playwright names otherwise: Retest's name for it, and Playwright's arguments read in Retest's terms. */
+type Renamed = { readonly to: string; readonly translate: (args: readonly unknown[]) => unknown[] }
+
+const renamed: Readonly<Record<string, Renamed>> = {
+  'locator.selectOption': { to: 'select', translate: ([values, ...rest]) => [selectChoice(values), ...rest] },
+}
+
+// What a Playwright call answers where Retest's answers nothing, named as a test would read it.
+const unanswered: Readonly<Record<string, string>> = {
+  'page.goto': 'The response page.goto() returns',
+  'page.reload': 'The response page.reload() returns',
+  'page.goBack': 'The response page.goBack() returns',
+  'page.goForward': 'The response page.goForward() returns',
+  'locator.selectOption': 'The values locator.selectOption() returns',
 }
 
 // A guard and the object it wraps, so the object itself can be handed back to Retest, whose own checks read its
@@ -102,15 +125,71 @@ export function guard<T extends object>(target: T, label: string): T {
     get(_shell, property) {
       if (typeof property === 'symbol' || passedThrough.has(property)) return Reflect.get(target, property, target)
       const member = `${label}.${property}`
-      if (!(property in target) || refused.has(member)) throw notYet(member)
-      const value: unknown = Reflect.get(target, property, target)
+      const alias = renamed[member]
+      const name = alias?.to ?? property
+      if (!(name in target) || refused.has(member)) throw notYet(member)
+      const value: unknown = Reflect.get(target, name, target)
       if (typeof value !== 'function') return guardResult(value)
-      return (...args: unknown[]): unknown => guardResult(Reflect.apply(value, target, playwrightArguments(label, property, value.length, args).map(unguarded)))
+      return (...args: unknown[]): unknown => {
+        const given = playwrightArguments(label, property, value.length, args)
+        const passed = alias === undefined ? given : alias.translate(given)
+        return answering(member, guardResult(Reflect.apply(value, target, passed.map(unguarded))))
+      }
     },
-    has: (_shell, property) => property in target,
+    has: (_shell, property) => property in target || (typeof property === 'string' && renamed[`${label}.${property}`] !== undefined),
   })
   wrapped.set(proxy, target)
   return proxy
+}
+
+/**
+ * The option a `selectOption` call names, as Retest's `select` takes it: `{ label }` as the label itself and
+ * `{ value }` as it is. A bare string is refused, since Playwright matches it against each option's value and its
+ * label at once; so are a list, `{ index }`, `null` and an option named two ways, which Retest has no answer for.
+ * Anything else goes to Retest's own check, which says what `select` takes.
+ */
+function selectChoice(values: unknown): unknown {
+  if (typeof values === 'string') throw notYet('locator.selectOption(text)')
+  if (Array.isArray(values)) throw notYet('locator.selectOption([…])')
+  if (values === null) throw notYet('locator.selectOption(null)')
+  if (!isPlainObject(values)) return values
+  const keys = Object.entries(values).flatMap(([key, value]) => (value === undefined ? [] : [key]))
+  const [only] = keys
+  const named = only === undefined ? undefined : values[only]
+  if (keys.length === 1 && only === 'label' && typeof named === 'string') return named
+  if (keys.length === 1 && only === 'value' && typeof named === 'string') return { value: named }
+  if (keys.length === 0) return values
+  throw notYet(`locator.selectOption({ ${keys.join(', ')} })`)
+}
+
+/**
+ * The call's own promise, or, for a call whose answer Playwright gives and Retest does not, the same promise answering
+ * a value that fails by name when anything reads it. The promise's own `then` still runs only when the test awaits it,
+ * so Retest still sees a call nothing awaited.
+ */
+function answering(member: string, result: unknown): unknown {
+  const name = unanswered[member]
+  if (name === undefined || !(result instanceof Promise)) return result
+  const unread = unreadable(name)
+  return new Proxy(result, {
+    get(promise, property) {
+      const value: unknown = Reflect.get(promise, property, promise)
+      if (property !== 'then' || typeof value !== 'function') return value
+      return (onFulfilled?: unknown, onRejected?: unknown): unknown =>
+        Reflect.apply(value, promise, [() => (typeof onFulfilled === 'function' ? Reflect.apply(onFulfilled, undefined, [unread]) : unread), onRejected])
+    },
+  })
+}
+
+// Awaiting, printing and JSON.stringify find nothing on it; anything else a test reads fails by name.
+function unreadable(name: string): object {
+  const empty: object = Object.create(null)
+  return new Proxy(empty, {
+    get(_empty, property) {
+      if (typeof property === 'symbol' || passedThrough.has(property)) return undefined
+      throw notYet(name)
+    },
+  })
 }
 
 /**
@@ -130,6 +209,7 @@ function playwrightArguments(label: string, property: string, arity: number, arg
   const given: Readonly<Record<string, unknown>> = isPlainObject(options) ? options : {}
   const unknown = Object.entries(given).find(([key, value]) => value !== undefined && !at.keys.includes(key))
   if (unknown !== undefined) throw notYet(`${label}.${at.call.replace('options', `{ ${unknown[0]} }`)}`)
+  if (property === 'getByRole' && args[0] === 'row' && given['name'] !== undefined) throw notYet(`${label}.getByRole(row, { name })`)
   if (!textFinders.has(property)) return [...args]
   const text = property === 'getByRole' ? given['name'] : args[0]
   return [...args.slice(0, at.index), finderOptions(text, given)]

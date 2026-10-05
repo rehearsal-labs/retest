@@ -68,7 +68,7 @@ describe("a page under Retest's Playwright compatibility", () => {
       await playwrightExpect(locator).toHaveText('Saved')
     })
     assert.equal(verdict.status, 'passed')
-    assert.deepEqual(commands, [{ kind: 'observe', locator: { by: 'testId', value: 'saved-task' } }])
+    assert.deepEqual(commands, [{ kind: 'observe', locator: { by: 'testId', value: 'saved-task' }, check: true }])
   })
 
   check("Playwright's options Retest has no answer for fail by name, and a timeout goes to Retest's own", async () => {

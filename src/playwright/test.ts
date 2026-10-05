@@ -1,10 +1,10 @@
-import type { Page } from '../api/page.ts'
+import type { Page } from './page.ts'
 import { withPlaywrightRules } from '../api/app-page.ts'
 import { declareDescribe, declareHook, declareTest } from '../api/declare.ts'
 import { test as retestTest } from '../api/test.ts'
 import { guard, notYet } from './not-yet.ts'
 
-/** What a Playwright test function is handed. `page` is Retest's page for the run's app. */
+/** What a Playwright test function is handed. `page` is Retest's page for the run's app, under Playwright's names. */
 export type PlaywrightFixtures = { readonly page: Page }
 
 type TestBody = (fixtures: PlaywrightFixtures) => unknown

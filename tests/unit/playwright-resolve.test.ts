@@ -40,7 +40,8 @@ describe("the project resolver's Playwright mapping and imports without an exten
     assert.deepEqual(file.asked.map(([specifier]) => specifier), ['./helper', './helper.ts'])
     const folder = resolving(['../pages/index.ts'], 'ERR_UNSUPPORTED_DIR_IMPORT')
     assert.equal(hook('../pages', context, folder.next).url, 'file:///resolved/../pages/index.ts')
-    assert.deepEqual(folder.asked.map(([specifier]) => specifier), ['../pages', '../pages.ts', '../pages.js', '../pages.mts', '../pages.mjs', '../pages/index.ts'])
+    // TSX and JSX candidates are asked for too, so a JSX source is refused by name before a JavaScript sibling can load.
+    assert.deepEqual(folder.asked.map(([specifier]) => specifier), ['../pages', '../pages.ts', '../pages.tsx', '../pages.js', '../pages.jsx', '../pages.mts', '../pages.mjs', '../pages/index.ts'])
   })
 
   test('an import that names its file is asked for once, and one nothing answers fails as it first did', () => {
@@ -50,7 +51,11 @@ describe("the project resolver's Playwright mapping and imports without an exten
     assert.equal(named.asked.length, 1)
     const missing = resolving([])
     assert.throws(() => hook('./nowhere', context, missing.next), /Cannot find module \.\/nowhere$/)
-    assert.equal(missing.asked.length, 7)
+    assert.equal(missing.asked.length, 11)
+    assert.deepEqual(
+      missing.asked.map(([specifier]) => specifier),
+      ['./nowhere', ...['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'].map((suffix) => `./nowhere${suffix}`)],
+    )
   })
 
   test('a package that is not there, and an error that is not about a missing file, are not retried', () => {
