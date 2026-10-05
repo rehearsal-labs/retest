@@ -423,9 +423,9 @@ test("the window's first address is known from the start, and a secret is typed 
     'tests/desktop.retest.ts': `import { expect, secret, test } from '@rehearsal-labs/retest'
 
 test(${JSON.stringify(name)}, async ({ page }) => {
+  await page.getByLabel('Title').fill(secret('password'))
   await expect(page).toHaveURL('${origin}/index.html')
   expect(await page.url()).toBe('${origin}/index.html')
-  await page.getByLabel('Title').fill(secret('password'))
   await page.getByRole('button', { name: 'Add task' }).click()
   await expect(page.getByTestId('task-total')).toHaveText('1 task')
 })
@@ -438,8 +438,11 @@ test(${JSON.stringify(name)}, async ({ page }) => {
   const look = eventsOf(run.events, 'assertion.passed').find((event) => event.matcher === 'toHaveURL')
   assert.equal(look?.pageUrl, `${origin}/index.html`, 'the check recorded the window\'s address')
   assert.deepEqual(eventsOf(run.events, 'navigation'), [], 'the window never navigated, so its address came from the page itself')
+  assert.equal(eventsOf(run.events, 'action.completed')[0]?.command, 'fill', 'the first action types the secret before a URL check could wait for an initial load')
+  assert.deepEqual(eventsOf(run.events, 'action.completed').filter(event => ['goto', 'reload', 'goBack', 'goForward'].includes(event.command)), [], 'the test never asks the window to navigate')
   const fill = eventsOf(run.events, 'action.completed').find((event) => event.command === 'fill')
   assert.ok(fill !== undefined, 'the secret was typed')
+  assert.ok(look !== undefined && fill.sequence < look.sequence, 'secret input succeeds before any URL assertion can wait for the app load')
   assert.deepEqual(filesHolding(run.output, password), [], 'and its value reached no file of the run')
   for (const folder of dataFolders(run)) assert.equal(processesNaming(basename(folder)), '', 'no process of the app is left')
 })

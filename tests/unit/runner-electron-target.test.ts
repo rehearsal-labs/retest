@@ -585,8 +585,8 @@ describe('the pool and an Electron target', () => {
     )
     const info = { product: 'Electron', version: '44.5.1', executablePath: target.executablePath, app: 'desktop', target: { name: 'electron', electron: versions } }
     assert.deepEqual(announced, [
-      { info, userAgent: apps[0]?.userAgent, pid: 7001 },
-      { info, userAgent: apps[1]?.userAgent, pid: 7002, instance: 2 },
+      { info, userAgent: apps[0]?.userAgent, pid: 7001, engine: 'chromium' },
+      { info, userAgent: apps[1]?.userAgent, pid: 7002, instance: 2, engine: 'chromium' },
     ])
     assert.deepEqual(pool.started, [announced[0]], 'the result lists the target once')
     assert.deepEqual([browsers.length, executables.length], [0, 0], 'no browser stands in, and no browser executable is looked for')

@@ -159,6 +159,21 @@ describe('electron(): what the config refuses', () => {
     assert.equal(lines.join('\n').includes('/home/someone'), false, 'no message quotes the value an argument carries')
   })
 
+  test("Chromium's logging switches in any form, which would copy the windows' console lines out, naming the switch alone", () => {
+    const args = ['--enable-logging', '--enable-logging=file', '--enable-logging=stderr', '-enable-logging=/home/someone/app.log', '--log-file=/home/someone/app.log', '-log-file', '--tasks=3', 'enable-logging']
+    const lines = problems({ apps: { desktop: electron({ executablePath: binary, appPath: 'desktop', args }) } })
+    const message = (name: string): string => `Retest keeps Chromium's logging off in the app, as it keeps Electron's logging variables from it, so the app takes no ${name}`
+    assert.deepEqual(lines, [
+      `apps.desktop.args[0]: ${message('--enable-logging')}`,
+      `apps.desktop.args[1]: ${message('--enable-logging')}`,
+      `apps.desktop.args[2]: ${message('--enable-logging')}`,
+      `apps.desktop.args[3]: ${message('--enable-logging')}`,
+      `apps.desktop.args[4]: ${message('--log-file')}`,
+      `apps.desktop.args[5]: ${message('--log-file')}`,
+    ])
+    assert.equal(lines.join('\n').includes('/home/someone'), false, 'no message quotes the value an argument carries')
+  })
+
   test('two Electron targets that name one data folder, naming both, since each would wait on the other for the run', () => {
     const shared = { executablePath: binary, appPath: 'desktop', userDataDir: '.data/desktop' }
     assert.deepEqual(

@@ -10,8 +10,8 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { budgets, eventsOf, filesHolding, repositoryRoot, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
+import { endService } from './service-teardown.ts'
 
 // One test across two apps on the cross-platform fixture's service: it creates a task in the Electron fixture, opens
 // that task by its id on the web in Chrome, marks it done there, and sees the change in the Electron window once the
@@ -86,6 +86,10 @@ test('signs in to the service in the Electron window', { apps: ['desktop'] }, as
 })
 `
 
+// The same sign-in in a test that also uses the web app, whose base URL is the service's own origin.
+const signInBesideWeb = signIn.replace("{ apps: ['desktop'] }, async ({ desktop })", "{ apps: ['desktop', 'web'] }, async ({ desktop })")
+assert.notEqual(signInBesideWeb, signIn, 'the sign-in test also uses the web app')
+
 type ConfigOptions = { service: string; web: boolean; secretOrigins: boolean }
 
 function configSource({ service, web, secretOrigins }: ConfigOptions): string {
@@ -106,7 +110,10 @@ export default defineConfig({
 
 type Service = { url: string; requests(): RequestRecord[] }
 
-/** Starts the service on a free port in a process group of its own, ended after the test. */
+/**
+ * Starts the service on a free port in a process group of its own. After the test it is ended through its own handle,
+ * and anything of its group still there fails the test by name.
+ */
 async function startService(t: TestContext, flags: readonly string[] = []): Promise<Service> {
   const folder = await scratchFolder(t, 'retest-electron-service-')
   const networkLog = join(folder, 'network.jsonl')
@@ -114,7 +121,7 @@ async function startService(t: TestContext, flags: readonly string[] = []): Prom
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
   const { pid } = child
   assert.ok(pid !== undefined, 'the service did not start')
-  t.after(() => signalGroup(pid, 'SIGKILL'))
+  t.after(() => endService(child, 'the task service'))
   let stdout = ''
   let stderr = ''
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
@@ -156,7 +163,9 @@ function createdId(run: FinishedRun): string {
 test('a task created in Electron is opened by its id on the web, marked done there, and seen done in Electron', { timeout: 180_000, skip: unverified }, async (t) => {
   binaryPresent()
   const service = await startService(t)
-  const root = await writeProject(t, { 'retest.config.ts': configSource({ service: service.url, web: true, secretOrigins: false }), 'tests/flow.retest.ts': flow })
+  // The window signs in with the password, so secretOrigins names the service: the web app's base URL never lets a secret
+  // into an Electron window.
+  const root = await writeProject(t, { 'retest.config.ts': configSource({ service: service.url, web: true, secretOrigins: true }), 'tests/flow.retest.ts': flow })
   const run = await runProject(t, root, { env: environment, timeouts })
 
   assert.equal(run.exit.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -191,13 +200,15 @@ test('a task created in Electron is opened by its id on the web, marked done the
 test('when the service never passes changes on to the web, the test fails at the web check, naming the task, and goes no further', { timeout: 180_000, skip: unverified }, async (t) => {
   binaryPresent()
   const service = await startService(t, ['--broken-sync=web'])
-  const root = await writeProject(t, { 'retest.config.ts': configSource({ service: service.url, web: true, secretOrigins: false }), 'tests/flow.retest.ts': flow })
+  // The window signs in with the password, so secretOrigins names the service: the web app's base URL never lets a secret
+  // into an Electron window.
+  const root = await writeProject(t, { 'retest.config.ts': configSource({ service: service.url, web: true, secretOrigins: true }), 'tests/flow.retest.ts': flow })
   const run = await runProject(t, root, { env: environment, timeouts })
 
   assert.equal(run.exit.code, 1, `${run.stdout}\n${run.stderr}`)
   const result = testNamed(run, flowName)
   // The web never gets a row for the task, so its check finds no element by that id.
-  assert.deepEqual([result.status, result.failure?.class], ['failed', 'not_found'])
+  assert.deepEqual([result.status, result.failure?.class], ['failed', 'not_found'], JSON.stringify(result.failure))
   const id = createdId(run)
   const failed = eventsOf(run.events, 'assertion.failed').filter((event) => event.testId === result.testId)
   assert.equal(failed.length, 1)
@@ -224,14 +235,15 @@ test('the password is typed into the Electron window only when secretOrigins nam
   const signInsBefore = service.requests().filter((request) => request.path === '/api/sign-in' && request.client === 'electron')
   assert.deepEqual(signInsBefore.map(({ status }) => status), [200], 'the window signed in with the password it was given')
 
-  const refusing = await writeProject(t, { 'retest.config.ts': configSource({ service: service.url, web: false, secretOrigins: false }), 'tests/sign-in.retest.ts': signIn })
+  // The web app's base URL is the service's own origin, and still the window is refused: only secretOrigins counts there.
+  const refusing = await writeProject(t, { 'retest.config.ts': configSource({ service: service.url, web: true, secretOrigins: false }), 'tests/sign-in.retest.ts': signInBesideWeb })
   const refused = await runProject(t, refusing, { env: environment, timeouts })
   assert.equal(refused.exit.code, 1, `${refused.stdout}\n${refused.stderr}`)
   const result = testNamed(refused, 'signs in to the service in the Electron window')
   assert.deepEqual([result.status, result.failure?.class], ['failed', 'not_actionable'])
   assert.equal(
     result.failure?.message,
-    `Retest did not type the secret "password": the page is on ${service.url}, and it may be typed only on no origin, since no app it uses has a base URL. Add the origin to secretOrigins if it belongs there.`,
+    `Retest did not type the secret "password": the window is on ${service.url}, and in an Electron app it may be typed only on an origin secretOrigins lists for it, and it lists none. An Electron app shows whatever origin it chooses, so no base URL counts there. Add the origin to secretOrigins if it belongs there.`,
   )
   const signInsAfter = service.requests().filter((request) => request.path === '/api/sign-in' && request.client === 'electron')
   assert.equal(signInsAfter.length, 1, 'the refused run sent no sign-in')

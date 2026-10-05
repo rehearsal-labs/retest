@@ -1,6 +1,8 @@
-import type { LaunchOptions, OwnedBrowser, OutputRedactor, ProxyOptions, WebRuntimeIdentity } from '../browser/contract.ts'
+import type { LaunchOptions, OwnedBrowser, OutputRedactor, ProxyOptions, WebEngine, WebRuntimeIdentity } from '../browser/contract.ts'
 import type { ElectronLaunchOptions, ElectronRuntime } from '../browser/electron.ts'
-import type { LoadedApp, LoadedChromiumTarget, LoadedElectronTarget, LoadedProxy, LoadedTarget } from '../config/loaded.ts'
+import type { FirefoxLaunchOptions } from '../browser/firefox/launch.ts'
+import type { WebKitLaunchOptions } from '../browser/webkit/browser.ts'
+import type { LoadedApp, LoadedChromiumTarget, LoadedElectronTarget, LoadedFirefoxTarget, LoadedProxy, LoadedTarget, LoadedWebKitTarget } from '../config/loaded.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { TargetInfo } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
@@ -8,9 +10,16 @@ import type { BrowserInfo } from '../protocol/result.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Bounded } from './bounded.ts'
 import { dirname, join } from 'node:path'
+import { ChromiumBrowser } from '../browser/browser.ts'
 import { closeGraceMs, LaunchError, webRuntimeIdentity } from '../browser/contract.ts'
 import { ElectronLaunchError, launchElectron } from '../browser/electron.ts'
 import { ProcessLaunchError } from '../browser/chromium-process.ts'
+import { findFirefoxExecutable } from '../browser/firefox/executable.ts'
+import { FirefoxBrowser } from '../browser/firefox/browser.ts'
+import { launchFirefox } from '../browser/firefox/launch.ts'
+import { firefoxRoute } from '../browser/firefox/route.ts'
+import { launchWebKit, WebKitBrowser } from '../browser/webkit/browser.ts'
+import { webKitBuildPath } from '../browser/webkit/build.ts'
 import { BrowserError } from '../browser/browser-error.ts'
 import { emulationFor } from '../config/devices.ts'
 import { errorMessage, failure } from '../protocol/failures.ts'
@@ -28,6 +37,15 @@ export type LaunchBrowser = (options: LaunchOptions, timeoutMs: number) => Promi
 /** Starts an Electron app. The runner passes its setup budget; tests pass a fake. */
 export type LaunchElectron = (options: ElectronLaunchOptions, timeoutMs: number) => Promise<ElectronRuntime>
 
+/** Starts Firefox. The runner passes its setup budget; tests pass a fake. */
+export type LaunchFirefox = (options: FirefoxLaunchOptions, timeoutMs: number) => Promise<OwnedBrowser>
+
+/** Finds the Firefox a target launches, or says why there is none. */
+export type FindFirefox = (target: LoadedFirefoxTarget, app: string, env: Readonly<Record<string, string | undefined>>) => Promise<{ ok: true; path: string } | { ok: false; failure: Failure }>
+
+/** Starts a WebKit build. The runner passes its setup budget; tests pass a fake. */
+export type LaunchWebKit = (options: WebKitLaunchOptions, timeoutMs: number) => Promise<OwnedBrowser>
+
 /** Finds the executable a Chromium target launches, or says why there is none, naming the paths it tried. */
 export type FindExecutable = (target: LoadedChromiumTarget) => Promise<{ ok: true; path: string } | { ok: false; failure: Failure }>
 
@@ -44,7 +62,8 @@ export type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
  * tests are spread over several browsers, the first says how many in `instances`, and each further one its number
  * in `instance`, from 2.
  */
-export type StartedTarget = { info: BrowserInfo; userAgent: string; pid: number; instance?: number; instances?: number }
+/** A browser the pool started, as its events tell it: what it is, the engine that ran it and the build its driver read, when it read one. */
+export type StartedTarget = { info: BrowserInfo; userAgent: string; pid: number; instance?: number; instances?: number; engine?: WebEngine; build?: string }
 
 export type BrowserPoolOptions = {
   launch: LaunchBrowser
@@ -67,6 +86,11 @@ export type BrowserPoolOptions = {
   hiddenVariables?: readonly string[]
   /** Starts an Electron app: Retest's own launcher when absent. */
   launchElectron?: LaunchElectron
+  /** Starts Firefox, and finds the Firefox a target launches: Retest's own when absent. */
+  launchFirefox?: LaunchFirefox
+  findFirefox?: FindFirefox
+  /** Starts a WebKit build: Retest's own launcher when absent. */
+  launchWebKit?: LaunchWebKit
   /**
    * Rewrites each line an Electron app's log receives, as the run's redactor does, since the app's own output can hold
    * what a test typed into it. Without it the app's output is written as the app printed it.
@@ -77,14 +101,14 @@ export type BrowserPoolOptions = {
 
 type Launched = { kind: 'ready'; browser: OwnedBrowser } | { kind: 'unavailable'; failure: Failure; browser?: OwnedBrowser }
 type AppTarget =
-  | { ok: true; key: string; emulation?: Emulation; proxy?: LoadedProxy }
+  | { ok: true; key: string; emulation?: Emulation; proxy?: LoadedProxy; engine?: WebEngine }
   | { ok: true; key: string; electron: LoadedElectronTarget }
   | { ok: false; failure: Failure }
 
 /**
  * The run's browsers and Electron apps. A target runs on the driver it needs: Chromium's, which also drives Electron
- * apps. A run refuses the tests of any other target before it asks the pool; should one still reach it, it fails setup
- * by name and launches nothing. Each distinct target, its executable with its headless setting and emulation, launches
+ * apps, or Firefox's, or WebKit's. A run refuses the tests of any other target before it asks the pool; should one still reach it,
+ * it fails setup by name and launches nothing. Each distinct target, its executable with its headless setting and emulation, launches
  * once, the first time a test needs it or when the run warms it, and app targets that are the same share it. A proxy
  * belongs to each page's browser context, so targets that differ only by proxy share a browser too. A browser that
  * fails to launch, or is lost, is not launched again: every later test that needs it does not run. App targets are set
@@ -204,7 +228,7 @@ export class BrowserPool {
     if (launched?.kind !== 'ready') return { ok: false, failure: launched?.failure ?? failure('setup_failed', 'The browser was closed.') }
     const emulation = known.emulation === undefined ? {} : { emulation: known.emulation }
     const proxy = known.proxy === undefined ? {} : { proxy: known.proxy }
-    const runtime = webRuntimeIdentity(launched.browser, 'chromium')
+    const runtime = webRuntimeIdentity(launched.browser, known.engine ?? 'chromium')
     return { ok: true, value: { browser: launched.browser, runtime, ...emulation, ...proxy } }
   }
 
@@ -252,6 +276,8 @@ export class BrowserPool {
     const driver = targetDriver(app.name, loaded)
     if (!driver.ok) return driver
     if (driver.driver === 'electron') return this.#firstApp(app, driver.target)
+    if (driver.driver === 'firefox') return this.#firstFirefox(app, driver.target, instance)
+    if (driver.driver === 'webkit') return this.#firstWebKit(app, driver.target, instance)
     const { target } = driver
     const found = await this.#options.findExecutable(target)
     if (!found.ok) return found
@@ -268,6 +294,54 @@ export class BrowserPool {
     const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
     this.#announce(app, target, browser, emulation, instance)
     return { ok: true, key, ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
+  }
+
+  // A Firefox target launches the Firefox its path, the pinned build in Retest's cache or the system install names, by
+  // the route the machine's RETEST_FIREFOX_ROUTE chooses; every page it serves opens in a user context of its own.
+  async #firstFirefox(app: LoadedApp, target: LoadedFirefoxTarget, instance: number): Promise<AppTarget> {
+    const route = firefoxRoute(process.env)
+    if (!route.ok) return { ok: false, failure: failure('setup_failed', route.message) }
+    const found = await (this.#options.findFirefox ?? findFirefoxExecutable)(target, app.name, process.env)
+    if (!found.ok) return found
+    if (this.#closing !== undefined) return { ok: false, failure: this.#options.interruption() ?? failure('setup_failed', 'The browser was closed.') }
+    const executablePath = found.path
+    const headless = this.#options.headless && target.headless
+    const key = JSON.stringify(['firefox', executablePath, headless, instance])
+    const hidden = this.#options.hiddenVariables === undefined ? {} : { hiddenVariables: this.#options.hiddenVariables }
+    const redacting = this.#options.redact === undefined ? {} : { redact: this.#options.redact }
+    const streaming = this.#options.redactStream === undefined ? {} : { redactStream: this.#options.redactStream }
+    const options = { executablePath, headless, route: route.route, logFile: this.#options.logFile(app.name, target.name, instance), ...hidden, ...redacting, ...streaming }
+    const launch = this.#options.launchFirefox ?? launchFirefox
+    const launched = this.#launched.get(key) ?? (await this.#launch(key, options, (given, timeoutMs) => launch({ ...given, route: route.route }, timeoutMs)))
+    if (launched.kind !== 'ready') return { ok: false, failure: launched.failure }
+    const { browser } = launched
+    const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
+    this.#announce(app, target, browser, emulation, instance)
+    return { ok: true, key, engine: 'firefox', ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
+  }
+
+  // A WebKit target launches the build its path or RETEST_WEBKIT_BUILD names, and nothing else; every page it serves opens
+  // in a browser context of its own. The build gets an environment of its own, so no hidden variable can reach it.
+  async #firstWebKit(app: LoadedApp, target: LoadedWebKitTarget, instance: number): Promise<AppTarget> {
+    const found = webKitBuildPath(target, process.env)
+    if (!found.ok) return found
+    const headless = this.#options.headless && target.headless
+    const key = JSON.stringify(['webkit', found.path, headless, target.emulate ?? null, instance])
+    const redacting = this.#options.redact === undefined ? {} : { redact: this.#options.redact }
+    const streaming = this.#options.redactStream === undefined ? {} : { redactStream: this.#options.redactStream }
+    const options = { executablePath: found.path, headless, logFile: this.#options.logFile(app.name, target.name, instance), ...redacting, ...streaming }
+    const launch = this.#options.launchWebKit ?? launchWebKit
+    const launchBuild: LaunchBrowser = (given, timeoutMs) => {
+      const redact = given.redact === undefined ? {} : { redact: given.redact }
+      const stream = given.redactStream === undefined ? {} : { redactStream: given.redactStream }
+      return launch({ buildPath: given.executablePath, buildSource: found.source, logFile: given.logFile, headless: given.headless, ...redact, ...stream }, timeoutMs)
+    }
+    const launched = this.#launched.get(key) ?? (await this.#launch(key, options, launchBuild))
+    if (launched.kind !== 'ready') return { ok: false, failure: launched.failure }
+    const { browser } = launched
+    const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
+    this.#announce(app, target, browser, emulation, instance)
+    return { ok: true, key, engine: 'webkit', ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
   }
 
   // The target's setup: its first launch, which the first test that asks for the target gets.
@@ -368,14 +442,14 @@ export class BrowserPool {
     const { product, version, userAgent, pid, executablePath, electron } = started
     const described: TargetInfo = { name: target.name, electron: { version: electron.version, chromium: electron.chromium } }
     const named = this.#options.named ? { app: app.name, target: described } : {}
-    const announced: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid, ...(launch > 1 ? { instance: launch } : {}) }
+    const announced: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid, ...(launch > 1 ? { instance: launch } : {}), engine: 'chromium' }
     if (launch === 1) this.#started.push(announced)
     this.#options.onStarted(announced)
   }
 
-  async #launch(key: string, options: LaunchOptions): Promise<Launched> {
+  async #launch(key: string, options: LaunchOptions, launch: LaunchBrowser = this.#options.launch): Promise<Launched> {
     const { setup, cleanup } = this.#options.timeouts
-    const launching = this.#options.launch(options, setup)
+    const launching = launch(options, setup)
     this.#trackOutput(launching)
     const launched = await bounded(launching, timerMs(setup + abortGraceMs), this.#options.stopped)
     if (launched.status !== 'done') {
@@ -421,7 +495,7 @@ export class BrowserPool {
   }
 
   // The run's result lists each app target once, so only its first browser joins `started`; every browser is told.
-  #announce(app: LoadedApp, target: LoadedChromiumTarget, browser: OwnedBrowser, emulation: Emulation | undefined, instance: number): void {
+  #announce(app: LoadedApp, target: LoadedChromiumTarget | LoadedFirefoxTarget | LoadedWebKitTarget, browser: OwnedBrowser, emulation: Emulation | undefined, instance: number): void {
     const { product, version, userAgent, pid, executablePath } = browser
     const device = typeof target.emulate === 'string' ? { device: target.emulate } : {}
     const proxy = target.proxy === undefined ? {} : { proxy: recordedProxy(target.proxy) }
@@ -429,10 +503,25 @@ export class BrowserPool {
     const named = this.#options.named ? { app: app.name, target: described } : {}
     const size = this.#sizeOf(app, target)
     const numbered = instance > 0 ? { instance: instance + 1 } : size > 1 ? { instances: size } : {}
-    const started: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid, ...numbered }
+    const build = reportedBuild(browser)
+    const started: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid, ...numbered, engine: engineOf(target), ...(build === undefined ? {} : { build }) }
     if (instance === 0) this.#started.push(started)
     this.#options.onStarted(started)
   }
+}
+
+// The engine a browser target runs on, as the driver that launches it is.
+function engineOf(target: LoadedChromiumTarget | LoadedFirefoxTarget | LoadedWebKitTarget): WebEngine {
+  return target.browser === 'firefox' || target.browser === 'webkit' ? target.browser : 'chromium'
+}
+
+// The build a driver read about the browser it launched: Chromium's source revision from `Browser.getVersion`, Firefox's
+// `moz:buildID` from `session.new`, WebKit's revision from its build folder's name. Nothing is taken from a pin.
+function reportedBuild(browser: OwnedBrowser): string | undefined {
+  if (browser instanceof ChromiumBrowser) return browser.revision
+  if (browser instanceof FirefoxBrowser) return browser.buildId
+  if (browser instanceof WebKitBrowser) return browser.build.revision
+  return undefined
 }
 
 // The proxy's address and bypass rules as events record them; a user name or password never is.
