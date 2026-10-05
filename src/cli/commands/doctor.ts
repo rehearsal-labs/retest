@@ -63,15 +63,16 @@ function removeLogs(folder: string): void {
   if (existsSync(runs) && readdirSync(runs).length === 0) rmSync(runs, { recursive: true, force: true })
 }
 
-function renderChecks(checks: readonly Check[], config: LoadedConfig, style: Style): string {
+export function renderChecks(checks: readonly Check[], config: LoadedConfig, style: Style): string {
+  const shown = checks.map(plainNoticeCheck)
   const groupWidth = Math.max(...checks.map((check) => check.group.length)) + 3
   const subjectWidth = Math.max(subjectColumn, ...checks.map((check) => check.subject.length + 3))
-  const detailed = checks.filter((check) => check.detail !== undefined)
+  const detailed = shown.filter((check) => check.detail !== undefined)
   const textWidth = Math.max(0, ...detailed.map((check) => check.text.length + 3))
   const fixIndent = ' '.repeat(2 + groupWidth + subjectWidth + 2)
   const lines: string[] = []
   let group: string | undefined
-  for (const check of checks) {
+  for (const check of shown) {
     const shownGroup = check.group === group ? '' : check.group
     group = check.group
     const mark = check.ok ? style.green('✓') : style.red('✗')
@@ -86,4 +87,18 @@ function renderChecks(checks: readonly Check[], config: LoadedConfig, style: Sty
       ? `Ready. ${plural(config.apps.size, 'app')}, ${plural(targets, 'target')}.`
       : `${plural(problems, 'problem')}. Fix ${problems === 1 ? 'it' : 'them'} and run ${retestCommand} doctor again.`
   return `\n${lines.join('\n')}\n\n  ${problems === 0 ? summary : style.red(summary)}\n`
+}
+
+// Verification retains its detailed facts for independent checks. Only this terminal view shortens them.
+function plainNoticeCheck(check: Check): Check {
+  if (check.noticeText !== undefined) {
+    const { detail, ...rest } = check
+    const path = detail?.split('\n').filter(line => !line.startsWith('Licence ') && !line.startsWith('Source ') && !line.startsWith('Patches ') && !line.startsWith('npx retest install ')).join('\n')
+    if (check.text.includes(' supplied licence notices ')) return { ...rest, text: check.noticeText }
+    return { ...rest, ...(path === undefined || path === '' ? {} : { detail: path }), text: check.text.includes(check.noticeText) ? check.text : `${check.text}; ${check.noticeText}` }
+  }
+  if (check.ok && (check.group === 'builds' && check.text.includes('installed by Retest') || check.text.includes('built in Retest\'s cache') && check.text.endsWith('doctor starts neither'))) {
+    return { ...check, text: `${check.text}; licence notices present and verified` }
+  }
+  return check
 }
