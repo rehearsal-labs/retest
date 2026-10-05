@@ -4,6 +4,8 @@ import type { OwnedBrowser, OwnedPage, SessionIdentity } from '../../src/browser
 import type { DiagnosticRecord, DiagnosticsSummary, NetworkRequestRecord } from '../../src/protocol/diagnostics.ts'
 import type { EventBody } from '../../src/protocol/events.ts'
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -14,7 +16,7 @@ import { parseArtifact } from '../../src/diagnostics/artifact.ts'
 import { AttemptDiagnostics } from '../../src/diagnostics/attempt.ts'
 import { defaultDiagnosticsPolicy, type DiagnosticsPolicy } from '../../src/diagnostics/policy.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
-import { assertOk, browserPath, closeMs, goto, groupExists, launch, launchGated, observeUntil, openApp, openPage, processesUsing, profileOf, scratchFolder, setupMs } from './browser-harness.ts'
+import { assertOk, browserPath, closeMs, goto, groupExists, launch, launchGated, observeUntil, openApp, openPage, processesUsing, profileOf, setupMs } from './browser-harness.ts'
 
 // The Chromium collector on real Chrome, below the runner: a crashed page, a lost connection, a capture that cannot
 // start, listeners that end with the capture, and two contexts at once. Each test drives the same `AttemptDiagnostics`
@@ -135,15 +137,26 @@ class InjectingTransport implements Transport {
 }
 
 async function launchInjecting(t: TestContext): Promise<{ browser: OwnedBrowser; transport: () => InjectingTransport }> {
-  const folder = await scratchFolder(t)
+  const folder = await mkdtemp(join(tmpdir(), 'retest-browser-test-'))
+  let browser: OwnedBrowser | undefined
+  t.after(async () => {
+    const failures: unknown[] = []
+    const owned = browser
+    if (owned !== undefined) {
+      try {
+        await owned.close(closeMs)
+        assert.equal(groupExists(owned.pid), false)
+      } catch (error) { failures.push(error) }
+    }
+    // The injected detach leaves real messages coming from Chrome. Its diagnostic logger can recreate browser.log
+    // during recursive removal, so the transport and output must be closed before the folder is removed.
+    try { await rm(folder, { recursive: true, force: true }) } catch (error) { failures.push(error) }
+    if (failures.length > 0) throw new AggregateError(failures, 'Diagnostics fixture cleanup failed.')
+  })
   let made: InjectingTransport | undefined
-  const browser = await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true }, undefined, (pipe) => {
+  browser = await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true }, undefined, (pipe) => {
     made = new InjectingTransport(new PipeTransport(pipe))
     return made
-  })
-  t.after(async () => {
-    await browser.close(closeMs)
-    assert.equal(groupExists(browser.pid), false)
   })
   return {
     browser,

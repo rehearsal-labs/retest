@@ -1,4 +1,4 @@
-import type { ConsoleLevel, ConsoleOrigin, DiagnosticScope, FrameRole } from '../protocol/diagnostics.ts'
+import type { ConsoleLevel, ConsoleOrigin, DiagnosticKind, DiagnosticScope, FrameRole } from '../protocol/diagnostics.ts'
 
 // What a driver's collector hands the parent: what the engine reported, read but not yet cleaned, redacted, cut or
 // numbered. Times are milliseconds since the epoch on the engine's clock. A request is named by a key the collector
@@ -98,6 +98,7 @@ export interface DiagnosticSink {
 /**
  * A collector that runs: what it covers, and `stop`, which removes its listeners at once and is safe to repeat.
  * `startedLate` says why it did not hear its page from the page's start, as for a page that was already running when
- * capture began; every kind it covers is then partial, for that reason.
+ * capture began; every kind it covers is then partial, for that reason. `unavailable` names a kind the collector has
+ * no source for, with the reason: that kind is unavailable whatever arrived, and the other is captured as usual.
  */
-export type DiagnosticCollection = { readonly scope: DiagnosticScope; readonly startedLate?: string; stop(): void }
+export type DiagnosticCollection = { readonly scope: DiagnosticScope; readonly startedLate?: string; readonly unavailable?: Partial<Record<DiagnosticKind, string>>; stop(): void }

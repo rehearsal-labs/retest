@@ -27,12 +27,14 @@ import { newRunFolder, quickTimeouts, readEvents, rootDir, supportFile } from '.
 class DiagnosedPage implements OwnedPage {
   readonly #inner: OwnedPage
   readonly #hangs: boolean
+  readonly #onCapture: (() => void) | undefined
   #sink: DiagnosticSink | undefined
   stops = 0
 
-  constructor(inner: OwnedPage, hangs: boolean) {
+  constructor(inner: OwnedPage, hangs: boolean, onCapture: (() => void) | undefined) {
     this.#inner = inner
     this.#hangs = hangs
+    this.#onCapture = onCapture
   }
 
   get url(): string | undefined {
@@ -73,6 +75,7 @@ class DiagnosedPage implements OwnedPage {
 
   // A page that hangs answers only once its own budget is long gone, as one whose Network.enable never returns.
   async collectDiagnostics(sink: DiagnosticSink, timeoutMs: number): Promise<DiagnosticCollection> {
+    this.#onCapture?.()
     if (this.#hangs) await new Promise((resolve) => setTimeout(resolve, timeoutMs).unref())
     this.#sink = sink
     return { scope: chromiumScope, stop: () => void (this.stops += 1) }
@@ -83,11 +86,13 @@ class DiagnosedPage implements OwnedPage {
 class DiagnosedBrowser implements OwnedBrowser {
   readonly #inner: OwnedBrowser
   readonly #hangs: boolean
+  readonly #onCapture: (() => void) | undefined
   readonly pages: DiagnosedPage[] = []
 
-  constructor(inner: OwnedBrowser, hangs: boolean) {
+  constructor(inner: OwnedBrowser, hangs: boolean, onCapture: (() => void) | undefined) {
     this.#inner = inner
     this.#hangs = hangs
+    this.#onCapture = onCapture
   }
 
   get product(): string {
@@ -115,7 +120,7 @@ class DiagnosedBrowser implements OwnedBrowser {
   }
 
   async newPage(options: NewPageOptions, timeoutMs: number): Promise<OwnedPage> {
-    const page = new DiagnosedPage(await this.#inner.newPage(options, timeoutMs), this.#hangs)
+    const page = new DiagnosedPage(await this.#inner.newPage(options, timeoutMs), this.#hangs, this.#onCapture)
     this.pages.push(page)
     return page
   }
@@ -131,12 +136,14 @@ class DiagnosedBrowser implements OwnedBrowser {
 
 type Ran = { result: RunResult; events: RetestEvent[]; folder: string; human: string; agent: string; browsers: DiagnosedBrowser[] }
 
-async function run(names: readonly string[], options: { diagnose?: boolean; hangs?: boolean; diagnostics?: DiagnosticsConfig; signal?: AbortSignal; setupMs?: number } = {}): Promise<Ran> {
+type RunCase = { diagnose?: boolean; hangs?: boolean; onCapture?: () => void; diagnostics?: DiagnosticsConfig; signal?: AbortSignal; setupMs?: number }
+
+async function run(names: readonly string[], options: RunCase = {}): Promise<Ran> {
   const folder = newRunFolder()
   const { launch } = fakeLauncher()
   const browsers: DiagnosedBrowser[] = []
   const diagnosing: LaunchBrowser = async (launchOptions, timeoutMs) => {
-    const browser = new DiagnosedBrowser(await launch(launchOptions, timeoutMs), options.hangs === true)
+    const browser = new DiagnosedBrowser(await launch(launchOptions, timeoutMs), options.hangs === true, options.onCapture)
     browsers.push(browser)
     return browser
   }
@@ -253,9 +260,11 @@ describe('a declared policy in a run', () => {
 
   test('a run stopped while a page is slow to start its capture waits for no page, and the test is interrupted', async () => {
     const controller = new AbortController()
-    setTimeout(() => controller.abort('SIGINT'), 300)
+    // The stop comes once the page has been starting its capture for a while, however long a busy machine took to collect
+    // the file and open the page; a stop on a fixed timer can land before either and test something else.
+    const onCapture = (): void => void setTimeout(() => controller.abort('SIGINT'), 100)
     const started = performance.now()
-    const ran = await run(['passing.retest.ts'], { diagnose: true, hangs: true, signal: controller.signal, setupMs: 20_000 })
+    const ran = await run(['passing.retest.ts'], { diagnose: true, hangs: true, onCapture, signal: controller.signal, setupMs: 20_000 })
     assert.ok(performance.now() - started < 10_000, `the run ended ${Math.round(performance.now() - started)} ms after it started, not at the 20 s setup budget`)
     assert.equal(ran.result.exitCode, 130)
     const saves = onlyTest(ran.result, 'saves a task')

@@ -1,12 +1,12 @@
 import type { OwnedPage, SessionIdentity } from '../browser/contract.ts'
-import type { DiagnosticIdentity, DiagnosticRecord, DiagnosticScope, DiagnosticsSummary } from '../protocol/diagnostics.ts'
+import type { DiagnosticIdentity, DiagnosticKind, DiagnosticRecord, DiagnosticScope, DiagnosticsSummary } from '../protocol/diagnostics.ts'
 import type { EventBody } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { DiagnosticCollection } from './observations.ts'
 import type { DiagnosticsPolicy } from './policy.ts'
 import type { CaptureEnding, TextRedactor } from './session-capture.ts'
-import type { FinishedCapture } from './session-capture.ts'
+import type { CaptureSnapshot, FinishedCapture } from './session-capture.ts'
 import type { NativeNetworkDeclaration } from './native-network.ts'
 import { NativeLogSource } from '../native/logs.ts'
 import { NativeNetworkSource } from './native-network.ts'
@@ -75,8 +75,11 @@ export class AttemptDiagnostics {
     this.#clock = options.clock ?? Date.now
   }
 
-  /** Opens the declared file before app launch. The launch owner binds stdout to the returned log source. */
-  async startNative(app: string, session: SessionIdentity, networkSource?: NativeNetworkDeclaration): Promise<{ logs: NativeLogSource; network: NativeNetworkSource }> {
+  /**
+   * Opens the declared file before app launch. The launch owner binds stdout to the returned log source; `logs: false`
+   * says it will not, as for a target that keeps no log, and the scope then covers no console.
+   */
+  async startNative(app: string, session: SessionIdentity, networkSource?: NativeNetworkDeclaration, sources: { logs?: boolean } = {}): Promise<{ logs: NativeLogSource; network: NativeNetworkSource }> {
     if (this.#finished !== undefined || this.#sessions.some((entry) => entry.app === app)) throw new Error('The diagnostics attempt or app already has a capture.')
     if (session.owner.testId !== this.#options.testId || session.owner.attemptId !== this.#options.attemptId || session.owner.app !== app || session.sessionId !== formatSessionId(this.#options.attemptId, app)) throw new Error('Native diagnostics belong to a different test, attempt, app or session.')
     const target = this.#options.variant?.[app]
@@ -85,7 +88,8 @@ export class AttemptDiagnostics {
     const options = { identity, budget: this.#budget, redactor: this.#options.redactor, enabled: this.#options.policy.capture }
     const logs = new NativeLogSource({ ...options, clock: this.#clock })
     const network = new NativeNetworkSource({ ...options, ...(networkSource === undefined ? {} : { source: networkSource }) })
-    const scope: DiagnosticScope = { engine: session.runtime.kind, source: 'owned_app', console: { covered: ['owned_process'], notCovered: [] }, network: { covered: networkSource === undefined ? [] : ['app_network_source'], notCovered: [] }, reason: 'Owned app stdout and declared app-supplied metadata only; no machine-wide logs or transparent network capture.' }
+    const consoleScope: DiagnosticScope['console'] = sources.logs === false ? { covered: [], notCovered: ['owned_process'] } : { covered: ['owned_process'], notCovered: [] }
+    const scope: DiagnosticScope = { engine: session.runtime.kind, source: 'owned_app', console: consoleScope, network: { covered: networkSource === undefined ? [] : ['app_network_source'], notCovered: [] }, reason: 'Owned app stdout and declared app-supplied metadata only; no machine-wide logs or transparent network capture.' }
     const entry: SessionEntry = { app, identity, native: { logs, network, scope, startedAt } }
     this.#sessions.push(entry)
     await network.start()
@@ -147,6 +151,22 @@ export class AttemptDiagnostics {
     }
   }
 
+  /** A read-only, identity-preserving view for an evaluation; collection continues after the view is taken. */
+  snapshot(app: string): (CaptureSnapshot & DiagnosticIdentity) | undefined {
+    const entry = this.#sessions.find((session) => session.app === app)
+    if (entry === undefined) return undefined
+    const captured = entry.running?.capture.snapshot()
+    if (captured !== undefined) {
+      const unavailable = entry.running?.collection.unavailable
+      const console = unavailable?.console === undefined ? captured.console : Object.freeze({ state: 'unavailable' as const, reason: this.#options.redactor.redact(unavailable.console) })
+      const network = unavailable?.network === undefined ? captured.network : Object.freeze({ state: 'unavailable' as const, reason: this.#options.redactor.redact(unavailable.network) })
+      return Object.freeze({ ...entry.identity, records: captured.records, console, network })
+    }
+    if (!this.#options.policy.capture) return Object.freeze({ ...entry.identity, records: Object.freeze([]), console: Object.freeze({ state: 'disabled' as const }), network: Object.freeze({ state: 'disabled' as const }) })
+    const reason = this.#options.redactor.redact(entry.unavailable ?? (entry.native === undefined ? 'capture has not started' : 'live native diagnostics do not provide an evaluation snapshot'))
+    return Object.freeze({ ...entry.identity, records: Object.freeze([]), console: Object.freeze({ state: 'unavailable' as const, reason }), network: Object.freeze({ state: 'unavailable' as const, reason }) })
+  }
+
   /**
    * Ends every capture, writes each session's artifact and `diagnostics.finished`, and judges the policy over every
    * record the attempt kept. Safe to repeat; the first ending stands.
@@ -190,8 +210,9 @@ export class AttemptDiagnostics {
     const scope = entry.native?.scope ?? entry.running?.scope
     if (scope === undefined) throw new Error('The diagnostics capture has no scope.')
     entry.running?.collection.stop()
-    const finished = entry.native?.finished ?? entry.running?.capture.finish(ending, time)
-    if (finished === undefined) throw new Error('The diagnostics capture did not finish.')
+    const captured = entry.native?.finished ?? entry.running?.capture.finish(ending, time)
+    if (captured === undefined) throw new Error('The diagnostics capture did not finish.')
+    const finished = withoutSource(captured, entry.running?.collection.unavailable)
     if (finished.console.state === 'disabled' && finished.network.state === 'disabled') return { ...head, console: finished.console, network: finished.network }
     const redact = (text: string): string => this.#options.redactor.redact(text)
     const records = finished.records.map((record) => mapRecordText(record, redact))
@@ -209,4 +230,12 @@ export class AttemptDiagnostics {
     }
     return { ...head, path, scope, ...markers, console: finished.console, network: finished.network }
   }
+}
+
+// A kind the collector has no source for is unavailable with its reason, never complete because nothing arrived.
+function withoutSource(finished: FinishedCapture, unavailable: Partial<Record<DiagnosticKind, string>> | undefined): FinishedCapture {
+  if (unavailable === undefined) return finished
+  const console = unavailable.console === undefined ? finished.console : { state: 'unavailable' as const, reason: unavailable.console }
+  const network = unavailable.network === undefined ? finished.network : { state: 'unavailable' as const, reason: unavailable.network }
+  return { ...finished, console, network }
 }

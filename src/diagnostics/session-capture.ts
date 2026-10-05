@@ -27,6 +27,7 @@ import type {
   RuntimeErrorObservation,
 } from './observations.ts'
 import { truncateText } from '../protocol/failures.ts'
+import { mapRecordText } from './artifact.ts'
 import { sanitizeText, sanitizeUrl } from './sanitize.ts'
 
 /** What hides the run's secrets in text: `scan` with `holding` keeps back a tail that may begin a secret. */
@@ -67,6 +68,13 @@ export type FinishedCapture = {
   network: NetworkCapture
   startedAt: string
   endedAt: string
+}
+
+/** A detached view of the bounded capture at the moment it is read; taking one does not end collection. */
+export type CaptureSnapshot = {
+  readonly records: readonly DiagnosticRecord[]
+  readonly console: ConsoleCapture
+  readonly network: NetworkCapture
 }
 
 type HopState = 'requested' | 'responded' | 'receiving'
@@ -157,14 +165,12 @@ export class SessionCapture implements DiagnosticSink {
 
   unreadable(method: string): void {
     if (this.#finished !== undefined) return
-    if (method.startsWith('Network.')) this.#unreadable.network += 1
-    else this.#unreadable.console += 1
+    for (const kind of kindsFed(method)) this.#unreadable[kind] += 1
   }
 
   limited(method: string, count: number): void {
     if (this.#finished !== undefined || !Number.isSafeInteger(count) || count < 1) return
-    const kind = method.startsWith('Network.') ? 'network' : 'console'
-    this.#limited[kind] = Math.min(Number.MAX_SAFE_INTEGER, this.#limited[kind] + count)
+    for (const kind of kindsFed(method)) this.#limited[kind] = Math.min(Number.MAX_SAFE_INTEGER, this.#limited[kind] + count)
   }
 
   /**
@@ -181,6 +187,18 @@ export class SessionCapture implements DiagnosticSink {
     if (this.#finished !== undefined || this.#loss !== undefined) return
     this.#loss = loss
     this.#markPending(loss.kind, loss.time)
+  }
+
+  /** Reads the current records and capture states without closing open requests, stopping capture or spending its budget. */
+  snapshot(): CaptureSnapshot {
+    const source = this.#finished
+    // Detached copies also protect the collector's stored nested text and stack frames from a view's consumer.
+    const records = structuredClone(source?.records ?? this.#records).map((record) => mapRecordText(record, (text) => this.#redactor.redact(text)))
+    const consoleCapture = structuredClone(source?.console ?? this.#consoleCapture())
+    const networkCapture = structuredClone(source?.network ?? this.#networkCapture())
+    if ('reason' in consoleCapture) consoleCapture.reason = this.#redactor.redact(consoleCapture.reason)
+    if ('reason' in networkCapture) networkCapture.reason = this.#redactor.redact(networkCapture.reason)
+    return freezeSnapshot({ records, console: consoleCapture, network: networkCapture })
   }
 
   /**
@@ -485,6 +503,42 @@ export class SessionCapture implements DiagnosticSink {
   }
 }
 
+// The events each collector reads, by the kind of record they feed, in each engine's own names: Chrome's and WebKit's
+// protocol events and Firefox's WebDriver BiDi ones. A frame that leaves for another site's process ends the requests
+// it held, so Chrome's `Page.frameDetached` feeds the network records whatever its name says.
+const networkEvents: ReadonlySet<string> = new Set([
+  'Network.requestWillBeSent',
+  'Network.requestServedFromCache',
+  'Network.requestServedFromMemoryCache',
+  'Network.responseReceived',
+  'Network.dataReceived',
+  'Network.loadingFinished',
+  'Network.loadingFailed',
+  'Page.frameDetached',
+  'network.beforeRequestSent',
+  'network.responseStarted',
+  'network.responseCompleted',
+  'network.fetchError',
+])
+const consoleEvents: ReadonlySet<string> = new Set([
+  'Runtime.consoleAPICalled',
+  'Runtime.exceptionThrown',
+  'Runtime.exceptionRevoked',
+  'Runtime.executionContextCreated',
+  'Runtime.executionContextDestroyed',
+  'Runtime.executionContextsCleared',
+  'Log.entryAdded',
+  'Console.messageAdded',
+  'Console.messageRepeatCountUpdated',
+  'log.entryAdded',
+])
+
+// An event of a kind Retest does not know may have fed either, so neither kind can stay complete.
+function kindsFed(method: string): readonly ('console' | 'network')[] {
+  if (networkEvents.has(method)) return ['network']
+  return consoleEvents.has(method) ? ['console'] : ['console', 'network']
+}
+
 function dropReason(dropped: number, one: string, many: string): string[] {
   if (dropped === 0) return []
   return [`${dropped} ${dropped === 1 ? one : many} over the attempt's limits ${dropped === 1 ? 'was' : 'were'} dropped`]
@@ -506,4 +560,13 @@ function recordBytes(record: DiagnosticRecord): number {
 function isoTime(milliseconds: number): string {
   const date = new Date(milliseconds)
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString()
+}
+
+// Snapshot data consists only of records, arrays, text and capture-state objects.
+function freezeSnapshot<T extends object>(value: T): T {
+  for (const key of Object.keys(value) as (keyof T)[]) {
+    const item = value[key]
+    if (typeof item === 'object' && item !== null) freezeSnapshot(item)
+  }
+  return Object.freeze(value)
 }
