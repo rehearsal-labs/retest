@@ -71,6 +71,28 @@ function capture(fps: number): Capture {
 }
 
 describe('the Chromium frame source over one page’s session', () => {
+  test('bounds each screencast frame by the previous acknowledged frame, including a withheld stretch', async () => {
+    const session = new FakeSession()
+    const source = new ChromiumFrameSource(session, identity)
+    const run = capture(20)
+    await source.start(run.start)
+    try {
+      run.setNow(100_000)
+      session.paint(1)
+      run.setNow(110_000)
+      session.paint(2)
+      run.setNow(120_000)
+      session.paint(3)
+      run.setNow(200_000)
+      session.paint(4)
+      run.setNow(300_000)
+      session.paint(5)
+      assert.deepEqual(run.frames.map(({ timestampUs, earliestUs }) => [timestampUs, earliestUs]), [
+        [100_000, 0], [200_000, 120_000], [300_000, 200_000],
+      ], 'each acknowledgement advances the next read boundary even when its frame waits or is superseded')
+    } finally { await source.stop(1000) }
+  })
+
   test('starts Chrome’s screencast on that session, acknowledges every frame and keeps its bytes as Chrome encoded them', async () => {
     const session = new FakeSession()
     const source = new ChromiumFrameSource(session, identity, { format: 'png', maxWidth: 1280 })
@@ -81,7 +103,7 @@ describe('the Chromium frame source over one page’s session', () => {
     run.setNow(5000)
     session.paint(7, Buffer.from('a png').toString('base64'))
     assert.deepEqual(session.acknowledged(), [7])
-    assert.deepEqual(run.frames, [{ identity, timestampUs: 5000, format: 'png', bytes: Buffer.from('a png') }])
+    assert.deepEqual(run.frames, [{ identity, timestampUs: 5000, earliestUs: 0, format: 'png', bytes: Buffer.from('a png') }])
     run.setNow(2_005_000)
     const stats = await source.stop(1000)
     assert.equal(session.sent.at(-1)?.method, 'Page.stopScreencast')
@@ -89,6 +111,7 @@ describe('the Chromium frame source over one page’s session', () => {
     assert.deepEqual(stats, {
       mode: 'screencast',
       requestedFps: 1000,
+      clockMapping: { timestamp: 'run-arrival', targetClock: 'not-used', imageRead: 'previous-acknowledgement-to-arrival' },
       delivered: 1,
       superseded: 0,
       dropped: 0,
@@ -240,6 +263,17 @@ describe('the Chromium frame source over one page’s session', () => {
     assert.equal(session.listening(), 0)
   })
 
+  test('cleanup of an uncertain Chrome start is awaited and its refusal stays in the final stats', async () => {
+    const session = new FakeSession((method) => Promise.reject(new Error(method === 'Page.startScreencast' ? 'start reply lost' : 'stop reply lost')))
+    const source = new ChromiumFrameSource(session, identity)
+    const start = await source.start(capture(10).start)
+    assert.equal(start.ok, false)
+    const stats = await source.stop(50)
+    assert.deepEqual(stats.problems, ["Ending Chrome's uncertain screencast start failed: stop reply lost"])
+    assert.deepEqual(session.sent.map((entry) => entry.method), ['Page.startScreencast', 'Page.stopScreencast'])
+    assert.equal(session.listening(), 0)
+  })
+
   test('a stop Chrome never answers resolves within its time, named, with nothing left listening', async () => {
     const session = new FakeSession((method) => (method === 'Page.stopScreencast' ? new Promise(() => {}) : Promise.resolve({})))
     const source = new ChromiumFrameSource(session, identity)
@@ -282,7 +316,7 @@ describe('the Chromium frame source over one page’s session', () => {
 
   test('a stop before any start captures nothing, and a refused acknowledgement is named', async () => {
     const idle = new ChromiumFrameSource(new FakeSession(), identity)
-    assert.deepEqual(await idle.stop(100), { mode: 'screencast', requestedFps: 0, delivered: 0, superseded: 0, dropped: 0, problems: [] })
+    assert.deepEqual(await idle.stop(100), { mode: 'screencast', requestedFps: 0, clockMapping: { timestamp: 'run-arrival', targetClock: 'not-used', imageRead: 'previous-acknowledgement-to-arrival' }, delivered: 0, superseded: 0, dropped: 0, problems: [] })
     const session = new FakeSession((method) => (method === 'Page.screencastFrameAck' ? Promise.reject(new Error('a JavaScript alert dialog holds the page')) : Promise.resolve({})))
     const source = new ChromiumFrameSource(session, identity)
     await source.start(capture(1000).start)

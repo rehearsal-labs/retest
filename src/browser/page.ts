@@ -1,7 +1,7 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { CdpSession } from './cdp/session.ts'
 import type { ChromiumCaptureOptions } from './capture.ts'
-import type { BrowserCommand, DispatchedCommand, PageNavigation, PageReading, SessionIdentity, TextQuery, WebSession } from './contract.ts'
+import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, SessionIdentity, SessionOwner, TextQuery, WebSession } from './contract.ts'
 import type { ActionTarget, PendingNavigation, ReadyTarget } from './actionability.ts'
 import type { ActionIntent, PlannedKey, Pointer, SelectPlan, Selection } from './element-queries.ts'
 import type { Guard, GuardedIntent, GuardVerdict } from './input-guard.ts'
@@ -16,6 +16,7 @@ import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
 import type { StorageState, StoredOrigin } from '../protocol/storage-state.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { waitBeforeRead } from '../assertions/wait-before-read.ts'
 import { ChromiumCollector } from '../diagnostics/chromium-collector.ts'
 import { isNavigationKind } from '../protocol/commands.ts'
 import { Deadline, monotonicClock } from '../protocol/deadline.ts'
@@ -37,7 +38,7 @@ import { awaitCheckedState } from './checked-state.ts'
 import { commandStopped, connectionEnded, dialogOpened, failureFromError } from './command-failures.ts'
 import { Dispatch } from './dispatch.ts'
 import { documentFactsSchema, pageFactsOf, pageTitleOf } from './document-facts.ts'
-import { describeAction, describeChoices, observe, pageSetOff, readSelection } from './element-queries.ts'
+import { describeAction, describeChoices, dispatchPinned, observe, observeKeyed, pageSetOff, readSelection } from './element-queries.ts'
 import { worldName } from './isolated-world.ts'
 import { applyEmulation } from './emulation.ts'
 import { clickAt, moveTo, pressKey, replaceSelection, tapAt, wheelAt, type Point } from './input.ts'
@@ -116,8 +117,8 @@ const dialogSchema = s.object({ type: s.string() })
 // Navigations that keep the document. Any other replaces it when it commits.
 const withinDocument: ReadonlySet<string> = new Set(['sameDocument', 'historySameDocument'])
 
-/** One page in a browser context of its own: a web session. */
-export class ChromiumPage implements WebSession {
+/** One page in a browser context of its own: a web session, which tells one element from another. */
+export class ChromiumPage implements WebSession, ElementIdentity {
   readonly #connection: CdpConnection
   readonly #session: CdpSession
   readonly #browserContextId: string
@@ -143,8 +144,9 @@ export class ChromiumPage implements WebSession {
   #lostReason: string | undefined
   #dialog: string | undefined
   #disposing: Promise<void> | undefined
-  // The session this page is, once the runner has named it; what its captures are recorded as.
-  #identity: RecordIdentity | undefined
+  // The session this page is, once the runner has named it: who holds it, and the identity its captures are recorded
+  // as. Both are frozen copies, so neither what the caller holds nor a source the page hands out can change them.
+  #named: { readonly owner: Readonly<SessionOwner>; readonly identity: Readonly<RecordIdentity> } | undefined
 
   /**
    * Applies the page's emulation, reads its main frame, then follows it through the events this enables, and has
@@ -241,12 +243,49 @@ export class ChromiumPage implements WebSession {
     return { result, input: dispatch.input }
   }
 
+  /**
+   * Reads each locator's matches as `observe` does, all in one call of Retest's world in the current document, and keys
+   * each element listed with the key that world keeps for the node. Waits for no change and sends no input; a page that
+   * is lost, closed or held by a dialog answers as it does a look.
+   */
+  async readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
+    const startedAt = monotonicClock()
+    const deadline = new Deadline(timeoutMs, { signal, startedAt })
+    const described = `read ${locators.map((locator) => describeLocator(locator)).join(' and ')}`
+    try {
+      await this.#titles.settle(deadline)
+      signal?.throwIfAborted()
+      const blocked = this.#blocked(described, false)
+      if (blocked !== undefined) return { ok: false, failure: blocked }
+      const read = await observeKeyed(this.#world, locators, deadline)
+      if ('reads' in read) return { ok: true, reads: read.reads, page: read.page }
+      const named = locators[read.locator]
+      if (named === undefined) throw new Error("Retest's keyed look named a locator it was not given")
+      return { ok: false, failure: 'invalid' in read ? invalidSelector(read.invalid, named, undefined) : shadowRefused(read.shadow, named, undefined) }
+    } catch (error) {
+      if (error instanceof CdpTimeoutError) await outlast(startedAt + timeoutMs, signal)
+      if (signal?.aborted === true) return { ok: false, failure: commandStopped(described, false, signal.reason) }
+      return { ok: false, failure: this.#blocked(described, false) ?? failureFromError(error, { command: described, timeoutMs, inputSent: false }) }
+    }
+  }
+
+  /**
+   * Sends `command` as `dispatch` does, only to the node `key` names: every look that readies the element checks, in
+   * the task of the hit test, that the locator's one match is that node, and a look that finds another fails the
+   * command at once as `not_actionable` with `details.refused` `'moved'`, with no input sent. A key read in an earlier
+   * document names nothing in this one.
+   */
+  dispatchTo(command: BrowserCommand, key: string, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand> {
+    return dispatchPinned(command, key, () => this.dispatch(command, timeoutMs, signal, commandToken))
+  }
+
   /** A capture names this page\'s runner session beside its Chromium source. */
   async capture(timeoutMs: number): Promise<{ readonly ok: true; readonly capture: { readonly png: Uint8Array; readonly source: 'chromium'; readonly reference: { readonly sessionId: string }; readonly capturedAt: string } } | { readonly ok: false; readonly failure: Failure }> {
-    if (this.#identity === undefined) return { ok: false, failure: { class: 'unsupported', message: 'The runner has not named this page\'s session, so no capture can be attributed to it.' } }
+    const identity = this.#named?.identity
+    if (identity === undefined) return { ok: false, failure: { class: 'unsupported', message: 'The runner has not named this page\'s session, so no capture can be attributed to it.' } }
     try {
       const png = await this.screenshot(timeoutMs)
-      return { ok: true, capture: { png, source: 'chromium', reference: { sessionId: this.#identity.sessionId }, capturedAt: new Date().toISOString() } }
+      return { ok: true, capture: { png, source: 'chromium', reference: { sessionId: identity.sessionId }, capturedAt: new Date().toISOString() } }
     } catch (error) {
       if (error instanceof BrowserError) return { ok: false, failure: error.failure }
       throw error
@@ -256,6 +295,7 @@ export class ChromiumPage implements WebSession {
   async screenshot(timeoutMs: number): Promise<Uint8Array> {
     const deadline = new Deadline(timeoutMs)
     for (;;) {
+      const finalRead = deadline.reached
       const blocked = this.#blocked(screenshotCommand, false)
       if (blocked !== undefined) throw new BrowserError(blocked)
       try {
@@ -263,8 +303,8 @@ export class ChromiumPage implements WebSession {
         const { data } = await request(this.#session, 'Page.captureScreenshot', params, screenshotSchema, sendOptions(deadline))
         return Buffer.from(data, 'base64')
       } catch (error) {
-        if (!isBetweenDocuments(error) || deadline.expired) throw this.#operationError(screenshotCommand, error, timeoutMs)
-        await sleep(Math.min(retryPauseMs, deadline.remainingMs))
+        if (!(error instanceof CdpTimeoutError) && !isBetweenDocuments(error) || finalRead) throw this.#operationError(screenshotCommand, error, timeoutMs)
+        await waitBeforeRead(deadline, retryPauseMs)
       }
     }
   }
@@ -346,20 +386,27 @@ export class ChromiumPage implements WebSession {
   }
 
   /**
-   * Names the session this page is, as the runner holds it: its id and the test, attempt and app that hold it. A page is
-   * one session for its whole life, so naming it again as another throws, and so does an id that is not the attempt's
-   * and the app's.
+   * Names the session this page is, as the runner holds it: its id and the run, test, attempt and app that hold it. A
+   * page is one session for its whole life, so naming it again with any other owner throws, run included; so does an
+   * owner with an empty part, and an id that is not the attempt's and the app's.
    *
    * @example page.identify(appPage.session)
    */
   identify(session: SessionIdentity): void {
     const { sessionId, owner } = session
+    const empty = ownerParts.filter((part) => owner[part] === '')
+    if (empty.length > 0) throw new Error(`A session's owner names its run, test, attempt and app; this one names no ${empty.join(', ')}.`)
     const expected = formatSessionId(owner.attemptId, owner.app)
     if (sessionId !== expected) throw new Error(`A session of attempt ${owner.attemptId} and app ${owner.app} is ${expected}, not ${sessionId}.`)
-    const identity = { testId: owner.testId, attemptId: owner.attemptId, app: owner.app, sessionId }
-    const known = this.#identity
-    if (known !== undefined && !sameSession(known, identity)) throw new Error(`This page is session ${known.sessionId} of ${JSON.stringify(known.testId)}; it cannot become ${sessionId}.`)
-    this.#identity = identity
+    const known = this.#named
+    if (known !== undefined) {
+      if (sameOwner(known.owner, owner)) return
+      throw new Error(`This page is session ${known.identity.sessionId} of ${describeOwner(known.owner)}; it cannot become session ${sessionId} of ${describeOwner(owner)}.`)
+    }
+    this.#named = {
+      owner: Object.freeze({ ...owner }),
+      identity: Object.freeze({ testId: owner.testId, attemptId: owner.attemptId, app: owner.app, sessionId }),
+    }
   }
 
   /**
@@ -369,7 +416,7 @@ export class ChromiumPage implements WebSession {
    * never recorded as another's session. Nothing is captured until it starts. Sends no input.
    */
   frameSource(identity: RecordIdentity, options?: ChromiumCaptureOptions): ChromiumFrameSource {
-    const own = this.#identity
+    const own = this.#named?.identity
     if (own === undefined) return new ChromiumFrameSource(this.#session, identity, options, `Retest has not named the session this page is, so it records nothing as ${identity.sessionId}.`)
     if (!sameSession(own, identity)) {
       const refused = `This page is session ${own.sessionId} of ${JSON.stringify(own.testId)}, not ${identity.sessionId} of ${JSON.stringify(identity.testId)}, so Retest records nothing of it as that session.`
@@ -384,7 +431,8 @@ export class ChromiumPage implements WebSession {
   }
 
   async #execute(command: BrowserCommand, { timeoutMs, signal, commandToken, dispatch }: Executing): Promise<CommandResult> {
-    const deadline = new Deadline(timeoutMs, { signal })
+    const startedAt = monotonicClock()
+    const deadline = new Deadline(timeoutMs, { signal, startedAt })
     const described = this.#describe(command)
     try {
       await this.#titles.settle(deadline)
@@ -392,8 +440,16 @@ export class ChromiumPage implements WebSession {
       const blocked = this.#blocked(described, false)
       if (blocked !== undefined) return { ok: false, failure: blocked }
       const result = await this.#run(command, deadline, dispatch, commandToken)
-      return result.ok ? result : { ok: false, failure: this.#blocked(described, dispatch.sent) ?? result.failure }
+      if (result.ok) return result
+      // A nested command can exhaust its allocation before this exact deadline. Only a timeout or a readiness
+      // refusal that claims this whole budget is held through the remaining fraction.
+      if (!stopped(signal) && waitedWholeBudget(result.failure, timeoutMs)) {
+        await outlast(startedAt + timeoutMs, signal)
+        if (signal !== undefined && stopped(signal)) return { ok: false, failure: commandStopped(described, dispatch.sent, signal.reason) }
+      }
+      return { ok: false, failure: this.#blocked(described, dispatch.sent) ?? result.failure }
     } catch (error) {
+      if (error instanceof CdpTimeoutError) await outlast(startedAt + timeoutMs, signal)
       if (signal?.aborted === true) return { ok: false, failure: commandStopped(described, dispatch.sent, signal.reason) }
       const failure = this.#blocked(described, dispatch.sent) ?? failureFromError(error, { command: described, timeoutMs, inputSent: dispatch.sent })
       return { ok: false, failure }
@@ -627,21 +683,24 @@ export class ChromiumPage implements WebSession {
   async #awaitSelection({ locator, intent, document, heard }: AwaitedSelection, deadline: Deadline): Promise<CommandResult> {
     let last: Selection | undefined
     for (let attempt = 0; ; attempt += 1) {
+      const finalRead = deadline.reached
       let read: Selection | undefined
       try {
         read = await readSelection(this.#world, { locator, choices: intent.choices, document }, deadline)
       } catch (error) {
         // The time ran out during a read, so the previous read is the latest there is.
         if (!(error instanceof CdpTimeoutError)) throw error
-        break
+        if (finalRead) break
+        await waitBeforeRead(deadline, Math.min(firstSelectionPauseMs * 2 ** attempt, maxSelectionPauseMs))
+        continue
       }
       const gone = read === undefined || read.status === 'lost'
       if (gone && heard?.status === 'selected') return { ok: true, kind: 'select', changed: true, page: heard.page }
       if (read === undefined) return selectionLeft({ locator, intent, sent: 0, of: 0, heard })
       last = read
       if (last.status === 'selected') return { ok: true, kind: 'select', changed: true, page: last.page }
-      if (deadline.expired) break
-      await sleep(Math.min(firstSelectionPauseMs * 2 ** attempt, maxSelectionPauseMs, deadline.remainingMs), undefined, { signal: deadline.signal })
+      if (finalRead) break
+      await waitBeforeRead(deadline, Math.min(firstSelectionPauseMs * 2 ** attempt, maxSelectionPauseMs))
     }
     return { ok: false, failure: selectionStayed(locator, intent, last) }
   }
@@ -988,6 +1047,19 @@ function sameSession(first: RecordIdentity, second: RecordIdentity): boolean {
   return first.testId === second.testId && first.attemptId === second.attemptId && first.app === second.app && first.sessionId === second.sessionId
 }
 
+// One entry for each key of `SessionOwner`, which the compiler checks, so a part the owner gains is compared too.
+const ownerKeys: { readonly [Part in keyof SessionOwner]: Part } = { runId: 'runId', testId: 'testId', attemptId: 'attemptId', app: 'app' }
+const ownerParts = Object.values(ownerKeys)
+
+function sameOwner(first: SessionOwner, second: SessionOwner): boolean {
+  return ownerParts.every((part) => first[part] === second[part])
+}
+
+// The attempt and the app are in the session id that goes beside this.
+function describeOwner(owner: SessionOwner): string {
+  return `run ${owner.runId}, test ${JSON.stringify(owner.testId)}`
+}
+
 function withTitle(title: string | undefined): { title?: string } {
   return title === undefined ? {} : { title }
 }
@@ -1003,6 +1075,28 @@ function noTouchScreen(command: Extract<BrowserCommand, { kind: 'tap' }>): Failu
     class: 'unsupported',
     message: `Could not tap ${describeLocator(command.locator)}: the page does not emulate a touch screen, and tap() needs one.`,
   }
+}
+
+// Waits until `endsAt` on the monotonic clock has passed, or `signal` aborts. Each command's timer is set for the whole
+// milliseconds its budget has left and can fire a fraction of a millisecond early by the clock, so a timeout can come
+// before the budget it names has passed. A poll's last look waits all but a moment of its budget, and its caller takes
+// a timeout at the deadline as the deadline but one before it as the failure of the check, so a timeout is never told
+// early. The WebKit page waits the same way.
+async function outlast(endsAt: number, signal: AbortSignal | undefined): Promise<void> {
+  for (let left = endsAt - monotonicClock(); left > 0 && signal?.aborted !== true; left = endsAt - monotonicClock()) {
+    await sleep(Math.ceil(left), undefined, signal === undefined ? {} : { signal }).catch(() => undefined)
+  }
+}
+
+// A failure a command tells at the end of its budget: a timeout, or one that says it waited the whole budget, such as an
+// element still missing or covered when the time was up. The WebKit page holds the same failures.
+function waitedWholeBudget(failure: Failure, budgetMs: number): boolean {
+  return failure.class === 'timeout' || failure.details?.['waitedMs'] === budgetMs
+}
+
+// Read through a call, so a check after an await reads the signal as it is then.
+function stopped(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true
 }
 
 // Between a failed navigation and its error page, the page has no document to capture.

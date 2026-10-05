@@ -18,12 +18,17 @@ import {
   observeUntil,
   openApp,
   openPage,
+  servePages,
   sharedBrowser,
   timed,
 } from './browser-harness.ts'
+import { engineExpectations } from './engine-expectations.ts'
 import { observationOf } from '../support/observation.ts'
 
 const browser = sharedBrowser()
+
+// Cases another engine ends otherwise assert through this, which holds Chrome's outcome or the engine's declared one.
+const engineCase = engineExpectations('browser-locators')
 
 async function locatorsPage(t: TestContext): Promise<OwnedPage> {
   const app = await openApp(t)
@@ -81,10 +86,13 @@ test('role without a name finds every element with it, and a role Chrome names i
   const page = await locatorsPage(t)
   const listItems = await observe(page, byRole('listitem'))
   assert.equal(listItems.count, ROW_COUNT)
-  assert.equal((await observe(page, byRole('img', 'Logo'))).count, 1)
-  assert.equal((await observe(page, byRole('img', 'Badge'))).count, 1)
-  assert.equal((await observe(page, byRole('math', 'Formula'))).count, 1)
-  assert.equal((await observe(page, byRole('heading', 'Locators'))).count, 1)
+  // Each lookup is a subtest, so one an engine answers differently does not hide the others.
+  for (const [role, name] of [['img', 'Logo'], ['img', 'Badge'], ['math', 'Formula'], ['heading', 'Locators']] as const) {
+    await t.test(`${role} ${name}`, async (each) => {
+      const looked = await page.execute({ kind: 'observe', locator: byRole(role, name) }, 2000)
+      engineCase.assertOutcome(each, looked.ok && looked.kind === 'observe' ? { count: looked.observation.count } : looked, { count: 1 })
+    })
+  }
 })
 
 test('role stays in the document itself, out of shadow roots and frames, as test id and text do', async (t) => {
@@ -211,5 +219,36 @@ test('an action on a locator that matches nothing fails as not found when the ti
     const failure = failureOf(await click(page, locator, 300))
     assert.equal(failure.class, 'not_found')
     assert.match(failure.message, /no element matched within 300 ms/)
+  }
+})
+
+// Assertions may look together. A look that shared its document with another once lost elements on WebKit, whose every
+// fresh reading of a document cancelled the node ids the other look was still using: 400 buttons were counted as 0,
+// 100, 200 or 300, or the look failed outright.
+const manyButtons = 400
+
+async function counts(page: OwnedPage, locators: readonly LocatorRecipe[], pauseMs: number): Promise<number[]> {
+  const looks: Promise<number>[] = []
+  for (const [index, locator] of locators.entries()) {
+    if (index > 0 && pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pauseMs))
+    looks.push(page.execute({ kind: 'observe', locator }, 10_000).then((result) => {
+      assert.ok(result.ok && result.kind === 'observe', JSON.stringify(result))
+      return result.observation.count
+    }))
+  }
+  return Promise.all(looks)
+}
+
+test('two or three looks at once, started together or a few milliseconds apart, each count every one of hundreds of matches', async (t) => {
+  const buttons = Array.from({ length: manyButtons }, (_, index) => `<button>Item ${index}</button><span>filler ${index}</span>`).join('')
+  const site = await servePages(t, { '/': `<!doctype html><title>Many</title><body>${buttons}</body>` })
+  const page = await openPage(t, browser(), site.url)
+  assertOk(await goto(page, '/'))
+  const all = byRole('button')
+  const last = byRole('button', `Item ${manyButtons - 1}`)
+  const named = byRole('button', 'item', false)
+  for (const pauseMs of [0, 0, 0, 1, 2, 5, 8, 12, 16, 20, 30, 50]) {
+    assert.deepEqual(await counts(page, [all, last], pauseMs), [manyButtons, 1], `two looks ${pauseMs} ms apart`)
+    assert.deepEqual(await counts(page, [all, last, named], pauseMs), [manyButtons, 1, manyButtons], `three looks ${pauseMs} ms apart`)
   }
 })

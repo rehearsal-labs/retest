@@ -21,7 +21,7 @@ async function launchFailure(executablePath: string, logFile: string, timeoutMs?
     ),
   )
   assert.ok(error instanceof LaunchError, String(error))
-  assert.equal(error.failure.class, 'setup_failed')
+  assert.equal(error.failure.class, 'setup_failed', error.message)
   assert.equal(error.failure.message, error.message)
   return { error, ms }
 }
@@ -109,7 +109,7 @@ test('what an earlier launch left in the same log explains nothing about this on
 })
 
 test('a program that never answers fails within the launch time, and its process group is killed', async (t) => {
-  const program = await script(t, 'silent-browser', 'echo "pid $$ $@"\nexec sleep 30')
+  const program = await script(t, 'silent-browser', 'echo "pid $$ $@"\nsleep 30')
   const log = join(await scratchFolder(t), 'browser.log')
   const { error, ms } = await launchFailure(program, log, 1000)
   assert.equal(error.message, `${program} did not answer as a browser within 1000 ms. ${advice} Its output is in ${log}.`)

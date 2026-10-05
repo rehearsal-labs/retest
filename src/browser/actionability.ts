@@ -5,7 +5,7 @@ import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
-import { setTimeout as sleep } from 'node:timers/promises'
+import { waitBeforeRead } from '../assertions/wait-before-read.ts'
 import { describeEmptyStep, describeLocator, describeStep, locatorSteps } from '../protocol/locator.ts'
 import { describeOptionChoice } from '../protocol/option-choices.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
@@ -57,6 +57,7 @@ type Unready =
   | Extract<Readiness, { status: 'missing' | 'blocked' }>
   | { status: 'option'; problem: 'missing' | 'disabled'; choice: number }
   | { status: 'navigating'; url: string }
+  | { status: 'timeout'; error: CdpTimeoutError }
 type Look = { kind: 'settled'; target: ActionTarget } | { kind: 'unready'; unready: Unready }
 
 const firstPauseMs = 20
@@ -90,11 +91,12 @@ export async function waitUntilActionable(options: ActionabilityOptions): Promis
   const { deadline } = options
   let last: Unready | undefined
   for (let attempt = 0; ; attempt += 1) {
+    const finalRead = deadline.reached
     const looked = await look(options, last)
     if (looked.kind === 'settled') return looked.target
     last = looked.unready
-    if (deadline.expired) return failed(unready(last, options.locator, options.intent, deadline))
-    await sleep(Math.min(firstPauseMs * 2 ** attempt, maxPauseMs, deadline.remainingMs), undefined, { signal: deadline.signal })
+    if (finalRead) return failed(unready(last, options.locator, options.intent, deadline))
+    await waitBeforeRead(deadline, Math.min(firstPauseMs * 2 ** attempt, maxPauseMs))
   }
 }
 
@@ -105,8 +107,8 @@ async function look({ world, locator, intent, deadline, pendingNavigation }: Act
   try {
     seen = locator === undefined ? await armDocument(world, documentAction(intent), strokesOf(intent), deadline) : await prepare(world, locator, intent, deadline)
   } catch (error) {
-    // The deadline ran out during a look, so the previous look is the latest answer there is.
-    if (last !== undefined && error instanceof CdpTimeoutError) return { kind: 'settled', target: failed(unready(last, locator, intent, deadline)) }
+    // A timed-out look keeps the previous readiness reason and retries through the exact deadline.
+    if (error instanceof CdpTimeoutError) return { kind: 'unready', unready: last ?? { status: 'timeout', error } }
     throw error
   }
   return lookedAt(seen, locator, intent)
@@ -131,13 +133,15 @@ function lookedAt({ value: readiness, context }: InDocument<Readiness>, locator:
  * a disabled one.
  */
 function settledFailure(
-  readiness: Extract<Readiness, { status: 'ambiguous' | 'unsupported' | 'refused' | 'option' | 'invalid' | 'shadow' | 'unreachable' }>,
+  readiness: Extract<Readiness, { status: 'ambiguous' | 'moved' | 'unsupported' | 'refused' | 'option' | 'invalid' | 'shadow' | 'unreachable' }>,
   locator: LocatorRecipe,
   intent: ActionIntent,
 ): Look {
   switch (readiness.status) {
     case 'ambiguous':
       return { kind: 'settled', target: failed(ambiguous(readiness.count, locator, intent)) }
+    case 'moved':
+      return { kind: 'settled', target: failed(moved(locator, intent)) }
     case 'invalid':
       return { kind: 'settled', target: failed(invalidSelector(readiness, locator, intent)) }
     case 'shadow':
@@ -224,6 +228,16 @@ function ambiguous(count: number, locator: LocatorRecipe, intent: ActionIntent):
   }
 }
 
+// An action pinned to one node whose locator found another in its place. Waiting cannot bring the node back to that
+// place in any way Retest could tell from another taking it, so it fails at once.
+function moved(locator: LocatorRecipe, intent: ActionIntent): Failure {
+  return {
+    class: 'not_actionable',
+    message: `Could not ${describeAction(intent, locator)}: it finds another element than the one Retest was asked to act on, which the page moved or replaced, and Retest sent nothing to it.`,
+    details: { refused: 'moved', inputSent: false },
+  }
+}
+
 function ambiguousOption(choice: number, count: number, locator: LocatorRecipe, intent: ActionIntent): Failure {
   const named = choiceOf(intent, choice)
   return {
@@ -274,6 +288,8 @@ function unready(last: Unready, locator: LocatorRecipe | undefined, intent: Acti
   const action = describeAction(intent, locator)
   const waitedMs = deadline.budgetMs
   switch (last.status) {
+    case 'timeout':
+      throw last.error
     case 'missing': {
       const step = locator === undefined || last.empty === null ? undefined : describeEmptyStep(locator, last.empty)
       return { class: 'not_found', message: `Could not ${action}: no element matched within ${waitedMs} ms.${step === undefined ? '' : ` ${step}`}`, details: { waitedMs } }

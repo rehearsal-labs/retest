@@ -6,6 +6,7 @@ import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
+import { runInNewContext } from 'node:vm'
 import { CHOICES_PAGE, TOGGLE_PATH } from '../../fixtures/task-app/choices-page.ts'
 import { LOCATORS_PAGE, ROW_COUNT } from '../../fixtures/task-app/locators-page.ts'
 import { SAVE_BUTTON } from '../../fixtures/task-app/page.ts'
@@ -233,6 +234,39 @@ test('the device page shows the user agent and client hints the request carried,
   assert.match(page, /<span data-testid="client-hints-header">&quot;Brand&quot;;v=&quot;1&quot;<\/span>/)
   assert.match(page, /<meta name="viewport" content="width=device-width, initial-scale=1">/)
   assert.match(await html(app, '/device'), /<span data-testid="client-hints-header"><\/span>/)
+})
+
+type DevicePage = { shown: ReadonlyMap<string, string>; click(pointerType: string): void }
+
+// The device page's own script, run against a page with the globals every engine has and the navigator given, with
+// what it shows kept by test id and its button's listeners kept by event type. A script that throws throws here.
+function runDeviceScript(page: string, navigator: Record<string, unknown>): DevicePage {
+  const script = /<script>([\s\S]*)<\/script>/.exec(page)?.[1]
+  assert.ok(script !== undefined, 'the device page has its script')
+  const shown = new Map<string, string>()
+  const listeners = new Map<string, (event: { pointerType: string }) => void>()
+  const element = (testId: string) => ({
+    set textContent(value: string) {
+      shown.set(testId, value)
+    },
+    addEventListener: (type: string, listener: (event: { pointerType: string }) => void) => void listeners.set(type, listener),
+  })
+  const document = { querySelector: (selector: string) => element(/data-testid="([^"]+)"/.exec(selector)?.[1] ?? selector) }
+  const window: Record<string, unknown> = { innerWidth: 1280, innerHeight: 600, devicePixelRatio: 1, navigator, document }
+  window['window'] = window
+  runInNewContext(script, window)
+  return { shown, click: (pointerType) => listeners.get('click')?.({ pointerType }) }
+}
+
+test('the device page reads client hints only where the browser has them, and its button hears a click either way', async (t) => {
+  const app = await start(t)
+  const page = await html(app, '/device')
+  const firefox = runDeviceScript(page, { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0' })
+  firefox.click('mouse')
+  assert.deepEqual([firefox.shown.get('width'), firefox.shown.get('touch'), firefox.shown.get('client-hints'), firefox.shown.get('touch-events')], ['1280', 'false', '', 'click:mouse'])
+  const chrome = runDeviceScript(page, { userAgent: 'Mozilla/5.0 Chrome/154.0.0.0', userAgentData: { brands: [{ brand: 'Chromium' }, { brand: 'Google Chrome' }] } })
+  chrome.click('mouse')
+  assert.deepEqual([chrome.shown.get('client-hints'), chrome.shown.get('touch-events')], ['Chromium, Google Chrome', 'click:mouse'])
 })
 
 test('signing in with the password sets a session cookie and a cookie that remembers the user for a day', async (t) => {

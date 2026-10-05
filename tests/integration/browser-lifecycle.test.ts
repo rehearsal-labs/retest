@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -34,6 +35,7 @@ import {
   waitForGroupEnd,
   within,
 } from './browser-harness.ts'
+import { killBrowserFromOutside } from './outside-kill.ts'
 
 // Posts to /pressed with a synchronous request, so the server knows the press arrived, then never returns.
 const FREEZE_ON_PRESS = `<!doctype html><button data-testid="freeze" style="width: 200px; height: 60px">Freeze</button><script>
@@ -280,6 +282,20 @@ test('once the browser is gone, commands fail at once, new pages are refused and
   assert.equal(existsSync(profile), false)
 })
 
+test('a browser whose main process is killed from outside after its pages opened closes cleanly once its group is gone', async (t) => {
+  const site = await servePages(t, { '/': '<!doctype html><p data-testid="text">Here</p>' })
+  const browser = await launch(t)
+  const profile = await profileOf(browser.pid)
+  for (const page of [await openPage(t, browser, site.url), await openPage(t, browser, site.url)]) assertOk(await goto(page, '/'))
+  killBrowserFromOutside(browser.pid, browser.pid)
+  await browser.close(closeMs)
+  assert.ok(browser.gone !== undefined, 'a Chromium browser says when it is gone')
+  await within(browser.gone, 10_000, 'the browser never read as gone')
+  assert.equal(groupExists(browser.pid), false)
+  assert.deepEqual(await processesUsing(profile), [])
+  assert.equal(existsSync(profile), false)
+})
+
 test('a press the page never confirms times out once, says it was sent, and is not sent again', async (t) => {
   const site = await servePages(t, { '/': FREEZE_ON_PRESS })
   const browser = await launch(t)
@@ -371,6 +387,31 @@ test('each page starts with empty storage and cookies', async (t) => {
   assert.equal((await observe(second, 'before')).text, 'nothing no cookie')
 })
 
+/**
+ * What a child prints first, failing by name if it exits first or prints nothing within `timeoutMs`, so a child that
+ * dies without printing ends the test rather than holding the file open.
+ */
+async function firstOutput(child: ChildProcess, exited: Promise<unknown[]>, timeoutMs: number): Promise<string> {
+  const { stdout } = child
+  assert.ok(stdout !== null, 'the child has a stdout pipe')
+  const printed = once(stdout, 'data').then(([chunk]: unknown[]) => String(chunk))
+  const ended = exited.then(([code, signal]: unknown[]) => assert.fail(`the child exited with ${String(code ?? signal)} before it printed anything`))
+  return within(Promise.race([printed, ended]), timeoutMs, `the child printed nothing within ${timeoutMs} ms`)
+}
+
+test('a child that exits before printing fails its first-output wait at once, naming the exit', async () => {
+  const child = spawn(process.execPath, ['-e', 'process.exit(4)'], { stdio: ['ignore', 'pipe', 'ignore'] })
+  const exited = once(child, 'exit')
+  await assert.rejects(within(firstOutput(child, exited, 10_000), 5000, 'the wait outlived the child'), /the child exited with 4 before it printed anything/)
+})
+
+test('a child that prints nothing fails its first-output wait within its bound', async (t) => {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'ignore'] })
+  t.after(() => { child.kill('SIGKILL') })
+  const exited = once(child, 'exit')
+  await assert.rejects(firstOutput(child, exited, 300), /the child printed nothing within 300 ms/)
+})
+
 async function launchInChild(t: TestContext, mode: 'exit' | 'wait') {
   const folder = await scratchFolder(t)
   const launchModule = new URL('../../src/browser/launch.ts', import.meta.url).href
@@ -390,9 +431,9 @@ async function launchInChild(t: TestContext, mode: 'exit' | 'wait') {
   const ownership = new OwnedProcessGroup(child.pid)
   assert.deepEqual(ownership.capture(), [])
   t.after(() => assert.deepEqual(ownership.signal('SIGKILL'), []))
-  const [line] = await once(child.stdout, 'data')
-  const pid = Number(String(line).trim())
-  assert.ok(Number.isInteger(pid) && pid > 0, `the child printed ${String(line)}`)
+  const line = await firstOutput(child, exited, 30_000)
+  const pid = Number(line.trim())
+  assert.ok(Number.isInteger(pid) && pid > 0, `the child printed ${line}`)
   assert.deepEqual(ownership.capture(), [])
   const browserOwnership = ownership.groupFor(pid)
   assert.ok(browserOwnership !== undefined, 'the reported browser was recorded as a descendant of the launched child')

@@ -26,7 +26,7 @@ import { constants } from 'node:fs'
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
+import { waitUntilDeadline } from '../assertions/wait-before-read.ts'
 import { chromiumScope } from '../diagnostics/chromium-collector.ts'
 import { Deadline, elapsedMs, monotonicClock } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -315,7 +315,7 @@ export class AppWindows {
   /** Waits for the first window within the deadline; rejects when the app goes first, or opens none in time. */
   async first(deadline: Deadline): Promise<FirstWindow> {
     const timer = new AbortController()
-    const waited = sleep(deadline.remainingMs, 'expired' as const, { signal: timer.signal }).catch(() => 'stopped' as const)
+    const waited = waitUntilDeadline(deadline, timer.signal).then(() => 'expired' as const, () => 'stopped' as const)
     try {
       const outcome = await Promise.race([this.#first.promise, this.#ended.promise.then((reason) => ({ ended: reason })), waited])
       if (outcome === 'expired' || outcome === 'stopped') throw new NoWindowError(deadline.budgetMs)

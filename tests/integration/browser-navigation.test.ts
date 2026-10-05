@@ -1,9 +1,11 @@
 import type { TestContext } from 'node:test'
 import type { OwnedPage, PageNavigation } from '../../src/browser/contract.ts'
+import type { Observation } from '../../src/protocol/commands.ts'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
 import { titleReadLimit } from '../../src/protocol/page-facts.ts'
 import {
@@ -22,10 +24,25 @@ import {
   sharedBrowser,
   timed,
 } from './browser-harness.ts'
+import { engineExpectations } from './engine-expectations.ts'
 
 const browser = sharedBrowser()
 
+// Cases another engine ends otherwise assert through this, which holds Chrome's outcome or the engine's declared one.
+const engineCase = engineExpectations('browser-navigation')
+
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+// Looks again, as observeUntil does, until the observation satisfies `expected` or the time runs out, and gives the last
+// look either way, for a case that holds an engine to what its page showed when that is not what Chrome's shows.
+async function lastLook(page: OwnedPage, target: string, expected: (observation: Observation) => boolean, timeoutMs = 5000): Promise<Observation> {
+  const end = performance.now() + timeoutMs
+  for (;;) {
+    const observation = await observe(page, target)
+    if (expected(observation) || performance.now() > end) return observation
+    await delay(25)
+  }
+}
 
 test('goto resolves against the base URL and answers with origin and path only', async (t) => {
   const app = await openApp(t)
@@ -110,14 +127,24 @@ test('a page that never finishes loading times out and names the address without
   assert.ok(ms >= 690 && ms < 2000, `took ${ms} ms`)
 })
 
-test('an address nobody answers fails with the browser navigation error', async (t) => {
+// Split in two so the details are checked on every engine, also one whose message differs.
+async function refusedConnection(t: TestContext) {
   const closed = await startTaskApp()
   await closed.close()
   const page = await openPage(t, browser())
-  const failure = failureOf(await goto(page, `${closed.url}/?token=secret`))
+  return { closed, failure: failureOf(await goto(page, `${closed.url}/?token=secret`)) }
+}
+
+test('an address nobody answers fails with the browser navigation error', async (t) => {
+  const { closed, failure } = await refusedConnection(t)
   assert.equal(failure.class, 'not_actionable')
-  assert.equal(failure.message, `Could not open ${closed.url}/: net::ERR_CONNECTION_REFUSED.`)
-  assert.deepEqual(failure.details, { url: `${closed.url}/`, errorText: 'net::ERR_CONNECTION_REFUSED' })
+  engineCase.assertOutcome(t, failure.message, `Could not open ${closed.url}/: net::ERR_CONNECTION_REFUSED.`, { origin: closed.url })
+})
+
+test("an address nobody answers names the address without its query and the browser's error in its details", async (t) => {
+  const { closed, failure } = await refusedConnection(t)
+  assert.equal(failure.class, 'not_actionable')
+  engineCase.assertOutcome(t, failure.details ?? null, { url: `${closed.url}/`, errorText: 'net::ERR_CONNECTION_REFUSED' }, { origin: closed.url })
 })
 
 test('the error page of a failed navigation can be captured at once', async (t) => {
@@ -249,20 +276,33 @@ test('a title the page writes after it loads is no navigation, and the next look
 // The parent redacts a title before it cleans it or cuts it to the 300 code units it records, so the browser hands
 // it over as the page has it. Chrome's own `document.title` already reads each C0 control character and DEL as a
 // space, joins runs of spaces and trims the ends; a C1 control character, such as U+009B, reaches Retest as it is.
-test('a title reaches the parent as the page has it, a C1 control character and all, and an empty one is none', async (t) => {
+// Split in three so each fact is checked on every engine, also one that hands the first title over differently.
+const echo = (title: string) => `/titles/echo?title=${encodeURIComponent(title)}`
+
+test('a title reaches the parent as the page has it, a C1 control character and all', async (t) => {
   const { app, page, told } = await titlesPage(t)
-  const echo = (title: string) => `/titles/echo?title=${encodeURIComponent(title)}`
   const raw = await goto(page, echo('\u009bBell\t tab \u001b[2J '))
-  assert.deepEqual(raw, { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo`, title: '\u009bBell tab [2J' } })
+  await t.test('the goto hands over the title', (each) => {
+    engineCase.assertOutcome(each, raw, { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo`, title: '\u009bBell tab [2J' } }, { origin: app.url })
+  })
+  await t.test('the navigation hands over the title', async (each) => {
+    engineCase.assertOutcome(each, (await told()).map(({ title }) => title ?? null), ['\u009bBell tab [2J'])
+  })
+})
+
+test('a title of nothing but spaces is none, in the goto and in the navigation it tells', async (t) => {
+  const { app, page, told } = await titlesPage(t)
   assert.deepEqual(await goto(page, echo('   ')), { ok: true, kind: 'goto', url: `${app.url}/titles/echo`, page: { url: `${app.url}/titles/echo` } })
+  assert.deepEqual((await told()).map(({ title }) => title), [undefined])
+})
+
+test('a long title, a surrogate pair at the cut among them, reaches the parent as the page has it, in the navigations it tells and in readPage', async (t) => {
+  const { app, page, told } = await titlesPage(t)
   const longer = `${'a'.repeat(299)}😀tail`
   assertOk(await goto(page, echo(longer)))
   const longest = `${'b'.repeat(4095)}😀tail`
   assertOk(await goto(page, echo(longest)))
-  assert.deepEqual(
-    (await told()).map(({ title }) => title),
-    ['\u009bBell tab [2J', undefined, longer, longest],
-  )
+  assert.deepEqual((await told()).map(({ title }) => title), [longer, longest])
   const reading = await page.readPage([{ text: 'Titled', ignoreCase: false }], 1000)
   assert.deepEqual(reading, { url: `${app.url}/titles/echo`, title: longest, navigating: false, found: [true] })
 })
@@ -407,30 +447,58 @@ async function serveFlips(t: TestContext): Promise<string> {
   return `http://127.0.0.1:${address.port}`
 }
 
-test('reload, goBack and goForward onto a response with no content fail at once, naming the navigation the browser gave up, with the request sent', async (t) => {
-  const url = await serveFlips(t)
-  const page = await openPage(t, browser(), url)
-  const gaveUp = (verb: string, stayed: string) => ({
+// Split in three so the move forward is checked on every engine, also one whose history differs after a move back
+// it gave up; the case for the move back keeps the history after it.
+function gaveUp(url: string, verb: string, stayed: string) {
+  return {
     class: 'not_actionable',
     message: `Could not ${verb} ${url}/flip: the browser sent the request and gave the navigation up without opening a document, as it does for a response with no content or a download. The page stayed on ${url}${stayed}.`,
     details: { url: `${url}/flip`, inputSent: true },
-  })
+  }
+}
+
+test('reload onto a response with no content fails at once, naming the navigation the browser gave up, with the request sent', async (t) => {
+  const url = await serveFlips(t)
+  const page = await openPage(t, browser(), url)
   assertOk(await goto(page, '/flip?for=reload'))
   const reloaded = await timed(page.execute({ kind: 'reload' }, 5000))
-  assert.deepEqual(failureOf(reloaded.value), gaveUp('reload', '/flip'))
+  assert.deepEqual(failureOf(reloaded.value), gaveUp(url, 'reload', '/flip'))
   assert.ok(reloaded.ms < 2500, `failed after ${reloaded.ms} ms of a 5000 ms budget`)
   assert.equal((await observe(page, 'here')).text, '/flip?for=reload', 'the page that stayed is still there')
+})
 
+test('goBack onto a response with no content fails at once, naming the navigation the browser gave up, and the history stays at the page that stayed', async (t) => {
+  const url = await serveFlips(t)
+  const page = await openPage(t, browser(), url)
   assertOk(await goto(page, '/flip?for=back'))
   assertOk(await goto(page, '/other'))
   const back = await timed(page.execute({ kind: 'goBack' }, 5000))
-  assert.deepEqual(failureOf(back.value), gaveUp('go back to', '/other'))
+  assert.deepEqual(failureOf(back.value), gaveUp(url, 'go back to', '/other'))
   assert.ok(back.ms < 2500, `failed after ${back.ms} ms`)
+  // Where the history stands: the next document, a move back, and the page that move leaves showing, read together.
+  const next = await goto(page, '/flip?for=forward')
+  const backAgain = await page.execute({ kind: 'goBack' }, 5000)
+  const shown = (await lastLook(page, 'here', (seen) => seen.text === '/other')).text
+  engineCase.assertOutcome(
+    t,
+    { next, backAgain, shown },
+    {
+      next: { ok: true, kind: 'goto', url: `${url}/flip`, page: { url: `${url}/flip`, title: 'Page' } },
+      backAgain: { ok: true, kind: 'goBack', url: `${url}/other`, page: { url: `${url}/other`, title: 'Page' } },
+      shown: '/other',
+    },
+    { origin: url },
+  )
+})
 
+test('goForward onto a response with no content fails at once, naming the navigation the browser gave up, with the request sent', async (t) => {
+  const url = await serveFlips(t)
+  const page = await openPage(t, browser(), url)
+  assertOk(await goto(page, '/other'))
   assertOk(await goto(page, '/flip?for=forward'))
   assertOk(await page.execute({ kind: 'goBack' }, 5000))
   await observeUntil(page, 'here', (seen) => seen.text === '/other')
   const forward = await timed(page.execute({ kind: 'goForward' }, 5000))
-  assert.deepEqual(failureOf(forward.value), gaveUp('go forward to', '/other'))
+  assert.deepEqual(failureOf(forward.value), gaveUp(url, 'go forward to', '/other'))
   assert.ok(forward.ms < 2500, `failed after ${forward.ms} ms`)
 })

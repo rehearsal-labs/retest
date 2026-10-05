@@ -7,6 +7,7 @@ import {
   checkedFunction,
   disarmFunction,
   guardScript,
+  keyedObserveFunction,
   observeFunction,
   pageFactsFunction,
   prepareFunction,
@@ -23,6 +24,7 @@ import { FakeEvent, FakeInput, fakePage, oneElement } from './browser-fake-page.
 
 const functions = [
   ['observe', observeFunction, 'function observe(limit, query, ...elements)'],
+  ['observeKeyed', keyedObserveFunction, 'function observeKeyed(limit, queries, ...elements)'],
   ['prepare', prepareFunction, 'async function prepare(intent, query, ...elements)'],
   ['verdict', verdictFunction, 'function verdict(token'],
   ['disarm', disarmFunction, 'function disarm(token'],

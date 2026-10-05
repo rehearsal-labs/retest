@@ -1,3 +1,4 @@
+import type { BrowserCommand, DispatchedCommand } from './contract.ts'
 import type { DocumentFacts } from './document-facts.ts'
 import type { Point } from './input.ts'
 import type { InDocument, IsolatedWorld } from './isolated-world.ts'
@@ -7,6 +8,7 @@ import type { EmptyStep, LocatorRecipe } from '../protocol/locator.ts'
 import type { OptionChoiceRecord } from '../protocol/option-choices.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
 import type { Schema } from '../protocol/schema.ts'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { observationSchema, observedItemLimit } from '../protocol/commands.ts'
 import { describeLocator, emptyStepSchema } from '../protocol/locator.ts'
 import { describeOptionChoice, describeOptionChoices } from '../protocol/option-choices.ts'
@@ -14,8 +16,8 @@ import { s } from '../protocol/schema.ts'
 import { shorten } from '../protocol/text.ts'
 import { documentFactsSchema, pageFactsOf } from './document-facts.ts'
 import { isGoneContext } from './isolated-world.ts'
-import { locatorArguments } from './locate.ts'
-import { armDocumentFunction, checkedFunction, observeFunction, prepareFunction, selectionFunction, setOffFunction } from './page-scripts.ts'
+import { locatorArguments, locatorsArguments } from './locate.ts'
+import { armDocumentFunction, checkedFunction, keyedObserveFunction, observeFunction, prepareFunction, selectionFunction, setOffFunction } from './page-scripts.ts'
 
 const checks = ['attached', 'visible', 'enabled', 'editable', 'stable', 'in-view', 'hit-target', 'focused'] as const
 
@@ -50,7 +52,8 @@ export type SelectPlan = { quietMs: number; keys: PlannedKey[] }
  * matched no option, more than one, or a disabled one, and `unreachable` a select whose options no key reaches.
  * `missing` names the step of a scoped locator that kept nothing, and `invalid` a CSS selector the page could not
  * read. `shadow` names the host of an open shadow root a locator by Playwright's rules refuses to look past.
- * `unchanged` is a `check` or `select` already as asked.
+ * `unchanged` is a `check` or `select` already as asked. `moved` is an action pinned to one node whose locator now
+ * finds another.
  */
 export type Readiness =
   | { status: 'missing'; empty: EmptyStep | null }
@@ -58,6 +61,7 @@ export type Readiness =
   | { status: 'shadow'; host: string }
   | { status: 'refused'; origin: string; leaving: boolean }
   | { status: 'ambiguous'; count: number }
+  | { status: 'moved' }
   | { status: 'unsupported'; reason: UnsupportedReason; element: string }
   | { status: 'option'; problem: 'missing' | 'ambiguous' | 'disabled'; choice: number; count: number }
   | { status: 'unreachable'; element: string }
@@ -111,6 +115,7 @@ const readinessSchema: Schema<Readiness> = s.discriminatedUnion('status', [
   s.object({ status: s.literal('shadow'), host: s.string() }),
   s.object({ status: s.literal('refused'), origin: s.string(), leaving: s.boolean() }),
   s.object({ status: s.literal('ambiguous'), count: s.number({ integer: true, min: 2 }) }),
+  s.object({ status: s.literal('moved') }),
   s.object({ status: s.literal('unsupported'), reason: s.enum(unsupportedReasons), element: s.string() }),
   s.object({
     status: s.literal('option'),
@@ -147,10 +152,72 @@ export async function observe(world: IsolatedWorld, locator: LocatorRecipe, dead
   return 'observation' in observed ? { observation: observed.observation, page: pageFactsOf(observed.page) } : observed
 }
 
+/** One locator's read in a keyed look: its observation, and the key of each element it lists, in the same order. */
+export type KeyedLook = { observation: Observation; keys: string[] }
+
+/**
+ * What one keyed look at several locators read: a read per locator and the page, or, with the place of the locator
+ * it names, a CSS selector the page could not read or the host of an open shadow root a locator refuses to look past.
+ */
+export type KeyedObserved = { reads: KeyedLook[]; page: PageFacts } | { invalid: InvalidSelector; locator: number } | { shadow: string; locator: number }
+
+const keyedSchema = s.union([
+  s.object({ reads: s.array(s.object({ observation: observationSchema, keys: s.array(s.string()) })), page: pageFacts }),
+  s.object({ invalid: invalidSchema, query: s.number({ integer: true, min: 0 }) }),
+  s.object({ shadow: s.string(), query: s.number({ integer: true, min: 0 }) }),
+])
+
+/**
+ * Resolves each locator once, all in one call of the world, reads what `observe` reads of each, and keys every element
+ * listed with the key the document's world keeps for that node. An answer that does not read each locator once, or
+ * does not key each element it lists, is not Retest's page function answering, and throws. Sends no input.
+ */
+export async function observeKeyed(world: IsolatedWorld, locators: readonly LocatorRecipe[], deadline: Deadline): Promise<KeyedObserved> {
+  const observed = await world.call(keyedObserveFunction, locatorsArguments(locators, [observedItemLimit]), keyedSchema, deadline)
+  if ('invalid' in observed) return { invalid: observed.invalid, locator: observed.query }
+  if ('shadow' in observed) return { shadow: observed.shadow, locator: observed.query }
+  const whole = observed.reads.length === locators.length && observed.reads.every((read) => read.keys.length === read.observation.items.length)
+  if (!whole) throw new Error(`Retest's keyed look answered ${observed.reads.length} reads for ${locators.length} locators, or left an element it listed without a key`)
+  return { reads: observed.reads, page: pageFactsOf(observed.page) }
+}
+
+// The node an action is pinned to, for every look that readies its element. A driver's `dispatchTo` runs its own
+// `dispatch` inside it, so the look that readies the element checks the node in the task of the hit test on every
+// engine, without each driver's action code carrying the key through every path that readies an element.
+const pinnedElement = new AsyncLocalStorage<string>()
+
+/**
+ * Sends one command through `dispatch` with every look that readies its element pinned to the node `key` names: a
+ * look whose locator finds another node answers `moved`, which fails the command at once with no input sent. A command
+ * that acts on no element, or only reads one, is refused with `usage` and sends nothing, since there is no node to hold
+ * it to. The shared body of every driver's `dispatchTo`.
+ *
+ * @example return dispatchPinned(command, key, () => this.dispatch(command, timeoutMs, signal, commandToken))
+ */
+export function dispatchPinned(command: BrowserCommand, key: string, dispatch: () => Promise<DispatchedCommand>): Promise<DispatchedCommand> {
+  const locator = command.kind === 'observe' || !('locator' in command) ? undefined : command.locator
+  if (locator === undefined) {
+    const message = `Retest pins only an action that sends input to an element it names by a locator, and this ${command.kind} is not one, so Retest sent nothing.`
+    return Promise.resolve({ result: { ok: false, failure: { class: 'usage', message, details: { inputSent: false } } }, input: 'not_sent' })
+  }
+  return pinnedElement.run(key, dispatch)
+}
+
+/**
+ * The key of the node the command now running is pinned to, inside `dispatchPinned`, or undefined. A driver passes it
+ * to a page function of its own that must read only that node, as `locatorArguments`'s `pinned`.
+ *
+ * @example locatorArguments(locator, [choices], pinnedKey())
+ */
+export function pinnedKey(): string | undefined {
+  return pinnedElement.getStore()
+}
+
 /**
  * Resolves the locator once and runs the checks an action needs, readying a field for `fill` and focusing the
  * element for `press`, or for one key of a `select`'s plan. Also names the document it looked at, which holds the
- * guard a ready element armed. A `select` that is not yet typing is only checked here, and planned.
+ * guard a ready element armed. A `select` that is not yet typing is only checked here, and planned. Inside
+ * `dispatchPinned` the one match must be the pinned node.
  */
 export function prepare(
   world: IsolatedWorld,
@@ -158,7 +225,9 @@ export function prepare(
   intent: ActionIntent,
   deadline: Deadline,
 ): Promise<InDocument<Readiness>> {
-  return world.enter(prepareFunction, locatorArguments(locator, [pageIntent(intent)]), readinessSchema, deadline)
+  const pinned = pinnedElement.getStore()
+  const asked = pinned === undefined ? pageIntent(intent) : { ...pageIntent(intent), element: pinned }
+  return world.enter(prepareFunction, locatorArguments(locator, [asked]), readinessSchema, deadline)
 }
 
 /** Whether a select holds exactly the options its choices name, the labels of those it holds, and the page it is on. */
@@ -187,11 +256,12 @@ export type TypedSelect = { locator: LocatorRecipe; choices: readonly OptionChoi
 
 /**
  * Reads the selection of the one select the locator finds in the document the keys of a `select` went to, or
- * undefined once that document has gone: a select another document holds is never read in its place. Sends no input.
+ * undefined once that document has gone: a select another document holds is never read in its place. Inside
+ * `dispatchPinned` it reads the pinned select only, and another in its place is `lost`. Sends no input.
  */
 export async function readSelection(world: IsolatedWorld, { locator, choices, document }: TypedSelect, deadline: Deadline): Promise<Selection | undefined> {
   try {
-    return selectionOf(await world.callIn(document, selectionFunction, locatorArguments(locator, [choices]), pageSelectionSchema, deadline))
+    return selectionOf(await world.callIn(document, selectionFunction, locatorArguments(locator, [choices], pinnedKey()), pageSelectionSchema, deadline))
   } catch (error) {
     if (isGoneContext(error)) return undefined
     throw error
@@ -220,9 +290,12 @@ export function armDocument(world: IsolatedWorld, action: DocumentAction, stroke
   return world.enter(armDocumentFunction, [action, strokes], readySchema, deadline)
 }
 
-/** Whether the one element the locator finds is checked, or null when no single such control is there. */
+/**
+ * Whether the one element the locator finds is checked, or null when no single such control is there. Inside
+ * `dispatchPinned` it reads the pinned element only, and another in its place is null.
+ */
 export function readChecked(world: IsolatedWorld, locator: LocatorRecipe, deadline: Deadline): Promise<boolean | null> {
-  return world.call(checkedFunction, locatorArguments(locator, []), s.nullable(s.boolean()), deadline)
+  return world.call(checkedFunction, locatorArguments(locator, [], pinnedKey()), s.nullable(s.boolean()), deadline)
 }
 
 /**

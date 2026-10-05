@@ -557,6 +557,63 @@ const stateHelper = String.raw`
   }
 `
 
+// What a look reads of a resolved locator's matches: the first `limit` listed with their text and visibility, and for
+// a single match its state. Both looks, plain and keyed, read through it, so they read alike.
+const observationHelper = String.raw`
+  const observationOf = (limit, resolved) => {
+    const { found } = resolved
+    const items = found.slice(0, limit).map((element) => ({ text: textOf(element), visible: isVisible(element) }))
+    const listed = { count: found.length, items, itemsTruncated: found.length > limit }
+    const unread = { visible: null, text: null, value: null, checked: null, enabled: null }
+    if (found.length !== 1) {
+      const empty = resolved.empty === null ? {} : { emptyStep: resolved.empty }
+      return { ...listed, ...unread, ...empty }
+    }
+    const element = found[0]
+    const isField = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
+    const kind = checkable(element)
+    return {
+      ...listed,
+      visible: isVisible(element),
+      text: textOf(element),
+      value: isField ? element.value : null,
+      checked: kind === null ? null : isChecked(element, kind),
+      enabled: !isDisabled(element),
+    }
+  }
+`
+
+// The keys a keyed look gives the elements it lists, kept in Retest's world for the life of the document: one key per
+// node, never another node's, held in a WeakMap so a key keeps no node alive. Each key starts with a token this world
+// draws when it first keys an element, so a key read in an earlier document, whose world drew another, names nothing
+// here. The page cannot reach this world, so it can neither read a key nor move one to another node.
+const keysHelper = String.raw`
+  const elementKeys = () => {
+    if (globalThis.retestKeys === undefined) {
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) => byte.toString(16).padStart(2, '0')).join('')
+      globalThis.retestKeys = { token, count: 0, keys: new WeakMap() }
+    }
+    return globalThis.retestKeys
+  }
+  const keyOf = (element) => {
+    const known = elementKeys()
+    const kept = known.keys.get(element)
+    if (kept !== undefined) return kept
+    known.count += 1
+    const key = known.token + '-' + known.count
+    known.keys.set(element, key)
+    return key
+  }
+  const isKeyed = (element, key) => elementKeys().keys.get(element) === key
+`
+
+// Whether a read's one element is the node its query is pinned to, when the query carries a key as query.element; a
+// query with none is pinned to nothing. It reads the keys the keyed look keeps straight from their store, which a
+// document nothing keyed has none of, so it declares none of that look's helpers and sits beside them in any function.
+const pinnedReadHelper = String.raw`
+  const pinnedIn = (query, element) => typeof query.element !== 'string' || globalThis.retestKeys?.keys.get(element) === query.element
+`
+
 /**
  * Finds the matches of `query`, and lists the first `limit` of them; for a single match, reads whether it is
  * visible, its text, for a field its value, for a checkable control whether it is checked, and whether it is
@@ -569,29 +626,37 @@ export const observeFunction: string = `function observe(limit, query, ...elemen
   ${pageFactsHelper}
   ${checkableHelper}
   ${stateHelper}
+  ${observationHelper}
   const resolved = resolve(query, elements)
   if (resolved.invalid !== null) return { invalid: resolved.invalid }
   if (resolved.shadow !== null) return { shadow: resolved.shadow }
-  const { found } = resolved
-  const items = found.slice(0, limit).map((element) => ({ text: textOf(element), visible: isVisible(element) }))
-  const listed = { count: found.length, items, itemsTruncated: found.length > limit }
-  const unread = { visible: null, text: null, value: null, checked: null, enabled: null }
-  if (found.length !== 1) {
-    const empty = resolved.empty === null ? {} : { emptyStep: resolved.empty }
-    return { observation: { ...listed, ...unread, ...empty }, page: pageFacts() }
-  }
-  const element = found[0]
-  const isField = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
-  const kind = checkable(element)
-  const observation = {
-    ...listed,
-    visible: isVisible(element),
-    text: textOf(element),
-    value: isField ? element.value : null,
-    checked: kind === null ? null : isChecked(element, kind),
-    enabled: !isDisabled(element),
-  }
+  const observation = observationOf(limit, resolved)
   return { observation, page: pageFacts() }
+}`
+
+/**
+ * Reads several locators' matches, each exactly as `observe` reads one, all in this one call, so no script of the
+ * page runs between them, and gives each element listed the key this document's world keeps for it: the same key for
+ * the same node in every read of the document. `queries` holds one query per locator; their `elements` steps take
+ * from the elements that follow, as `observe`'s do. Returns a read per query and the page they were read on, or the
+ * first CSS selector the page could not read, or the host of an open shadow root, each with its query's place. Never
+ * waits, and sends no input.
+ */
+export const keyedObserveFunction: string = `function observeKeyed(limit, queries, ...elements) {
+  ${helpers}
+  ${pageFactsHelper}
+  ${checkableHelper}
+  ${stateHelper}
+  ${observationHelper}
+  ${keysHelper}
+  const reads = []
+  for (const [place, query] of queries.entries()) {
+    const resolved = resolve(query, elements)
+    if (resolved.invalid !== null) return { invalid: resolved.invalid, query: place }
+    if (resolved.shadow !== null) return { shadow: resolved.shadow, query: place }
+    reads.push({ observation: observationOf(limit, resolved), keys: resolved.found.slice(0, limit).map(keyOf) })
+  }
+  return { reads, page: pageFacts() }
 }`
 
 /**
@@ -612,6 +677,9 @@ export const observeFunction: string = `function observe(limit, query, ...elemen
  *   `typing`, it is readied for one of those keys as a press is, with `strokes`.
  * - `hover` checks what a click does, except that the element may be disabled.
  * - `click`, `tap` and `scroll` need nothing more.
+ *
+ * Any action may carry `element`, the key a keyed look gave one node: the one match must then be that node, or the
+ * look answers `moved` before it focuses, scrolls, arms or reads anything of the element.
  */
 export const prepareFunction: string = `async function prepare(intent, query, ...elements) {
   ${helpers}
@@ -623,6 +691,7 @@ export const prepareFunction: string = `async function prepare(intent, query, ..
   ${checkableHelper}
   ${selectHelper}
   ${fitHelper}
+  ${keysHelper}
   const { action } = intent
   const origins = intent.origins ?? null
   if (origins !== null && !origins.includes(location.origin)) return { status: 'refused', origin: location.origin, leaving: false }
@@ -633,6 +702,7 @@ export const prepareFunction: string = `async function prepare(intent, query, ..
   if (found.length === 0) return { status: 'missing', empty: resolved.empty }
   if (found.length > 1) return { status: 'ambiguous', count: found.length }
   const control = found[0]
+  if (typeof intent.element === 'string' && !isKeyed(control, intent.element)) return { status: 'moved' }
   const fitted = fit(intent, control)
   if (fitted.settled !== undefined) return fitted.settled
   const { element, via = null } = fitted
@@ -689,27 +759,32 @@ export const armDocumentFunction: string = `function armDocument(action, strokes
 
 /**
  * Whether the one element `query` finds is checked, as `check` reads it, or null when there is not exactly one
- * such element, or it is not a control that can be checked.
+ * such element, or it is not a control that can be checked. A query pinned to one node (`query.element`, a key a keyed
+ * look gave it) reads that node only, and null when another is in its place.
  */
 export const checkedFunction: string = `function checked(query, ...elements) {
   ${helpers}
   ${checkableHelper}
+  ${pinnedReadHelper}
   const { found } = resolve(query, elements)
-  if (found.length !== 1) return null
+  if (found.length !== 1 || !pinnedIn(query, found[0])) return null
   const kind = checkable(found[0])
   return kind === null ? null : isChecked(found[0], kind)
 }`
 
 /**
  * Whether the one select `query` finds holds exactly the options `choices` name, and the labels of the options it
- * holds, with the page it is on. `lost` when there is not exactly one select, or the choices no longer name options.
+ * holds, with the page it is on. `lost` when there is not exactly one select, or the choices no longer name options,
+ * or, for a query pinned to one node (`query.element`), when another select is in its place. WebKit's list plan is
+ * built from this source up to its last line, so that line stays as it is.
  */
 export const selectionFunction: string = `function selection(choices, query, ...elements) {
   ${helpers}
   ${pageFactsHelper}
   ${selectHelper}
+  ${pinnedReadHelper}
   const { found } = resolve(query, elements)
-  const select = found.length === 1 ? found[0] : null
+  const select = found.length === 1 && pinnedIn(query, found[0]) ? found[0] : null
   if (!(select instanceof HTMLSelectElement)) return { status: 'lost', selected: [], page: pageFacts() }
   return selectionOf(select, choices)
 }`

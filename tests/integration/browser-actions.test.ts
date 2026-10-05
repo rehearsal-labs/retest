@@ -1,11 +1,12 @@
 import type { TestContext } from 'node:test'
 import type { OwnedPage } from '../../src/browser/contract.ts'
+import type { Observation } from '../../src/protocol/commands.ts'
 import type { TaskApp, TaskAppOptions } from '../../fixtures/task-app/server.ts'
+import type { DeclaredValue } from './engine-expectations.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { BrowserError } from '../../src/browser/browser-error.ts'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import {
   assertOk,
   byLabel,
@@ -15,7 +16,6 @@ import {
   failureOf,
   fill,
   goto,
-  launchGated,
   observe,
   observeUntil,
   openApp,
@@ -28,9 +28,14 @@ import {
   timed,
   uncheck,
 } from './browser-harness.ts'
+import { engineExpectations } from './engine-expectations.ts'
+import { crashBrowser, launchWithGate } from './engines.ts'
 import { observationOf } from '../support/observation.ts'
 
 const browser = sharedBrowser()
+
+// Cases another engine ends otherwise assert through this, which holds Chrome's outcome or the engine's declared one.
+const engineCase = engineExpectations('browser-actions')
 
 async function taskPage(t: TestContext, options?: TaskAppOptions) {
   const app = await openApp(t, options)
@@ -51,6 +56,17 @@ async function customPage(t: TestContext, body: string) {
 async function assertNothingSaved(page: OwnedPage, app: TaskApp): Promise<void> {
   assert.equal((await observe(page, 'saved-task')).text, '')
   assert.equal(app.submissions(), 0)
+}
+
+// Looks again, as observeUntil does, until the observation satisfies `expected` or the time runs out, and gives the last
+// look either way, for a case that holds an engine to what its page showed when that is not what Chrome's shows.
+async function lastLook(page: OwnedPage, target: string, expected: (observation: Observation) => boolean, timeoutMs = 5000): Promise<Observation> {
+  const end = performance.now() + timeoutMs
+  for (;;) {
+    const observation = await observe(page, target)
+    if (expected(observation) || performance.now() > end) return observation
+    await delay(25)
+  }
 }
 
 // Shows a field's value in a testid-addressed element, since observe reads text, not values.
@@ -312,15 +328,19 @@ const STEAL_FOCUS = `<input data-testid="field" value="Old"><input data-testid="
 
 test('fill stops the typing when the focus moves after Retest focused the field, and names where it went', async (t) => {
   const { page } = await customPage(t, STEAL_FOCUS)
+  // Each value is a subtest, and the first event the guard stopped is checked after what the page received, so an
+  // engine that stops typing at another event still runs every other check of both values.
   for (const [value, event] of [['Release checklist', 'beforeinput'], ['', 'keydown']] as const) {
-    const failure = failureOf(await fill(page, 'field', value))
-    assert.equal(failure.class, 'not_actionable')
-    assert.equal(
-      failure.message,
-      `Could not fill getByTestId('field'): the keyboard focus moved to another element, <input data-testid="other">, before Retest typed. Retest stopped the typing before the page received it.`,
-    )
-    assert.deepEqual(failure.details, { check: 'focused', focus: '<input data-testid="other">', event })
-    assert.equal((await observe(page, 'values')).text, 'Old|Other')
+    await t.test(value === '' ? 'the empty value' : value, async (each) => {
+      const failure = failureOf(await fill(page, 'field', value))
+      assert.equal(failure.class, 'not_actionable')
+      assert.equal(
+        failure.message,
+        `Could not fill getByTestId('field'): the keyboard focus moved to another element, <input data-testid="other">, before Retest typed. Retest stopped the typing before the page received it.`,
+      )
+      assert.equal((await observe(page, 'values')).text, 'Old|Other')
+      engineCase.assertOutcome(each, failure.details ?? null, { check: 'focused', focus: '<input data-testid="other">', event })
+    })
   }
 })
 
@@ -586,8 +606,12 @@ test('a character is typed with the key a person presses for it, and Shift for a
     </script>`,
   )
   for (const key of ['a', 'A', '7', '!', 'é']) assertOk(await press(page, 'field', key))
-  assert.equal((await observe(page, 'mirror')).text, 'aA7!é')
-  assert.equal((await observe(page, 'keys')).text, 'a:KeyA: A:KeyA:shift 7:Digit7: !:Digit1:shift é::')
+  await t.test('the field receives every character', async () => {
+    assert.equal((await observe(page, 'mirror')).text, 'aA7!é')
+  })
+  await t.test('the page hears each key and its modifiers', async (each) => {
+    engineCase.assertOutcome(each, (await observe(page, 'keys')).text, 'a:KeyA: A:KeyA:shift 7:Digit7: !:Digit1:shift é::')
+  })
 })
 
 test('each editing key edits a field once', async (t) => {
@@ -602,10 +626,13 @@ test('each editing key edits a field once', async (t) => {
     [['Home', 'End', 'X'], 'abcdX'],
     [['Shift+Home', 'X'], 'X'],
   ]
+  // Each case is a subtest, so an engine whose editing key differs in one still runs the others.
   for (const [keys, value] of cases) {
-    assertOk(await fill(page, 'field', 'abcd'))
-    for (const key of keys) assertOk(await press(page, 'field', key))
-    assert.equal((await observe(page, 'mirror')).text, value, keys.join(' then '))
+    await t.test(keys.join(' then '), async (each) => {
+      assertOk(await fill(page, 'field', 'abcd'))
+      for (const key of keys) assertOk(await press(page, 'field', key))
+      engineCase.assertOutcome(each, (await observe(page, 'mirror')).text, value)
+    })
   }
 })
 
@@ -697,30 +724,31 @@ test("a key for the page's keyboard waits while the page opens another document,
 })
 
 test('a browser lost between the key down and the key up leaves the outcome unknown, and the key went down once', async (t) => {
-  const keyDowns: unknown[] = []
+  const keyDowns: string[] = []
   const releaseHeld = Promise.withResolvers<void>()
-  const browser = await launchGated(t, {
-    hold: (method, params) => {
-      if (method !== 'Input.dispatchKeyEvent') return undefined
-      const type = typeof params === 'object' && params !== null && 'type' in params ? params.type : undefined
-      if (type !== 'keyUp') {
-        keyDowns.push(type)
+  // Close the fixture before the browser hook: a browser cleanup failure must stay a failure without leaving its server listening.
+  const app = await openApp(t)
+  const browser = await launchWithGate(t, {
+    hold: (input) => {
+      if (input === 'text') return undefined
+      if (input !== 'key up') {
+        keyDowns.push(input)
         return undefined
       }
       releaseHeld.resolve()
       return new Promise(() => {})
     },
-  })
-  const app = await openApp(t)
+  }, 'the gate holds a key up back')
+  if (browser === undefined) return
   const page = await openPage(t, browser, app.url)
   assertOk(await goto(page, '/actions'))
   const pressing = press(page, 'query', 'Enter', 5000)
   await releaseHeld.promise
-  signalGroup(browser.pid, 'SIGKILL')
+  crashBrowser(browser)
   const failure = failureOf(await pressing)
   assert.equal(failure.class, 'outcome_unknown', JSON.stringify(failure))
   assert.match(failure.message, /^Retest lost the page after it began to press Enter on getByTestId\('query'\), so it cannot tell whether that took effect: /)
-  assert.deepEqual(keyDowns, ['keyDown'])
+  assert.deepEqual(keyDowns, ['key down'])
 })
 
 async function choicesPage(t: TestContext) {
@@ -763,13 +791,27 @@ test('a select its own change takes off the page passes on what it held as the c
 })
 
 test('a list chooses exactly those options of a select multiple and clears the others; one option chooses just that one', async (t) => {
-  const { page, facts } = await choicesPage(t)
+  const { app, page, facts } = await choicesPage(t)
   assert.equal((await observe(page, 'toppings-shown')).text, 'cheese')
-  assert.deepEqual(await select(page, 'toppings', ['Basil', { value: 'olives' }]), { ok: true, kind: 'select', changed: true, page: facts })
-  assert.equal((await observe(page, 'toppings-shown')).text, 'olives,basil')
-  assert.deepEqual(await select(page, 'toppings', ['Olives', 'Basil']), { ok: true, kind: 'select', changed: false, page: facts })
-  assertOk(await select(page, 'toppings', 'Garlic'))
-  assert.equal((await observe(page, 'toppings-shown')).text, 'garlic')
+  // Every choice is made and read before one comparison, so an engine that refuses a choice is held to what it did
+  // with the others too.
+  const several = await select(page, 'toppings', ['Basil', { value: 'olives' }])
+  const shownAfterSeveral = (await observe(page, 'toppings-shown')).text
+  const same = await select(page, 'toppings', ['Olives', 'Basil'])
+  const one = await select(page, 'toppings', 'Garlic')
+  const shownAfterOne = (await observe(page, 'toppings-shown')).text
+  engineCase.assertOutcome(
+    t,
+    { several, shownAfterSeveral, same, one, shownAfterOne },
+    {
+      several: { ok: true, kind: 'select', changed: true, page: facts },
+      shownAfterSeveral: 'olives,basil',
+      same: { ok: true, kind: 'select', changed: false, page: facts },
+      one: { ok: true, kind: 'select', changed: true, page: facts },
+      shownAfterOne: 'garlic',
+    },
+    { origin: app.url },
+  )
 })
 
 test('an option that arrives late is waited for, and one that never does fails as not found, naming it', async (t) => {
@@ -927,20 +969,51 @@ test('the wheel turned at the centre of the viewport scrolls the page, which loa
 })
 
 test('the wheel turned on the terms scrolls them to their end, which enables Accept', async (t) => {
-  const { page, facts } = await scrollPage(t)
+  const { app, page, facts } = await scrollPage(t)
   assert.equal((await observe(page, 'accept-state')).text, 'disabled')
-  assert.deepEqual(await scroll(page, 'terms', { y: 2000 }), { ok: true, kind: 'scroll', page: facts })
-  await observeUntil(page, 'accept-state', (seen) => seen.text === 'enabled')
-  assertOk(await click(page, 'accept'))
+  const scrolled = await scroll(page, 'terms', { y: 2000 })
+  const accept = (await lastLook(page, 'accept-state', (seen) => seen.text === 'enabled')).text
+  // Read once Accept has settled, so an engine that scrolls the terms less is held to their having moved at all.
+  const moved = Number((await observe(page, 'terms-scrolled')).text) > 0
+  const clicked = await click(page, 'accept')
+  engineCase.assertOutcome(
+    t,
+    { scrolled, moved, accept, clicked },
+    { scrolled: { ok: true, kind: 'scroll', page: facts }, moved: true, accept: 'enabled', clicked: { ok: true, kind: 'click', page: facts } },
+    { origin: app.url },
+  )
 })
+
+// Opens the scroll page with `options` and scrolls the terms by 60 CSS pixels: says they moved by them, or gives the
+// failure of a page that could not open with those options.
+async function scrollSixty(t: TestContext, options: Parameters<typeof openPage>[3]): Promise<DeclaredValue> {
+  let opened: Awaited<ReturnType<typeof scrollPage>>
+  try {
+    opened = await scrollPage(t, options)
+  } catch (error) {
+    if (error instanceof BrowserError) return { refused: error.failure }
+    throw error
+  }
+  assertOk(await scroll(opened.page, 'terms', { y: 60 }))
+  await observeUntil(opened.page, 'terms-scrolled', (seen) => Math.abs(Number(seen.text) - 60) <= 2)
+  return 'moved by 60'
+}
 
 test('a scroll delta is in CSS pixels, also on a phone page zoomed out to fit, where the wheel still scrolls', async (t) => {
   const phone = { emulation: { viewport: { width: 412, height: 915 }, deviceScaleFactor: 2.625, touch: true, isMobile: true } }
-  for (const options of [{}, phone]) {
-    const { page } = await scrollPage(t, options)
-    assertOk(await scroll(page, 'terms', { y: 60 }))
-    await observeUntil(page, 'terms-scrolled', (seen) => Math.abs(Number(seen.text) - 60) <= 2)
-  }
+  const plain = await scrollSixty(t, {})
+  engineCase.assertOutcome(t, { plain, phone: await scrollSixty(t, phone) }, { plain: 'moved by 60', phone: 'moved by 60' })
+})
+
+test('a desktop viewport applies its pixel ratio without enabling touch or a mobile layout', async (t) => {
+  const site = await servePages(t, {
+    '/': `<!doctype html><meta name="viewport" content="width=device-width"><p data-testid="screen"></p><script>
+      document.querySelector('[data-testid="screen"]').textContent = JSON.stringify({ width: innerWidth, height: innerHeight, ratio: devicePixelRatio, touch: navigator.maxTouchPoints });
+    </script>`,
+  })
+  const page = await openPage(t, browser(), site.url, { emulation: { viewport: { width: 600, height: 500 }, deviceScaleFactor: 2.625, touch: false, isMobile: false } })
+  assertOk(await goto(page, '/'))
+  assert.equal((await observe(page, 'screen')).text, JSON.stringify({ width: 600, height: 500, ratio: 2.625, touch: 0 }))
 })
 
 test('a covered list is not scrolled, and no listener of the page hears the wheel', async (t) => {

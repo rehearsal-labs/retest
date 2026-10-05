@@ -4,12 +4,12 @@ import type { NativeUnknownOutcome } from '../native/interaction-session.ts'
 import type { FrameSource } from '../media/capture.ts'
 import type { RecordIdentity } from '../protocol/identity.ts'
 import type { DiagnosticCollection, DiagnosticSink } from '../diagnostics/observations.ts'
-import type { CommandResult, PageCommand } from '../protocol/commands.ts'
+import type { CommandResult, Observation, PageCommand } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { TextQuery } from '../protocol/host-check.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
-import type { NavigationCause, NavigationDocument } from '../protocol/page-facts.ts'
+import type { NavigationCause, NavigationDocument, PageFacts } from '../protocol/page-facts.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 
 export type { Emulation } from '../protocol/emulation.ts'
@@ -320,6 +320,37 @@ export interface OwnedPage extends NavigationCapability, StorageStateCapability 
    * on a driver that collects nothing, whose results then say so.
    */
   collectDiagnostics?(sink: DiagnosticSink, timeoutMs: number): Promise<DiagnosticCollection>
+}
+
+/**
+ * One locator's matches as a keyed read saw them: the observation `observe` answers, and a key for each element it
+ * lists, in the same order.
+ */
+export type KeyedRead = { readonly observation: Observation; readonly keys: readonly string[] }
+
+/** A keyed read of several locators, taken at once, and the page it read; or why there is none. */
+export type KeyedReading = { readonly ok: true; readonly reads: readonly KeyedRead[]; readonly page?: PageFacts } | { readonly ok: false; readonly failure: Failure }
+
+/**
+ * Element identity, a web capability: telling one element from another from one call to the next, which text never
+ * does, since two elements can show the same and a page can put one in another's place. A driver offers it by these
+ * two methods; the agent sessions detect them on the page. Chromium's page offers it.
+ */
+export interface ElementIdentity {
+  /**
+   * Reads each locator's matches as `observe` does, all in one task of the page's current main-frame document, so
+   * nothing of the page runs between them, and gives each element listed a key: the same key for the same node in
+   * every read of that document, never the key of another node, and a key read in an earlier document matches
+   * nothing. `keys.length` equals the elements the observation lists. Sends no input.
+   */
+  readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading>
+  /**
+   * Sends `command` as `dispatch` does, and only to the node `key` names: in the task that readies the element, the
+   * task of the hit test, the command's locator must find that node, or the command is refused at once, with no wait
+   * for the element to come back, as `not_actionable` with `details.refused` `'moved'`, and no input goes. A command
+   * that acts on no element is refused with `usage`, since there is no node to hold it to.
+   */
+  dispatchTo(command: BrowserCommand, key: string, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand>
 }
 
 /** A web session: the shared commands, with navigation and storage state. A Chromium page is one. */

@@ -22,6 +22,7 @@ import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
+import { engineUnderTest } from './engines.ts'
 
 /** The budgets these tests give opening a page and closing the browser. */
 export const setupMs = 10_000
@@ -38,9 +39,12 @@ export async function scratchFolder(t: TestContext): Promise<string> {
   return folder
 }
 
-/** Launches a headless browser that is closed, and its process group checked, after the test. */
-export function launch(t: TestContext): Promise<OwnedBrowser> {
-  return launchThrough(t, (pipe) => new PipeTransport(pipe))
+/** Launches a headless browser of the engine under test that is closed, and its process group checked, after the test. */
+export async function launch(t: TestContext): Promise<OwnedBrowser> {
+  const engine = engineUnderTest()
+  if (engine.name === 'chromium') return launchThrough(t, (pipe) => new PipeTransport(pipe))
+  const folder = await scratchFolder(t)
+  return closedAfter(t, await engine.launch({ logFile: join(folder, 'browser.log'), headless: true }, setupMs * 3))
 }
 
 /**
@@ -61,7 +65,10 @@ export function launchGated(t: TestContext, gate: Gate): Promise<OwnedBrowser> {
 
 async function launchThrough(t: TestContext, transport: Parameters<typeof launchBrowser>[2]): Promise<OwnedBrowser> {
   const folder = await scratchFolder(t)
-  const browser = await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true }, undefined, transport)
+  return closedAfter(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true }, undefined, transport))
+}
+
+function closedAfter(t: TestContext, browser: OwnedBrowser): OwnedBrowser {
   t.diagnostic(`browser ${browser.product} ${browser.version}, pid and process group ${browser.pid}`)
   t.after(async () => {
     await browser.close(closeMs)
@@ -118,7 +125,7 @@ export function sharedBrowser(): () => OwnedBrowser {
   let folder: string | undefined
   before(async () => {
     folder = await mkdtemp(join(tmpdir(), 'retest-browser-test-'))
-    browser = await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true })
+    browser = await launchEngine(join(folder, 'browser.log'))
   })
   after(async () => {
     if (browser !== undefined) {
@@ -131,6 +138,16 @@ export function sharedBrowser(): () => OwnedBrowser {
     assert.ok(browser !== undefined, 'the shared browser did not launch')
     return browser
   }
+}
+
+/**
+ * Launches a headless browser of the engine under test, as `sharedBrowser` and a file of its own launch one: Chromium at
+ * the test browser's path, any other engine as its entry in `engines.ts` says.
+ */
+export function launchEngine(logFile: string): Promise<OwnedBrowser> {
+  const engine = engineUnderTest()
+  if (engine.name === 'chromium') return launchBrowser({ executablePath: browserPath(), logFile, headless: true })
+  return engine.launch({ logFile, headless: true }, setupMs * 3)
 }
 
 export async function openPage(t: TestContext, browser: OwnedBrowser, baseUrl?: string, options: Omit<NewPageOptions, 'baseUrl'> = {}): Promise<OwnedPage> {
@@ -335,6 +352,7 @@ export async function profileOf(pid: number): Promise<string> {
 
 /** Lines of `ps` that mention a path, which every browser process carries in its command line. */
 export async function processesUsing(path: string): Promise<string[]> {
-  const { stdout } = await promisify(execFile)('ps', ['-axww', '-o', 'pid=,pgid=,command='])
+  // Every process's whole command line: on a busy machine the table runs to megabytes, past execFile's default buffer.
+  const { stdout } = await promisify(execFile)('ps', ['-axww', '-o', 'pid=,pgid=,command='], { maxBuffer: 256 * 1024 * 1024 })
   return stdout.split('\n').filter((line) => line.includes(path))
 }

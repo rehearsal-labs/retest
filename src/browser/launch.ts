@@ -25,7 +25,7 @@ const launchTimeoutMs = 30_000
 // Chrome states why it stopped in its last lines; more than this is never needed to find them.
 const launchOutputLimit = 64 * 1024
 
-const versionSchema = s.object({ product: s.string(), userAgent: s.string() })
+const versionSchema = s.object({ product: s.string(), userAgent: s.string(), revision: s.optional(s.string()) })
 
 /**
  * Starts a Chromium browser this run owns, in a process group of its own, with a temporary profile and a
@@ -99,10 +99,12 @@ function chromiumArguments(profile: string, headless: boolean): string[] {
  * @example await handshake(connection, deadline) // { product: 'Chrome', version: '152.0.7977.130', userAgent }
  */
 export async function handshake(connection: CdpConnection, deadline: Deadline): Promise<BrowserVersion> {
-  const { product, userAgent } = await request(connection, 'Browser.getVersion', undefined, versionSchema, sendOptions(deadline))
+  const { product, userAgent, revision } = await request(connection, 'Browser.getVersion', undefined, versionSchema, sendOptions(deadline))
+  // The source revision the browser was built from, when it says one.
+  const built = revision === undefined || revision === '' ? {} : { revision }
   const slash = product.indexOf('/')
-  if (slash === -1) return { product, version: 'unknown', userAgent }
-  return { product: product.slice(0, slash), version: product.slice(slash + 1), userAgent }
+  if (slash === -1) return { product, version: 'unknown', userAgent, ...built }
+  return { product: product.slice(0, slash), version: product.slice(slash + 1), userAgent, ...built }
 }
 
 type HandshakeContext = { executable: string; exit: ProcessExit | undefined; logFile: string; timeoutMs: number; output: string }

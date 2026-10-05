@@ -15,8 +15,8 @@ import { Listeners } from './listeners.ts'
 import { ChromiumPage } from './page.ts'
 import { restoreState } from './storage-state.ts'
 
-/** What `Browser.getVersion` said, split into a product name and its version. */
-export type BrowserVersion = { product: string; version: string; userAgent: string }
+/** What `Browser.getVersion` said, split into a product name and its version, with the source revision when it gave one. */
+export type BrowserVersion = { product: string; version: string; userAgent: string; revision?: string }
 
 export type BrowserOptions = {
   process: ChromiumProcess
@@ -34,6 +34,8 @@ const targetSchema = s.object({ targetId: s.string() })
 export class ChromiumBrowser implements WebRuntime {
   readonly product: string
   readonly version: string
+  /** The source revision the running browser said it was built from, when it said one. */
+  readonly revision: string | undefined
   readonly userAgent: string
   readonly pid: number
   readonly executablePath: string
@@ -51,6 +53,7 @@ export class ChromiumBrowser implements WebRuntime {
   constructor(options: BrowserOptions) {
     this.product = options.version.product
     this.version = options.version.version
+    this.revision = options.version.revision
     this.userAgent = options.version.userAgent
     this.pid = options.process.pid
     this.executablePath = options.executablePath
@@ -60,7 +63,11 @@ export class ChromiumBrowser implements WebRuntime {
     this.#connection = options.connection
     this.#onListenerError = options.onListenerError
     this.#disconnects = new Listeners(options.onListenerError)
-    this.#connection.onDisconnect((reason) => this.#disconnected(reason))
+    this.#connection.onDisconnect((reason) => {
+      // A pipe that closes is often a browser beginning to exit; its helpers are recorded while it may still be their parent.
+      this.#process.recordDescendants()
+      this.#disconnected(reason)
+    })
     if (this.#connection.closeReason !== undefined) this.#disconnected(this.#connection.closeReason)
     void this.#process.exited.then((exit) => {
       try { this.#disconnected(`the browser process ended with ${describeExit(exit)}`) }
@@ -78,7 +85,17 @@ export class ChromiumBrowser implements WebRuntime {
     return webRuntimeIdentity(this, 'chromium')
   }
 
+  // A page runs in a renderer process the browser starts for it. Recording it right after, while its parent is alive,
+  // keeps it owned if the browser's main process later dies first and leaves it to launchd.
   async newPage(options: NewPageOptions, timeoutMs: number): Promise<WebSession> {
+    try {
+      return await this.#openPage(options, timeoutMs)
+    } finally {
+      this.#process.recordDescendantsSoon()
+    }
+  }
+
+  async #openPage(options: NewPageOptions, timeoutMs: number): Promise<WebSession> {
     if (this.#disconnectReason !== undefined) throw this.#lost(this.#disconnectReason)
     const deadline = new Deadline(timeoutMs)
     const { browserContextId } = await this.#request('Target.createBrowserContext', browserContextOptions(options.proxy), contextSchema, deadline)

@@ -25,7 +25,8 @@ type State = 'idle' | 'starting' | 'running' | 'stopping' | 'ended' | 'stopped'
  * Chrome's screencast of one page, as a frame source for the media process: `Page.startScreencast` on the page's own
  * session, so it captures that page and nothing else. Chrome sends frames when it chooses to, as the page paints, and
  * holds back the next until the last is acknowledged, so not every paint arrives as a frame; every frame is
- * acknowledged as it arrives. No frame between two times does not mean nothing appeared on the page between them. Frames
+ * acknowledged as it arrives while capture is permitted. Withholding stops the stream and discards arrivals without
+ * acknowledging them. No frame between two times does not mean nothing appeared on the page between them. Frames
  * are kept as Chrome encoded them, JPEG or PNG, out of the protocol's base64 and never decoded; each is stamped with the
  * run's clock when it reaches Retest. At most one frame is handed over each `1/fps` of a second: one that comes sooner
  * waits for its turn, and a newer frame that comes before then takes its place and the older one is counted as
@@ -60,11 +61,19 @@ export class ChromiumFrameSource implements FrameSource {
   #firstUs: number | undefined
   #lastUs: number | undefined
   // When on the run's clock the last frame was handed over, which the next turn is counted from.
+  #acknowledgedUs: number | undefined
   #handedOverUs: number | undefined
   #waiting: CapturedFrame | undefined
   #timer: NodeJS.Timeout | undefined
   #endedEarly: string | undefined
   #stopping: Promise<CaptureStats> | undefined
+  #uncertainStop: Promise<Answer> | undefined
+  #paused = false
+  #remoteRunning = false
+  #pauseStop: Promise<Answer> | undefined
+  #resuming: Promise<void> | undefined
+  #withheldFromUs: number | undefined
+  #resumedAtUs: number | undefined
 
   /** `refused` names why the source must not capture at all; its availability says so. */
   constructor(session: CaptureSession, identity: RecordIdentity, options: ChromiumCaptureOptions = {}, refused?: string) {
@@ -92,6 +101,14 @@ export class ChromiumFrameSource implements FrameSource {
       this.#session.on('Page.screencastFrame', (params) => this.#frame(params)),
       this.#session.onDetach((reason) => this.#end(reason)),
     )
+    if (capture.onWithholdingChange !== undefined) this.#listeners.push(capture.onWithholdingChange((held) => this.#withholding(held)))
+    if (capture.withheld?.() === true) {
+      this.#paused = true
+      this.#withheldFromUs = this.#startedAtUs
+      this.#state = 'running'
+      return { ok: true, mode: 'screencast' }
+    }
+    this.#remoteRunning = true
     try {
       await request(this.#session, 'Page.startScreencast', this.#parameters(), s.object({}), { timeoutMs: capture.timeoutMs })
     } catch (error) {
@@ -102,12 +119,13 @@ export class ChromiumFrameSource implements FrameSource {
         this.#release('stopped')
       }
       // A start whose answer did not come in time may still have begun the screencast, which nobody would acknowledge.
-      if (this.#session.detachReason === undefined) this.#session.send('Page.stopScreencast', undefined, { timeoutMs: Math.max(1, capture.timeoutMs) }).catch(() => undefined)
+      if (this.#session.detachReason === undefined && this.#stopping === undefined) this.#uncertainStop = answeredWithin(Promise.resolve().then(() => this.#session.send('Page.stopScreencast', undefined, { timeoutMs: Math.max(1, capture.timeoutMs) })), capture.timeoutMs)
       return { ok: false, reason: `Chrome did not start its screencast of the page: ${errorMessage(error)}` }
     }
     // A stop asked for while Chrome started has already sent the end of the screencast after its start.
     if (this.#state !== 'starting') return { ok: false, reason: this.#endedEarly ?? 'The capture was stopped before it started.' }
     this.#state = 'running'
+    if (this.#paused && capture.withheld?.() !== true) this.#withholding(false)
     return { ok: true, mode: 'screencast' }
   }
 
@@ -119,18 +137,36 @@ export class ChromiumFrameSource implements FrameSource {
   async #stop(timeoutMs: number): Promise<CaptureStats> {
     if (this.#state !== 'starting' && this.#state !== 'running') {
       if (this.#state === 'idle') this.#state = 'stopped'
+      if (this.#uncertainStop !== undefined) {
+        const answer = await uncertainStopWithin(this.#uncertainStop, timeoutMs)
+        this.#uncertainStop = undefined
+        if (answer.status === 'failed') this.#problem(`Ending Chrome's uncertain screencast start failed: ${answer.problem}`)
+        if (answer.status === 'late') this.#problem(`Chrome did not confirm the end of its uncertain screencast start within ${timeoutMs} ms.`)
+      }
       return this.#stats()
     }
     // Frames that come while Chrome ends its screencast are still offered and counted; the stop waits for its answer
     // only as long as it was given, since a page that stopped answering would hold it forever.
     this.#state = 'stopping'
-    if (this.#session.detachReason === undefined) {
-      const answered = await answeredWithin(this.#session.send('Page.stopScreencast', undefined, { timeoutMs: Math.max(1, timeoutMs) }), timeoutMs)
+    const stoppingAt = performance.now()
+    const remaining = (): number => Math.max(1, Math.floor(timeoutMs - (performance.now() - stoppingAt)))
+    if (this.#resuming !== undefined) {
+      const resumed = await answeredWithin(this.#resuming, remaining())
+      if (resumed.status !== 'answered') this.#problem("Chrome did not confirm its screencast restart before the stop budget ended; remote capture is unknown.")
+    }
+    if (this.#pauseStop !== undefined) {
+      const paused = await uncertainStopWithin(this.#pauseStop, remaining())
+      if (paused.status === 'late') this.#problem("Chrome did not confirm its screencast pause before the stop budget ended; remote capture is unknown.")
+    }
+    if (this.#session.detachReason === undefined && this.#remoteRunning) {
+      this.#remoteRunning = false
+      const answered = await answeredWithin(this.#session.send('Page.stopScreencast', undefined, { timeoutMs: remaining() }), remaining())
       if (answered.status === 'failed') this.#problem(`Chrome did not answer the end of its screencast: ${answered.problem}`)
       if (answered.status === 'late') this.#problem(`Chrome did not answer the end of its screencast within ${timeoutMs} ms.`)
     }
     if (this.#state === 'stopping') {
       this.#handOverWaiting()
+      this.#closeWithheldGap()
       this.#stoppedAtUs = this.#capture?.clock()
       this.#release('stopped')
     }
@@ -164,10 +200,18 @@ export class ChromiumFrameSource implements FrameSource {
       this.#problem(`Chrome sent a frame Retest could not read: ${errorMessage(error)}`)
       return
     }
+    const capture = this.#capture
+    if (capture?.withheld?.() === true) this.#withholding(true)
+    if (this.#paused) {
+      this.#dropped += 1
+      this.#withheldGap(this.#acknowledgedUs ?? this.#startedAtUs ?? capture?.clock() ?? 0, capture?.clock() ?? 0)
+      return
+    }
+    const earliestUs = Math.max(this.#acknowledgedUs ?? this.#startedAtUs ?? 0, this.#resumedAtUs ?? 0)
+    this.#acknowledgedUs = this.#capture?.clock()
     this.#session.send('Page.screencastFrameAck', { sessionId: frame.sessionId }, { timeoutMs: acknowledgeTimeoutMs }).catch((error: unknown) => {
       this.#problem(`Chrome did not take a frame's acknowledgement: ${errorMessage(error)}`)
     })
-    const capture = this.#capture
     if (capture === undefined || (this.#state !== 'starting' && this.#state !== 'running' && this.#state !== 'stopping')) return
     const bytes = Buffer.from(frame.data, 'base64')
     if (bytes.byteLength === 0) {
@@ -175,10 +219,75 @@ export class ChromiumFrameSource implements FrameSource {
       this.#problem('Chrome sent a frame with no image in it.')
       return
     }
-    this.#offer({ identity: this.identity, timestampUs: capture.clock(), format: this.#options.format ?? 'jpeg', bytes })
+    const timestampUs = capture.clock()
+    // Acknowledgement lets the next read begin before cadence delivery. Keep the bound from before this frame’s ack.
+    this.#offer({ identity: this.identity, timestampUs, earliestUs: earliestUs ?? timestampUs, format: this.#options.format ?? 'jpeg', bytes })
   }
 
-  // Hands a frame over when its turn has come, or keeps it for the next turn in place of any frame already waiting.
+  // Stop the remote stream at the policy boundary. No acknowledgement may permit another read while held.
+  #withholding(held: boolean): void {
+    const capture = this.#capture
+    if (capture === undefined || (this.#state !== 'starting' && this.#state !== 'running' && this.#state !== 'stopping')) return
+    if (!held) {
+      if (this.#state !== 'running') return
+      this.#resuming ??= this.#resumeCapture().finally(() => { this.#resuming = undefined })
+      return
+    }
+    if (this.#paused) return
+    this.#paused = true
+    this.#withheldFromUs = capture.clock()
+    this.#clearTimer()
+    if (this.#waiting !== undefined) {
+      this.#withheldGap(this.#waiting.earliestUs ?? this.#waiting.timestampUs, capture.clock())
+      this.#dropped += 1
+      this.#waiting = undefined
+    }
+    if (this.#remoteRunning && this.#state !== 'stopping') {
+      this.#remoteRunning = false
+      this.#pauseStop = answeredWithin(this.#session.send('Page.stopScreencast', undefined, { timeoutMs: Math.max(1, capture.timeoutMs) }), capture.timeoutMs).then((answer) => {
+        if (answer.status !== 'answered') {
+          const reason = answer.status === 'failed' ? answer.problem : 'the stop reply did not arrive within its budget'
+          this.#problem("Chrome could not confirm its screencast paused: " + reason)
+          this.#end("withholding could not confirm stopped pixel capture; remote capture is unknown: " + reason, false)
+        }
+        return answer
+      })
+    }
+  }
+
+  async #resumeCapture(): Promise<void> {
+    const capture = this.#capture
+    if (!this.#paused || capture === undefined) return
+    const stopped = await this.#pauseStop
+    if (stopped !== undefined && stopped.status !== 'answered') return
+    if (this.#state !== 'running' || capture.withheld?.() === true) return
+    this.#closeWithheldGap()
+    this.#resumedAtUs = capture.clock()
+    this.#acknowledgedUs = undefined
+    this.#paused = false
+    this.#pauseStop = undefined
+    this.#remoteRunning = true
+    try {
+      await request(this.#session, 'Page.startScreencast', this.#parameters(), s.object({}), { timeoutMs: capture.timeoutMs })
+    } catch (error) {
+      this.#problem("Chrome could not restart its screencast after withholding: " + errorMessage(error))
+      this.#uncertainStop = answeredWithin(Promise.resolve().then(() => this.#session.send('Page.stopScreencast', undefined, { timeoutMs: Math.max(1, capture.timeoutMs) })), capture.timeoutMs)
+      this.#end('capture could not resume after withholding; the restart outcome is unknown', false)
+    }
+  }
+
+  #withheldGap(fromUs: number, toUs: number): void {
+    try { this.#capture?.gap?.({ fromUs, toUs, reason: 'pixels_withheld' }) }
+    catch (error) { this.#problem('Reporting withheld pixels failed: ' + errorMessage(error)) }
+  }
+
+  #closeWithheldGap(): void {
+    if (this.#withheldFromUs === undefined) return
+    this.#withheldGap(this.#withheldFromUs, this.#capture?.clock() ?? this.#withheldFromUs)
+    this.#withheldFromUs = undefined
+  }
+
+  // Hand over a due frame, or retain the newest arrival until its cadence turn.
   #offer(frame: CapturedFrame): void {
     const due = this.#handedOverUs === undefined ? frame.timestampUs : this.#handedOverUs + this.#intervalUs
     if (frame.timestampUs >= due) {
@@ -198,6 +307,10 @@ export class ChromiumFrameSource implements FrameSource {
   }
 
   #handOverWaiting(): void {
+    if (this.#paused) {
+      this.#clearTimer()
+      return
+    }
     const waiting = this.#waiting
     const capture = this.#capture
     this.#clearTimer()
@@ -227,11 +340,17 @@ export class ChromiumFrameSource implements FrameSource {
   }
 
   // The page closed or the browser went: what was waiting is handed over, since it arrived, and capture ends.
-  #end(reason: string): void {
+  #end(reason: string, targetLost = true): void {
     if (this.#state !== 'starting' && this.#state !== 'running' && this.#state !== 'stopping') return
     this.#handOverWaiting()
     this.#stoppedAtUs = this.#capture?.clock()
-    this.#endedEarly = `The page's session ended: ${reason}.`
+    this.#closeWithheldGap()
+    this.#endedEarly = targetLost ? `The page's session ended: ${reason}.` : `The capture ended: ${reason}.`
+    const fromUs = this.#lastUs ?? this.#startedAtUs
+    if (fromUs !== undefined && this.#stoppedAtUs !== undefined) {
+      try { this.#capture?.gap?.({ fromUs, toUs: this.#stoppedAtUs, reason: targetLost ? 'target_lost' : 'capture_failed' }) }
+      catch (error) { this.#problem(`Reporting the lost target failed: ${errorMessage(error)}`) }
+    }
     this.#release('ended')
     this.#capture?.ended(this.#endedEarly)
   }
@@ -259,6 +378,7 @@ export class ChromiumFrameSource implements FrameSource {
     return {
       mode: 'screencast',
       requestedFps: this.#capture?.fps ?? 0,
+      clockMapping: { timestamp: 'run-arrival', targetClock: 'not-used', imageRead: 'previous-acknowledgement-to-arrival' },
       delivered: this.#delivered,
       superseded: this.#superseded,
       dropped: this.#dropped,
@@ -274,6 +394,15 @@ export class ChromiumFrameSource implements FrameSource {
 }
 
 type Answer = { status: 'answered' } | { status: 'failed'; problem: string } | { status: 'late' }
+
+async function uncertainStopWithin(stopping: Promise<Answer>, timeoutMs: number): Promise<Answer> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([stopping, new Promise<Answer>((resolve) => {
+      timer = setTimeout(resolve, Math.max(1, timeoutMs), { status: 'late' })
+    })])
+  } finally { clearTimeout(timer) }
+}
 
 // Whether a command answered, failed, or had not answered when its time was up. Chrome's session times its commands out
 // itself; this bounds the stop whatever session it is given.

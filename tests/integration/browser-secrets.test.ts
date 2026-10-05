@@ -9,11 +9,8 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
-import { launchBrowser } from '../../src/browser/launch.ts'
 import {
   assertOk,
-  awaitPosts,
-  browserPath,
   byLabel,
   byTestId,
   click,
@@ -21,17 +18,23 @@ import {
   failureOf,
   fill,
   goto,
-  launchGated,
+  launchEngine,
   observe,
   observeUntil,
   openApp,
   openPage,
   servePages,
+  type Pages,
   type Target,
 } from './browser-harness.ts'
+import { engineExpectations } from './engine-expectations.ts'
+import { launchWithGate } from './engines.ts'
 
 const value = 'hunter2-never-shown'
 const secret = 'password'
+
+// Cases another engine ends otherwise assert through this, which holds Chrome's outcome or the engine's declared one.
+const engineCase = engineExpectations('browser-secrets')
 
 let browser: OwnedBrowser | undefined
 let folder: string | undefined
@@ -39,7 +42,7 @@ let folder: string | undefined
 // A browser of this file's own, so its log can be searched for the values once it closes.
 before(async () => {
   folder = await mkdtemp(join(tmpdir(), 'retest-browser-test-'))
-  browser = await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'browser.log'), headless: true })
+  browser = await launchEngine(join(folder, 'browser.log'))
 })
 
 after(async () => {
@@ -129,6 +132,13 @@ function fillBound(page: OwnedPage, allowedOrigins: readonly string[], timeoutMs
   return page.execute({ kind: 'fill', locator: byTestId('field'), value, secret, allowedOrigins }, timeoutMs)
 }
 
+// The POST requests to `path` the server has counted once there are `count` of them, or once `timeoutMs` has passed.
+async function postsWithin(site: Pages, path: string, count: number, timeoutMs = 5000): Promise<number> {
+  const end = performance.now() + timeoutMs
+  while (site.posts(path) < count && performance.now() <= end) await delay(10)
+  return site.posts(path)
+}
+
 // Each page reports text that reaches its field, so a page the secret never reached is one that sent nothing.
 const reportsTyping = `<script>
   document.querySelector('[data-testid="field"]').addEventListener('input', () => fetch('/typed', { method: 'POST' }))
@@ -146,17 +156,31 @@ test('a page that sets off for another origin as the field takes focus is kept w
   const visited: string[] = []
   page.onNavigation((navigation) => void visited.push(navigation.url))
   assertOk(await goto(page, '/'))
-  const failure = hidden(await fillBound(page, [site.url]))
-  assert.deepEqual(failure, {
-    class: 'not_actionable',
-    message: `Could not fill getByTestId('field') with {{password}}: the page started to open ${elsewhere.url} before Retest typed. Retest kept the page where it was and did not type {{password}}.`,
-    details: { origin: elsewhere.url, leaving: true },
+  const filling = await fillBound(page, [site.url])
+  await t.test('the refusal names the attempted origin', () => {
+    const failure = hidden(filling)
+    assert.deepEqual(failure, {
+      class: 'not_actionable',
+      message: `Could not fill getByTestId('field') with {{password}}: the page started to open ${elsewhere.url} before Retest typed. Retest kept the page where it was and did not type {{password}}.`,
+      details: { origin: elsewhere.url, leaving: true },
+    })
   })
-  // A cancelled navigation is over: the page hears of it, and never opens the other origin afterwards.
-  await awaitPosts(site, '/cancelled', 1)
-  assert.equal((await observe(page, 'field')).value, '')
-  assert.deepEqual(visited, [`${site.url}/`], 'the page never left')
-  assert.deepEqual([site.posts('/typed'), elsewhere.posts('/typed')], [0, 0])
+  // A cancelled navigation is over: the page hears of it, and never opens the other origin afterwards. Each check is a
+  // subtest, so the rest still run, after the first has waited its time, on an engine whose page cannot hear of it.
+  await t.test('the page hears that its navigation was cancelled', async (each) => {
+    engineCase.assertOutcome(each, await postsWithin(site, '/cancelled', 1), 1)
+  })
+  await t.test('the field is empty, the page never left, and no origin received typing', async (checks) => {
+    await checks.test('the field is empty', async () => {
+      assert.equal((await observe(page, 'field')).value, '')
+    })
+    await checks.test('the page never left', () => {
+      assert.deepEqual(visited, [`${site.url}/`], 'the page never left')
+    })
+    await checks.test('no origin received typing', () => {
+      assert.deepEqual([site.posts('/typed'), elsewhere.posts('/typed')], [0, 0])
+    })
+  })
 })
 
 test('a page already on another origin is refused by the page itself, whatever the parent last saw', async (t) => {
@@ -186,9 +210,18 @@ test('a fill bound to its origin still lets the page move within the document, a
   const page = await openPage(t, launched(), site.url)
   assertOk(await goto(page, '/'))
   // The field's focus moved the page to /focused within the document, and the fill names the page it typed on.
-  assert.deepEqual(await fillBound(page, [site.url]), { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
-  await observeUntil(page, 'done', (seen) => seen.text === 'Done')
-  assert.equal(site.posts('/typed'), 1)
+  const filled = await fillBound(page, [site.url])
+  await t.test('the fill names the document it typed on', () => {
+    assert.deepEqual(filled, { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
+  })
+  await t.test('the page leaves after receiving the text once', async (checks) => {
+    await checks.test('the next document arrives', async () => {
+      await observeUntil(page, 'done', (seen) => seen.text === 'Done')
+    })
+    await checks.test('the text reached one request', (each) => {
+      engineCase.assertOutcome(each, site.posts('/typed'), 1)
+    })
+  })
 })
 
 // A page whose load handler sends the browser to another origin, so the navigation is already under way when
@@ -246,30 +279,35 @@ test('a document that arrives while the text is on its way never receives it, an
   const loaded = Promise.withResolvers<void>()
   const elsewhere = await servePages(t, { '/': focusedWhileParsed })
   const site = await servePages(t, { '/': `<!doctype html><input data-testid="field">${reportsTyping}` })
-  let arrived = false
-  const browser = await launchGated(t, {
-    hold: (method) => {
-      if (method !== 'Input.insertText') return undefined
+  const browser = await launchWithGate(t, {
+    hold: (input) => {
+      if (input !== 'text') return undefined
       sending.resolve()
       return loaded.promise
     },
-    watch: (message) => {
-      const params = JSON.stringify(message['params'] ?? null)
-      if (message['method'] === 'Page.frameNavigated' && params.includes(`${elsewhere.url}/`)) arrived = true
-      if (arrived && message['method'] === 'Page.lifecycleEvent' && params.includes('"load"')) loaded.resolve()
+    loaded: (url) => {
+      if (url.startsWith(`${elsewhere.url}/`)) loaded.resolve()
     },
-  })
+  }, 'the gate holds the text insertion back')
+  if (browser === undefined) return
   const page = await openPage(t, browser, site.url)
   assertOk(await goto(page, '/'))
   const filling = fillBound(page, [site.url], 5000)
   await sending.promise
   assertOk(await goto(page, `${elsewhere.url}/`))
-  const failure = hidden(await filling)
-  assert.deepEqual(failure, {
-    class: 'not_actionable',
-    message: `Could not fill getByTestId('field') with {{password}}: the page moved to ${elsewhere.url} before the text arrived. Retest stopped the typing before that document received it, and typed nothing.`,
-    details: { origin: elsewhere.url, moved: true },
+  const filled = await filling
+  await t.test('the failure names the replacement document', () => {
+    const failure = hidden(filled)
+    assert.deepEqual(failure, {
+      class: 'not_actionable',
+      message: `Could not fill getByTestId('field') with {{password}}: the page moved to ${elsewhere.url} before the text arrived. Retest stopped the typing before that document received it, and typed nothing.`,
+      details: { origin: elsewhere.url, moved: true },
+    })
   })
-  assert.equal((await observe(page, 'field')).value, '', 'the field of the document that arrived is empty')
-  assert.deepEqual([site.posts('/typed'), elsewhere.posts('/typed')], [0, 0])
+  await t.test('the field of the replacement document is empty', async () => {
+    assert.equal((await observe(page, 'field')).value, '', 'the field of the document that arrived is empty')
+  })
+  await t.test('neither origin received typing', () => {
+    assert.deepEqual([site.posts('/typed'), elsewhere.posts('/typed')], [0, 0])
+  })
 })
