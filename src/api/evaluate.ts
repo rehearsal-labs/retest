@@ -1,5 +1,5 @@
 import type { AppName, DefaultJudgeName, IsRegistered, JudgeAccepts, JudgeName, RetestTypeError } from '../config/register.ts'
-import type { EvaluationCall, EvaluationMode, EvidenceSelector } from '../protocol/evaluation.ts'
+import type { CriterionKind, DiagnosticsPart, EvaluationCall, EvaluationMode, EvidenceSelector } from '../protocol/evaluation.ts'
 import { countsAsAssertion } from '../evaluation/policy.ts'
 import { isName } from '../protocol/names.ts'
 import { isArray, isPlainObject } from '../protocol/schema.ts'
@@ -16,8 +16,19 @@ export type ScreenshotEvidence = { readonly app?: EvidenceApp | undefined; reado
 /** Text the check supplies, such as an answer the test read from the page. `label` says what it is. */
 export type TextEvidence = { readonly text: string; readonly label?: string | undefined }
 
-/** The frames of a recorded step. Retest records no steps yet, so a run refuses this evidence by name. */
-export type RecordingEvidence = { readonly app?: EvidenceApp | undefined; readonly recording: { readonly step: string } }
+/**
+ * The frames an app's recording kept, from a step of this attempt by its name, the latest step with that name, or over
+ * the `lastMs` milliseconds before the check. A run that does not record the app refuses it by name. Frames are
+ * samples. The declared criterion kind names the question; partial capture cannot support a pass, and a seen frame
+ * may show a forbidden appearance.
+ */
+export type RecordingEvidence = { readonly app?: EvidenceApp | undefined; readonly recording: { readonly step: string } | { readonly lastMs: number } }
+
+/**
+ * The console or network records of an app as this attempt kept them so far, cleaned and redacted, which the judge
+ * reads as text with each part's capture state. Nothing of an app's diagnostics is sent unless a check names it here.
+ */
+export type TextRecordsEvidence = { readonly app?: EvidenceApp | undefined; readonly diagnostics: DiagnosticsPart | readonly [DiagnosticsPart, ...DiagnosticsPart[]] }
 
 /** The evidence a judge that takes `Kind` can receive: screenshots for `images`, text for `text`, frames for `frames`. */
 export type EvidenceFor<Kind> =
@@ -25,18 +36,33 @@ export type EvidenceFor<Kind> =
   | ('text' extends Kind ? TextEvidence : never)
   | ('frames' extends Kind ? RecordingEvidence : never)
 
+/** Diagnostics records, which a judge that takes `text` reads as text. */
+export type DiagnosticsFor<Kind> = 'text' extends Kind ? TextRecordsEvidence : never
+
+/** One piece of evidence a check of the judge `Judge` may name. */
+export type EvidenceItem<Judge extends JudgeName> = EvidenceFor<JudgeAccepts<Judge>> | DiagnosticsFor<JudgeAccepts<Judge>>
+
+/** A requirement that something does not appear. A seen frame may violate it, but sampled frames cannot prove it. */
+export type AbsenceRequirement = { readonly requirement: string; readonly absence: true; readonly kind?: never }
+
+/** Over frames, `state` checks the last frame held, `seen` asks for an appearance, and `never` forbids one. */
+export type CriterionRequirement = { readonly requirement: string; readonly kind: CriterionKind; readonly absence?: never }
+
 type JudgeChoice<Judge> = [DefaultJudgeName] extends [never] ? { readonly judge: Judge } : { readonly judge?: Judge | undefined }
 
 /**
  * One AI check. `requirement` is what the evidence must show, decided before the judge sees anything: a sentence, or
- * criteria by id, each of which must pass. `evidence` is what the judge looks at, one item or several. `judge` names one
+ * criteria by id, each of which must pass. A criterion given as `{ requirement, kind }` names an end `state`, a
+ * required appearance `seen`, or a forbidden appearance `never`. The older `{ requirement, absence: true }` keeps
+ * its conservative sample rule. `evidence` is what the judge looks at, one item or several. `judge` names one
  * of the config's judges, the default judge when left out. `context` is reference text the judge may read, such as a
  * policy an answer must follow. `mode` is `required` by default; an `advisory` check only records a warning.
  * `timeoutMs` may shorten the check's time, never lengthen what the test has left.
  */
 export type EvaluateOptions<Judge extends JudgeName = DefaultJudgeName & JudgeName> = JudgeChoice<Judge> & {
-  readonly requirement: string | Readonly<Record<string, string>>
-  readonly evidence: EvidenceFor<JudgeAccepts<Judge>> | readonly [EvidenceFor<JudgeAccepts<Judge>>, ...EvidenceFor<JudgeAccepts<Judge>>[]]
+  readonly requirement: string | Readonly<Record<string, string | AbsenceRequirement | CriterionRequirement>>
+  // Written out rather than as one alias, so a type error names each kind of evidence the judge takes.
+  readonly evidence: EvidenceFor<JudgeAccepts<Judge>> | DiagnosticsFor<JudgeAccepts<Judge>> | readonly [EvidenceItem<Judge>, ...EvidenceItem<Judge>[]]
   readonly context?: string | undefined
   readonly mode?: EvaluationMode | undefined
   readonly timeoutMs?: number | undefined
@@ -64,10 +90,11 @@ export function evaluate(check: unknown): Promise<void> {
   const read = readCheck(check)
   if (typeof read === 'string') throw misuse(`test.evaluate() ${read}`, run)
   const { call } = read
-  // The check holds the look lane of every app whose page it captures, the test's first app when it names none, so no
-  // action runs there while the screenshot is taken.
+  // The check holds the look lane of every app whose page it screenshots, the test's first app when it names none, so
+  // no action runs there while the screenshot is taken. Frames and diagnostics are read from what the run kept, not
+  // from the page, so they hold no lane.
   const [firstApp] = run.apps
-  const apps = [...new Set(call.evidence.flatMap((selector) => (selector.kind === 'text' ? [] : [selector.app ?? firstApp ?? ''])))]
+  const apps = [...new Set(call.evidence.flatMap((selector) => (selector.kind === 'screenshot' ? [selector.app ?? firstApp ?? ''] : [])))]
   return run.assertion('test.evaluate()', location, async () => {
     const answer = await run.requestEvaluation(call, location)
     if (countsAsAssertion(answer.mode, answer.verdict)) run.countAssertion()
@@ -113,12 +140,32 @@ function readCriteria(requirement: unknown): EvaluationCall['criteria'] | string
     return `takes requirement as a sentence, or criteria by id such as { saved: 'The task shows as saved.' }, received ${formatValue(requirement)}.`
   }
   const criteria: EvaluationCall['criteria'] = []
-  for (const [id, text] of Object.entries(requirement)) {
+  for (const [id, given] of Object.entries(requirement)) {
     if (!isName(id)) return `takes criterion ids of letters, digits, "_" and "-" that start with a letter, received ${JSON.stringify(id)}.`
-    if (typeof text !== 'string' || text.trim() === '') return `takes the requirement of ${id} as text, received ${formatValue(text)}.`
-    criteria.push({ id, requirement: text })
+    if (isPlainObject(given) && 'kind' in given) {
+      const { kind, requirement: text } = given
+      if ((kind !== 'state' && kind !== 'seen' && kind !== 'never') || typeof text !== 'string' || text.trim() === '' || !onlyKeys(given, ['kind', 'requirement'])) return `takes the requirement of ${id} as { requirement, kind: 'state', 'seen' or 'never' }, received ${formatValue(given)}.`
+      criteria.push({ id, requirement: text, kind })
+      continue
+    }
+    const absence = readAbsence(given)
+    if (absence !== undefined) {
+      criteria.push({ id, requirement: absence, absence: true })
+      continue
+    }
+    if (typeof given !== 'string' || given.trim() === '') return `takes the requirement of ${id} as text, or as { requirement, absence: true }, received ${formatValue(given)}.`
+    criteria.push({ id, requirement: given })
   }
   return criteria
+}
+
+// A criterion that says something must not appear: exactly its requirement and the mark.
+function readAbsence(given: unknown): string | undefined {
+  if (!isPlainObject(given)) return undefined
+  const requirement = given['requirement']
+  const keys = Object.keys(given).filter((key) => given[key] !== undefined)
+  if (given['absence'] !== true || typeof requirement !== 'string' || requirement.trim() === '' || keys.length !== 2) return undefined
+  return requirement
 }
 
 function readEvidence(evidence: unknown): EvidenceSelector[] | string {
@@ -134,7 +181,7 @@ function readEvidence(evidence: unknown): EvidenceSelector[] | string {
 }
 
 function readSelector(item: unknown): EvidenceSelector | string {
-  const expected = "takes evidence as { capture: 'screenshot', app? }, { text, label? } or { recording: { step }, app? }"
+  const expected = "takes evidence as { capture: 'screenshot', app? }, { text, label? }, { recording: { step } or { lastMs }, app? } or { diagnostics: 'console', 'network' or both, app? }"
   if (!isPlainObject(item)) return `${expected}, received ${formatValue(item)}.`
   const entry = Object.fromEntries(Object.entries(item).filter(([, value]) => value !== undefined))
   const app = entry['app']
@@ -149,10 +196,26 @@ function readSelector(item: unknown): EvidenceSelector | string {
     if (typeof text !== 'string' || text === '' || (label !== undefined && typeof label !== 'string') || !onlyKeys(entry, ['text', 'label'])) return `${expected}, received ${formatValue(item)}.`
     return { kind: 'text', text, ...(typeof label === 'string' ? { label } : {}) }
   }
+  if ('diagnostics' in entry) {
+    const include = readParts(entry['diagnostics'])
+    if (include === undefined || !onlyKeys(entry, ['diagnostics', 'app'])) return `${expected}, received ${formatValue(item)}.`
+    return { kind: 'diagnostics', ...named, include }
+  }
   const recording = entry['recording']
-  const step = isPlainObject(recording) ? recording['step'] : undefined
-  if (typeof step !== 'string' || !onlyKeys(entry, ['recording', 'app'])) return `${expected}, received ${formatValue(item)}.`
-  return { kind: 'recording', ...named, step }
+  if (!isPlainObject(recording) || !onlyKeys(entry, ['recording', 'app'])) return `${expected}, received ${formatValue(item)}.`
+  const keys = Object.keys(recording).filter((key) => recording[key] !== undefined)
+  const step = recording['step']
+  const lastMs = recording['lastMs']
+  if (keys.length === 1 && typeof step === 'string' && step !== '') return { kind: 'recording', ...named, step }
+  if (keys.length === 1 && isBudget(lastMs) && typeof lastMs === 'number') return { kind: 'recording', ...named, lastMs }
+  return `takes a recording as { step } naming a step of the test, or { lastMs } as a whole number of milliseconds from 1 to ${maxTimeout}, received ${formatValue(recording)}.`
+}
+
+// One part or several, each once, kept in the order console then network.
+function readParts(given: unknown): DiagnosticsPart[] | undefined {
+  const list: readonly unknown[] = isArray(given) ? given : [given]
+  if (list.length === 0 || new Set(list).size !== list.length || !list.every((part) => part === 'console' || part === 'network')) return undefined
+  return (['console', 'network'] as const).filter((part) => list.includes(part))
 }
 
 function onlyKeys(entry: Record<string, unknown>, keys: readonly string[]): boolean {

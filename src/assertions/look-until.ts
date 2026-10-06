@@ -41,8 +41,10 @@ export const lookFloorMs: number = 50
  * Looks at an app's page until what it sees passes or the time runs out. It only ever reads the page: it never
  * repeats the action that came before it. A page that counts its changes is asked to answer the next look as soon as
  * it has changed again, at most `lookFloorMs` after the last look and at the latest after the poll delay; a page that
- * does not count them is looked at on the poll delays alone. The last look happens at the deadline. A look that fails
- * for any reason other than reaching the deadline after an earlier look stops the looking with its failure.
+ * does not count them is looked at on the poll delays alone. The last look is sent once the deadline is reached on the
+ * clock the deadline reads, never while part of a millisecond is left, so a `timeout` of 1500 never gives up at 1499.6.
+ * A look that fails for any reason other than reaching the deadline after an earlier look stops the looking with its
+ * failure.
  */
 export async function lookUntil<Observed>(options: LookOptions<Observed>): Promise<Looked<Observed>> {
   const { run, timeoutMs, location } = options
@@ -53,14 +55,22 @@ export async function lookUntil<Observed>(options: LookOptions<Observed>): Promi
   let last: Look<Observed> | undefined
   let lastLookAt = startedAt
   for (;;) {
-    const delay = smallestBudget(pollDelay(attempts), deadline.remainingMs)
+    // Rounded up, so a wait cut to the deadline ends at it; a timer that fires early leaves time, and the loop waits again.
+    const waitToEndMs = deadline.waitToEndMs
+    const delay = smallestBudget(pollDelay(attempts), waitToEndMs)
     let after: ObserveAfter | undefined
     const changes = last?.changes
     if (changes === undefined) {
       if (delay > 0) await sleep(delay)
+      if (delay > 0 && delay === waitToEndMs) {
+        while (!deadline.reached) await sleep(deadline.waitToEndMs)
+      }
     } else {
       const pause = Math.min(Math.max(0, lookFloorMs - elapsedMs(lastLookAt, now)), delay)
       if (pause > 0) await sleep(pause)
+      if (pause > 0 && pause === waitToEndMs) {
+        while (!deadline.reached) await sleep(deadline.waitToEndMs)
+      }
       after = { changes, waitMs: delay - pause }
     }
     const result = await options.look(deadline.commandTimeoutMs, after)
@@ -70,10 +80,12 @@ export async function lookUntil<Observed>(options: LookOptions<Observed>): Promi
     if (seen !== undefined) {
       last = seen
       if (options.passes(seen.observation)) break
+      // A look is given the whole milliseconds left, so a timeout after using them all can come with part of one still
+      // left: that is the deadline, and the loop looks once more when the end comes.
     } else if (!result.ok && !(result.failure.class === 'timeout' && deadline.expired && last !== undefined)) {
       return { last, attempts, startedAt, stopped: withLocation(result.failure, location) }
     }
-    if (deadline.expired) break
+    if (deadline.reached) break
   }
   return { last, attempts, startedAt, stopped: undefined }
 }

@@ -23,6 +23,7 @@ const failureClasses = [
   'evaluation_failed',
   'evaluation_inconclusive',
   'evaluation_error',
+  'evidence_incomplete',
 ] as const
 
 export type FailureClass = (typeof failureClasses)[number]

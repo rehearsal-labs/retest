@@ -48,6 +48,18 @@ import { locatorRecipeSchema, type LocatorRecipe } from './locator.ts'
 import { observedRecordSchema, type ObservedRecord } from './observation-record.ts'
 import { optionChoiceRecordSchema, type OptionChoiceRecord } from './option-choices.ts'
 import { navigationCauseSchema, navigationDocumentSchema, type NavigationCause, type NavigationDocument } from './page-facts.ts'
+import {
+  evidenceStatusSchema,
+  leftoverRecordSchema,
+  mediaStartedRecordSchema,
+  recordingRecordSchema,
+  runEvidenceStatusSchema,
+  type EvidenceStatus,
+  type LeftoverRecord,
+  type MediaStartedRecord,
+  type RecordingRecord,
+  type RunEvidenceStatus,
+} from './recording.ts'
 import { s, type Schema } from './schema.ts'
 import { partialTimeoutsSchema, timeoutsSchema, type Timeouts } from './timeouts.ts'
 import { variantSchema, type Variant } from './variant.ts'
@@ -182,6 +194,12 @@ type ActionFields = StepScope & {
   via?: 'label'
   /** A `check` or `uncheck` that tapped, on a page that emulates a touch screen. */
   touch?: true
+  /** The way a native `swipe` went. */
+  direction?: 'up' | 'down' | 'left' | 'right'
+  /** What a native keyboard or alert call did: `keyboard.wait()`, `dismiss()` or `dismissFirstRunCard()`, `alert.accept()` or `dismiss()`. */
+  operation?: 'wait' | 'dismiss' | 'dismissFirstRunCard' | 'accept'
+  /** The label of the button a native alert call pressed, as the test wrote it. */
+  button?: string
   /**
    * For a call that gave itself `{ timeout }`: in `callTimeoutMs` what it asked for, and in `timeoutMs` the time the
    * parent gave the command, the smallest of that, the action or navigation budget and the test's time left. Both
@@ -284,11 +302,12 @@ export type ChildEvent = Common &
  * when `test.only` kept part of the files' tests. A `skipped` test has a `test.finished` and no `test.started`.
  * `session.reserved` comes before `test.started` for an attempt of a run with session limits, once it holds a session
  * for each of its apps, and `session.released` when it gives them back: once its contexts are closed, or, when they could
- * not be closed, once their browsers have. `resource.acquired` comes once an attempt holds the desktop, the devices and
+ * not be closed, once their browsers have, or at the latest when the run ends. `resource.acquired` comes once an attempt holds the desktop, the devices and
  * the data folders it needs, after its locks and before its sessions, and `lease.taken` once it holds everything, before
  * `test.started`. `lease.expired` is a desktop, a device or a data folder that did not come free within the cleanup
  * budget once the attempt let go, which comes after its `test.finished`. `test.started` records the attempt's execution identity, and `test.finished` how it ended and,
- * when its body loaded more of the project, the bundle it ran in the end. `preparation.finished` and `cleanup.finished`
+ * when its body loaded more of the project, the bundle it ran in the end, and the host checks that never ran. A host AI
+ * check that never ran has its own `evaluation.finished`, with the verdict `not_run`. `preparation.finished` and `cleanup.finished`
  * are the host's preparation and cleanup of the attempt, as the parent saw them end.
  */
 export type NativeOutcomeRecord = { source: 'lifecycle' | 'input'; id: string; kind: string; generation: number; route?: string; input?: 'not_sent' | 'sent' | 'unknown'; failure?: Failure; reconciled?: { running?: boolean; pids?: number[]; problem?: string } }
@@ -341,6 +360,14 @@ export type EventBody =
             type: 'browser.started'
             product: string
             version: string
+            /** The web engine that ran it, as the driver that launched it is: an Electron app's is `chromium`. */
+            engine?: 'chromium' | 'firefox' | 'webkit'
+            /**
+             * The browser's own build, when its driver read one: for Chromium, the source revision `Browser.getVersion`
+             * answered; for Firefox, the `moz:buildID` its `session.new` answered; for WebKit, the revision its build folder
+             * is named for, as Playwright names it (`webkit-2359`). Absent when the driver read none, never taken from a pin.
+             */
+            build?: string
             userAgent: string
             pid: number
             executablePath: string
@@ -416,8 +443,12 @@ export type EventBody =
             type: 'session.released'
             owner: string
             sessions: number
-            /** `contexts_closed` once the attempt closed its contexts; `browser_closed` when it could not, once their browsers closed. */
-            after: 'contexts_closed' | 'browser_closed'
+            /**
+             * `contexts_closed` once the attempt closed its contexts; `browser_closed` when it could not, once their browsers
+             * closed; `run_ended` when not even that was confirmed, as for a native app whose close failed, once every
+             * runtime of the run had been asked to close.
+             */
+            after: 'contexts_closed' | 'browser_closed' | 'run_ended'
           })
         | (AttemptScope & {
             type: 'test.started'
@@ -477,7 +508,67 @@ export type EventBody =
             /** The look id the parent gave the capture when it served it to the test file's process as a look. */
             observationId?: string
           })
-        | (AttemptScope & { type: 'evidence.failed'; kind: 'screenshot'; reason: 'failure'; message: string; sessionId?: string; source?: CaptureSourceName })
+        /** `withheld` says the pixel capture policy kept the screenshot from being taken or kept, and why. */
+        | (AttemptScope & { type: 'evidence.failed'; kind: 'screenshot'; reason: 'failure'; message: string; sessionId?: string; source?: CaptureSourceName; withheld?: 'app_rules' | 'secret_entry' })
+        /**
+         * A recording of one app session began: its capture is running and the media process is writing it. `number`
+         * counts the session's recordings from 1. `path` is where its video will be, relative to the run folder, if it ends
+         * with one. `startedUs` is when capture began, on the run's clock in whole microseconds. Only a run that records
+         * writes it.
+         */
+        | (AttemptScope & {
+            type: 'recording.started'
+            sessionId: string
+            recordingId: string
+            number: number
+            source: CaptureSourceName
+            mode: 'screencast' | 'screenshot-loop'
+            path: string
+            fps: number
+            width: number
+            height: number
+            codec: 'h264' | 'vp8'
+            container: 'mp4' | 'webm'
+            route: 'decoded' | 'encoded'
+            keepFrames: boolean
+            startedUs: number
+          })
+        /**
+         * How one app session's recording ended, or why it never began, with its evidence status apart from the test's
+         * outcome. Comes before the attempt's `test.finished`.
+         */
+        | (AttemptScope & { type: 'recording.finished'; sessionId: string; recording: RecordingRecord })
+        /** The run's media process started and greeted: once per run that records, and once more after a crash. */
+        | { type: 'media.started'; media: MediaStartedRecord }
+        /** The run's media process could not be started, or its encoder cannot record; `code` says which. */
+        | { type: 'media.failed'; start: number; code: 'media_unavailable' | 'encoder_unavailable'; message: string }
+        /** The run's media process ended while the run still needed it; `recordings` were running and are lost. */
+        | { type: 'media.lost'; pid: number; start: number; exit: { code: number | null; signal: string | null }; recordings: number; restart: boolean }
+        /**
+         * The run's media process closed at the end of the run and is gone, as the ownership layer confirmed; `forced`
+         * when its recorded processes had to be stopped, and `problems` when cleanup could not be confirmed.
+         */
+        | { type: 'media.closed'; pid: number; start: number; forced: boolean; exit?: { code: number | null; signal: string | null }; problems?: string[] }
+        /**
+         * A recording a killed run left, found by this run: the run it belonged to, the output it wrote, as a reference
+         * in that run's folder, what the media process found there and what it removed. Only outputs a run that is no
+         * longer running named in its own events are ever looked at.
+         */
+        | { type: 'media.leftovers'; previousRunId: string; folder: string; reference: string; status: 'ok' | 'in_use' | 'invalid' | 'unconfirmed'; removed: LeftoverRecord[]; skipped: number; problem?: string }
+        /** A stretch the pixel capture policy withheld captures of one session around a secret, from `fromUs` on the run's clock. */
+        | (AttemptScope & { type: 'capture.withheld'; sessionId: string; secret: string; nativeField?: 'secure' | 'plain' | 'unreadable'; cause: 'text' | 'typed_characters' | 'unknown' | 'unmasked_while_typed'; fromUs: number; exposedFromUs?: number })
+        /** The end of a withheld stretch: what ended it and its span on the run's clock. */
+        | (AttemptScope & { type: 'capture.resumed'; sessionId: string; secret: string; endedBy: 'nothing_typed' | 'field_gone' | 'field_empty' | 'field_masked' | 'new_document' | 'session_ended'; reason?: 'the field reads back masked' | 'the field that received the secret is gone'; fromUs: number; untilUs: number })
+        /** The native secret-entry pixel decision, without the secret value; secure fills still require masked read-back. */
+        | (AttemptScope & { type: 'capture.native_entry'; sessionId: string; secret: string; nativeField: 'secure' | 'plain' | 'unreadable'; branch: 'typed into a secure field' | 'typed into a plain field, pixels kept' | 'typed into a plain field, pixels withheld' | 'field type unreadable, pixels kept' | 'field type unreadable, pixels withheld'; atUs: number })
+        /** A secret typed into a field that masks it, so capture went on. */
+        | (AttemptScope & { type: 'capture.masked_entry'; sessionId: string; secret: string; nativeField?: 'secure' | 'plain' | 'unreadable'; readBack?: 'length_matched'; atUs: number })
+        /** A request to remove a file. Its persistence is required before unlink. */
+        | (VariantScope & { type: 'artifact.removal_requested'; path: string; kind: 'screenshot' | 'thumbnail' | 'recording' | 'frames' | 'diagnostics' | 'report' | 'partial'; reason: 'passed_attempt_recording' | 'thumbnail_of_removed' | 'lost_recording_partial'; moment: 'attempt_finished' | 'run_finished'; bytes: number; testId?: string; attemptId?: string; sessionId?: string })
+        /** A completed removal, written after unlink succeeded. */
+        | (VariantScope & { type: 'artifact.removed'; path: string; kind: 'screenshot' | 'thumbnail' | 'recording' | 'frames' | 'diagnostics' | 'report' | 'partial'; reason: 'passed_attempt_recording' | 'thumbnail_of_removed' | 'lost_recording_partial'; moment: 'attempt_finished' | 'run_finished'; bytes: number; testId?: string; attemptId?: string; sessionId?: string })
+        /** A requested removal that was refused or failed, so the file is still there. */
+        | (VariantScope & { type: 'artifact.removal_failed'; path: string; kind: 'screenshot' | 'thumbnail' | 'recording' | 'frames' | 'diagnostics' | 'report' | 'partial'; reason: 'passed_attempt_recording' | 'thumbnail_of_removed' | 'lost_recording_partial'; moment: 'attempt_finished' | 'run_finished'; message: string; testId?: string; attemptId?: string; sessionId?: string })
         /**
          * The start marker of one session's diagnostics capture: what it covers, its limits, and the policy the run
          * judges it by, when anything is strict or required. Written once capture has started, before the page's first
@@ -506,6 +597,14 @@ export type EventBody =
             ending?: Ending
             /** The bundle the attempt ran in the end, when its body loaded modules after `test.started` recorded it. */
             bundle?: BundleRecord
+            /**
+             * The host checks of the attempt that never ran, in order, each with the app whose page it would have read: a
+             * skipped or not-run test's, those after a page that could not be read, and those of a body that ended before
+             * its checks. Absent when every check ran, or the test had none, and in runs recorded before it was written.
+             */
+            hostChecksNotRun?: { check: HostCheckRecord; app: string }[]
+            /** The attempt's evidence, apart from its status. Absent in a run that records nothing, and in runs recorded before it. */
+            evidenceStatus?: EvidenceStatus
           })
         | {
             type: 'run.finished'
@@ -516,6 +615,8 @@ export type EventBody =
             counts: Counts
             durationMs: number
             failure?: Failure
+            /** The run's evidence over every attempt. Absent in a run that records nothing, and in runs recorded before it. */
+            evidenceStatus?: RunEvidenceStatus
           }
         | {
             /** Final outcome after reporter shutdown; clocks and test facts remain in run.finished. */
@@ -613,6 +714,9 @@ const actionFields = {
   input: s.optional(s.literal('script')),
   via: s.optional(s.literal('label')),
   touch: s.optional(s.literal(true)),
+  direction: s.optional(s.enum(['up', 'down', 'left', 'right'])),
+  operation: s.optional(s.enum(['wait', 'dismiss', 'dismissFirstRunCard', 'accept'])),
+  button: s.optional(s.string()),
   timeoutMs: s.optional(count),
   callTimeoutMs: s.optional(s.number({ integer: true, min: 1 })),
 }
@@ -635,6 +739,19 @@ const assertionFields = {
   soft: s.optional(s.literal(true)),
 }
 const sentAssertionFields = { ...assertionFields, check: s.optional(checkRecordSchema) }
+const processExitSchema = s.object({ code: s.nullable(s.number({ integer: true })), signal: s.nullable(s.string()) })
+const artifactKinds = ['screenshot', 'thumbnail', 'recording', 'frames', 'diagnostics', 'report', 'partial'] as const
+const removalFields = {
+  path: s.string(),
+  kind: s.enum(artifactKinds),
+  reason: s.enum(['passed_attempt_recording', 'thumbnail_of_removed', 'lost_recording_partial']),
+  moment: s.enum(['attempt_finished', 'run_finished']),
+  testId: s.optional(s.string()),
+  attemptId: s.optional(s.string()),
+  session: s.optional(s.string()),
+  sessionId: s.optional(s.string()),
+  ...variantScope,
+}
 const stateFields = { ...attemptScope, state: s.string(), app: s.string(), target: s.string(), sessionId: s.optional(s.string()) }
 const hostCheckFields = {
   ...attemptScope,
@@ -707,6 +824,8 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     type: s.literal('browser.started'),
     product: s.string(),
     version: s.string(),
+    engine: s.optional(s.enum(['chromium', 'firefox', 'webkit'])),
+    build: s.optional(s.string()),
     userAgent: s.string(),
     pid: processId,
     executablePath: s.string(),
@@ -777,7 +896,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     ...attemptScope,
     owner: s.string(),
     sessions: s.number({ integer: true, min: 1 }),
-    after: s.enum(['contexts_closed', 'browser_closed']),
+    after: s.enum(['contexts_closed', 'browser_closed', 'run_ended']),
   }),
   s.object({
     ...envelope,
@@ -850,8 +969,40 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     message: s.string(),
     sessionId: s.optional(s.string()),
     source: s.optional(captureSourceNameSchema),
-
+    withheld: s.optional(s.enum(['app_rules', 'secret_entry'])),
   }),
+  s.object({
+    ...envelope,
+    type: s.literal('recording.started'),
+    ...attemptScope,
+    sessionId: s.string(),
+    recordingId: s.string(),
+    number: s.number({ integer: true, min: 1 }),
+    source: captureSourceNameSchema,
+    mode: s.enum(['screencast', 'screenshot-loop']),
+    path: s.string(),
+    fps: s.number({ integer: true, min: 1 }),
+    width: s.number({ integer: true, min: 1 }),
+    height: s.number({ integer: true, min: 1 }),
+    codec: s.enum(['h264', 'vp8']),
+    container: s.enum(['mp4', 'webm']),
+    route: s.enum(['decoded', 'encoded']),
+    keepFrames: s.boolean(),
+    startedUs: count,
+  }),
+  s.object({ ...envelope, type: s.literal('recording.finished'), ...attemptScope, sessionId: s.string(), recording: recordingRecordSchema }),
+  s.object({ ...envelope, type: s.literal('media.started'), media: mediaStartedRecordSchema }),
+  s.object({ ...envelope, type: s.literal('media.failed'), start: s.number({ integer: true, min: 1 }), code: s.enum(['media_unavailable', 'encoder_unavailable']), message: s.string() }),
+  s.object({ ...envelope, type: s.literal('media.lost'), pid: processId, start: s.number({ integer: true, min: 1 }), exit: processExitSchema, recordings: count, restart: s.boolean() }),
+  s.object({ ...envelope, type: s.literal('media.closed'), pid: processId, start: s.number({ integer: true, min: 1 }), forced: s.boolean(), exit: s.optional(processExitSchema), problems: s.optional(s.array(s.string())) }),
+  s.object({ ...envelope, type: s.literal('media.leftovers'), previousRunId: s.string(), folder: s.string(), reference: s.string(), status: s.enum(['ok', 'in_use', 'invalid', 'unconfirmed']), removed: s.array(leftoverRecordSchema), skipped: count, problem: s.optional(s.string()) }),
+  s.object({ ...envelope, type: s.literal('capture.withheld'), ...attemptScope, sessionId: s.string(), secret: s.string(), nativeField: s.optional(s.enum(['secure', 'plain', 'unreadable'])), cause: s.enum(['text', 'typed_characters', 'unknown', 'unmasked_while_typed']), fromUs: count, exposedFromUs: s.optional(count) }),
+  s.object({ ...envelope, type: s.literal('capture.resumed'), ...attemptScope, sessionId: s.string(), secret: s.string(), endedBy: s.enum(['nothing_typed', 'field_gone', 'field_empty', 'field_masked', 'new_document', 'session_ended']), reason: s.optional(s.enum(['the field reads back masked', 'the field that received the secret is gone'])), fromUs: count, untilUs: count }),
+  s.object({ ...envelope, type: s.literal('capture.native_entry'), ...attemptScope, sessionId: s.string(), secret: s.string(), nativeField: s.enum(['secure', 'plain', 'unreadable']), branch: s.enum(['typed into a secure field', 'typed into a plain field, pixels kept', 'typed into a plain field, pixels withheld', 'field type unreadable, pixels kept', 'field type unreadable, pixels withheld']), atUs: count }),
+  s.object({ ...envelope, type: s.literal('capture.masked_entry'), ...attemptScope, sessionId: s.string(), secret: s.string(), nativeField: s.optional(s.enum(['secure', 'plain', 'unreadable'])), readBack: s.optional(s.literal('length_matched')), atUs: count }),
+  s.object({ ...envelope, type: s.literal('artifact.removal_requested'), ...removalFields, bytes: count }),
+  s.object({ ...envelope, type: s.literal('artifact.removed'), ...removalFields, bytes: count }),
+  s.object({ ...envelope, type: s.literal('artifact.removal_failed'), ...removalFields, message: s.string() }),
   s.object({
     ...envelope,
     type: s.literal('diagnostics.started'),
@@ -875,6 +1026,8 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     cleanupFailures: s.optional(s.array(failureSchema)),
     ending: s.optional(endingSchema),
     bundle: s.optional(bundleRecordSchema),
+    hostChecksNotRun: s.optional(s.array(s.object({ check: hostCheckRecordSchema, app: s.string() }))),
+    evidenceStatus: s.optional(evidenceStatusSchema),
   }),
   s.object({
     ...envelope,
@@ -886,6 +1039,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
     counts: countsSchema,
     durationMs: duration,
     failure: s.optional(failureSchema),
+    evidenceStatus: s.optional(runEvidenceStatusSchema),
   }),
   s.object({
     ...envelope,

@@ -42,9 +42,22 @@ export class Deadline {
     return Math.max(0, Math.floor(this.#end - this.#clock()))
   }
 
-  /** True once no whole millisecond is left. */
+  /** True once no whole millisecond is left, which on a clock that reads fractions is up to a millisecond before the end. */
   get expired(): boolean {
     return this.remainingMs === 0
+  }
+
+  /** True once the clock reads the end or later: no time at all is left, not even part of a millisecond. */
+  get reached(): boolean {
+    return this.#clock() >= this.#end
+  }
+
+  /**
+   * Time left rounded up, bounded by the largest timer delay. Check `reached` after waiting: floating-point
+   * subtraction can add a fraction to the largest budget, and rounding it past the timer limit would make Node wait 1 ms.
+   */
+  get waitToEndMs(): number {
+    return Math.min(maxTimeout, Math.max(0, Math.ceil(this.#end - this.#clock())))
   }
 
   /** The time left as the timeout of one command, which a timer needs to be at least one millisecond. */

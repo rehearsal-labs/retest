@@ -28,6 +28,7 @@ import {
 import { failureSchema, sourceLocationSchema, type Failure, type SourceLocation } from './failures.ts'
 import { hostCheckResultSchema, type HostCheckResult } from './host-check.ts'
 import { captureSourceNameSchema, type CaptureSourceName } from './identity.ts'
+import { evidenceStatusSchema, recordingRecordSchema, runEvidenceStatusSchema, type EvidenceStatus, type RecordingRecord, type RunEvidenceStatus } from './recording.ts'
 import { s, type Schema } from './schema.ts'
 import { variantSchema, type Variant } from './variant.ts'
 
@@ -85,6 +86,16 @@ export type TestResult = {
    * Absent for a test that never started its body, and in runs recorded before diagnostics.
    */
   diagnostics?: DiagnosticsSummary[]
+  /**
+   * Each app session's recording, in the order they ended, with its evidence status. Absent in a run that records
+   * nothing, and in runs recorded before recordings.
+   */
+  recordings?: RecordingRecord[]
+  /**
+   * The attempt's evidence, apart from `status`: a media failure never changes what the test observed. Absent in a run
+   * that records nothing, where nothing was requested, and in runs recorded before it.
+   */
+  evidenceStatus?: EvidenceStatus
   evidence: Evidence[]
 }
 
@@ -123,6 +134,8 @@ export type RunResult = {
   counts: Counts
   failure?: Failure
   narrowed?: Narrowed
+  /** The run's evidence over every attempt. Absent in a run that records nothing, and in runs recorded before it. */
+  evidenceStatus?: RunEvidenceStatus
   files: FileResult[]
 }
 
@@ -151,6 +164,8 @@ const testResultSchema = s.object({
   cleanups: s.optional(s.array(cleanupRecordSchema)),
   ending: s.optional(endingSchema),
   diagnostics: s.optional(s.array(diagnosticsSummarySchema)),
+  recordings: s.optional(s.array(recordingRecordSchema)),
+  evidenceStatus: s.optional(evidenceStatusSchema),
   evidence: s.array(
     s.object({
       kind: s.literal('screenshot'),
@@ -193,6 +208,7 @@ export const runResultSchema: Schema<RunResult> = s.object({
   narrowed: s.optional(
     s.object({ only: s.array(sourceLocationSchema), kept: s.number({ integer: true, min: 0 }), collected: s.number({ integer: true, min: 0 }) }),
   ),
+  evidenceStatus: s.optional(runEvidenceStatusSchema),
   files: s.array(
     s.object({
       file: s.string(),

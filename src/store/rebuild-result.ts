@@ -2,12 +2,14 @@ import type { DiagnosticsSummary } from '../protocol/diagnostics.ts'
 import type { RetestEvent } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { HostCheckResult } from '../protocol/host-check.ts'
+import type { RecordingRecord } from '../protocol/recording.ts'
 import type { BrowserInfo, FileResult, RunResult, TestResult } from '../protocol/result.ts'
 import type { EventOfType, TestEvent } from '../reporters/run-record.ts'
 import { withFinalBundle } from '../protocol/execution.ts'
 import { failure, withAlso } from '../protocol/failures.ts'
 import { eventsFile, resultFile } from '../protocol/run-folder.ts'
-import { recordEvents, type FileRecord, type TestRecord } from '../reporters/run-record.ts'
+import { recordEvents, type FileRecord, type RunRecord, type TestRecord } from '../reporters/run-record.ts'
+import { attemptEvidence, runEvidence } from '../runner/evidence-status.ts'
 import { countTests } from '../runner/outcome.ts'
 
 /** Thrown when a folder is not a run folder Retest can read. The message says why. */
@@ -32,7 +34,17 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
   if (started === undefined || last === undefined) {
     throw new RunFolderReadError(`${eventsFile} has no run.started event, so the run cannot be rebuilt.`)
   }
-  const files = [...record.files.values()].map((file) => fileResult(file, { endMs: last.elapsedMs, finished: finished !== undefined }))
+  const removed = removedRecordings(record.removals)
+  const files = [...record.files.values()].map((file) => fileResult(file, { endMs: last.elapsedMs, finished: finished !== undefined, removed }))
+  const pending = new Set<string>()
+  for (const event of record.removals) {
+    if (event.type === 'artifact.removal_requested') pending.add(event.path)
+    else pending.delete(event.path)
+  }
+  for (const test of files.flatMap((file) => file.tests)) {
+    if (test.recordings === undefined) continue
+    test.recordings = test.recordings.map((recording) => recording.path !== undefined && pending.has(recording.path) ? { ...recording, removalPending: true } : recording)
+  }
   // A target's further browsers are events of their own; the result lists each target once, by its first.
   const browsers = record.browsers.filter((event) => event.instance === undefined).map(browserInfo)
   const [browser = null] = browsers
@@ -53,6 +65,7 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
     counts: countTests(files),
     failure: missingResult(finished, record.outcome),
     ...narrowed,
+    ...(finished?.evidenceStatus !== undefined ? { evidenceStatus: finished.evidenceStatus } : files.some(file => file.tests.some(test => test.recordings !== undefined)) ? { evidenceStatus: runEvidence(files.flatMap(file => file.tests), [], false) } : {}),
     files,
   }
 }
@@ -92,7 +105,7 @@ function missingResult(finished: EventOfType<'run.finished'> | undefined, outcom
 // A run that finished gave every attempt it chose a test.finished, so a collected test with neither a start nor an end
 // was left out by the selection, test.only included, and the result leaves it out too. A run that stopped early may
 // have chosen it, so it stays, as not run.
-function fileResult(file: FileRecord, { endMs, finished }: { endMs: number; finished: boolean }): FileResult {
+function fileResult(file: FileRecord, { endMs, finished, removed }: { endMs: number; finished: boolean; removed: ReadonlySet<string> }): FileResult {
   const { collection } = file
   if (collection?.type === 'collection.failed') {
     return { file: file.file, collection: 'failed', failure: collection.failure, tests: [] }
@@ -107,7 +120,7 @@ function fileResult(file: FileRecord, { endMs, finished }: { endMs: number; fini
   }
   const failed = file.failed === undefined ? {} : { failure: file.failed.failure }
   const chosen = finished ? file.tests.filter((test) => test.started !== undefined || test.finished !== undefined) : file.tests
-  return { file: file.file, collection: 'ok', ...failed, tests: chosen.map((test) => testResult(test, endMs)) }
+  return { file: file.file, collection: 'ok', ...failed, tests: chosen.map((test) => testResult(test, endMs, removed)) }
 }
 
 function browserInfo(event: EventOfType<'browser.started'>): BrowserInfo {
@@ -115,7 +128,7 @@ function browserInfo(event: EventOfType<'browser.started'>): BrowserInfo {
   return { product, version, executablePath, ...(app === undefined ? {} : { app }), ...(target === undefined ? {} : { target }) }
 }
 
-function testResult(test: TestRecord, endMs: number): TestResult {
+function testResult(test: TestRecord, endMs: number, removed: ReadonlySet<string>): TestResult {
   const { testId, name, file, location, describePath, variant, variantKey, setup } = test
   const described = {
     testId,
@@ -144,12 +157,13 @@ function testResult(test: TestRecord, endMs: number): TestResult {
     return [{ kind: event.kind, path: event.path, ...(app === undefined ? {} : { app }), ...captured, ...identity }]
   })
   const { started, finished } = test
-  const recorded = recordedHostChecks(test.events)
+  const recorded = [...recordedHostChecks(test.events), ...(finished?.hostChecksNotRun ?? []).map(({ check, app }): HostCheckResult => ({ check, app, status: 'not_run' }))]
   // An AI check the run stopped before it ended has no event either, so a rebuilt test never lists one as passed.
   const evaluated = test.events.flatMap((event) => (event.type === 'evaluation.finished' ? [event.evaluation] : []))
   const hostChecks = { ...(recorded.length === 0 ? {} : { hostChecks: recorded }), ...(evaluated.length === 0 ? {} : { evaluations: evaluated }) }
   const attempt = attemptRecords(test)
   const diagnosed = recordedDiagnostics(test, variant !== undefined)
+  const recordings = recordedRecordings(test, removed)
   if (finished !== undefined) {
     return {
       ...described,
@@ -163,6 +177,8 @@ function testResult(test: TestRecord, endMs: number): TestResult {
       ...attempt,
       ...(finished.ending === undefined ? {} : { ending: finished.ending }),
       ...(finished.status === 'not_run' || finished.status === 'skipped' ? {} : diagnosed),
+      ...recordings,
+      ...(finished.evidenceStatus === undefined ? {} : { evidenceStatus: finished.evidenceStatus }),
       evidence,
     }
   }
@@ -179,6 +195,8 @@ function testResult(test: TestRecord, endMs: number): TestResult {
       ...hostChecks,
       ...attempt,
       ...diagnosed,
+      ...recordings,
+      ...(recordings.recordings === undefined ? {} : { evidenceStatus: attemptEvidence(recordings.recordings, []) }),
       evidence,
     }
   }
@@ -226,7 +244,40 @@ function recordedDiagnostics(test: TestRecord, named: boolean): Pick<TestResult,
   return summaries.length === 0 ? {} : { diagnostics: summaries }
 }
 
-// A check the run stopped before it ended has no event, so it is never listed, least of all as passed.
+// Each recording as its recording.finished wrote it, with the retention that removed its video once its attempt passed. A
+// recording that began and has no end was cut off with the run: nothing says its video was finished, so it is listed as
+// unavailable, never as complete.
+function recordedRecordings(test: TestRecord, removed: ReadonlySet<string>): Pick<TestResult, 'recordings'> {
+  const recordings: RecordingRecord[] = []
+  const ended = new Set<string>()
+  for (const event of test.events) {
+    if (event.type !== 'recording.finished') continue
+    ended.add(event.recording.recordingId)
+    const { path } = event.recording
+    recordings.push(path !== undefined && removed.has(path) ? { ...event.recording, removed: 'passed_attempt_recording' } : event.recording)
+  }
+  for (const event of test.events) {
+    if (event.type !== 'recording.started' || ended.has(event.recordingId)) continue
+    const { testId, attemptId, session, sessionId, recordingId, number, source, mode } = event
+    const app = session ?? ''
+    recordings.push({ recordingId, sequence: number, testId, attemptId, app, sessionId, status: 'unavailable', gaps: [{ code: 'run_stopped', message: 'The run stopped before this recording was written down, so nothing says its video was finished.', app, sessionId }], source, mode })
+  }
+  return recordings.length === 0 ? {} : { recordings }
+}
+
+// The recordings retention removed once their attempts passed, by path.
+function removedRecordings(removals: RunRecord['removals']): Set<string> {
+  const removed = new Set<string>()
+  for (const event of removals) {
+    if (event.reason !== 'passed_attempt_recording') continue
+    if (event.type === 'artifact.removed') removed.add(event.path)
+    else if (event.type === 'artifact.removal_failed') removed.delete(event.path)
+  }
+  return removed
+}
+
+// A check the run stopped before it ended has no event, so it is never listed, least of all as passed. A check the attempt
+// never ran is listed by its test.finished, after the checks that ran, as result.json lists it.
 function recordedHostChecks(events: readonly TestEvent[]): HostCheckResult[] {
   return events.flatMap((event): HostCheckResult[] => {
     if (event.type === 'host_check.passed') return [{ check: event.check, app: event.session, status: 'passed' }]

@@ -499,6 +499,78 @@ const parentEvents: EventBody[] = [
     failure: { class: 'setup_failed', message: 'No browser at /opt/chromium.' },
   },
   { type: 'run.outcome', status: 'error', exitCode: 2, complete: false, failure: { class: 'reporting_failed', message: 'The final reporter failed.' } },
+  {
+    type: 'recording.started',
+    ...scope,
+    session: 'web',
+    sessionId: 'attempt-1:web',
+    recordingId: 'attempt-1-1-1',
+    number: 1,
+    source: 'chromium',
+    mode: 'screencast',
+    path: 'artifacts/attempt-1/web-1a2b/recording-1.mp4',
+    fps: 10,
+    width: 1280,
+    height: 720,
+    codec: 'h264',
+    container: 'mp4',
+    route: 'decoded',
+    keepFrames: false,
+    startedUs: 812_000,
+  },
+  {
+    type: 'recording.finished',
+    ...scope,
+    session: 'web',
+    sessionId: 'attempt-1:web',
+    recording: {
+      recordingId: 'attempt-1-1-1',
+      sequence: 1,
+      testId: scope.testId,
+      attemptId: scope.attemptId,
+      app: 'web',
+      sessionId: 'attempt-1:web',
+      status: 'partial',
+      gaps: [{ code: 'pixels_withheld', message: 'The pixel capture policy withheld 4 frames over 1 stretch.', app: 'web', sessionId: 'attempt-1:web' }],
+      path: 'artifacts/attempt-1/web-1a2b/recording-1.mp4',
+      source: 'chromium',
+      mode: 'screencast',
+      video: { codec: 'h264', container: 'mp4', width: 1280, height: 720, fps: 10, outputFrames: 30, durationUs: 3_000_000, placedBy: 'link' },
+      frames: { delivered: 34, sent: 30, dropped: 0, notSent: 0, withheld: 4, refused: 0 },
+      media: { received: 30, shown: 26, superseded: 4, dropped: 0, outOfOrder: 0, outOfRange: 0, undecodable: 0, duplicate: 0, unprocessed: 0 },
+      captureGaps: 1,
+      withheld: { stretches: 1, durationUs: 400_000 },
+      clock: { capture: 'run_us', videoZeroUs: 812_400, durationUs: 3_000_000, shortened: [], shortenedCount: 0 },
+      stoppedBy: 'attempt_ended',
+      finalizeMs: 41,
+    },
+  },
+  {
+    type: 'media.started',
+    media: {
+      pid: 4242,
+      start: 1,
+      version: '0.1.0',
+      protocol: 2,
+      build: { target: 'aarch64-apple-darwin', profile: 'release', revision: 'b59eed5', dirty: true },
+      ffmpeg: '/opt/homebrew/bin/ffmpeg',
+      encoder: { state: 'ready', codec: 'h264', container: 'mp4', encoder: 'libx264', version: '9.0.2' },
+      owner: { pid: 4200, startedAt: 'Tue Oct  6 10:00:01 2026' },
+    },
+  },
+  { type: 'media.failed', start: 1, code: 'media_unavailable', message: 'No media binary is named: set RETEST_MEDIA_BINARY to the retest-media binary.' },
+  { type: 'media.lost', pid: 4242, start: 1, exit: { code: null, signal: 'SIGKILL' }, recordings: 1, restart: true },
+  { type: 'media.closed', pid: 4243, start: 2, forced: false, exit: { code: 0, signal: null } },
+  { type: 'media.leftovers', previousRunId: 'run-0', folder: '/work/.retest/runs/2026-10-06T10-00-00', reference: 'artifacts/attempt-0/web-1a2b/recording-1', status: 'ok', removed: [{ reference: 'artifacts/attempt-0/web-1a2b/recording-1.mp4.partial', kind: 'video_partial', byteLength: 4096 }], skipped: 0 },
+  { type: 'capture.withheld', ...scope, session: 'web', sessionId: 'attempt-1:web', secret: 'password', cause: 'unknown', fromUs: 1_200_000 },
+  { type: 'capture.resumed', ...scope, session: 'web', sessionId: 'attempt-1:web', secret: 'password', endedBy: 'new_document', fromUs: 1_200_000, untilUs: 1_600_000 },
+  { type: 'capture.resumed', ...scope, session: 'desk', sessionId: 'attempt-1:desk', secret: 'password', endedBy: 'field_masked', reason: 'the field reads back masked', fromUs: 1_200_000, untilUs: 1_600_000 },
+  { type: 'capture.resumed', ...scope, session: 'phone', sessionId: 'attempt-1:phone', secret: 'password', endedBy: 'field_gone', reason: 'the field that received the secret is gone', fromUs: 1_200_000, untilUs: 1_600_000 },
+  { type: 'capture.native_entry', ...scope, session: 'phone', sessionId: 'attempt-1:phone', secret: 'password', nativeField: 'plain', branch: 'typed into a plain field, pixels kept', atUs: 1_700_000 },
+  { type: 'capture.masked_entry', ...scope, session: 'web', sessionId: 'attempt-1:web', secret: 'password', atUs: 1_700_000 },
+  { type: 'artifact.removal_requested', path: 'artifacts/attempt-1/web-1a2b/recording-1.mp4', kind: 'recording', reason: 'passed_attempt_recording', moment: 'attempt_finished', bytes: 81920, ...scope, session: 'web', sessionId: 'attempt-1:web' },
+  { type: 'artifact.removed', path: 'artifacts/attempt-1/web-1a2b/recording-1.mp4', kind: 'recording', reason: 'passed_attempt_recording', moment: 'attempt_finished', bytes: 81920, ...scope, session: 'web', sessionId: 'attempt-1:web' },
+  { type: 'artifact.removal_failed', path: 'artifacts/attempt-1/web-1a2b/recording-1.mp4', kind: 'recording', reason: 'passed_attempt_recording', moment: 'attempt_finished', message: 'The file changed before it could be removed.', ...scope, session: 'web', sessionId: 'attempt-1:web' },
 ]
 
 // A child event as the parent writes it: a passed assertion gains the parent's mark.
@@ -541,6 +613,30 @@ describe('events', () => {
 
   test('every sample survives a JSON round trip', () => {
     for (const event of events) roundTrips(retestEventSchema, event)
+  })
+
+  test('native resume reasons are optional, exact and published in the version 1 JSON schema', () => {
+    const reasons = ['the field reads back masked', 'the field that received the secret is gone']
+    const option = toJsonSchema(retestEventSchema).oneOf?.find(option => option.properties?.['type']?.const === 'capture.resumed')
+    assert.ok(option)
+    assert.deepEqual(option.properties?.['reason']?.enum, reasons)
+    assert.equal(option.required?.includes('reason'), false)
+    assert.equal(option.properties?.['schemaVersion']?.const, 1)
+    assert.deepEqual(events.filter(event => event.type === 'capture.resumed' && event.reason !== undefined).map(event => event.type === 'capture.resumed' ? event.reason : undefined), reasons)
+    assert.deepEqual(issues(retestEventSchema, { ...sample('capture.resumed'), reason: 'probably safe' }).map(issue => issue.path), ['$.reason'])
+  })
+
+  test('native entry branches are exact, versioned and contain no private value', () => {
+    const branches = ['typed into a secure field', 'typed into a plain field, pixels kept', 'typed into a plain field, pixels withheld', 'field type unreadable, pixels kept', 'field type unreadable, pixels withheld']
+    const option = toJsonSchema(retestEventSchema).oneOf?.find(option => option.properties?.['type']?.const === 'capture.native_entry')
+    assert.ok(option)
+    assert.deepEqual(option.properties?.['branch']?.enum, branches)
+    assert.equal(option.properties?.['schemaVersion']?.const, 1)
+    for (const branch of branches) roundTrips(retestEventSchema, { ...sample('capture.native_entry'), branch })
+    assert.deepEqual(issues(retestEventSchema, { ...sample('capture.native_entry'), branch: 'probably masked' }).map(issue => issue.path), ['$.branch'])
+    assert.deepEqual(issues(retestEventSchema, { ...sample('capture.native_entry'), value: 'private' }).map(issue => issue.path), ['$.value'])
+    roundTrips(retestEventSchema, { ...sample('capture.masked_entry'), nativeField: 'secure', readBack: 'length_matched' })
+    assert.deepEqual(issues(retestEventSchema, { ...sample('capture.masked_entry'), readBack: 'assumed' }).map(issue => issue.path), ['$.readBack'])
   })
 
   test('malformed events are rejected with the path to the problem', () => {
@@ -1137,6 +1233,20 @@ test('protocol modules import only each other', () => {
     const source = readFileSync(new URL(file, directory), 'utf8')
     for (const [, specifier] of source.matchAll(/(?:from|import)\s*\(?\s*'([^']+)'/g)) {
       assert.match(specifier ?? '', /^\.\/[a-z-]+\.ts$/, `${file} imports ${specifier}`)
+    }
+  }
+})
+
+test('native secret pixel branches and masked proof are additive version 1 records with closed values', () => {
+  for (const nativeField of ['secure', 'plain', 'unreadable'] as const) {
+    for (const entry of [
+      { type: 'capture.masked_entry', ...scope, session: 'phone', sessionId: 'attempt-1:phone', secret: 'password', atUs: 1 },
+      { type: 'capture.withheld', ...scope, session: 'phone', sessionId: 'attempt-1:phone', secret: 'password', cause: 'unknown', fromUs: 1 },
+    ]) {
+      const event = { ...stamp, ...entry }
+      roundTrips(retestEventSchema, event)
+      roundTrips(retestEventSchema, { ...event, nativeField })
+      assert.ok(issues(retestEventSchema, { ...event, nativeField: 'assumed-secure' }).length > 0)
     }
   }
 })

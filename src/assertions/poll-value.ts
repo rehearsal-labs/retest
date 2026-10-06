@@ -39,15 +39,20 @@ export async function pollValue(options: ValuePoll): Promise<void> {
   let attempts = 0
   let last: Exclude<Look, { kind: 'late' }> | undefined
   for (;;) {
-    const delay = smallestBudget(waitBefore(attempts, options.intervals), deadline.remainingMs)
+    const waitToEndMs = deadline.waitToEndMs
+    const delay = smallestBudget(waitBefore(attempts, options.intervals), waitToEndMs)
     if (delay > 0) await sleep(delay)
+    // A timer can fire early. A pause cut to the end must finish before the final read starts.
+    if (delay > 0 && delay === waitToEndMs) {
+      while (!deadline.reached) await sleep(deadline.waitToEndMs)
+    }
     const look = await readOnce(options, deadline)
     attempts++
     if (look.kind === 'late') break
     last = look
     if (look.kind === 'threw' && look.error instanceof RetestError) break
     if (look.kind === 'value' && check.mismatch(look.value) === undefined) break
-    if (deadline.expired) break
+    if (deadline.reached) break
   }
   const fields: AssertionFields = {
     testId: run.testId,
@@ -103,7 +108,12 @@ async function readOnce({ run, stepId, read }: ValuePoll, deadline: Deadline): P
     (value): Look => ({ kind: 'value', value }),
     (error: unknown): Look => ({ kind: 'threw', error }),
   )
-  const late = run.time.sleep(deadline.remainingMs, stop.signal).then(
+  const waitForEnd = async (): Promise<void> => {
+    do {
+      await run.time.sleep(Math.max(1, deadline.waitToEndMs), stop.signal)
+    } while (!deadline.reached)
+  }
+  const late = waitForEnd().then(
     (): Look => ({ kind: 'late' }),
     (): Look => ({ kind: 'late' }),
   )

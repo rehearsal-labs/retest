@@ -12,7 +12,6 @@ import { recordedTitle } from '../protocol/page-facts.ts'
 import { isPlainObject } from '../protocol/schema.ts'
 import { listWords } from '../shared/list-words.ts'
 import { readScrollArgument, readSelectArgument } from './action-arguments.ts'
-import { readCallOptions } from './call-options.ts'
 import { formatValue } from './format-value.ts'
 import { cssRecipe, pickedRecipe, roleRecipe, scopedRecipe, testIdRecipe, textRecipe } from './locator-recipes.ts'
 import { misuse } from './misuse.ts'
@@ -141,7 +140,7 @@ export class AppPage implements Page<true> {
   }
 
   async #look(location: SourceLocation | undefined, timeoutMs: number): Promise<PageObservation> {
-    const result = await this.#run.observePage(this.#app, timeoutMs, location)
+    const result = await this.#run.readPage(this.#app, timeoutMs, location)
     if (!result.ok) throw this.#run.fail(withLocation(result.failure, location))
     if (result.kind !== 'observePage') throw new Error(`Retest answered a look at the page with ${result.kind}`)
     return result.observation
@@ -304,9 +303,7 @@ export class AppKeyboard implements NativeKeyboard<'ios-simulator'> {
 
   #native(operation: 'wait' | 'dismiss' | 'dismissFirstRunCard', options: unknown): Promise<void> {
     const { run, app } = this.#target
-    const location = run.location()
-    refuseOptions(`keyboard.${operation}`, options, run)
-    return run.action(app, { kind: 'nativeKeyboard', operation }, location, options)
+    return run.action(app, { kind: 'nativeKeyboard', operation }, run.location(), options)
   }
 }
 
@@ -333,7 +330,6 @@ export class AppAlert implements Alert {
     if (typeof button !== 'string' || button.trim() === '') {
       throw misuse(`alert.${operation}() takes the label of the button to press, word for word, received ${formatValue(button)}.`, run)
     }
-    refuseOptions(`alert.${operation}`, options, run)
     return run.action(app, { kind: 'nativeAlert', operation, button }, location, options)
   }
 }
@@ -382,13 +378,6 @@ function swipe({ run, app, recipe }: InputTarget, direction: unknown, options: u
 
 function isSwipeDirection(value: unknown): value is SwipeDirection {
   return swipeDirections.has(value)
-}
-
-// The run reads an action's options under its command's kind, which for the keyboard's controls and the alert answers
-// is not what the test wrote, so they are read first under the call's own name.
-function refuseOptions(call: string, options: unknown, run: TestRun): void {
-  const read = readCallOptions(call, options)
-  if (!read.ok) throw misuse(read.problem, run)
 }
 
 // A string is a CSS selector. An object is a native step written as data, read by the rules of the finder it names and

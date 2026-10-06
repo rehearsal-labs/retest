@@ -20,7 +20,8 @@ export type FillValue = string | SecretRef
  * `scrollProblem` checks: at the element's centre, or without a locator at the viewport's. `hover` moves the mouse to
  * the element's centre. `observe` reads a locator's elements once, and `observePage` the page's address and title.
  * With `after`, a look first waits until the page's document has changed since `after.changes`, as the page counts
- * its changes, or until `after.waitMs` have passed, and never past its own time.
+ * its changes, or until `after.waitMs` have passed, and never past its own time. `check` marks a look a check sends
+ * while it polls, which reports an assertion once it ends; a plain read, such as `page.url()`, sends none.
  */
 export type PageCommand =
   | { kind: 'goto'; url: string }
@@ -39,8 +40,8 @@ export type PageCommand =
   | { kind: 'swipe'; locator?: LocatorRecipe; direction: 'up' | 'down' | 'left' | 'right' }
   | { kind: 'nativeKeyboard'; operation: 'dismiss' | 'dismissFirstRunCard' | 'wait' }
   | { kind: 'nativeAlert'; operation: 'accept' | 'dismiss'; button?: string }
-  | { kind: 'observe'; locator: LocatorRecipe; after?: ObserveAfter }
-  | { kind: 'observePage'; after?: ObserveAfter }
+  | { kind: 'observe'; locator: LocatorRecipe; after?: ObserveAfter; check?: true }
+  | { kind: 'observePage'; after?: ObserveAfter; check?: true }
 
 /** What an `observe` waits for first: a change after the page's `changes` count, or `waitMs`, whichever comes first. */
 export type ObserveAfter = { changes: number; waitMs: number }
@@ -166,8 +167,8 @@ export const pageCommandSchema: Schema<PageCommand> = s.discriminatedUnion('kind
   s.object({ kind: s.literal('swipe'), locator: s.optional(locatorRecipeSchema), direction: s.enum(['up', 'down', 'left', 'right']) }),
   s.object({ kind: s.literal('nativeKeyboard'), operation: s.enum(['dismiss', 'dismissFirstRunCard', 'wait']) }),
   s.object({ kind: s.literal('nativeAlert'), operation: s.enum(['accept', 'dismiss']), button: s.optional(s.string()) }),
-  s.object({ kind: s.literal('observe'), locator: locatorRecipeSchema, after }),
-  s.object({ kind: s.literal('observePage'), after }),
+  s.object({ kind: s.literal('observe'), locator: locatorRecipeSchema, after, check: s.optional(s.literal(true)) }),
+  s.object({ kind: s.literal('observePage'), after, check: s.optional(s.literal(true)) }),
 ])
 
 export const actionKindSchema: Schema<ActionKind> = s.enum([
@@ -282,7 +283,7 @@ export function describeCommand(command: PageCommand): string {
     case 'nativeKeyboard':
       return `page.keyboard.${command.operation}()`
     case 'nativeAlert':
-      return `page.alert.${command.operation}()`
+      return `page.alert.${command.operation}(${command.button === undefined ? '' : stringLiteral(command.button)})`
     case 'observe':
       return `a look at ${describeLocator(command.locator)}`
     case 'observePage':

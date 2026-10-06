@@ -138,13 +138,13 @@ export type RequirementRecord = { version: string; sha256: string; checks: Requi
 export type BackendData = 'prepared' | 'reused' | 'external' | 'unavailable'
 
 /**
- * Where an app of an attempt started: its browser storage, new, restored from a saved state, which it names, or reused
- * from the data folder its Electron target names, which earlier launches may have changed; and its backend data as the
- * host declared it.
+ * Where an app of an attempt started: its browser storage, new, restored from a saved state, which it names, reused
+ * from the data folder its Electron target names, which earlier launches may have changed, or `none` for a native app,
+ * which has no browser storage and says what its relaunch resets in `native`; and its backend data as the host declared it.
  */
 export type NativeStartingState = { appData: 'reset' | 'kept'; keychain: 'reset' | 'kept'; boundary: string; appReset?: true; notIsolated: string[] }
 
-export type StartingState = { app: string; browserStorage?: 'fresh' | 'saved' | 'reused'; native?: NativeStartingState; state?: string; backendData: BackendData }
+export type StartingState = { app: string; browserStorage: 'fresh' | 'saved' | 'reused' | 'none'; native?: NativeStartingState; state?: string; backendData: BackendData }
 
 /**
  * The identity of one attempt's execution, as the parent recorded it before the attempt's first action: the bundle
@@ -311,7 +311,7 @@ export const executionRecordSchema: Schema<ExecutionRecord> = s.object({
   owner: s.optional(s.string()),
   appBuilds: s.optional(s.record(s.string())),
   requirement: s.optional(s.object({ version: s.string(), sha256: hex, checks: s.array(requirementCheckSchema) })),
-  startingState: s.array(s.object({ app: s.string(), browserStorage: s.optional(s.enum(['fresh', 'saved', 'reused'])), native: s.optional(nativeStartingStateSchema), state: s.optional(s.string()), backendData: backendDataSchema })),
+  startingState: s.array(s.object({ app: s.string(), browserStorage: s.enum(['fresh', 'saved', 'reused', 'none']), native: s.optional(nativeStartingStateSchema), state: s.optional(s.string()), backendData: backendDataSchema })),
   unavailable: s.optional(names),
 })
 

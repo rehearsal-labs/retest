@@ -84,6 +84,20 @@ const eventIdentity: Readonly<Record<string, readonly IdentityKey[]>> = {
   'test.finished': ['testId', 'attemptId'],
   'run.finished': [],
   'run.outcome': [],
+  'recording.started': ['testId', 'attemptId', 'sessionId'],
+  'recording.finished': ['testId', 'attemptId', 'sessionId'],
+  'media.started': [],
+  'media.failed': [],
+  'media.lost': [],
+  'media.closed': [],
+  'media.leftovers': [],
+  'capture.withheld': ['testId', 'attemptId', 'sessionId'],
+  'capture.resumed': ['testId', 'attemptId', 'sessionId'],
+  'capture.native_entry': ['testId', 'attemptId', 'sessionId'],
+  'capture.masked_entry': ['testId', 'attemptId', 'sessionId'],
+  'artifact.removal_requested': ['testId', 'attemptId', 'sessionId'],
+  'artifact.removed': ['testId', 'attemptId', 'sessionId'],
+  'artifact.removal_failed': ['testId', 'attemptId', 'sessionId'],
 }
 
 const identityKeys: readonly IdentityKey[] = ['testId', 'attemptId', 'app', 'sessionId', 'observationId']
@@ -107,8 +121,8 @@ describe('the record identity', () => {
   })
 
   test('a capture source is Chromium or one of the native session sources, by name', () => {
-    for (const name of ['chromium', 'executor-screen', 'simulator-display', 'window-crop']) assert.equal(parse(captureSourceNameSchema, name).ok, true, name)
-    for (const name of ['firefox', 'webkit', 'screen', '']) assert.equal(parse(captureSourceNameSchema, name).ok, false, name)
+    for (const name of ['chromium', 'firefox', 'webkit', 'executor-screen', 'simulator-display', 'window-crop']) assert.equal(parse(captureSourceNameSchema, name).ok, true, name)
+    for (const name of ['safari', 'gecko', 'screen', '']) assert.equal(parse(captureSourceNameSchema, name).ok, false, name)
   })
 
   test('every event type carries the identity keys its writer knows, and no others', () => {
@@ -198,6 +212,22 @@ describe('schema samples of the identity on each record', () => {
     { ...stamp, type: 'evidence.failed', ...scope, ...session, kind: 'screenshot', reason: 'failure', message: 'The browser was gone, so Retest took no screenshot.', source: 'chromium' },
   ]
 
+  test('native entry decisions retain exact attempt and session identity', () => {
+    const entry: RetestEvent = { ...stamp, type: 'capture.native_entry', ...scope, ...session, secret: 'password', nativeField: 'secure', branch: 'typed into a secure field', atUs: 10 }
+    roundTrips(entry)
+    assert.deepEqual(identityKeys.filter(key => key in entry), eventIdentity['capture.native_entry'])
+    assert.deepEqual(refusedPaths(retestEventSchema, { ...entry, observationId: 'o1' }), ['$.observationId'])
+  })
+
+  test('both native resume reasons keep the attempt and session identity in version 1', () => {
+    for (const reason of ['the field reads back masked', 'the field that received the secret is gone'] as const) {
+      const resumed: RetestEvent = { ...stamp, type: 'capture.resumed', ...scope, ...session, secret: 'password', endedBy: reason === 'the field reads back masked' ? 'field_masked' : 'field_gone', reason, fromUs: 10, untilUs: 20 }
+      roundTrips(resumed)
+      assert.deepEqual(identityKeys.filter(key => key in resumed), eventIdentity['capture.resumed'])
+      assert.deepEqual(refusedPaths(retestEventSchema, { ...resumed, observationId: 'o1' }), ['$.observationId'])
+    }
+  })
+
   test('each sample is a version 1 event and survives a JSON round trip', () => {
     for (const sample of samples) roundTrips(sample)
   })
@@ -205,7 +235,7 @@ describe('schema samples of the identity on each record', () => {
   test('a capture source that is not one, or a time before the run, is refused', () => {
     const captured = samples.find((sample) => sample.type === 'evidence.captured')
     assert.ok(captured)
-    assert.deepEqual(refusedPaths(retestEventSchema, { ...captured, source: 'webkit' }), ['$.source'])
+    assert.deepEqual(refusedPaths(retestEventSchema, { ...captured, source: 'safari' }), ['$.source'])
     assert.deepEqual(refusedPaths(retestEventSchema, { ...captured, capturedElapsedMs: -1 }), ['$.capturedElapsedMs'])
     assert.deepEqual(refusedPaths(retestEventSchema, { ...captured, capturedElapsedMs: 1.5 }), ['$.capturedElapsedMs'])
   })

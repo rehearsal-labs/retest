@@ -198,7 +198,7 @@ export class TestRun {
   action(app: string, command: ActionCommand, location: SourceLocation | undefined, options?: unknown): Operation<void> {
     const work = { label: describeCommand(command), location }
     const operation = this.#track<void>('action', work)
-    const read = readCallOptions(command.kind, options)
+    const read = readCallOptions(calledMethod(command), options)
     if (!read.ok) {
       operation.reject(this.#refusal() ?? this.fail(failure('usage', read.problem, location)))
       return operation
@@ -230,18 +230,34 @@ export class TestRun {
     return operation
   }
 
-  /** Reads an app's page once for an assertion. With `after`, the page first waits for its next change, or `after.waitMs`. */
+  /**
+   * Reads an app's page once for an assertion. With `after`, the page first waits for its next change, or `after.waitMs`.
+   * The look is marked as a check's, so the parent knows an assertion will report on it.
+   */
   observe(app: string, locator: LocatorRecipe, timeoutMs: number, location: SourceLocation | undefined, after?: ObserveAfter): Promise<CommandResult> {
     const refusal = this.#refusal()
     if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
-    return this.#send(app, { kind: 'observe', locator, ...(after === undefined ? {} : { after }) }, { timeoutMs, location })
+    return this.#send(app, { kind: 'observe', locator, ...(after === undefined ? {} : { after }), check: true }, { timeoutMs, location })
   }
 
-  /** Reads an app's page once for an assertion: its address and title. With `after`, the page first waits for its next change. */
+  /**
+   * Reads an app's page once for an assertion: its address and title. With `after`, the page first waits for its next
+   * change. The look is marked as a check's, as `observe` marks its own.
+   */
   observePage(app: string, timeoutMs: number, location: SourceLocation | undefined, after?: ObserveAfter): Promise<CommandResult> {
     const refusal = this.#refusal()
     if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
-    return this.#send(app, { kind: 'observePage', ...(after === undefined ? {} : { after }) }, { timeoutMs, location })
+    return this.#send(app, { kind: 'observePage', ...(after === undefined ? {} : { after }), check: true }, { timeoutMs, location })
+  }
+
+  /**
+   * Reads an app's page once outside any check, its address and title, as `page.url()` and `page.title()` do inside
+   * `read`. No assertion follows such a look, so it is not marked as a check's.
+   */
+  readPage(app: string, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
+    const refusal = this.#refusal()
+    if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
+    return this.#send(app, { kind: 'observePage' }, { timeoutMs, location })
   }
 
   /**
@@ -467,6 +483,21 @@ export class TestRun {
 
 function capitalize(text: string): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}`
+}
+
+// An action's options are refused under the method the test called. A press with no element came from the keyboard,
+// and the keyboard's own controls and an alert's answers are commands whose kind no test writes.
+function calledMethod(command: ActionCommand): string {
+  switch (command.kind) {
+    case 'press':
+      return command.locator === undefined ? 'keyboard.press' : 'press'
+    case 'nativeKeyboard':
+      return `keyboard.${command.operation}`
+    case 'nativeAlert':
+      return `alert.${command.operation}`
+    default:
+      return command.kind
+  }
 }
 
 function lineOrNull(location: SourceLocation | undefined): string | null {

@@ -1,8 +1,36 @@
 export type { AppHandle, Apps, TestBody, TestContext } from './api/apps.ts'
 export type { CallOptions } from './api/call-options.ts'
-export type { EvaluateCheck, EvaluateOptions, EvidenceFor, RecordingEvidence, ScreenshotEvidence, TextEvidence } from './api/evaluate.ts'
+export type {
+  AbsenceRequirement,
+  DiagnosticsFor,
+  EvaluateCheck,
+  EvaluateOptions,
+  EvidenceFor,
+  EvidenceItem,
+  RecordingEvidence,
+  ScreenshotEvidence,
+  TextEvidence,
+  TextRecordsEvidence,
+} from './api/evaluate.ts'
 export type { KeyArgument } from './api/key-argument.ts'
-export type { ElectronPage, Finders, Keyboard, Locator, NativeLocator, NativePage, OptionChoice, Page, RoleOptions, ScrollDelta, TextOptions } from './api/page.ts'
+export type {
+  Alert,
+  ElectronPage,
+  Finders,
+  Keyboard,
+  Locator,
+  NativeKeyboard,
+  NativeLocator,
+  NativeLocatorStep,
+  NativePage,
+  NativeStepPick,
+  OptionChoice,
+  Page,
+  RoleOptions,
+  ScrollDelta,
+  SwipeDirection,
+  TextOptions,
+} from './api/page.ts'
 export { secret } from './api/secret.ts'
 export type { Secret } from './api/secret.ts'
 export { test } from './api/test.ts'

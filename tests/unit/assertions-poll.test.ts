@@ -19,6 +19,33 @@ function reading<T>(first: T, ...later: T[]): { read: () => T; reads: () => numb
 }
 
 describe('expect.poll', () => {
+  for (const earlyMs of [0, 0.6, 0.9]) {
+    check(`reads at or after its fractional-clock deadline when waits fire ${earlyMs} ms early`, async () => {
+      const clock = manualTime()
+      let spent = 0
+      const looks: number[] = []
+      const time = { now: () => clock.now() + spent, sleep: (ms: number, signal?: AbortSignal) => clock.sleep(Math.max(0, ms - earlyMs), signal) }
+      const { runPage } = inProcessRun(file, page, { time })
+      const verdict = await clock.runUntil(runPage(() => expect.poll(() => {
+        looks.push(time.now())
+        spent += earlyMs === 0.9 ? 0.2 : 0.1
+        return 'Saving'
+      }, { timeout: 120 }).toBe('Saved')))
+      assert.equal(verdict.failure?.class, 'check_failed')
+      assert.ok((looks.at(-1) ?? 0) >= 120, `last read at ${looks.at(-1)}: ${looks.join(', ')}`)
+      assert.ok(time.now() < 122, `the wait ended at ${time.now()}`)
+    })
+  }
+
+  check('a pending read is timed out only once the exact deadline is reached, even with early timers', async () => {
+    const clock = manualTime()
+    const time = { now: clock.now, sleep: (ms: number, signal?: AbortSignal) => clock.sleep(Math.max(0, ms - 0.6), signal) }
+    const { runPage } = inProcessRun(file, page, { time })
+    const verdict = await clock.runUntil(runPage(() => expect.poll(() => new Promise<number>(() => {}), { timeout: 120 }).toBe(1)))
+    assert.equal(verdict.failure?.class, 'timeout')
+    assert.ok(time.now() >= 120 && time.now() < 121, `timed out at ${time.now()}`)
+  })
+
   check('reads again until the value passes, and reports one assertion with its looks', async () => {
     const status = reading(404, 404, 200)
     const { runPage, events, commands } = inProcessRun(file, page)
