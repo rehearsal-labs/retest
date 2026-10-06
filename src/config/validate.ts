@@ -2,8 +2,9 @@ import type { Failure } from '../protocol/failures.ts'
 import type { Path } from '../protocol/schema.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
-import type { LoadedSecret, LoadedApp, LoadedConfig } from './loaded.ts'
+import type { LoadedApp, LoadedConfig } from './loaded.ts'
 import type { ConfigIssue } from './problems.ts'
+import type { BaseUrlHost, SecretDestinations } from './read-secrets.ts'
 import { dirname, resolve } from 'node:path'
 import { readDiagnostics } from '../diagnostics/policy.ts'
 import { tagOperators } from '../protocol/names.ts'
@@ -13,11 +14,12 @@ import { variantKey } from '../protocol/variant.ts'
 import { configKey, Problems } from './problems.ts'
 import { readApps } from './read-apps.ts'
 import { readEvaluation } from './read-evaluation.ts'
+import { readPixels, readRecording } from './read-recording.ts'
 import { readSecrets } from './read-secrets.ts'
 
 export type ConfigResult = { ok: true; config: LoadedConfig } | { ok: false; failure: Failure }
 
-const configKeys = new Set(['apps', 'defaultApp', 'runs', 'secrets', 'secretOrigins', 'testIds', 'tags', 'states', 'locks', 'timeouts', 'evaluation', 'diagnostics'])
+const configKeys = new Set(['apps', 'defaultApp', 'runs', 'secrets', 'secretOrigins', 'testIds', 'tags', 'states', 'locks', 'timeouts', 'evaluation', 'diagnostics', 'recording', 'pixels'])
 const namesSchema = s.array(s.string())
 const runsSchema = s.array(s.record(s.string()))
 const testIdsSchema = s.union([s.record(s.string()), s.array(s.string())])
@@ -49,7 +51,7 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
   const apps = readApps(value['apps'], { problems, folder: dirname(file) })
   const defaultApp = readDefaultApp(value['defaultApp'], declaredApps, problems)
   const runs = readRuns(value['runs'], { declaredApps, apps, problems })
-  const secrets = readDestinationSecrets(value['secrets'], value['secretOrigins'], problems, [...apps.values()].some((app) => [...app.targets.values()].some((target) => 'platform' in target)))
+  const secrets = readSecrets(value['secrets'], value['secretOrigins'], problems, secretDestinations(apps))
   if (value['testIds'] !== undefined) problems.check(testIdsSchema, value['testIds'], ['testIds'])
   const tags = readNames(value['tags'], ['tags'], problems)
   for (const [index, tag] of (tags ?? []).entries()) {
@@ -60,6 +62,8 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
   const timeouts = readTimeouts(value['timeouts'], problems)
   const evaluation = readEvaluation(value['evaluation'], file, problems)
   const diagnostics = readDiagnostics(value['diagnostics'], problems)
+  const pixels = readPixels(value['pixels'], problems, declaredApps)
+  const recording = readRecording(value['recording'], problems, declaredApps, pixels ?? new Map())
   return {
     file,
     apps,
@@ -72,6 +76,8 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
     timeouts,
     ...(evaluation === undefined ? {} : { evaluation }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
+    ...(recording === undefined ? {} : { recording }),
+    ...(pixels === undefined || pixels.size === 0 ? {} : { pixels }),
   }
 }
 
@@ -166,18 +172,14 @@ function withoutUndefined(value: unknown, seen: WeakSet<object>): unknown {
   return Object.fromEntries(kept.map(([key, entry]) => [key, withoutUndefined(entry, seen)]))
 }
 
-// Native destinations are exact bundle identifiers. HTTP origins keep the existing web validation.
-function readDestinationSecrets(sources: unknown, origins: unknown, problems: Problems, nativeTargets: boolean): Map<string, LoadedSecret> {
-  if (!nativeTargets || !isPlainObject(origins)) return readSecrets(sources, origins, problems)
-  const native = new Map<string, string[]>()
-  const web: Record<string, unknown> = {}
-  for (const [name, listed] of Object.entries(origins)) {
-    if (!Array.isArray(listed)) { web[name] = listed; continue }
-    const bundles = listed.filter((entry): entry is string => typeof entry === 'string' && /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(entry))
-    native.set(name, bundles)
-    web[name] = listed.filter((entry) => !bundles.includes(entry))
+// A native app's destination is its exact bundle id, which only a config with a native app reads; HTTP origins keep
+// the web validation. The hosts of the config's own base URLs are never read as bundle ids.
+function secretDestinations(apps: ReadonlyMap<string, LoadedApp>): SecretDestinations {
+  const bundles = [...apps.values()].some((app) => [...app.targets.values()].some((target) => 'platform' in target))
+  const hosts = new Map<string, BaseUrlHost>()
+  for (const app of apps.values()) {
+    const url = app.baseUrl === undefined ? null : URL.parse(app.baseUrl)
+    if (url !== null && url.hostname !== '' && !hosts.has(url.hostname)) hosts.set(url.hostname, { app: configKey(['apps', app.name]), origin: url.origin })
   }
-  const loaded = readSecrets(sources, web, problems)
-  for (const [name, secret] of loaded) loaded.set(name, { ...secret, origins: [...secret.origins, ...(native.get(name) ?? [])] })
-  return loaded
+  return { bundles, hosts }
 }

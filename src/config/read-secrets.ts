@@ -5,16 +5,28 @@ import type { SecretContext } from './types.ts'
 import { describeChoices, describeValue, isPlainObject, s } from '../protocol/schema.ts'
 import { readOrigin } from '../protocol/url.ts'
 
+/** The origin of a base URL in the config, and the key of the app that has it, as messages name it. */
+export type BaseUrlHost = { readonly app: string; readonly origin: string }
+
+/**
+ * How `secretOrigins` reads an entry that is not an origin. With `bundles`, as in a config with a native app, a
+ * dotted name is a bundle id unless it is surely a host; `hosts` maps the hosts of the config's base URLs.
+ */
+export type SecretDestinations = { readonly bundles: boolean; readonly hosts: ReadonlyMap<string, BaseUrlHost> }
+
 const envName = /^[A-Za-z_][A-Za-z0-9_]*$/
 const envSecretSchema = s.object({ env: s.string() })
 const secretOriginsSchema = s.record(s.array(s.string()))
+const bundleShape = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/
+const ipAddress = /^\d{1,3}(?:\.\d{1,3}){3}$/
+const webOnly: SecretDestinations = { bundles: false, hosts: new Map() }
 
 /** Reads `secrets` and `secretOrigins` together, since each origin list belongs to a declared secret. */
-export function readSecrets(secrets: unknown, secretOrigins: unknown, problems: Problems): Map<string, LoadedSecret> {
+export function readSecrets(secrets: unknown, secretOrigins: unknown, problems: Problems, destinations: SecretDestinations = webOnly): Map<string, LoadedSecret> {
   const loaded = new Map<string, LoadedSecret>()
   if (secrets !== undefined && !isPlainObject(secrets)) problems.add(['secrets'], `expected object, received ${kindOf(secrets)}`)
   const declared = isPlainObject(secrets) ? secrets : {}
-  const origins = readSecretOrigins(secretOrigins, Object.keys(declared), problems)
+  const origins = readSecretOrigins(secretOrigins, { secrets: Object.keys(declared), destinations }, problems)
   for (const [name, source] of Object.entries(declared)) {
     const path = ['secrets', name]
     if (!problems.checkName(path, name)) continue
@@ -53,7 +65,10 @@ function reader(name: string, source: Function): (context: SecretContext) => Pro
   }
 }
 
-function readSecretOrigins(value: unknown, secrets: readonly string[], problems: Problems): Map<string, string[]> {
+type OriginsContext = { readonly secrets: readonly string[]; readonly destinations: SecretDestinations }
+
+// Each entry is checked at its own index. A secret's web origins come first and its bundle ids after them.
+function readSecretOrigins(value: unknown, { secrets, destinations }: OriginsContext, problems: Problems): Map<string, string[]> {
   const origins = new Map<string, string[]>()
   if (value === undefined) return origins
   const parsed = problems.check(secretOriginsSchema, value, ['secretOrigins'])
@@ -64,14 +79,32 @@ function readSecretOrigins(value: unknown, secrets: readonly string[], problems:
       problems.add(path, `unknown secret, ${known}`)
       continue
     }
-    origins.set(name, list.flatMap((text, index) => checkOrigin(text, [...path, index], problems)))
+    const web: string[] = []
+    const bundles: string[] = []
+    for (const [index, text] of list.entries()) {
+      const origin = readOrigin(text)
+      if (origin !== undefined) web.push(origin)
+      else if (destinations.bundles && bundleShape.test(text)) bundles.push(...checkBundle(text, [...path, index], destinations.hosts, problems))
+      else problems.add([...path, index], `expected an origin such as https://example.com, received ${describeValue(text)}`)
+    }
+    origins.set(name, [...web, ...bundles])
   }
   return origins
 }
 
-function checkOrigin(text: string, path: Path, problems: Problems): string[] {
-  const origin = readOrigin(text)
-  if (origin !== undefined) return [origin]
-  problems.add(path, `expected an origin such as https://example.com, received ${describeValue(text)}`)
+// A native app's destination is its bundle id, which has dots and no scheme, as a host name has: nothing in the letters
+// tells `com.example.tasks` from `auth.example.com`, and an installed app's id is read only once a run opens it. So a
+// dotted name is kept as a bundle id, which a native app takes only when its installed id is exactly that, and which a
+// web page never takes. Two kinds of name are surely hosts, and are refused as origins written without their scheme:
+// the host of one of the config's base URLs, and an IP address, four numbers, which no developer's domain reverses to.
+function checkBundle(text: string, path: Path, hosts: ReadonlyMap<string, BaseUrlHost>, problems: Problems): string[] {
+  const host = hosts.get(text.toLowerCase())
+  const received = describeValue(text)
+  const problem =
+    host !== undefined ? `expected an origin such as ${host.origin}, received ${received}, the host of the base URL of ${host.app} rather than a bundle id`
+    : ipAddress.test(text) ? `expected an origin such as http://${text}, received ${received}, an IP address rather than a bundle id`
+    : undefined
+  if (problem === undefined) return [text]
+  problems.add(path, problem)
   return []
 }

@@ -80,13 +80,16 @@ export type ChromiumTarget = ChromiumOptions & { readonly browser: 'chromium' }
 export type ChromeTarget = BrandedOptions & { readonly browser: 'chrome' }
 export type EdgeTarget = BrandedOptions & { readonly browser: 'edge' }
 /**
- * Firefox. Retest has no Firefox driver yet: the config accepts the target, and a run refuses every test that needs
- * it before starting anything for that test.
+ * Firefox, driven over WebDriver BiDi on macOS on Apple silicon. Without `executablePath` a run uses the pinned build in
+ * Retest's cache, when one is there, or Firefox where macOS installs it. A Firefox target takes a viewport; a proxy, or
+ * a device or emulation beyond a viewport at a pixel ratio of 1, fails the test's setup by name.
  */
 export type FirefoxTarget = EngineOptions & { readonly browser: 'firefox' }
 /**
- * A WebKit build. Retest has no WebKit driver yet: the config accepts the target, and a run refuses every test that
- * needs it before starting anything for that test.
+ * Playwright's WebKit build, driven over its inspector pipe on macOS. `executablePath` names the unpacked build's folder
+ * or the executable inside it, and falls back to the RETEST_WEBKIT_BUILD environment variable; Retest looks nowhere
+ * else. A WebKit target takes a viewport, or a screen with a pixel ratio and a user agent; a mobile layout, a touch screen
+ * or a proxy fails the test's setup by name.
  */
 export type WebKitTarget = EngineOptions & { readonly browser: 'webkit' }
 export type WebTargetConfig = ChromiumTarget | ChromeTarget | EdgeTarget | FirefoxTarget | WebKitTarget
@@ -246,6 +249,39 @@ export type DiagnosticsConfig = {
 }
 
 /**
+ * Video recording of each app session. Off unless asked: a run that records nothing starts no media process and runs as
+ * it would without this block.
+ *
+ * - `record`: record every app of the run whose pixel rules allow recordings. `apps` turns it on or off for one app,
+ *   whatever `record` says; an app named true there must allow recordings.
+ * - `required`: evidence is required. A run in which a recording asked for is missing or incomplete ends with its own
+ *   failure, `evidence_incomplete`, and exit code 2, while every test keeps the outcome it observed. It cannot be true
+ *   while nothing is recorded.
+ * - `keep`: `all` keeps every recording (the default); `failures` removes the recordings of an attempt that passed once it
+ *   has finished.
+ * - `fps`: the frames a second asked of the capture and given to the video, 1 to 30, 10 by default.
+ * - `nativeWithholding`: withhold plain native secret fields and resume only after verified clearance; false by default.
+ *   Secure native fields always keep pixels. Applies to screenshots too, even when recording is off.
+ * - `size`: the video's width and height, even numbers from 16 to 4096, 1280 by 720 by default; frames are fitted inside.
+ */
+export type RecordingConfig = {
+  readonly nativeWithholding?: boolean | undefined
+  readonly record?: boolean | undefined
+  readonly apps?: Readonly<Record<string, boolean>> | undefined
+  readonly required?: boolean | undefined
+  readonly keep?: 'all' | 'failures' | undefined
+  readonly fps?: number | undefined
+  readonly size?: { readonly width: number; readonly height: number } | undefined
+}
+
+/**
+ * What may be captured as pixels, by app: `screenshots` covers every single capture (a failure screenshot, an AI check's
+ * screenshot, an agent's frame) and `recordings` every frame of a recording or a live view, each `allowed` (the default)
+ * or `never`. The capture policy applies once a run records anything or an app states its rules here.
+ */
+export type PixelsConfig = Readonly<Record<string, { readonly screenshots?: 'allowed' | 'never' | undefined; readonly recordings?: 'allowed' | 'never' | undefined }>>
+
+/**
  * The default export of `retest.config.ts`.
  *
  * - `apps`: each app is `app({ targets })`, or a target on its own, which may carry the app's settings. A target is
@@ -260,6 +296,8 @@ export type DiagnosticsConfig = {
  * - `evaluation` declares the judges `test.evaluate` uses. Without it, a run has no AI checks.
  * - `diagnostics` sets console and network capture, a strict policy and its limits. Without it, capture is on and
  *   nothing in it fails a test.
+ * - `recording` records each app session as a video, and can require that evidence. Without it, nothing is recorded.
+ * - `pixels` says, by app, whether screenshots and recordings may be taken at all.
  */
 export type RetestConfig = {
   readonly apps: Readonly<Record<string, AppConfig | (WebTargetConfig & AppSettings) | ElectronApp | NativeApp>>
@@ -274,4 +312,6 @@ export type RetestConfig = {
   readonly timeouts?: { readonly [Name in keyof Timeouts]?: number | undefined } | undefined
   readonly evaluation?: EvaluationConfig | undefined
   readonly diagnostics?: DiagnosticsConfig | undefined
+  readonly recording?: RecordingConfig | undefined
+  readonly pixels?: PixelsConfig | undefined
 }

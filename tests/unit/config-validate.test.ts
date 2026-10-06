@@ -354,6 +354,30 @@ describe('validateConfig: what it rejects', () => {
     ])
   })
 
+  // A bundle id cannot be told from a host name by its letters, and an installed app's id is read only at run time.
+  test('with a native app, a dotted name is a bundle id unless it is surely a host, and every entry is named at its own index', () => {
+    const secrets = { password: env('TEST_PASSWORD') }
+    const phone = { platform: 'ios-simulator', appPath: 'TaskPhone.app', device: 'iPhone 17', runtime: '26.5' }
+    const desk = { platform: 'macos', appPath: 'TaskDesk.app' }
+    // The shape of the native fixtures' configs: bundle ids beside the service's origin, with a web app on that service.
+    const fixture = loaded({
+      apps: { phone, desk, web: chrome({ baseUrl: 'http://127.0.0.1:4100' }) },
+      secrets,
+      secretOrigins: { password: ['dev.retest.fixtures.taskphone', 'http://127.0.0.1:4100', 'dev.retest.fixtures.taskdesk', 'auth.example.test'] },
+    })
+    assert.deepEqual(fixture.secrets.get('password')?.origins, ['http://127.0.0.1:4100', 'dev.retest.fixtures.taskphone', 'dev.retest.fixtures.taskdesk', 'auth.example.test'])
+    assert.deepEqual(
+      problems({ apps: { phone, web: chrome({ baseUrl: 'https://example.com/app' }) }, secrets, secretOrigins: { password: ['dev.retest.fixtures.taskphone', 'Example.com', '10.0.0.5', 'not an origin', 'https://auth.example.test/login'] } }),
+      [
+        'secretOrigins.password[1]: expected an origin such as https://example.com, received "Example.com", the host of the base URL of apps.web rather than a bundle id',
+        'secretOrigins.password[2]: expected an origin such as http://10.0.0.5, received "10.0.0.5", an IP address rather than a bundle id',
+        'secretOrigins.password[3]: expected an origin such as https://example.com, received "not an origin"',
+        'secretOrigins.password[4]: expected an origin such as https://example.com, received "https://auth.example.test/login"',
+      ],
+    )
+    assert.deepEqual(problems({ apps: { phone }, secrets, secretOrigins: { password: ['dev.retest.fixtures.taskphone', 7] } }), ['secretOrigins.password[1]: expected string, received 7'])
+  })
+
   test('test ids, tags, states and timeouts', () => {
     assert.deepEqual(problems({ apps: web, testIds: { save: 1 } }), ['testIds.save: expected string, received 1'])
     assert.deepEqual(problems({ apps: web, testIds: 'save-task' }), ['testIds: expected object or array, received "save-task"'])

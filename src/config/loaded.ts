@@ -1,10 +1,12 @@
 import type { NativeNetworkDeclaration } from '../diagnostics/native-network.ts'
 import type { DiagnosticsPolicy } from '../diagnostics/policy.ts'
+import type { AppPixelRules } from '../media/policy.ts'
 import type { Emulation } from '../protocol/emulation.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { DeviceName } from './devices.ts'
 import type { LoadedEvaluation } from './read-evaluation.ts'
+import type { RecordingSettings } from './read-recording.ts'
 import type { Channel, SecretContext } from './types.ts'
 
 // A config as the runner reads it: validated, with defaults filled in and paths absolute. Maps keep the
@@ -28,6 +30,15 @@ export type LoadedChromiumTarget = LoadedWebSettings &
 /** A Firefox or WebKit target, which no driver runs yet. `executablePath` is absolute. */
 export type LoadedEngineTarget = LoadedWebSettings &
   ({ readonly browser: 'firefox'; readonly executablePath?: string } | { readonly browser: 'webkit'; readonly executablePath?: string })
+
+/** A Firefox target, which Retest's Firefox driver runs over WebDriver BiDi. `executablePath` is absolute. */
+export type LoadedFirefoxTarget = Extract<LoadedEngineTarget, { readonly browser: 'firefox' }>
+
+/**
+ * A WebKit target, which Retest's WebKit driver runs over the inspector pipe of Playwright's WebKit build. `executablePath`
+ * is absolute and names the unpacked build's folder or the executable inside it.
+ */
+export type LoadedWebKitTarget = Extract<LoadedEngineTarget, { readonly browser: 'webkit' }>
 
 export type LoadedWebTarget = LoadedChromiumTarget | LoadedEngineTarget
 
@@ -87,6 +98,7 @@ export type LoadedSecret = { readonly source: LoadedSecretSource; readonly origi
  * `file` is the config's absolute path. `defaultApp` is absent when several apps leave it unnamed. `tags`,
  * `states` and `locks` are absent when the config does not list them. `testIds` only feeds the type check, so it is
  * not kept. `evaluation` is absent when the config declares no judges, and `diagnostics` when it sets no diagnostics.
+ * `recording` is absent when the config has no `recording` block, and `pixels` when it states no app's pixel rules.
  */
 export type LoadedConfig = {
   readonly file: string
@@ -100,4 +112,6 @@ export type LoadedConfig = {
   readonly timeouts: Readonly<Partial<Timeouts>>
   readonly evaluation?: LoadedEvaluation
   readonly diagnostics?: DiagnosticsPolicy
+  readonly recording?: RecordingSettings
+  readonly pixels?: ReadonlyMap<string, AppPixelRules>
 }

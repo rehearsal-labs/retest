@@ -280,7 +280,7 @@ function loadElectronTarget(name: string, target: ParsedElectronTarget, path: Pa
   problems.checkFilled([...path, 'appPath'], target.appPath, 'a path')
   const args = target.args ?? []
   for (const [index, argument] of args.entries()) {
-    const problem = reservedArgumentProblem(argument)
+    const problem = reservedArgumentProblem(argument) ?? loggingArgumentProblem(argument)
     if (problem !== undefined) problems.add([...path, 'args', index], problem)
   }
   if (target.userDataDir !== undefined) problems.checkFilled([...path, 'userDataDir'], target.userDataDir, 'a folder')
@@ -291,10 +291,23 @@ function loadElectronTarget(name: string, target: ParsedElectronTarget, path: Pa
 
 // Chromium takes a switch written with one dash or two. The message names the switch, never the value beside it.
 function reservedArgumentProblem(argument: string): string | undefined {
-  const name = argument.replace(/^-{1,2}/, '--').split('=', 1)[0] ?? ''
+  const name = switchName(argument)
   if (name === '--user-data-dir') return 'Retest gives the app its data folder: set userDataDir instead of --user-data-dir'
   if (name.startsWith('--remote-debugging-')) return `Retest drives the app over a debugging pipe of its own, so the app takes no ${name}`
   return undefined
+}
+
+// Chromium's logging copies the windows' console lines, typed values among them, into the app's output, or with `=file`
+// or `--log-file` into a file Retest never redacts: what the logging variables the app never sees would do. Every form
+// is refused, since each turns it on or says where it goes. A native app's arguments are its own, so this is Electron's.
+function loggingArgumentProblem(argument: string): string | undefined {
+  const name = switchName(argument)
+  if (name === '--enable-logging' || name === '--log-file') return `Retest keeps Chromium's logging off in the app, as it keeps Electron's logging variables from it, so the app takes no ${name}`
+  return undefined
+}
+
+function switchName(argument: string): string {
+  return argument.replace(/^-{1,2}/, '--').split('=', 1)[0] ?? ''
 }
 
 function loadNativeTarget(name: string, target: ParsedNativeTarget, path: Path, { problems, folder }: ReadContext): LoadedNativeTarget {
