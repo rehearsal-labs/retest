@@ -1,73 +1,34 @@
 import type { TestContext } from 'node:test'
-import type { CaptureStart, CapturedFrame, FrameSource, MediaRecorder, RecordSourceOptions, SourceRecording } from '../../src/media/capture.ts'
+import type { CaptureStats, CapturedFrame, MediaRecorder, RecordSourceOptions, SourceRecording } from '../../src/media/capture.ts'
 import type { RecordIdentity } from '../../src/protocol/identity.ts'
+import type { MediaPrerequisites } from './capture-proof.ts'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { delimiter, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { webRuntimeIdentity } from '../../src/browser/contract.ts'
 import { ChromiumPage } from '../../src/browser/page.ts'
-import { microsecondsSince, recordSource } from '../../src/media/capture.ts'
+import { CaptureSuspension, microsecondsSince, recordSource, ScreenshotLoopSource } from '../../src/media/capture.ts'
 import { mediaArguments, MediaProcess } from '../../src/media/client.ts'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { groupExists, launchGated, openApp, scratchFolder, setupMs } from './browser-harness.ts'
+import { decodeFrames, decodeVideo, even, imageSize, mediaPrerequisites, pausesMs, shownFrameIds, spread, tickerFrames, tickerServer, videoAgainstTicks, watched } from './capture-proof.ts'
 
 // Chrome's screencast of one page, through the Chromium frame source, into the real media process: a plumbing proof
 // that a session's frames reach a recording with their identity and their clock. It claims nothing about the video's
 // quality, size or the time anything took. Set RETEST_CAPTURE_PROOF_OUT to keep the video and the process's reply.
 
 const run = promisify(execFile)
-const repositoryRoot = resolve(import.meta.dirname, '../..')
 const title = { by: 'testId', value: 'task-title' } as const
 const identity: RecordIdentity = { testId: 'tests/integration/capture-chromium.test.ts > records', attemptId: 'capture1', app: 'web', sessionId: formatSessionId('capture1', 'web') }
 
-type Prerequisites = { binary: string; ffmpeg: string; ffprobe: string }
-
-function findOnPath(program: string): string | undefined {
-  for (const folder of (process.env['PATH'] ?? '').split(delimiter)) {
-    const candidate = join(folder, program)
-    if (folder !== '' && existsSync(candidate)) return candidate
-  }
-  return undefined
-}
-
-// The media binary and ffmpeg this test needs. On macOS, where the media process is built and verified, a missing one
-// fails the test with what to do; elsewhere the test is skipped by name.
-function prerequisites(t: TestContext): Prerequisites | undefined {
-  const binary = process.env['RETEST_MEDIA_BINARY'] || join(repositoryRoot, 'media', 'target', 'release', 'retest-media')
-  const ffmpeg = process.env['RETEST_FFMPEG'] || findOnPath('ffmpeg')
-  const ffprobe = ffmpeg === undefined ? undefined : [join(ffmpeg, '..', 'ffprobe'), findOnPath('ffprobe')].find((path) => path !== undefined && existsSync(path))
-  const missing = [
-    ...(existsSync(binary) ? [] : [`the media binary at ${binary}; build it with: cargo build --release --manifest-path media/Cargo.toml`]),
-    ...(ffmpeg === undefined || !existsSync(ffmpeg) ? ['ffmpeg; install it or set RETEST_FFMPEG'] : []),
-    ...(ffprobe === undefined ? ['ffprobe, which comes with ffmpeg'] : []),
-  ]
-  if (missing.length === 0 && ffmpeg !== undefined && ffprobe !== undefined) return { binary, ffmpeg, ffprobe }
-  if (process.platform === 'darwin') assert.fail(`This test needs ${missing.join(', and ')}.`)
-  t.skip(`needs ${missing.join(', and ')}`)
-  return undefined
-}
-
-async function startMedia(t: TestContext, needs: Prerequisites): Promise<MediaProcess> {
+async function startMedia(t: TestContext, needs: MediaPrerequisites): Promise<MediaProcess> {
   const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: 10_000 })
   t.after(() => media.close(10_000))
   return media
-}
-
-/** A source that passes everything through and keeps what it handed over, for the test to read. */
-function watched(source: FrameSource): { source: FrameSource; frames: CapturedFrame[] } {
-  const frames: CapturedFrame[] = []
-  const wrapper: FrameSource = {
-    name: source.name,
-    identity: source.identity,
-    availability: () => source.availability(),
-    start: (capture): Promise<CaptureStart> => source.start({ ...capture, deliver: (frame) => (frames.push(frame), capture.deliver(frame)) }),
-    stop: (timeoutMs) => source.stop(timeoutMs),
-  }
-  return { source: wrapper, frames }
 }
 
 /** How many screencast frames Chrome has sent so far, counted on the wire. */
@@ -114,6 +75,7 @@ async function chromePage(t: TestContext, watch: (message: Record<string, unknow
 function recordOptions(folder: string, name: string, signal: AbortSignal): RecordSourceOptions {
   return {
     recordingId: name,
+    runId: 'run-1',
     output: join(folder, name),
     width: 800,
     height: 600,
@@ -153,7 +115,7 @@ function assertCountsAddUp(report: SourceRecording): void {
   assert.equal(Object.values(rest).reduce((sum, value) => sum + value, 0), received, JSON.stringify(frames))
   const tally = report.frames
   const refused = Object.values(tally.refused).reduce((sum, value) => sum + value, 0)
-  assert.equal(tally.delivered, tally.sent + tally.dropped + tally.notSent + refused)
+  assert.equal(tally.delivered, tally.sent + tally.dropped + tally.notSent + tally.withheld + refused)
 }
 
 function keep(report: SourceRecording, frames: readonly CapturedFrame[]): void {
@@ -166,7 +128,7 @@ function keep(report: SourceRecording, frames: readonly CapturedFrame[]): void {
 }
 
 test('a few seconds of a Chrome page reach the media process through the frame source, each frame with its identity', async (t) => {
-  const needs = prerequisites(t)
+  const needs = mediaPrerequisites(t)
   if (needs === undefined) return
   const folder = await scratchFolder(t)
   const counter = frameCounter()
@@ -224,7 +186,7 @@ test('a few seconds of a Chrome page reach the media process through the frame s
 })
 
 test('a media process closed mid-capture stops the capture and leaves no process, no partial file and no screencast', async (t) => {
-  const needs = prerequisites(t)
+  const needs = mediaPrerequisites(t)
   if (needs === undefined) return
   const folder = await scratchFolder(t)
   const counter = frameCounter()
@@ -251,7 +213,7 @@ test('a media process closed mid-capture stops the capture and leaves no process
 })
 
 test('a page closed mid-capture ends the capture, and the frames that came are recorded', async (t) => {
-  const needs = prerequisites(t)
+  const needs = mediaPrerequisites(t)
   if (needs === undefined) return
   const folder = await scratchFolder(t)
   const counter = frameCounter()
@@ -290,4 +252,127 @@ test('a page records only as the session it was named, and a page not yet named 
   assert.throws(() => page.identify({ sessionId: other.sessionId, owner: { runId: 'run-1', testId: other.testId, attemptId: other.attemptId, app: other.app }, runtime: { kind: 'web', engine: 'chromium', product: 'Chrome', version: '0', executablePath: '/x', processIds: [1] } }), /This page is session capture1:web/)
   const { page: unnamed } = await chromePage(t, () => undefined, 'unnamed')
   assert.deepEqual(unnamed.frameSource(identity).availability(), { available: false, reason: `Retest has not named the session this page is, so it records nothing as ${identity.sessionId}.` })
+})
+
+// Where the ticker proofs keep their videos and reports when RETEST_CAPTURE_PROOF_OUT names a folder.
+function keepTicker(name: string, report: SourceRecording, details: object): void {
+  const folder = process.env['RETEST_CAPTURE_PROOF_OUT']
+  if (!folder) return
+  mkdirSync(folder, { recursive: true })
+  if (report.ended?.path !== undefined) copyFileSync(report.ended.path, join(folder, `${name}.${report.ended.path.split('.').at(-1) ?? 'mp4'}`))
+  writeFileSync(join(folder, `${name}-report.json`), `${JSON.stringify({ report, ...details }, null, 2)}\n`)
+}
+
+// A page that changes on every tick, named as the session `identity` is, and the size it captures at.
+async function tickerPage(t: TestContext, needs: MediaPrerequisites, watch: (message: Record<string, unknown>) => void = () => undefined): Promise<{ page: ChromiumPage; size: { width: number; height: number } }> {
+  const ticker = await tickerServer(t)
+  const { page } = await chromePage(t, watch)
+  const went = await page.execute({ kind: 'goto', url: ticker }, 10_000)
+  assert.ok(went.ok, JSON.stringify(went))
+  const size = await imageSize(needs.ffprobe, await page.screenshot(5000), 'png')
+  return { page, size }
+}
+
+test('Chrome’s screencast of a page that changes on every tick: no frame shows a moment after it arrived, and each video frame shows the frame its time maps to', async (t) => {
+  const needs = mediaPrerequisites(t)
+  if (needs === undefined) return
+  const folder = await scratchFolder(t)
+  const counter = frameCounter()
+  const { page, size } = await tickerPage(t, needs, counter.watch)
+  const media = await startMedia(t, needs)
+  const startedAt = performance.now()
+  const clockZeroEpochMs = performance.timeOrigin + startedAt
+  const stop = new AbortController()
+  const { source, frames } = watched(page.frameSource(identity))
+  const options: RecordSourceOptions = { ...recordOptions(folder, 'ticker', stop.signal), clock: microsecondsSince(startedAt), width: even(size.width), height: even(size.height), fps: 30 }
+  const recording = recordSource(source, media, options)
+  await delay(3000)
+  stop.abort()
+  const report = await recording
+  const pictures = await decodeFrames(needs, frames)
+  const ticker = tickerFrames(frames, pictures, clockZeroEpochMs)
+  const ended = report.ended
+  assert.ok(ended !== undefined, report.reason)
+  assert.equal(ended.status, 'ok', ended.message)
+  const video = await decodeVideo(needs, ended.path ?? '')
+  const ids = shownFrameIds(ended, video.frames.length, options.fps)
+  const against = videoAgainstTicks(video.frames, ids, ticker.ticks)
+  const measured = { size, capture: report.capture, frames: report.frames, gaps: report.gaps, wire: counter.count(), distinctTicks: ticker.distinct, lagMs: spread(ticker.lagsMs), pausesMs: spread(pausesMs(frames)), video: { frames: video.frames.length, fps: video.fps, codec: video.codec, checked: against.checked, unmapped: against.unmapped.length }, evidence: ended.evidence, counts: ended.frames }
+  t.diagnostic(JSON.stringify(measured))
+  keepTicker('chrome-ticker', report, { measured, ticks: ticker.ticks, lagsMs: ticker.lagsMs })
+
+  assert.equal(report.status, 'ended')
+  assert.deepEqual(ticker.unreadable, [], 'every frame Chrome sent shows a tick that can be read')
+  assert.deepEqual(ticker.future, [], 'no frame shows a moment after it reached Retest')
+  assert.deepEqual(ticker.backwards, [], 'frames never go back in time')
+  assert.ok(ticker.distinct >= 2, 'the frames show the page changing')
+  assert.equal(ended.frames.received, report.frames.sent, 'every frame sent reached the process')
+  assert.equal(ended.frameMapEntries, report.frames.sent, 'the frame map lists every frame')
+  assert.deepEqual(ended.frameMap.map((entry) => entry.frameId), frames.map((_, index) => String(index + 1)), 'the frame map names the frames by their place in the order they were handed over')
+  assert.deepEqual(against.mismatched, [], 'every video frame shows the tick of the frame its time maps to')
+  assert.ok(against.checked > 0 && against.checked === video.frames.length - against.unmapped.length)
+  assert.deepEqual(against.unmapped, [], 'the frame map accounts for every video frame')
+  assert.deepEqual(ended.identity, { runId: 'run-1', ...identityWithoutLook() }, 'the recording carries the run and the session')
+})
+
+test('measured beside it: a Page.captureScreenshot loop on the same page is slower and each frame is a single capture, so the screencast stays Chrome’s mode', async (t) => {
+  const needs = mediaPrerequisites(t)
+  if (needs === undefined) return
+  const { page } = await tickerPage(t, needs)
+  const startedAt = performance.now()
+  const clockZeroEpochMs = performance.timeOrigin + startedAt
+  const clock = microsecondsSince(startedAt)
+  const loop = new ScreenshotLoopSource({
+    name: 'chromium',
+    identity,
+    unavailable: () => undefined,
+    grab: async (timeoutMs) => ({ ok: true, format: 'png', bytes: await page.screenshot(timeoutMs) }),
+    grabTimeoutMs: 5000,
+  })
+  const frames: CapturedFrame[] = []
+  const started = await loop.start({ fps: 30, clock, deliver: (frame) => frames.push(frame), ended: () => undefined, timeoutMs: 5000 })
+  assert.deepEqual(started, { ok: true, mode: 'screenshot-loop' })
+  await delay(3000)
+  const stats: CaptureStats = await loop.stop(5000)
+  const ticker = tickerFrames(frames, await decodeFrames(needs, frames), clockZeroEpochMs)
+  t.diagnostic(JSON.stringify({ stats, distinctTicks: ticker.distinct, lagMs: spread(ticker.lagsMs), pausesMs: spread(pausesMs(frames)) }))
+  assert.deepEqual([ticker.unreadable, ticker.future, ticker.backwards], [[], [], []])
+  assert.equal(stats.delivered, frames.length)
+})
+
+function identityWithoutLook(): RecordIdentity {
+  const { observationId: _look, ...rest } = identity
+  return rest
+}
+
+
+test('Chrome stops its real screencast during withholding and resumes with a new read window', async (t) => {
+  const counter = frameCounter()
+  const { page } = await chromePage(t, counter.watch)
+  const source = page.frameSource(identity)
+  const suspension = new CaptureSuspension()
+  const frames: CapturedFrame[] = []
+  const gaps: { reason: string }[] = []
+  const clock = microsecondsSince(performance.now())
+  const ended: string[] = []
+  assert.equal((await source.start({ fps: 30, clock, timeoutMs: 5000, deliver: frame => frames.push(frame), ended: reason => ended.push(reason),
+    gap: gap => gaps.push(gap), withheld: () => suspension.suspended, onWithholdingChange: listener => suspension.listen(listener) })).ok, true)
+  t.after(() => source.stop(5000))
+  await typeFor(page, 300)
+  suspension.suspend()
+  await delay(100) // Reconcile a frame already dispatched when the stream was stopped.
+  const heldWire = counter.count()
+  const heldDelivery = frames.length
+  await typeFor(page, 350)
+  assert.equal(counter.count(), heldWire, 'changing paints cannot produce new remote screencast frames while stopped')
+  assert.equal(frames.length, heldDelivery)
+  const resumedUs = clock()
+  suspension.resume()
+  await typeFor(page, 350)
+  assert.ok(frames.length > heldDelivery, 'the real stream resumes')
+  assert.ok(frames.slice(heldDelivery).every(frame => (frame.earliestUs ?? 0) >= resumedUs))
+  assert.ok(gaps.some(gap => gap.reason === 'pixels_withheld'))
+  assert.deepEqual(ended, [])
+  const stats = await source.stop(5000)
+  assert.deepEqual(stats.problems, [])
 })
