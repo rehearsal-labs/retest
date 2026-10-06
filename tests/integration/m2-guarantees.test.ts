@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { resultFile } from '../../src/protocol/run-folder.ts'
+import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { openApp, waitForGroupEnd } from './browser-harness.ts'
 import {
   answersAt,
@@ -135,7 +135,13 @@ test('needs the lost browser again', { apps: ['frozen'] }, async ({ frozen }) =>
   const started = await startRun(t, { files: [], cwd: root, browser: false, timeouts: budgets({ action: 20_000, test: 30_000 }) })
   const browser = await started.retest.waitForEvent('browser.started', (event) => event.app === 'frozen')
   await waitFor('the frozen page to count its save', () => frozen.submissions() === 1)
-  signalGroup(browser.pid, 'SIGKILL')
+  // The browser is lost from outside, as a crash would lose it. It is killed through the record of what the command
+  // launched, as the harness ends what it recorded, each process checked against its record first.
+  const launched = new OwnedProcessGroup(started.retest.pid)
+  launched.capture()
+  const lostBrowser = launched.groupFor(browser.pid)
+  assert.ok(lostBrowser !== undefined, 'the frozen browser is recorded as one the run launched')
+  assert.deepEqual(lostBrowser.signalReport('SIGKILL').problems, [], 'every process of the frozen browser was killed after its identity was checked')
   const run = await finishRun(started)
   assertStdoutIsEvents(run)
 

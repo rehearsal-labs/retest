@@ -1,6 +1,6 @@
 import type { Packed } from './cli-harness.ts'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -198,11 +198,14 @@ describe('milestone 2 package: init and a registered consumer', () => {
     assert.ok(typeof manifest === 'object' && manifest !== null && 'exports' in manifest)
     const { exports } = manifest
     assert.ok(typeof exports === 'object' && exports !== null)
-    assert.deepEqual(Object.keys(exports), ['.', './runner', './protocol', './playwright', './evaluation/ai-sdk', './package.json'])
-    for (const subpath of ['.', './runner', './protocol', './playwright', './evaluation/ai-sdk']) {
+    assert.deepEqual(Object.keys(exports), ['.', './runner', './protocol', './playwright', './agent', './evaluation/ai-sdk', './package.json'])
+    for (const subpath of ['.', './runner', './protocol', './playwright', './agent', './evaluation/ai-sdk']) {
       const entries: unknown = Reflect.get(exports, subpath)
       assert.ok(typeof entries === 'object' && entries !== null, subpath)
       assert.deepEqual(Object.keys(entries), ['retest-source', 'types', 'default'], subpath)
+      const module = subpath === '.' ? 'index' : subpath === './evaluation/ai-sdk' ? 'evaluation/ai-sdk' : `${subpath.slice(2)}/index`
+      assert.deepEqual(entries, { 'retest-source': `./src/${module}.ts`, types: `./dist/${module}.d.ts`, default: `./dist/${module}.js` }, subpath)
+      for (const extension of ['.js', '.d.ts']) assert.ok(existsSync(join(consumer, 'node_modules', packageName, 'dist', module + extension)), `${subpath} ships ${extension}`)
     }
   })
 

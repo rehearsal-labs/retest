@@ -13,15 +13,16 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { agentVariables } from '../../src/cli/agent-detection.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
 import { childLogFile, eventsFile, resultFile, statesFolder } from '../../src/protocol/run-folder.ts'
 import { parse, type Schema } from '../../src/protocol/schema.ts'
 import { errorCode } from '../../src/shared/error-code.ts'
+import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { tempFolder } from '../support/temp-folder.ts'
-import { browserPath, processesUsing, waitForGroupEnd } from './browser-harness.ts'
+import { browserPath, groupExists, processesUsing, waitForGroupEnd } from './browser-harness.ts'
+import { engineUnderTest, type TestEngine } from './engines.ts'
 
 export const repositoryRoot: string = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -95,16 +96,19 @@ export type StartOptions = {
 
 /**
  * One `retest` command, started as the leader of its own process group with a temporary folder of its
- * own, so that every process and profile it leaves can be found afterwards. Only processes this handle
- * started are ever signalled.
+ * own, so that every process and profile it leaves can be found afterwards. Only the command itself and the
+ * processes the process table shows it launched are ever signalled, each checked against its record first.
  */
 export class RetestProcess {
   readonly pid: number
   readonly tmp: string
   readonly exited: Promise<Exit>
   readonly #child: ChildProcess
+  /** The command and every process recorded beneath it while it ran, as the runner records the browsers it launches. */
+  #ownership: OwnedProcessGroup | undefined
   readonly #startedAt = performance.now()
-  readonly #groups = new Set<number>()
+  /** Each browser and app server process group the command reported, with what it is, for a failure that names it. */
+  readonly #groups = new Map<number, string>()
   readonly #waiters = new Set<() => void>()
   readonly #printed: RetestEvent[] = []
   #stdout = ''
@@ -142,7 +146,7 @@ export class RetestProcess {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const retest = new RetestProcess(child, tmp)
-    t.after(() => retest.#release())
+    t.after(() => retest.#release(t))
     return retest
   }
 
@@ -175,9 +179,14 @@ export class RetestProcess {
     this.#child.stderr?.destroy()
   }
 
-  /** A browser or app server process group this command reported, so the harness can check and release it. */
-  ownGroup(pid: number): void {
-    this.#groups.add(pid)
+  /**
+   * A browser or app server process group this command reported, so the harness can check that it ended, and end it
+   * if it is still there after the test. The reported pid alone is never signalled: while the command runs, a process
+   * it launched is its child in the process table, which is what records it as the command's own.
+   */
+  ownGroup(pid: number, what: string = this.#groups.get(pid) ?? 'a process group the run reported'): void {
+    this.#groups.set(pid, what)
+    this.#recordLaunched()
   }
 
   /** Resolves with the first event of this type on stdout, as the JSONL reporter prints it. */
@@ -207,7 +216,7 @@ export class RetestProcess {
       const parsed = parse(retestEventSchema, parseJson(line))
       if (!parsed.ok) continue
       this.#printed.push(parsed.value)
-      for (const group of reportedGroups([parsed.value])) this.ownGroup(group)
+      for (const { pid, what } of reportedProcesses([parsed.value])) this.ownGroup(pid, what)
     }
     this.#notify()
   }
@@ -216,16 +225,65 @@ export class RetestProcess {
     for (const check of [...this.#waiters]) check()
   }
 
-  // The last resort after a failed assertion: end what this command started, and nothing else.
-  #release(): void {
-    if (this.#durationMs === undefined) signalGroup(this.pid, 'SIGKILL')
-    for (const pid of this.#groups) signalGroup(pid, 'SIGKILL')
+  // Records the command and what it has launched since the last record, only while Node has not reaped it, so its pid
+  // cannot yet belong to anything else. The command is first recorded once it reports something, by when a launcher
+  // such as `/usr/bin/env` has long been replaced by the program the record must hold.
+  #recordLaunched(): void {
+    if (this.#child.exitCode !== null || this.#child.signalCode !== null) return
+    this.#ownership ??= new OwnedProcessGroup(this.pid)
+    this.#ownership.capture()
+  }
+
+  // The last resort after a failed assertion. A command still running is ended through its own handle, which never
+  // names a reaped pid, once what it launched is recorded; then each recorded process still there is ended after its
+  // identity is checked again. Anything of the run left after that was not this harness's to end, and fails the test.
+  // node:test keeps only the test's own failure when its body failed too, so what is left is also written as a
+  // diagnostic of the test and to stderr first, where it survives.
+  async #release(t: TestContext): Promise<void> {
+    if (this.#durationMs === undefined) {
+      this.#recordLaunched()
+      this.#child.kill('SIGKILL')
+    }
+    const ownership = this.#ownership
+    const report = ownership?.remains() === true ? ownership.signalReport('SIGKILL') : { problems: [], identityRefusals: [] }
+    const left = await groupsLeft(new Map([[this.pid, 'the command with its test file processes'], ...this.#groups]), releaseWaitMs)
+    if (left.length === 0) return
+    const message = [...left, 'The harness ends only what it recorded beneath the command, each process checked against its record.', ...report.problems, ...report.identityRefusals].join('\n')
+    t.diagnostic(message)
+    process.stderr.write(`${message}\n`)
+    assert.fail(message)
   }
 }
 
+type ReportedProcess = { pid: number; what: string }
+
 // A browser and a server the run started each lead a process group of their own.
+function reportedProcesses(events: readonly RetestEvent[]): ReportedProcess[] {
+  return events.flatMap((event): ReportedProcess[] => {
+    if (event.type === 'browser.started') return [{ pid: event.pid, what: `the ${event.product} browser${event.app === undefined ? '' : ` of ${event.app}`} the run reported` }]
+    if (event.type === 'app.started') return [{ pid: event.pid, what: `the server of ${event.app} the run reported` }]
+    return []
+  })
+}
+
 function reportedGroups(events: readonly RetestEvent[]): number[] {
-  return events.flatMap((event) => (event.type === 'browser.started' || event.type === 'app.started' ? [event.pid] : []))
+  return reportedProcesses(events).map((reported) => reported.pid)
+}
+
+// Each group still there after `timeoutMs`, named with the pid and executable name of every process in it. Command
+// lines are left out, since an app server's may carry what its config passed it.
+async function groupsLeft(groups: ReadonlyMap<number, string>, timeoutMs: number): Promise<string[]> {
+  const end = performance.now() + timeoutMs
+  const left: string[] = []
+  for (const [group, what] of groups) {
+    while (groupExists(group) && performance.now() < end) await delay(20)
+    if (!groupExists(group)) continue
+    const listed = await runProgram('/bin/ps', ['-ax', '-o', 'pid=,pgid=,comm='], repositoryRoot)
+    const members = listed.stdout.split('\n').map((line) => line.trim().split(/\s+/)).filter(([, pgid]) => pgid === String(group))
+    const named = members.map(([pid, , ...name]) => `${pid} ${name.join(' ')}`).join(', ')
+    left.push(`Process group ${group}, ${what}, is still there after the test: ${named}.`)
+  }
+  return left
 }
 
 function environment(tmp: string, extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
@@ -252,11 +310,15 @@ export type StartedRun = { retest: RetestProcess; output: string }
 export async function startRun(t: TestContext, request: RunRequest): Promise<StartedRun> {
   const folder = await scratchFolder(t)
   const output = join(folder, 'run')
-  const browser = request.browser ?? browserPath()
+  // A run on the test browser runs, on another engine, from a config whose one app is that engine's target.
+  const engine = engineUnderTest()
+  const engineConfig = request.browser === undefined && engine.name !== 'chromium' ? await writeEngineConfig(join(folder, 'engine'), engine) : undefined
+  const browser = engineConfig === undefined ? (request.browser ?? browserPath()) : false
   const args = [
     'run',
     ...request.files,
     ...(browser === false ? [] : ['--browser', browser]),
+    ...(engineConfig === undefined ? [] : ['--config', engineConfig]),
     '--reporter',
     request.reporter ?? 'jsonl',
     '--output',
@@ -266,8 +328,17 @@ export async function startRun(t: TestContext, request: RunRequest): Promise<Sta
     ...(request.baseUrl === undefined ? [] : ['--base-url', request.baseUrl]),
     ...(request.args ?? []),
   ]
-  const retest = await RetestProcess.start(t, { ...request, args, tmp: request.tmp ?? join(folder, 'tmp') })
+  const env = { ...engine.environment, ...(request.env ?? {}) }
+  const retest = await RetestProcess.start(t, { ...request, args, env, tmp: request.tmp ?? join(folder, 'tmp') })
   return { retest, output }
+}
+
+/** A config whose one app, `web`, is the engine's target, in a folder that resolves Retest by its package name. */
+async function writeEngineConfig(folder: string, engine: TestEngine): Promise<string> {
+  const file = join(folder, 'retest.config.ts')
+  await writeFiles(folder, { 'retest.config.ts': `import { defineConfig } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { web: ${engine.target()} } })\n` })
+  await linkPackage(folder, '@rehearsal-labs/retest', repositoryRoot)
+  return file
 }
 
 export type FinishedRun = {
@@ -301,7 +372,7 @@ export async function runRetest(t: TestContext, request: RunRequest): Promise<Fi
 export async function readFinishedRun({ retest, output }: StartedRun): Promise<FinishedRun> {
   const exit = await retest.exited
   const events = existsSync(join(output, eventsFile)) ? readEvents(readFileSync(join(output, eventsFile), 'utf8')) : []
-  for (const group of reportedGroups(events)) retest.ownGroup(group)
+  for (const { pid, what } of reportedProcesses(events)) retest.ownGroup(pid, what)
   assertJudged(events)
   const result = existsSync(join(output, resultFile)) ? readResult(readFileSync(join(output, resultFile), 'utf8')) : undefined
   const { stdout, stderr, durationMs } = retest
@@ -736,13 +807,18 @@ export async function appServersOn(port: number): Promise<string[]> {
 
 /**
  * Starts `fixtures/app-server` on `port` as a process group of this test's own, and waits until it listens.
- * It is killed after the test if it is still there.
+ * It is killed after the test if it is still there, through the record this test made of its launch.
  */
 export async function startAppServerFixture(t: TestContext, port: number): Promise<{ pid: number; url: string }> {
   const child = spawn(process.execPath, appServerArgs(port, {}), { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
+  await once(child, 'spawn')
   const { pid } = child
   assert.ok(pid !== undefined, 'the app server did not start')
-  t.after(() => signalGroup(pid, 'SIGKILL'))
+  const ownership = new OwnedProcessGroup(pid)
+  ownership.capture()
+  t.after(() => {
+    if (ownership.remains()) assert.deepEqual(ownership.signalReport('SIGKILL').problems, [], 'the app server this test started was ended')
+  })
   let printed = ''
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
     printed += text

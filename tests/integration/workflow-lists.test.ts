@@ -26,8 +26,16 @@ test('reads the table row by row and finds a member by name', async ({ page }) =
   await expect(page.getByRole('cell', { name: 'Grace Hopper' })).toBeVisible()
   await expect(page.getByRole('cell', { name: 'katherine@example.com' })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'Role' })).toBeVisible()
-  // Chrome's accessibility tree gives a table row no name from its cells, so a row is found by position, never by name.
+})
+
+test('a check that no row has a name the table shows is refused, not passed', async ({ page }) => {
+  await page.goto('/workflow/team')
   await expect(page.getByRole('row', { name: ${JSON.stringify(`${TEAM[1]?.name} ${TEAM[1]?.email} ${TEAM[1]?.role} ${TEAM[1]?.tasks}`)} })).toHaveCount(0)
+})
+
+test('a check that a row shown by name is hidden is refused, not passed', async ({ page }) => {
+  await page.goto('/workflow/team')
+  await expect(page.getByRole('row', { name: ${JSON.stringify(`${TEAM[1]?.name} ${TEAM[1]?.email} ${TEAM[1]?.role} ${TEAM[1]?.tasks}`)} })).toBeHidden()
 })
 
 test('sorts the table by name one way and then the other', async ({ page }) => {
@@ -56,6 +64,8 @@ test('a sort that compares numbers as text fails at the sorted column', async ({
 `
 
 const findsRow = 'reads the table row by row and finds a member by name'
+const namedRowCount = 'a check that no row has a name the table shows is refused, not passed'
+const namedRowHidden = 'a check that a row shown by name is hidden is refused, not passed'
 const sorts = 'sorts the table by name one way and then the other'
 const longList = 'finds an invoice far down a long list and opens it'
 const textSort = 'a sort that compares numbers as text fails at the sorted column'
@@ -72,6 +82,13 @@ test('workflow family 8: the rows read in order, cells are found by name, a colu
   // F8.1 and F8.2: every row's text in order, cells by their names, and the name column sorted both ways.
   assert.equal(testNamed(run, findsRow).status, 'passed')
   assert.equal(testNamed(run, sorts).status, 'passed')
+  // Chrome's accessibility tree gives a table row no name from its cells, so a named row would match nothing and both
+  // checks would pass beside the row on screen. Each is refused as unsupported, naming why, before the page is asked.
+  for (const name of [namedRowCount, namedRowHidden]) {
+    const refused = testNamed(run, name)
+    assert.deepEqual([refused.status, refused.failure?.class], ['error', 'unsupported'], name)
+    assert.match(refused.failure?.message ?? '', /gives a table row no name from its cells/)
+  }
 
   // F8.3: the link sits far below the first screen; the click brought it into view and opened its page.
   assert.equal(testNamed(run, longList).status, 'passed')

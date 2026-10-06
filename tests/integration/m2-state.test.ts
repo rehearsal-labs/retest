@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { SESSION_COOKIE, TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 import { openApp } from './browser-harness.ts'
+import { engineUnderTest } from './engines.ts'
 import {
   budgets,
   configSource,
@@ -13,7 +14,6 @@ import {
   resultOf,
   resultsNamed,
   runProject,
-  secondBrowserPath,
   writeProject,
 } from './cli-harness.ts'
 
@@ -61,7 +61,11 @@ test('needs the setup that fails', { state: 'wrong-password' }, async ({ page })
 `
 
 async function stateProject(t: TestContext, app: TaskApp, files: Record<string, string>): Promise<string> {
-  const targets = `targets: { chrome: chrome(), testing: chromium({ executablePath: ${JSON.stringify(secondBrowserPath())} }) }`
+  const engine = engineUnderTest()
+  // On an engine with one build here, the two targets are one build twice: the state is still kept per target, and
+  // the output says the second build was not exercised.
+  if (engine.secondBuild !== 'distinct') t.diagnostic(`${engine.label} has one build on this machine, so the targets chrome and testing both run it: a second build is not exercised.`)
+  const targets = `targets: { chrome: ${engine.target()}, testing: ${engine.target('', 'second')} }`
   return writeProject(t, {
     'retest.config.ts': configSource(`{
   apps: { web: app({ baseUrl: ${JSON.stringify(app.url)}, ${targets} }) },
@@ -155,7 +159,7 @@ test('a test file run on its own brings in the setup it needs from another file'
 test('a test that starts from a state no setup saves fails collection, naming the state', async (t) => {
   const app = await openApp(t)
   const root = await writeProject(t, {
-    'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
+    'retest.config.ts': configSource(`{ apps: { web: ${engineUnderTest().target(`baseUrl: ${JSON.stringify(app.url)}`)} } }`),
     'tests/orphan.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
 
 test('needs a state nobody saves', { state: 'nowhere' }, async ({ page }) => {

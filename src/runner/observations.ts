@@ -1,12 +1,13 @@
 import type { Observation, PageObservation } from '../protocol/commands.ts'
 import type { ChildEvent, EventBody } from '../protocol/events.ts'
-import type { LocatorCheckRecord, PageCheckRecord, PageLook } from '../protocol/locator-checks.ts'
+import type { Failure, FailureDetail } from '../protocol/failures.ts'
+import type { CheckRecord, LocatorCheckRecord, PageCheckRecord, PageLook } from '../protocol/locator-checks.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { Redactor } from './redactor.ts'
 import { isDeepStrictEqual } from 'node:util'
-import { truncateText } from '../protocol/failures.ts'
+import { failure, truncateText } from '../protocol/failures.ts'
 import { checkRecordProblem, decidedByLook, isPageCheck, locatorCheck, mapLocatorCheckText, mapPageCheckText, pageCheck } from '../protocol/locator-checks.ts'
-import { describeLocator } from '../protocol/locator.ts'
+import { describeEmptyStep, describeLocator } from '../protocol/locator.ts'
 import { formatObservationId } from '../protocol/observation-record.ts'
 import { cleanTitle, recordedTitle } from '../protocol/page-facts.ts'
 import { quoteText } from '../protocol/text.ts'
@@ -151,6 +152,38 @@ export class ServedObservations {
     return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
   }
 
+  /**
+   * The parent's own failure for a check on a look it served, when the check fails there, classed as the test process's
+   * poller classes a check its time ran out on: `not_found` when a check about one element saw none, `ambiguous` when it
+   * saw several, and `check_failed` otherwise; a page check is always `check_failed`. Undefined when the check passes
+   * on the look, or the look is not one this attempt served for a check of that kind. What it quotes is redacted with
+   * every value known now, and its details hold the expected and received values as the parent judged them.
+   *
+   * @example observations.lookFailure('o1', { matcher: 'toHaveText', text: 'Saved' })?.class // 'check_failed'
+   */
+  lookFailure(observationId: string, check: CheckRecord): Failure | undefined {
+    const served = this.#served.get(observationId)
+    if (served === undefined) return undefined
+    if (isPageCheck(check)) {
+      if (!('page' in served) || pageCheck(check).passes(served.page)) return undefined
+      const recorded = pageCheck(this.#redactor === undefined ? check : mapPageCheckText(check, (text) => this.#redactText(text)))
+      const look = served.page
+      const shown = { ...look, url: look.url === null ? null : this.#redactText(look.url), title: look.title === null ? null : this.#redactText(look.title) }
+      return { ...failure('check_failed', recorded.mismatch(shown)), details: judgedDetails(recorded.expected, recorded.actual(shown), recorded.comparison) }
+    }
+    if (!('locator' in served) || locatorCheck(check).passes(served.observation)) return undefined
+    const recorded = locatorCheck(this.#redactLocatorCheck(check))
+    const observation = this.#redactor?.redactObservation(served.observation) ?? served.observation
+    const locator = describeLocator(served.locator)
+    const details = judgedDetails(recorded.expected, recorded.actual(observation), recorded.comparison)
+    if (recorded.single && observation.count === 0) {
+      const step = observation.emptyStep === undefined ? undefined : describeEmptyStep(served.locator, observation.emptyStep)
+      return { ...failure('not_found', `${locator} matched no element.${step === undefined ? '' : ` ${step}`}`), details }
+    }
+    if (recorded.single && observation.count > 1) return { ...failure('ambiguous', `${locator} matched ${observation.count} elements, and ${recorded.matcher} needs exactly one.`), details }
+    return { ...failure('check_failed', recorded.mismatch(observation, locator)), details }
+  }
+
   #redactLocatorCheck(check: LocatorCheckRecord): LocatorCheckRecord {
     return this.#redactor === undefined ? check : mapLocatorCheckText(check, (text) => this.#redactText(text))
   }
@@ -162,6 +195,11 @@ export class ServedObservations {
 
 function refused(problem: string): Judged {
   return { ok: false, problem }
+}
+
+// The expected and received values of a check the parent judged, as a poller's failure details name them.
+function judgedDetails(expected: string, actual: string | null, comparison: string | undefined): Record<string, FailureDetail> {
+  return { expected: truncateText(expected), received: actual === null ? null : truncateText(actual), ...(comparison === undefined ? {} : { comparison }) }
 }
 
 function sessionOf(page: AssertionPage): { sessionId?: string } {

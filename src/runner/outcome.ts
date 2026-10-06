@@ -15,6 +15,7 @@ const errorClasses: ReadonlySet<FailureClass> = new Set<FailureClass>([
   'interrupted',
   'reporting_failed',
   'evaluation_error',
+  'evidence_incomplete',
 ])
 
 /**
@@ -52,6 +53,11 @@ export type RunFacts = {
    * cannot waive a host's check, so any of them keeps the run from passing.
    */
   hostFailures?: readonly Failure[]
+  /**
+   * The run required evidence and some of it is missing or incomplete. Every test keeps the outcome it observed; the run
+   * does not pass, and says why in its own failure.
+   */
+  evidenceFailure?: Failure
   files: readonly FileResult[]
 }
 
@@ -61,7 +67,8 @@ export type RunOutcome = { status: RunStatus; exitCode: ExitCode; complete: bool
 /**
  * Decides the run's status and exit code, in this order: 130 or 143 when interrupted, 130 for a `Failure` its
  * caller stopped it with; 2 when nothing trustworthy came out, a host's check among it; 1 when a test failed its checks; 2 when anything
- * else did not finish cleanly, including a file whose process failed outside its tests; otherwise 0.
+ * else did not finish cleanly, including a file whose process failed outside its tests and evidence the run required
+ * that is missing or incomplete; otherwise 0.
  *
  * @example runOutcome({ stoppedBy: undefined, runFailures: [], outputFailures: [], files }).exitCode
  */
@@ -136,7 +143,7 @@ function decideExitCode(facts: RunFacts, counts: Counts): ExitCode {
   if (facts.stoppedBy !== undefined) return stoppedExitCode(facts.stoppedBy)
   if (testsRan(counts) === 0 || facts.outputFailures.length > 0 || facts.runFailures.length > 0 || (facts.hostFailures?.length ?? 0) > 0) return 2
   if (counts.failed > 0) return 1
-  if (counts.error > 0 || counts.notRun > 0 || counts.inconclusive > 0 || hasUnfinishedWork(facts.files)) return 2
+  if (counts.error > 0 || counts.notRun > 0 || counts.inconclusive > 0 || hasUnfinishedWork(facts.files) || facts.evidenceFailure !== undefined) return 2
   return 0
 }
 
@@ -145,7 +152,8 @@ function decideExitCode(facts: RunFacts, counts: Counts): ExitCode {
 function runFailure(facts: RunFacts, counts: Counts): Failure | undefined {
   const { stoppedBy } = facts
   const stopped = stoppedBy === undefined || typeof stoppedBy === 'string' ? [] : [stoppedBy]
-  const [first, ...rest] = [...stopped, ...facts.runFailures, ...(facts.hostFailures ?? []), ...facts.outputFailures, ...processFailures(facts.files)]
+  const evidence = facts.evidenceFailure === undefined ? [] : [facts.evidenceFailure]
+  const [first, ...rest] = [...stopped, ...facts.runFailures, ...(facts.hostFailures ?? []), ...facts.outputFailures, ...processFailures(facts.files), ...evidence]
   if (first !== undefined) return withAlso(first, rest)
   if (facts.stoppedBy !== undefined || testsRan(counts) > 0) return undefined
   return whyNothingRan(facts.files)
@@ -191,7 +199,7 @@ function runStatus(exitCode: ExitCode): RunStatus {
 // Complete means every selected test reached a verdict of its own, or was skipped as its file declared, every file
 // ended cleanly and every output was kept.
 function isComplete(facts: RunFacts): boolean {
-  if (facts.stoppedBy !== undefined || facts.outputFailures.length > 0 || facts.runFailures.length > 0 || (facts.hostFailures?.length ?? 0) > 0) return false
+  if (facts.stoppedBy !== undefined || facts.outputFailures.length > 0 || facts.runFailures.length > 0 || (facts.hostFailures?.length ?? 0) > 0 || facts.evidenceFailure !== undefined) return false
   const settled: readonly TestStatus[] = ['passed', 'failed', 'skipped']
   return facts.files.every((file) => file.failure === undefined && file.tests.every((test) => settled.includes(test.status)))
 }

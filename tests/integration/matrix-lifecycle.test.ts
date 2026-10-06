@@ -20,6 +20,7 @@ import {
   testNamed,
   waitFor,
 } from './cli-harness.ts'
+import { killBrowserFromOutside } from './outside-kill.ts'
 
 // The test budget, the second a stopped test's process has to answer, then closing the browser.
 const timeoutBoundMs = 10_000
@@ -67,11 +68,12 @@ test('timeout: the next file still runs, in a new process, after a test in the p
   assert.equal(app.submissions(), 1)
 })
 
-// Kills only the browser this run reported, once `ready` proves a command is under way.
+// Kills only the browser this run reported, once `ready` proves a command is under way: its main process, read beneath
+// the run's own process just before the signal.
 async function killBrowserWhen(started: StartedRun, ready: () => Promise<unknown>): Promise<FinishedRun> {
   const browser = await started.retest.waitForEvent('browser.started')
   await ready()
-  process.kill(-browser.pid, 'SIGKILL')
+  killBrowserFromOutside(started.retest.pid, browser.pid)
   return finishRun(started)
 }
 

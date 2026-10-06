@@ -8,11 +8,11 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { profilePrefix } from '../../src/browser/profiles.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { childLogFile, eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
 import { parse } from '../../src/protocol/schema.ts'
+import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { isGoneWithin } from '../support/run-harness.ts'
 import { browserPath, groupExists, openApp, waitForGroupEnd } from './browser-harness.ts'
 import { budgets, childLog, finishRun, onlyEvent, onlyTest, printedPids, profilesIn, resultOf, startRun } from './cli-harness.ts'
@@ -81,16 +81,26 @@ for (const { signal, exitCode, notice } of secondSignals) {
     ]
     const retest = spawn(process.execPath, args, { cwd: rootDir, stdio: ['ignore', 'pipe', 'pipe'] })
     const exited = once(retest, 'exit')
-    t.after(() => retest.kill('SIGKILL'))
+    assert.ok(retest.pid !== undefined, 'retest started')
+    // What retest launched is recorded beneath it while it runs. The last resort ends retest through its own handle,
+    // then only those recorded processes still there, each checked again first; a browser group left fails by name.
+    const launched = new OwnedProcessGroup(retest.pid)
+    let browserPid: number | undefined
+    t.after(async () => {
+      retest.kill('SIGKILL')
+      if (browserPid === undefined) return
+      const problems = launched.remains() ? launched.signalReport('SIGKILL').problems : []
+      await waitForGroupEnd(browserPid, 5000)
+      assert.deepEqual(problems, [])
+    })
     const stdout = lines(retest.stdout)
     const stderr = lines(retest.stderr)
 
     const started = readEvent(await stdout((line) => line.includes('"type":"browser.started"')))
     assert.ok(started?.type === 'browser.started', 'retest printed browser.started')
     const { pid } = started
-    t.after(() => {
-      if (groupExists(pid)) signalGroup(pid, 'SIGKILL')
-    })
+    assert.deepEqual(launched.capture(), [], 'the browser retest reported is recorded beneath it')
+    browserPid = pid
     await stdout((line) => line.includes('"type":"action.completed"') && line.includes('"command":"goto"'))
     assert.equal(groupExists(pid), true, 'the browser is running while the test waits')
 

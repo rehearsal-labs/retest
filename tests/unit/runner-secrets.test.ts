@@ -114,6 +114,48 @@ describe('SecretFiller', () => {
     assert.equal(reads, 0, 'the source was never called')
   })
 
+  // An Electron app can show its own page under any address, so a base URL of another app never vouches for its window.
+  test('an Electron window takes a secret only on an origin secretOrigins lists, never on a base URL, without reading the value', async () => {
+    let reads = 0
+    const secrets = new SecretFiller(new Map([['password', { read: async () => `pass-${++reads}` }], ['token', { read: async () => `token-${++reads}` }]]), declared, new Redactor())
+    const electron = (pageUrl: string): FillContext => ({ ...on(pageUrl), target: 'electron' })
+    assert.deepEqual(await secrets.resolve(fill('password'), electron('http://127.0.0.1:4173/login')), {
+      ok: false,
+      failure: {
+        class: 'not_actionable',
+        message:
+          'Retest did not type the secret "password": the window is on http://127.0.0.1:4173, and in an Electron app it may be typed only on https://login.example, the origins secretOrigins lists for it. An Electron app shows whatever origin it chooses, so no base URL counts there. Add the origin to secretOrigins if it belongs there.',
+        details: { origin: 'http://127.0.0.1:4173' },
+      },
+    })
+    assert.deepEqual(await secrets.resolve(fill('token'), electron('http://127.0.0.1:4173/login')), {
+      ok: false,
+      failure: {
+        class: 'not_actionable',
+        message:
+          'Retest did not type the secret "token": the window is on http://127.0.0.1:4173, and in an Electron app it may be typed only on an origin secretOrigins lists for it, and it lists none. An Electron app shows whatever origin it chooses, so no base URL counts there. Add the origin to secretOrigins if it belongs there.',
+        details: { origin: 'http://127.0.0.1:4173' },
+      },
+    })
+    assert.equal(reads, 0, 'no source was called for a refused window')
+    const listed = await secrets.resolve(fill('password'), electron('https://login.example/sso'))
+    assert.deepEqual(listed.ok ? listed.command.allowedOrigins : listed.failure, ['https://login.example'], 'the fill is bound to the listed origin alone')
+    const web = await secrets.resolve(fill('password'), { ...on('http://127.0.0.1:4173/login'), target: 'web' })
+    assert.deepEqual(web.ok ? web.command.allowedOrigins : web.failure, ['http://127.0.0.1:4173', 'https://login.example'], 'a web page keeps its base URLs')
+  })
+
+  test('a refused page whose host secretOrigins lists without a scheme is told that name reads as a bundle id', async () => {
+    const native = new Map<string, LoadedSecret>([['pin', { source: { env: 'TEST_PIN' }, origins: ['https://login.example', 'example.com', 'dev.retest.fixtures.taskphone'] }]])
+    const secrets = new SecretFiller(new Map([['pin', { value: 'pin-4821' }]]), native, new Redactor())
+    const refused = await secrets.resolve(fill('pin'), on('https://Example.com/login'))
+    assert.equal(
+      refused.ok ? undefined : refused.failure.message,
+      'Retest did not type the secret "pin": the page is on https://example.com, and it may be typed only on http://127.0.0.1:4173, https://login.example, example.com, dev.retest.fixtures.taskphone. secretOrigins lists example.com without a scheme, which Retest reads as a native app\'s bundle id: write https://example.com if this page is where it belongs.',
+    )
+    const elsewhere = await secrets.resolve(fill('pin'), on('https://other.example/login'))
+    assert.match(elsewhere.ok ? '' : elsewhere.failure.message, /\. Add the origin to secretOrigins if it belongs there\.$/, 'a page on another host gets the usual advice')
+  })
+
   test('calls a function source on every use and teaches each new value to the redactor', async () => {
     let reads = 0
     const { filler: secrets, redactor } = filler(new Map([['code', { read: async () => `code-${++reads}` }]]))

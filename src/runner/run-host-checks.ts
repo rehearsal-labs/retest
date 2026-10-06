@@ -67,9 +67,61 @@ export async function runHostChecks(context: PagesContext, pages: readonly AppPa
   return first === undefined ? { results } : { results, failure: withAlso(first, failures.filter((each) => each !== first)) }
 }
 
-// Looks until the check passes or its time runs out, and waits for any document the frame is opening.
+// Looks until the check passes or its time runs out, as `decideHostCheck` decides it, and writes what it decided.
 async function runCheck(context: PagesContext, page: AppPage | undefined, { check, app }: TestHostCheck): Promise<CheckOutcome> {
   const timeoutMs = check.timeoutMs ?? context.timeouts.assertion
+  const read = page === undefined ? undefined : { readPage: (queries: readonly TextQuery[], readMs: number) => page.page.readPage(queries, readMs), connected: () => context.connected(page.browser) }
+  const decided = await decideHostCheck({ check, app, page: read, timeoutMs, stopped: context.stopped, interruption: context.interruption, redact: context.redact })
+  if (decided.kind === 'stopped') return decided
+  const record = hostCheckRecord(check)
+  // The session of the page it read; a check of an app the test does not have read no page and names no session.
+  const session = page === undefined ? {} : { sessionId: page.session.sessionId }
+  const fields = { testId: context.testId, attemptId: context.attemptId, session: app, ...session, check: record, actual: decided.actual, attempts: decided.attempts, timeoutMs: decided.timeoutMs, durationMs: decided.durationMs }
+  if (decided.failure === undefined) {
+    context.emit({ type: 'host_check.passed', ...fields })
+    return { kind: 'done', result: { check: record, app, status: 'passed' }, stops: false }
+  }
+  context.emit({ type: 'host_check.failed', ...fields, failure: decided.failure })
+  return { kind: 'done', result: { check: record, app, status: 'failed', failure: decided.failure }, stops: decided.lost }
+}
+
+/** One read of an app's page for a host check, and whether its browser is still there, asked before every look. */
+export type HostCheckPage = {
+  readonly readPage: (queries: readonly TextQuery[], timeoutMs: number) => Promise<PageReading>
+  readonly connected: () => boolean
+}
+
+/**
+ * One host check to decide: the check, the app it names, that app's page, absent when the caller has none for it, its
+ * time, the caller's stop and why it stopped, and the redaction of every value the caller has read.
+ */
+export type HostCheckCall = {
+  readonly check: HostCheck
+  readonly app: string
+  readonly page: HostCheckPage | undefined
+  readonly timeoutMs: number
+  readonly stopped: Promise<unknown>
+  readonly interruption: () => Failure | undefined
+  readonly redact: (text: string) => string
+}
+
+/**
+ * One host check decided: stopped by the caller, or done with its status, its failure when it failed, what the last look
+ * saw, how many looks it took in how long, and `lost` when the page could not be read, which stops the checks after it.
+ */
+export type DecidedHostCheck =
+  | { readonly kind: 'stopped'; readonly failure: Failure }
+  | { readonly kind: 'done'; readonly status: 'passed' | 'failed'; readonly failure?: Failure; readonly actual: HostCheckActual; readonly attempts: number; readonly timeoutMs: number; readonly durationMs: number; readonly lost: boolean }
+
+/**
+ * Looks at the page until the check passes or its time runs out, waiting for any document the frame is opening, and
+ * decides it. It writes nothing: the runner writes `host_check.passed` or `host_check.failed` from the answer, and an
+ * agent session's check reads the same answer, so both decide a check one way.
+ *
+ * @example const decided = await decideHostCheck({ check, app: 'web', page, timeoutMs: 5000, stopped, interruption, redact })
+ */
+export async function decideHostCheck(call: HostCheckCall): Promise<DecidedHostCheck> {
+  const { check, app, timeoutMs } = call
   const deadline = new Deadline(timeoutMs)
   const startedAt = monotonicClock()
   const queries: TextQuery[] = check.kind === 'text' ? [{ text: check.text, ignoreCase: check.ignoreCase === true }] : []
@@ -77,41 +129,42 @@ async function runCheck(context: PagesContext, page: AppPage | undefined, { chec
   let last: PageReading | undefined
   let unread: Failure | undefined
   for (;;) {
-    const delay = smallestBudget(lookDelays[Math.min(attempts, lookDelays.length - 1)] ?? 0, deadline.remainingMs)
-    if (delay > 0 && (await bounded(sleep(delay), timerMs(delay + abortGraceMs), context.stopped)).status === 'stopped') return stopped(context)
-    const read = await readOnce(context, page, app, queries, deadline)
+    const waitToEndMs = deadline.waitToEndMs
+    const delay = smallestBudget(lookDelays[Math.min(attempts, lookDelays.length - 1)] ?? 0, waitToEndMs)
+    if (delay > 0 && (await bounded(sleep(delay), timerMs(delay + abortGraceMs), call.stopped)).status === 'stopped') return stopped(call)
+    if (delay > 0 && delay === waitToEndMs) {
+      while (!deadline.reached) {
+        const pause = deadline.waitToEndMs
+        if ((await bounded(sleep(pause), timerMs(pause + abortGraceMs), call.stopped)).status === 'stopped') return stopped(call)
+      }
+    }
+    const read = await readOnce(call, queries, deadline)
     attempts++
-    if (read.status === 'stopped') return stopped(context)
+    if (read.status === 'stopped') return stopped(call)
     if (read.status === 'unread') unread = read.failure
     if (read.status === 'read') last = read.reading
-    if (unread !== undefined || passes(check, last) || deadline.expired) break
+    if (unread !== undefined || passes(check, last) || deadline.reached) break
   }
   const looked = { attempts, timeoutMs }
   // A page that answered no read in the whole time could not be read, which says nothing about the app.
   const lost = unread ?? (last === undefined ? failure('session_lost', `The page of ${app} did not answer a host check within ${timeoutMs} ms, so Retest could not read it.`) : undefined)
-  const problem = passes(check, last) ? undefined : (lost ?? checkFailure({ check, app, last, looked, redact: context.redact }))
-  const record = hostCheckRecord(check)
-  // The session of the page it read; a check of an app the test does not have read no page and names no session.
-  const session = page === undefined ? {} : { sessionId: page.session.sessionId }
-  const fields = { testId: context.testId, attemptId: context.attemptId, session: app, ...session, check: record, actual: actualOf(check, last), ...looked, durationMs: elapsedMs(startedAt) }
-  if (problem === undefined) {
-    context.emit({ type: 'host_check.passed', ...fields })
-    return { kind: 'done', result: { check: record, app, status: 'passed' }, stops: false }
-  }
-  context.emit({ type: 'host_check.failed', ...fields, failure: problem })
-  return { kind: 'done', result: { check: record, app, status: 'failed', failure: problem }, stops: lost !== undefined }
+  const problem = passes(check, last) ? undefined : (lost ?? checkFailure({ check, app, last, looked, redact: call.redact }))
+  const decided = { actual: actualOf(check, last), ...looked, durationMs: elapsedMs(startedAt) }
+  if (problem === undefined) return { kind: 'done', status: 'passed', ...decided, lost: false }
+  return { kind: 'done', status: 'failed', failure: problem, ...decided, lost: lost !== undefined }
 }
 
-async function readOnce(context: PagesContext, page: AppPage | undefined, app: string, queries: readonly TextQuery[], deadline: Deadline): Promise<Read> {
-  if (context.interruption() !== undefined) return { status: 'stopped' }
+async function readOnce(call: HostCheckCall, queries: readonly TextQuery[], deadline: Deadline): Promise<Read> {
+  const { app, page } = call
+  if (call.interruption() !== undefined) return { status: 'stopped' }
   if (page === undefined) return { status: 'unread', failure: failure('test_error', `The host check reads the page of ${app}, which this test does not have.`) }
-  if (!context.connected(page.browser)) return { status: 'unread', failure: failure('session_lost', `The browser of ${app} was gone, so Retest could not run the host check.`) }
+  if (!page.connected()) return { status: 'unread', failure: failure('session_lost', `The browser of ${app} was gone, so Retest could not run the host check.`) }
   const timeoutMs = deadline.commandTimeoutMs
-  const read = await bounded(page.page.readPage(queries, timeoutMs), timerMs(timeoutMs + abortGraceMs), context.stopped)
+  const read = await bounded(page.readPage(queries, timeoutMs), timerMs(timeoutMs + abortGraceMs), call.stopped)
   if (read.status === 'stopped') return { status: 'stopped' }
   if (read.status === 'done') return { status: 'read', reading: read.value }
   if (read.status === 'timed_out') return { status: 'late' }
-  const problem = readFailure(read.error, app, context.connected(page.browser))
+  const problem = readFailure(read.error, app, page.connected())
   return problem.class === 'timeout' ? { status: 'late' } : { status: 'unread', failure: problem }
 }
 
@@ -183,6 +236,6 @@ function expectedAddress(check: Extract<HostCheck, { kind: 'address' }>): string
   return typeof path === 'string' ? `${origin}${path}` : `${origin} with a path matching ${String(path)}`
 }
 
-function stopped(context: PagesContext): CheckOutcome {
-  return { kind: 'stopped', failure: context.interruption() ?? failure('interrupted', 'The run was interrupted.') }
+function stopped(call: HostCheckCall): { readonly kind: 'stopped'; readonly failure: Failure } {
+  return { kind: 'stopped', failure: call.interruption() ?? failure('interrupted', 'The run was interrupted.') }
 }

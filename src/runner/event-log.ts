@@ -15,6 +15,7 @@ export type EventLogOptions = {
   onFailure: (failure: Failure) => void
   /** Rewrites each event before anything sees it, as the run's redactor does. */
   redact?: (event: RetestEvent) => RetestEvent
+  redactText?: (text: string) => string
 }
 
 type Delivery = { reporter: Reporter; broken: boolean }
@@ -31,6 +32,7 @@ export class EventLog {
   #sequence = 0
   #queue: Promise<void> = Promise.resolve()
   #writable = true
+  readonly #persisted = new WeakSet<RetestEvent>()
   readonly #failures: Failure[] = []
 
   constructor(options: EventLogOptions) {
@@ -50,6 +52,11 @@ export class EventLog {
     return event
   }
 
+  /** Emits an event and reports whether its synchronous store append succeeded. */
+  emitPersisted(body: EventBody, origin: EventOrigin = 'parent'): boolean {
+    return this.#persisted.has(this.emit(body, origin))
+  }
+
   /** Persists the settled outcome after all reporters have ended, without calling closed reporters again. */
   recordOutcome(result: RunResult): void {
     const { status, exitCode, complete, failure } = result
@@ -67,7 +74,7 @@ export class EventLog {
       ...body,
     }
     const event = this.#options.redact?.(stamped) ?? stamped
-    this.#write(event)
+    if (this.#write(event)) this.#persisted.add(event)
     return event
   }
 
@@ -87,20 +94,22 @@ export class EventLog {
     for (const delivery of this.#deliveries) {
       if (delivery.broken) continue
       try {
-        await delivery.reporter.onRunEnd(structuredClone(result))
+        await delivery.reporter.onRunEnd(structuredClone(result), this.#options.redactText === undefined ? undefined : { redactText: this.#options.redactText })
       } catch (error) {
         this.#brokeOn(delivery, 'the end of the run', error)
       }
     }
   }
 
-  #write(event: RetestEvent): void {
-    if (!this.#writable) return
+  #write(event: RetestEvent): boolean {
+    if (!this.#writable) return false
     try {
       this.#options.store.appendEvent(event)
+      return true
     } catch (error) {
       this.#writable = false
       this.#fail(failure('reporting_failed', `Retest could not write events.jsonl: ${errorMessage(error)}`))
+      return false
     }
   }
 

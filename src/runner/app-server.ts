@@ -55,7 +55,7 @@ export class AppServerError extends Error {
 
 const probeLimitMs = 1000
 const pollIntervalMs = 100
-const liveGroups = new Set<OwnedProcessGroup>()
+const liveServers = new Set<ServerOwnership>()
 let exitHookInstalled = false
 
 /**
@@ -87,34 +87,86 @@ export function probeReady(url: string, timeoutMs: number): Promise<boolean> {
  *
  * @example const server = await startAppServer({ name: 'web', start, logFile }, 60_000); await server.stop(1000)
  */
-export async function startAppServer(options: AppServerOptions, timeoutMs: number): Promise<AppServerHandle> {
+export async function startAppServer(options: AppServerOptions, timeoutMs: number, dependencies: AppServerDependencies = {}): Promise<AppServerHandle> {
+  const interrupted = (): boolean => options.signal?.aborted === true
+  const probe = dependencies.probe ?? probeReady
+  const launchServer = dependencies.launch ?? launch
   const startedAt = monotonicClock()
   const deadline = new Deadline(timeoutMs, { startedAt })
   const { name, start } = options
   const ready = withoutCredentials(start.ready)
-  if (await probeReady(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs))) {
+  if (await probe(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs))) {
     return { status: 'reused', durationMs: elapsedMs(startedAt), stop: async () => undefined }
   }
-  const server = await launch(options)
-  while (!deadline.expired) {
-    if (options.signal?.aborted === true) return server.fail(failure('interrupted', `Starting the server for ${name} was interrupted.`))
+  const server = await launchServer(options)
+  for (;;) {
+    if (interrupted()) return server.fail(failure('interrupted', `Starting the server for ${name} was interrupted.`))
     if (server.exit !== undefined) {
       return server.fail(failure('setup_failed', `The server for ${name} exited with ${describeExit(server.exit)} before ${ready} answered. Its output is in ${options.logFile}.`))
     }
-    if (await probeReady(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs))) {
+    if (await probe(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs))) {
+      server.settle()
       return { status: 'started', pid: server.pid, durationMs: elapsedMs(startedAt), stop: (budget) => server.stop(budget) }
     }
-    await sleep(smallestBudget(pollIntervalMs, deadline.remainingMs))
+    if (deadline.reached) break
+    const waitToEndMs = deadline.waitToEndMs
+    const pause = smallestBudget(pollIntervalMs, waitToEndMs)
+    await sleep(pause)
+    if (pause === waitToEndMs) {
+      while (!deadline.reached && !interrupted()) await sleep(deadline.waitToEndMs)
+    }
   }
   return server.fail(failure('setup_failed', `The server for ${name} did not answer at ${ready} within ${timeoutMs} ms. Its output is in ${options.logFile}.`))
+}
+
+/** Internal readiness seams; production uses the owned server and HTTP probe. */
+export type AppServerDependencies = {
+  readonly probe?: (url: string, timeoutMs: number) => Promise<boolean>
+  readonly launch?: (options: AppServerOptions) => Promise<Launched>
 }
 
 type Launched = {
   readonly pid: number
   readonly exit: ProcessExit | undefined
+  /** Records the server again once it answers, when its shell has become the command it ran. */
+  settle(): void
   stop(timeoutMs: number): Promise<void>
   /** Stops the server and throws the failure. */
   fail(problem: Failure): Promise<never>
+}
+
+/**
+ * The server's processes as Retest recorded them. A shell may replace itself with the command it runs, as `sh -c
+ * "node server.js"` does, keeping its pid and start under a new command line, and the ownership rule refuses a record
+ * whose readable command differs from the process it names. So the launch is recorded at once, which covers a start
+ * that fails before the shell runs anything, and recorded once more when the server answers, or is stopped or the
+ * parent exits before it did. That second record is taken only while Node has not reaped the child, so its pid cannot
+ * yet belong to any other process, and it holds whatever command the shell became.
+ */
+class ServerOwnership {
+  readonly #child: ChildProcess
+  readonly #pid: number
+  #group: OwnedProcessGroup
+  #settled = false
+
+  constructor(child: ChildProcess, pid: number) {
+    this.#child = child
+    this.#pid = pid
+    this.#group = new OwnedProcessGroup(pid)
+  }
+
+  get group(): OwnedProcessGroup {
+    return this.#group
+  }
+
+  // A record that cannot be taken cleanly leaves the launch record in place, with the problems it meets in cleanup.
+  settle(): void {
+    if (this.#settled) return
+    this.#settled = true
+    if (this.#child.exitCode !== null || this.#child.signalCode !== null) return
+    const settled = new OwnedProcessGroup(this.#pid)
+    if (settled.capture().length === 0) this.#group = settled
+  }
 }
 
 async function launch({ name, start, logFile, redactor, hiddenVariables }: AppServerOptions): Promise<Launched> {
@@ -148,8 +200,8 @@ async function launch({ name, start, logFile, redactor, hiddenVariables }: AppSe
     const problem = failure('setup_failed', `The server for ${name} could not start: ${outputErrorMessage(error, redactor)}`)
     throw new AppServerError(logFailure === undefined ? problem : withAlso(problem, [logFailure]))
   }
-  const ownership = new OwnedProcessGroup(pid)
-  const ownershipProblems = ownership.capture()
+  const ownership = new ServerOwnership(child, pid)
+  const ownershipProblems = ownership.group.capture()
   own(ownership)
   let exit: ProcessExit | undefined
   child.on('exit', (code, signal) => (exit ??= { code, signal }))
@@ -174,8 +226,8 @@ async function launch({ name, start, logFile, redactor, hiddenVariables }: AppSe
       if (output.status === 'timed_out') problems.push("The server's output did not close; cleanup completion is unknown.")
       if (output.status === 'failed') problems.push(`The server's output could not close: ${errorMessage(output.error)}`)
       // A process whose ownership could not be read must not keep the reporting process open indefinitely.
-      if (ownership.remains()) child.unref()
-      problems.push(...ownership.readProblems)
+      if (ownership.group.remains()) child.unref()
+      problems.push(...ownership.group.readProblems)
       if (problems.length > 0) throw new AppServerError(failure('cleanup_failed', `Retest could not stop the server for ${name}: ${[...new Set(problems)].join(' ')}`))
     })()
     return stopping
@@ -195,6 +247,7 @@ async function launch({ name, start, logFile, redactor, hiddenVariables }: AppSe
     get exit() {
       return exit
     },
+    settle: () => ownership.settle(),
     stop,
     fail,
   }
@@ -263,14 +316,16 @@ function outputErrorMessage(error: unknown, redactor: Redactor | undefined): str
   }
 }
 
-async function stopGroup(ownership: OwnedProcessGroup, timeoutMs: number): Promise<string[]> {
+async function stopGroup(server: ServerOwnership, timeoutMs: number): Promise<string[]> {
+  server.settle()
+  const ownership = server.group
   const problems = ownership.signal('SIGTERM')
   let gone = await groupGoneWithin(ownership, timeoutMs)
   if (!gone) {
     problems.push(...ownership.signal('SIGKILL'))
     gone = await groupGoneWithin(ownership, closeGraceMs)
   }
-  if (gone) liveGroups.delete(ownership)
+  if (gone) liveServers.delete(server)
   else problems.push('Recorded server processes or processes with unknown ownership are still running after cleanup.')
   problems.push(...ownership.readProblems)
   return problems
@@ -285,12 +340,15 @@ async function groupGoneWithin(ownership: OwnedProcessGroup, timeoutMs: number):
   return true
 }
 
-function own(ownership: OwnedProcessGroup): void {
-  liveGroups.add(ownership)
+function own(server: ServerOwnership): void {
+  liveServers.add(server)
   if (exitHookInstalled) return
   exitHookInstalled = true
   // Runs synchronously as the parent exits, with the same exact identity checks as ordinary cleanup.
   process.on('exit', () => {
-    for (const group of liveGroups) group.signalNow('SIGKILL')
+    for (const live of liveServers) {
+      live.settle()
+      live.group.signalNow('SIGKILL')
+    }
   })
 }

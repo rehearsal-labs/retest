@@ -24,6 +24,11 @@ export type FillContext = {
    * no address, so this id is its destination, and `pageUrl` and `appOrigins` play no part.
    */
   bundleId?: string
+  /**
+   * What the page belongs to: a web app, as when absent, or an Electron app. An Electron app shows whatever origin it
+   * chooses, so on its window only the origins `secretOrigins` lists count, and `appOrigins` plays no part.
+   */
+  target?: 'web' | 'electron'
   timeoutMs: number
   /** Aborted, with a `Failure` as its reason, when the fill is stopped, as when its test is. */
   signal: AbortSignal
@@ -81,10 +86,11 @@ export function secretVariables(secrets: ReadonlyMap<string, LoadedSecret>): str
 /**
  * Turns a secret fill into the text the page types. The page's origin is checked first, so a secret is never
  * read, let alone typed, for a page it does not belong to: the origins of the test's apps' base URLs, and the
- * ones `secretOrigins` lists for it. The page checks its origin again as it types, since a page can move after
- * its last navigation was seen, so the fill carries the same origins. A native app's destination is its bundle
- * id, which `secretOrigins` must name exactly; no base URL stands for it. Every value read is taught to the
- * redactor before it goes anywhere.
+ * ones `secretOrigins` lists for it. An Electron app's window takes only the ones `secretOrigins` lists, since
+ * the app decides what origin its page shows. The page checks its origin again as it types, since a page can
+ * move after its last navigation was seen, so the fill carries the same origins. A native app's destination is
+ * its bundle id, which `secretOrigins` must name exactly; no base URL stands for it. Every value read is taught
+ * to the redactor before it goes anywhere.
  */
 export class SecretFiller {
   readonly #secrets: ReadonlyMap<string, ResolvedSecret>
@@ -103,9 +109,14 @@ export class SecretFiller {
     const secret = this.#secrets.get(name)
     if (secret === undefined) return refused('usage', `secret(${JSON.stringify(name)}) is not one of the config's secrets.`)
     if (context.bundleId !== undefined) return this.#resolveNative(command, secret, context.bundleId, context)
-    const allowedOrigins = [...new Set([...context.appOrigins, ...(this.#declared.get(name)?.origins ?? [])])]
+    const declared = this.#declared.get(name)?.origins ?? []
+    const electron = context.target === 'electron'
+    const allowedOrigins = electron ? [...new Set(declared.filter(isWebOrigin))] : [...new Set([...context.appOrigins, ...declared])]
     const origin = originOf(context.pageUrl)
-    if (origin === undefined || !allowedOrigins.includes(origin)) return refused('not_actionable', wrongOrigin(name, origin, allowedOrigins), { origin: origin ?? null })
+    if (origin === undefined || !allowedOrigins.includes(origin)) {
+      const refusal = { name, origin, allowed: allowedOrigins, schemeless: schemelessHost(declared, context.pageUrl) }
+      return refused('not_actionable', electron ? wrongElectronOrigin(refusal) : wrongOrigin(refusal), { origin: origin ?? null })
+    }
     const value = await this.#read(name, secret, context)
     if (typeof value !== 'string') return { ok: false, failure: value }
     return { ok: true, command: { kind: 'fill', locator: command.locator, value, secret: name, allowedOrigins } }
@@ -175,15 +186,41 @@ function refused(kind: Failure['class'], message: string, details?: Failure['det
   return { ok: false, failure: { ...failure(kind, message), ...(details === undefined ? {} : { details }) } }
 }
 
-function wrongOrigin(name: string, origin: string | undefined, allowed: readonly string[]): string {
+type OriginRefusal = { name: string; origin: string | undefined; allowed: readonly string[]; schemeless: string | undefined }
+
+function wrongOrigin({ name, origin, allowed, schemeless }: OriginRefusal): string {
   const where = origin === undefined ? 'the page has not opened a web address yet' : `the page is on ${origin}`
   const permitted = allowed.length === 0 ? 'no origin, since no app it uses has a base URL' : allowed.join(', ')
-  return `Retest did not type the secret ${JSON.stringify(name)}: ${where}, and it may be typed only on ${permitted}. Add the origin to secretOrigins if it belongs there.`
+  return `Retest did not type the secret ${JSON.stringify(name)}: ${where}, and it may be typed only on ${permitted}. ${originAdvice(origin, schemeless)}`
+}
+
+function wrongElectronOrigin({ name, origin, allowed, schemeless }: OriginRefusal): string {
+  const where = origin === undefined ? 'the window has not opened a web address yet' : `the window is on ${origin}`
+  const permitted = allowed.length === 0 ? 'an origin secretOrigins lists for it, and it lists none' : `${allowed.join(', ')}, the origins secretOrigins lists for it`
+  const reason = 'An Electron app shows whatever origin it chooses, so no base URL counts there.'
+  return `Retest did not type the secret ${JSON.stringify(name)}: ${where}, and in an Electron app it may be typed only on ${permitted}. ${reason} ${originAdvice(origin, schemeless)}`
+}
+
+function originAdvice(origin: string | undefined, schemeless: string | undefined): string {
+  if (origin === undefined || schemeless === undefined) return 'Add the origin to secretOrigins if it belongs there.'
+  return `secretOrigins lists ${schemeless} without a scheme, which Retest reads as a native app's bundle id: write ${origin} if this page is where it belongs.`
+}
+
+// A config with a native app reads a dotted name without a scheme as a bundle id, since nothing in it tells one from a
+// host name. Such a name that is the page's own host was most likely written for this page, without its scheme.
+function schemelessHost(declared: readonly string[], pageUrl: string | undefined): string | undefined {
+  const host = pageUrl === undefined ? undefined : URL.parse(pageUrl)?.hostname
+  if (host === undefined || host === '') return undefined
+  return declared.find((destination) => !isWebOrigin(destination) && destination.toLowerCase() === host)
+}
+
+function isWebOrigin(destination: string): boolean {
+  return destination.includes('://')
 }
 
 // Only the bundle ids among a secret's destinations are named: a web origin can never be a native app's.
 function wrongBundle(name: string, bundleId: string, declared: readonly string[]): string {
-  const bundles = declared.filter((destination) => !destination.includes('://'))
+  const bundles = declared.filter((destination) => !isWebOrigin(destination))
   const permitted = bundles.length === 0 ? 'no native app, since secretOrigins names no bundle id for it' : bundles.join(', ')
   return `Retest did not type the secret ${JSON.stringify(name)}: the app is ${bundleId}, and it may be typed only into ${permitted}. Add the app's bundle id to secretOrigins if it belongs there.`
 }

@@ -52,6 +52,43 @@ describe('Deadline', () => {
     assert.equal(deadline.expired, true, 'less than a millisecond is left')
   })
 
+  test('is reached only once the clock reads its end, not while part of a millisecond is left', () => {
+    const time = manualClock(0)
+    const deadline = new Deadline(10, { clock: time.clock })
+    time.advance(9.9)
+    assert.equal(deadline.expired, true, 'no whole millisecond is left')
+    assert.equal(deadline.reached, false, 'a tenth of one is')
+    time.advance(0.1)
+    assert.equal(deadline.reached, true)
+    time.advance(1000)
+    assert.equal(deadline.reached, true)
+    assert.equal(new Deadline(0, { clock: manualClock(0).clock }).reached, true, 'a budget of zero is reached from the start')
+  })
+
+  test('gives a wait the time left rounded up, so a wait of that long ends at the end or after it', () => {
+    const time = manualClock(0)
+    const deadline = new Deadline(100, { clock: time.clock })
+    assert.equal(deadline.waitToEndMs, 100)
+    time.advance(30.4)
+    assert.equal(deadline.waitToEndMs, 70)
+    assert.equal(deadline.remainingMs, 69)
+    time.advance(69.5)
+    assert.equal(deadline.waitToEndMs, 1, 'a tenth of a millisecond is waited as a whole one')
+    time.advance(0.1)
+    assert.equal(deadline.waitToEndMs, 0)
+    time.advance(1000)
+    assert.equal(deadline.waitToEndMs, 0)
+  })
+
+  test('keeps the largest wait within the timer limit even when floating-point subtraction adds a fraction', () => {
+    const time = manualClock(1.01)
+    const deadline = new Deadline(maxTimeout, { clock: time.clock })
+    assert.equal(deadline.waitToEndMs, maxTimeout, 'rounding must not overflow a Node timer into a one-millisecond wait')
+    time.advance(maxTimeout)
+    assert.equal(deadline.reached, true)
+    assert.equal(deadline.waitToEndMs, 0)
+  })
+
   test('gives a command what is left, and at least the one millisecond a timer needs', () => {
     const time = manualClock(0)
     const deadline = new Deadline(500, { clock: time.clock })

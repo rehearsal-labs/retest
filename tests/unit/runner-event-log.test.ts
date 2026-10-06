@@ -158,3 +158,14 @@ describe('EventLog', () => {
     store.close()
   })
 })
+
+test('emitPersisted returns append success, then false for a failed store and every later event', async () => {
+  const { log, store, failures } = newLog([])
+  assert.equal(log.emitPersisted(started), true)
+  store.close()
+  assert.equal(log.emitPersisted(started), false)
+  assert.equal(log.emitPersisted(started), false)
+  await log.flush()
+  assert.equal(failures.length, 1)
+  assert.equal(failures[0]?.class, 'reporting_failed')
+})

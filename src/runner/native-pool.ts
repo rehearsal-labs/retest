@@ -15,12 +15,18 @@ import type { Failure } from '../protocol/failures.ts'
 import type { PageCommand } from '../protocol/commands.ts'
 import type { TextQuery } from '../protocol/host-check.ts'
 import type { PageReading } from '../browser/contract.ts'
+import type { FrameSource } from '../media/capture.ts'
+import type { RecordIdentity } from '../protocol/identity.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 import type { Opened } from './browser-pool.ts'
 import type { HeldApp, ResourceLease } from './resources.ts'
+import type { ChildProcess } from 'node:child_process'
+import { realpathSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { BrowserError } from '../browser/browser-error.ts'
+import { endHolder, holdKernelLock } from '../native/desktop-lock.ts'
 import { readAppBundle } from '../native/identity.ts'
 import { ensureExecutorBuild } from '../native/executors.ts'
 import { IosSimulatorRuntime } from '../native/ios-simulator.ts'
@@ -32,6 +38,7 @@ import { resetPolicyFor } from '../native/reset-policy.ts'
 import { NativeError } from '../native/session.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
+import { sha256Hex } from '../shared/sha256.ts'
 import { bounded } from './bounded.ts'
 
 /**
@@ -46,7 +53,7 @@ export type NativePoolRuntime = Omit<NativeRuntime, 'openSession'> & {
   openSession(options: NativeSessionOptions, timeoutMs: number, signal?: AbortSignal): Promise<{ readonly ok: true; readonly session: NativeAppSession; readonly client?: ExecutorClient; readonly executor?: ExecutorSession } | { readonly ok: false; readonly failure: Failure }>
 }
 export type NativeFactoryContext = { readonly tools: NativeTools; readonly logFolder: string; readonly timeoutMs: number; readonly signal: AbortSignal; readonly redact: (text: string) => string }
-export type StartNative = (target: LoadedNativeTarget, context: NativeFactoryContext) => Promise<{ readonly ok: true; readonly value: { readonly runtime: NativePoolRuntime; readonly close: (timeoutMs: number) => Promise<void> } } | { readonly ok: false; readonly failure: Failure; readonly idle?: true }>
+export type StartNative = (target: LoadedNativeTarget, context: NativeFactoryContext) => Promise<{ readonly ok: true; readonly value: { readonly runtime: NativePoolRuntime; readonly close: (timeoutMs: number) => Promise<void> } } | { readonly ok: false; readonly failure: Failure; readonly idle?: true; readonly cleaned?: true }>
 export type ReadyNativeTarget = { readonly browser: NativeBrowserAdapter; readonly runtime: NativeRuntimeIdentity & { readonly execution: NativeExecutionIdentity }; readonly emulation?: never; readonly proxy?: never }
 /** Launches the app with a pipe on its standard output: `launchLoggedNativeApp` unless a test gives a stand-in. */
 export type LaunchWithLogs = (options: LoggedNativeLaunchOptions) => Promise<LoggedNativeLaunch>
@@ -67,11 +74,13 @@ export type NativePoolOptions = {
 /** Native runtimes start only for an acquired lease and end before its resource can be handed on. */
 export class NativePool {
   readonly #options: NativePoolOptions
-  readonly #idle = new Set<string>()
+  readonly #freeStarts = new Set<string>()
   readonly #runtimeHolders = new Map<string, string>()
   readonly #free = new Map<string, PromiseWithResolvers<void>>()
   readonly #apps = new Map<string, NativeBrowserAdapter>()
   readonly #starting = new Set<Promise<Opened<ReadyNativeTarget>>>()
+  /** Apps whose failed close an attempt already recorded, which the run's end does not report again. */
+  readonly #reported = new WeakSet<NativeBrowserAdapter>()
   #closing = false
 
   constructor(options: NativePoolOptions) { this.#options = options }
@@ -106,7 +115,7 @@ export class NativePool {
       // A thrown start supplies no proof that it launched nothing. Keep its release signal unresolved.
       return refused(this.#options.redact(errorMessage(error)))
     }
-    if (!started.ok) { if (started.idle === true) { this.#idle.add(key); free.resolve() }; return started }
+    if (!started.ok) { if (started.idle === true || started.cleaned === true) { this.#freeStarts.add(key); free.resolve() }; return started }
     const browser = new NativeBrowserAdapter({ ...started.value, target, owner, options, tools, signal: this.#options.signal, interact: this.#options.interact ?? openInteraction, launchWithLogs: this.#options.launchWithLogs ?? launchLoggedNativeApp, cleanupMs: this.#options.cleanupMs })
     // Record ownership before opening a session, so partial setup is also closed at run end.
     this.#apps.set(key, browser)
@@ -134,13 +143,31 @@ export class NativePool {
   }
 
   held(browser: NativeBrowserAdapter): HeldApp { return { whenFree: () => browser.close(this.#options.cleanupMs).then(() => browser.ended) } }
+
+  /**
+   * Closes an app an attempt ran, within `timeoutMs`, and says why it could not, redacted. The attempt records that
+   * failure beside its outcome, so the run's end does not count it again; the app's part of the lease stays held, and
+   * its expiry is recorded once.
+   */
+  async closeApp(browser: NativeBrowserAdapter, timeoutMs: number): Promise<string | undefined> {
+    try {
+      await browser.close(timeoutMs)
+      return undefined
+    } catch (error) {
+      this.#reported.add(browser)
+      return this.#options.redact(errorMessage(error))
+    }
+  }
   connected(browser: OwnedBrowser): boolean { return browser instanceof NativeBrowserAdapter && browser.connected }
   async close(): Promise<Failure[]> {
     this.#closing = true
     await Promise.allSettled(this.#starting)
     const failures: Failure[] = []
-    for (const browser of this.#apps.values()) await browser.close(this.#options.cleanupMs).catch((error: unknown) => failures.push({ class: 'cleanup_failed', message: this.#options.redact(errorMessage(error)) }))
-    for (const [key] of this.#free) if (!this.#apps.has(key) && !this.#idle.has(key)) failures.push({ class: 'cleanup_failed', message: `Retest could not prove the native start for ${key} ended. Its lease stays held unless the start proved it launched nothing.` })
+    for (const browser of this.#apps.values()) {
+      if (this.#reported.has(browser)) continue
+      await browser.close(this.#options.cleanupMs).catch((error: unknown) => failures.push({ class: 'cleanup_failed', message: this.#options.redact(errorMessage(error)) }))
+    }
+    for (const [key] of this.#free) if (!this.#apps.has(key) && !this.#freeStarts.has(key)) failures.push({ class: 'cleanup_failed', message: `Retest could not prove the native start for ${key} ended. Its lease stays held unless the start proved it left no resource in use.` })
     return failures
   }
 }
@@ -170,6 +197,8 @@ export class NativeBrowserAdapter implements OwnedBrowser {
   #logs: NativeLogSource | undefined
   // The launch that kept the app's output, once one was made: it settles to undefined when it recorded nothing to end.
   #logged: Promise<LoggedNativeLaunch | undefined> | undefined
+  // The kernel lock on the app's declared network file, held from before its session opens until it closes.
+  #networkLock: ChildProcess | undefined
   constructor(options: NativeBrowserOptions) { this.#options = options }
   get page(): NativePageAdapter | undefined { return this.#page }
   get target(): LoadedNativeTarget { return this.#options.target }
@@ -198,6 +227,7 @@ export class NativeBrowserAdapter implements OwnedBrowser {
     this.#logs = source
   }
   async prepare(timeoutMs: number): Promise<void> {
+    await this.#holdNetworkFile()
     const launcher: NativeLauncher = (launch, bounds) => this.#launchWithLogs(launch, bounds)
     const opened = await this.#options.interact(this.#options.runtime, { ...this.#options.options, launcher }, timeoutMs, this.#options.signal, this.#options.tools)
     if (!opened.ok) throw new NativeError(opened.failure)
@@ -232,6 +262,7 @@ export class NativeBrowserAdapter implements OwnedBrowser {
     // lease held.
     if (this.#logged !== undefined) failures.push(...(await stopLogged(this.#logged, deadline)))
     await this.#options.close(deadline.commandTimeoutMs).catch((error: unknown) => failures.push(errorMessage(error)))
+    if (this.#networkLock !== undefined) await endHolder(this.#networkLock).catch((error: unknown) => failures.push(errorMessage(error)))
     // A rejection keeps the lease held. A disconnected pipe is not proof that an app has ended.
     if (failures.length > 0) throw new NativeError({ class: 'cleanup_failed', message: failures.join(' ') })
     this.#ended.resolve()
@@ -256,6 +287,26 @@ export class NativeBrowserAdapter implements OwnedBrowser {
     if (settled.status === 'failed') return { answer: { status: 'failed', input: 'unknown', failure: { class: 'outcome_unknown', message: `Launching the app with its standard output kept failed: ${this.#options.options.redact(errorMessage(settled.error))} The launch may have happened.` } }, processes: [] }
     const reason = settled.status === 'stopped' ? 'stopped' : 'timeout'
     return { answer: { status: 'unknown', reason, message: `the launch with the app's standard output kept had not finished after ${durationMs} ms.`, durationMs }, processes: [] }
+  }
+
+  // A declared network file is attributed by its client name alone, so two runs reading one file for one client could not
+  // tell their records apart. The app holds a kernel lock for the file, which another Retest process, or another run in
+  // this one, cannot take meanwhile, and which the system lets go if this process dies. The lock file is Retest's own, in
+  // the user's shared cache, named for the file's real path and declared client. Its inode stays after release so a waiter cannot hold a
+  // different inode. Run-specific temporary folders cannot provide exclusion across runs.
+  async #holdNetworkFile(): Promise<void> {
+    const network = this.target.diagnostics?.network
+    // Native apps run only on a Mac, where `lockf` is a system tool; off a Mac only a stand-in executor runs one.
+    if (network === undefined || process.platform !== 'darwin') return
+    const folder = join(homedir(), 'Library', 'Caches', 'retest', 'network-locks')
+    await mkdir(folder, { recursive: true })
+    const path = join(folder, `${sha256Hex(JSON.stringify([realPathOf(network.path), network.client]))}.lock`)
+    const held = await holdKernelLock({ path, tools: this.#options.tools, name: 'lock on the network file' })
+    if (!held.ok) {
+      const message = held.reason === 'held' ? `Another run reads the network file ${network.path} for its native app, and two runs cannot tell their records apart, so Retest launched nothing.` : held.reason
+      throw new NativeError({ class: 'setup_failed', message })
+    }
+    this.#networkLock = held.holder
   }
 
   // Where that launch starts the app: at its executable on the Mac, or by bundle id on the session's own simulator.
@@ -299,6 +350,9 @@ export class NativePageAdapter implements OwnedPage {
       return dispatched.result.ok ? { ok: true, kind: 'swipe' } : dispatched.result
     }
     if (command.kind === 'nativeKeyboard') {
+      // The first-run keyboard card is an iOS screen. The types keep it off a macOS page; a caller that reaches it anyway
+      // is refused here, before anything is read or pressed.
+      if (command.operation === 'dismissFirstRunCard' && this.native.session.execution.platform === 'macos') return unsupported('The first-run keyboard card is an iOS screen, and a macOS app has none, so Retest sent nothing.')
       if (command.operation === 'wait') {
         const read = await this.native.waitForKeyboard(timeoutMs, signal)
         return read.ok ? { ok: true, kind: 'nativeKeyboard' } : read
@@ -319,6 +373,7 @@ export class NativePageAdapter implements OwnedPage {
     return unsupported(`${command.kind} is a web capability and is not available on a native app.`)
   }
   capture(timeoutMs: number): Promise<{ readonly ok: true; readonly capture: NativeCapture } | { readonly ok: false; readonly failure: Failure }> { return this.native.capture(timeoutMs) }
+  frameSource(identity: RecordIdentity): FrameSource { return this.native.frameSource(identity) }
   screenshot(timeoutMs: number): Promise<Uint8Array> { return this.native.screenshot(timeoutMs) }
   async dispose(timeoutMs: number): Promise<void> { const deadline = new Deadline(timeoutMs); await this.native.reconcile(deadline.commandTimeoutMs); await this.native.dispose(deadline.commandTimeoutMs) }
 }
@@ -381,18 +436,45 @@ async function startNative(target: LoadedNativeTarget, context: NativeFactoryCon
   if (!build.ok) return { ...build, idle: true }
   return startBuilt(target, context, build.build)
 }
-async function startBuilt(target: LoadedNativeTarget, context: NativeFactoryContext, build: ExecutorBuild): ReturnType<StartNative> {
+/** The runtimes a native start uses once its executor is built: Retest's own, unless a test gives stand-ins. */
+export type NativeRuntimeStarters = { readonly ios: typeof IosSimulatorRuntime.start; readonly macos: typeof MacosDesktop.start }
+
+const runtimeStarters: NativeRuntimeStarters = { ios: (options) => IosSimulatorRuntime.start(options), macos: (options) => MacosDesktop.start(options) }
+
+/**
+ * Starts the runtime for a target whose executor is built. `idle` means it created nothing; `cleaned` means its recorded
+ * runtime was proved removed after a failed start. Both proofs are passed on, so the pool frees the part the attempt
+ * holds; any other refusal leaves the part held, since something may remain.
+ *
+ * @example await startBuilt(target, context, build) // { ok: false, failure, idle: true } when another process holds the desktop
+ */
+export async function startBuilt(target: LoadedNativeTarget, context: NativeFactoryContext, build: ExecutorBuild, starters: NativeRuntimeStarters = runtimeStarters): ReturnType<StartNative> {
   if (target.platform === 'ios-simulator') {
     if (target.device === undefined || target.runtime === undefined) return { ...refused('An iOS target needs a device type and runtime.'), idle: true }
-    const started = await IosSimulatorRuntime.start({ target: { appPath: target.appPath, device: target.device, runtime: target.runtime }, build, ...context })
-    return started.ok ? { ok: true, value: { runtime: started.runtime, close: (timeoutMs) => started.runtime.close(timeoutMs) } } : started
+    const started = await starters.ios({ target: { appPath: target.appPath, device: target.device, runtime: target.runtime }, build, ...context })
+    if (!started.ok) return { ok: false, failure: started.failure, ...(started.idle === true ? { idle: true as const } : {}), ...(started.cleaned === true ? { cleaned: true as const } : {}) }
+    return { ok: true, value: { runtime: started.runtime, close: (timeoutMs) => started.runtime.close(timeoutMs) } }
   }
-  const started = await MacosDesktop.start({ build, ...context })
-  if (!started.ok) return started
+  const started = await starters.macos({ build, ...context })
+  if (!started.ok) return started.idle === true ? { ok: false, failure: started.failure, idle: true } : { ok: false, failure: started.failure }
   const opened = await started.desktop.openApp(target.appPath, context.signal)
   if (!opened.ok) { await started.desktop.close(context.timeoutMs); return { ...opened, idle: true } }
   return { ok: true, value: { runtime: { get identity() { return opened.runtime.identity }, get execution() { return opened.runtime.execution }, get bundle() { return opened.runtime.bundle }, port: started.desktop.port, get connected() { return opened.runtime.connected }, onDisconnect: (listener) => opened.runtime.onDisconnect(listener), openSession: (options, timeoutMs, signal) => opened.runtime.openSession(options, timeoutMs, signal), close: (timeoutMs) => opened.runtime.close(timeoutMs) }, close: async (timeoutMs) => { await opened.runtime.close(timeoutMs); await started.desktop.close(timeoutMs) } } }
 }
+// The real path of a file that may not exist yet: its folder's, through every link, with its own name added.
+function realPathOf(path: string): string {
+  const absolute = resolve(path)
+  try {
+    return realpathSync(absolute)
+  } catch {
+    try {
+      return join(realpathSync(dirname(absolute)), basename(absolute))
+    } catch {
+      return absolute
+    }
+  }
+}
+
 // How long past its own budget the launch that keeps the app's output is waited for: its process readings each take a
 // bounded time of their own.
 const logLaunchGraceMs = 1000

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { browserLogFile } from '../../src/protocol/run-folder.ts'
-import { openApp, waitForGroupEnd } from './browser-harness.ts'
+import { openApp, processesUsing, waitForGroupEnd } from './browser-harness.ts'
 import {
   budgets,
   childLog,
@@ -19,6 +19,8 @@ import {
   onlyTest,
   parseLine,
   profilesIn,
+  retestEntriesIn,
+  statesLeftIn,
   readFinishedRun,
   resultOf,
   runRetest,
@@ -118,10 +120,15 @@ test('report interruption: the profile a killed run left is retained when the ne
   const retained = profilesIn(killed.tmp)
   assert.ok(retained.length > 0)
   const app = await openApp(t)
-  const next = await runRetest(t, { files: [exampleFile], baseUrl: app.url, tmp: killed.tmp })
-
+  const started = await startRun(t, { files: [exampleFile], baseUrl: app.url, tmp: killed.tmp })
+  const next = await readFinishedRun(started)
+  await waitForGroupEnd(started.retest.pid, 5000)
+  for (const browser of eventsOf(next.events, 'browser.started')) await waitForGroupEnd(browser.pid, 5000)
   assert.equal(next.exit.code, 0)
   assert.deepEqual(profilesIn(killed.tmp), retained)
+  assert.deepEqual(retestEntriesIn(killed.tmp), retained, 'the next run leaves exactly the prior killed profile and no new Retest folder')
+  assert.deepEqual(await processesUsing(killed.tmp), [], 'no process of either run uses the retained temporary folder')
+  assert.deepEqual(statesLeftIn(next.output), [], 'the next run leaves no saved sign-in state')
 })
 
 test('interrupt: SIGINT stops the run, releases the browser, records an interrupted run and exits 130', async (t) => {

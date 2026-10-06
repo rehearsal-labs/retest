@@ -100,7 +100,7 @@ export function folderKey(path: string): string {
   }
   const real = realpathSync.native(existing)
   const whole = missing.length === 0 ? real : join(real, ...missing)
-  return ignoresCase(probeFolder(real, missing.length === 0)) ? whole.toLowerCase() : whole
+  return ignoresCase(probeFolder(real)) ? whole.toLowerCase() : whole
 }
 
 /**
@@ -465,11 +465,11 @@ function targetResource(target: LoadedTarget): { kind: 'desktop' | 'device' | 'd
   return undefined
 }
 
-// Where to read a folder's case rule: beside it, on the same volume, so the probe never touches the folder an app may be
-// using; in it when it is the root of a volume of its own; and in the nearest existing folder when it does not exist.
-function probeFolder(real: string, exists: boolean): string {
-  if (!exists || dirname(real) === real) return real
-  return statSync(dirname(real)).dev === statSync(real).dev ? dirname(real) : real
+// Where to read a path's case rule: in the folder itself, which is on its volume and writable wherever the app could
+// use it, though its parent may not be; in the nearest existing folder when it does not exist yet; and beside a file,
+// in the folder that holds it. The probe writes a folder under a name of Retest's own and removes it before answering.
+function probeFolder(real: string): string {
+  return statSync(real).isDirectory() ? real : dirname(real)
 }
 
 // The case rule of each folder a probe was written in, read once in a process.

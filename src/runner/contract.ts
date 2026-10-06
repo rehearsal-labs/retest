@@ -1,5 +1,5 @@
 import type { LoadedConfig } from '../config/loaded.ts'
-import type { DiagnosticsConfig, SecretContext } from '../config/types.ts'
+import type { DiagnosticsConfig, RecordingConfig, SecretContext } from '../config/types.ts'
 import type { HostEvaluation } from '../protocol/evaluation.ts'
 import type { CollectedTest } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
@@ -11,7 +11,7 @@ import type { Requirement } from './fingerprint.ts'
 import type { HostPreparations } from './preparation.ts'
 import type { SessionOptions } from './sessions.ts'
 
-export type { DiagnosticsConfig, StrictDiagnostics } from '../config/types.ts'
+export type { DiagnosticsConfig, PixelsConfig, RecordingConfig, StrictDiagnostics } from '../config/types.ts'
 export type { HostCheck } from '../protocol/host-check.ts'
 export type { HostEvaluation, HostEvidence } from '../protocol/evaluation.ts'
 export type { Requirement } from './fingerprint.ts'
@@ -175,7 +175,25 @@ export type RunOptions = {
    * cannot be read is a usage failure before any test runs.
    */
   diagnostics?: DiagnosticsConfig
+  /**
+   * Video recording for this run, in the shape a config's `recording` takes. Given, it replaces the config's whole block.
+   * A block that cannot be read is a usage failure before any test runs. Absent, and without a config block, nothing is
+   * recorded and no media process starts.
+   */
+  recording?: RecordingConfig
+  /**
+   * The media process a recording run starts. Absent: the binary `RETEST_MEDIA_BINARY` names and the ffmpeg
+   * `RETEST_FFMPEG` names, or the one on `PATH`. A recording run without a binary records nothing and says why in every
+   * recording's evidence; no test's outcome changes.
+   */
+  media?: MediaLocation
 }
+
+/**
+ * Where the media process is: the `retest-media` binary, and the ffmpeg it runs, the one on `PATH` when absent. A run
+ * that records nothing never reads it.
+ */
+export type MediaLocation = { readonly executable: string; readonly ffmpeg?: string }
 
 export type ChildOutput = { file: string; stream: 'stdout' | 'stderr'; text: string }
 

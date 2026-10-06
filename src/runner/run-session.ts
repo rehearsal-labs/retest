@@ -1,19 +1,25 @@
 import type { NewPageOptions, OwnedBrowser, SessionIdentity } from '../browser/contract.ts'
 import type { ElectronRuntime } from '../browser/electron.ts'
 import type { LoadedTarget } from '../config/loaded.ts'
+import type { RecordingSettings } from '../config/read-recording.ts'
 import type { DiagnosticsPolicy } from '../diagnostics/policy.ts'
 import type { AttemptEvaluations, AttemptHostCheck } from '../evaluation/attempt.ts'
+import type { AppPixelRules, PixelPolicyRecord, PixelRequest, SecretEntry } from '../media/policy.ts'
+import type { NativeSecretField } from '../native/input.ts'
 import type { DiagnosticsSummary } from '../protocol/diagnostics.ts'
 import type { EvaluationRecord } from '../protocol/evaluation.ts'
-import type { EventBody, EventOrigin, LeasePart } from '../protocol/events.ts'
+import type { EventBody, EventOrigin, LeasePart, TestStatus } from '../protocol/events.ts'
 import type { BundleRecord, CleanupRecord, ExecutionRecord, ModuleRecord, PreparationRecord, RequirementCheck } from '../protocol/execution.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { HostCheckResult } from '../protocol/host-check.ts'
+import type { RecordIdentity } from '../protocol/identity.ts'
+import type { EvidenceGap, EvidenceStatus, RecordingRecord } from '../protocol/recording.ts'
 import type { Evidence, FileResult, Narrowed, RunResult, TestResult } from '../protocol/result.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { Reporter } from '../reporters/reporter.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
+import type { ArtifactReference, RetentionMoment } from '../store/artifacts.ts'
 import type { RunStore } from '../store/run-store.ts'
 import type { FindExecutable, LaunchBrowser, LaunchElectron, ReadyTarget as WebReadyTarget } from './browser-pool.ts'
 import type { ChildOutput, RunOptions, Selection, StopReason } from './contract.ts'
@@ -27,6 +33,8 @@ import type { Attempt, Visit } from './schedule.ts'
 import type { RunJudges } from './fingerprint.ts'
 import type { HostPreparations, TestPreparation } from './preparation.ts'
 import type { AcquiredStage, HeldApp, ResourceLease, ResourceNeed } from './resources.ts'
+import type { StartMedia } from './run-media.ts'
+import type { SecretEntryEnd } from './running-test.ts'
 import type { SessionLease } from './sessions.ts'
 import type { AppPage, PagesContext } from './test-pages.ts'
 import { randomUUID } from 'node:crypto'
@@ -34,8 +42,11 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { AttemptDiagnostics } from '../diagnostics/attempt.ts'
+import { defaultRecordingSettings, recordsApp, resolveRecording } from '../config/read-recording.ts'
 import { defaultDiagnosticsPolicy, recordedPolicy, resolveDiagnostics, withDiagnosticsFailure } from '../diagnostics/policy.ts'
 import { notRunRecords, RunEvaluations, withEvaluationFailures } from '../evaluation/run-evaluations.ts'
+import { microsecondsSince } from '../media/capture.ts'
+import { defaultAppPixelRules, PixelCapturePolicy } from '../media/policy.ts'
 import { elapsedMs, monotonicClock } from '../protocol/deadline.ts'
 import { retestEventSchema } from '../protocol/events.ts'
 import { formatSessionId } from '../protocol/evidence.ts'
@@ -47,15 +58,17 @@ import { appLogFile, browserLogFile, childLogFile, stateFile, targetBrowserLogFi
 import { originOf, withoutCredentials } from '../protocol/url.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { relativePosixPath } from '../shared/posix-path.ts'
+import { applyRetention, recordingArtifactReferences, ArtifactSequences, inventoryArtifacts, planRetention } from '../store/artifacts.ts'
 import { retestVersion } from '../version.ts'
 import { AppServers } from './app-servers.ts'
 import { newAttemptId } from './attempt-id.ts'
 import { bounded } from './bounded.ts'
-import { NativeBrowserAdapter, NativePool } from './native-pool.ts'
+import { NativeBrowserAdapter, NativePageAdapter, NativePool } from './native-pool.ts'
 import type { LaunchWithLogs, ReadyNativeTarget, StartNative } from './native-pool.ts'
 import { BrowserPool } from './browser-pool.ts'
 import { defaultBrowsers, defaultWorkers, runInWorkers } from './workers.ts'
 import { EventLog } from './event-log.ts'
+import { attemptEvidence, evidenceFailure, runEvidence } from './evidence-status.ts'
 import { appBuildsProblem, bundleRecord, configurationRecord, executionRecord, executionSettings, hashModules, judgeFor, redactedRecord, Requirements, runJudges, secretDeclarations } from './fingerprint.ts'
 import { focusOf, onlyRefusal } from './focus.ts'
 import { hostChecksScopeProblem, hostChecksShapeProblem, notRunHostChecks, recordedHostChecks, testHostChecks } from './host-checks.ts'
@@ -70,6 +83,7 @@ import { endedBeforeTest, fileProcessFailure, laterTestsReason, reportedErrors }
 import { Redactor } from './redactor.ts'
 import { runConfig } from './run-config.ts'
 import { runHostChecks } from './run-host-checks.ts'
+import { AttemptRecorder, discoverMediaLocation, RunMedia, startMediaProcess } from './run-media.ts'
 import { abortGraceMs, RunningTest } from './running-test.ts'
 import { attemptKey, phasesOf, scheduleRun } from './schedule.ts'
 import { SecretFiller, secretValuesProblem, secretVariables } from './secrets.ts'
@@ -93,9 +107,15 @@ export type RunSessionOptions = {
   launchElectron?: LaunchElectron
   /** Starts a native runtime, and launches a native app with its standard output kept: Retest's own when absent; tests pass stand-ins. */
   native?: { readonly start?: StartNative; readonly launchWithLogs?: LaunchWithLogs }
+  /** Starts the media process of a run that records: Retest's own `retest-media` when absent; tests pass a stand-in. */
+  startMedia?: StartMedia
+  discoverMedia?: import('./run-media.ts').DiscoverMedia
 }
 
 type ReadyTarget = WebReadyTarget | ReadyNativeTarget
+
+// How much longer than the media process's own deadline the run waits for a recording's end.
+const finishMarginMs = 5000
 
 type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
 /**
@@ -124,8 +144,11 @@ type TestOutcome = { result: TestResult; laterTests?: Failure; paths?: string[];
 type AttemptModules = { collected: readonly string[] | undefined; known: readonly string[]; hashes: Map<string, string> }
 /** The attempt's browser contexts once closed: the cleanup failures to report, and the browsers whose contexts stayed open. */
 type ClosedPages = { cleanupFailures: Failure[]; leftOpen: OwnedBrowser[] }
-/** What an attempt that started records besides its verdict: its execution identity, and the host's preparation and cleanup. */
-type AttemptRecords = { execution?: ExecutionRecord; preparations?: PreparationRecord[]; cleanups?: CleanupRecord[] }
+/**
+ * What an attempt that started records besides its verdict: its execution identity, the host's preparation and cleanup,
+ * and in a run that records, its recordings.
+ */
+type AttemptRecords = { execution?: ExecutionRecord; preparations?: PreparationRecord[]; cleanups?: CleanupRecord[]; recordings?: RecordingRecord[] }
 /**
  * `checked` is each host check's result once they ran; without it, every check is listed as not run. `evaluated` is
  * every AI check the attempt ended; without it, each of the host's is listed as not run.
@@ -148,11 +171,13 @@ type Finished = Described & {
   finalBundle?: BundleRecord
   /** Each session's diagnostics, once its capture ended. */
   diagnostics?: DiagnosticsSummary[]
+  /** Each recorded session's recording, once it ended, in a run that records. */
+  recordings?: RecordingRecord[]
 } & AttemptRecords
 /** An attempt that ran to its end, or one whose body never started, with why. */
 type Ran =
   | { kind: 'finished'; finished: Finished; laterTests?: Failure; paths?: string[]; leftOpen?: readonly OwnedBrowser[] }
-  | { kind: 'not_run'; reason: Failure; cleanupFailures: Failure[]; leftOpen?: readonly OwnedBrowser[] }
+  | { kind: 'not_run'; reason: Failure; cleanupFailures: Failure[]; leftOpen?: readonly OwnedBrowser[]; recordings?: RecordingRecord[] }
 /** What a file's visits added up to: its results in the order they ran, and its process failures. */
 type FileRecord = { tests: TestResult[]; failures: Failure[] }
 type Output = { write: (stream: ChildOutput['stream'], text: string) => void; end: () => void }
@@ -242,14 +267,43 @@ export class RunSession {
   readonly #requirements: Requirements
   /** The run's judges as fingerprints read them. */
   readonly #judges: RunJudges
-  /** Sessions held for contexts that could not be closed, each given back when its browsers close or the run ends. */
-  readonly #heldSessions = new Set<() => void>()
+  /**
+   * Sessions held for contexts that could not be closed, each given back when its browsers close, or, once every runtime
+   * of the run has been asked to close, when the run ends.
+   */
+  readonly #heldSessions = new Set<(after: 'browser_closed' | 'run_ended') => void>()
   /** What the run refuses in its sessions, preparations, requirement and app builds before it loads anything. */
   readonly #hostProblems: (Failure | undefined)[]
   /** How the run captures and judges console, runtime error and network diagnostics. */
   readonly #diagnostics: DiagnosticsPolicy
+  /** What the run records, and each app's pixel rules. */
+  readonly #recording: RecordingSettings
+  readonly #pixels: ReadonlyMap<string, AppPixelRules>
+  /** Whether any app of the run is recorded; only then is a media process ever started, or evidence written. */
+  readonly #recordsApps: boolean
+  /** The pixel capture policy, once the run records anything or an app states its pixel rules. */
+  readonly #policy: PixelCapturePolicy | undefined
+  /** The run's one media process, in a run that records. */
+  readonly #media: RunMedia | undefined
+  /** The run's clock in whole microseconds, the clock frames are stamped with and every event's `elapsedMs` counts. */
+  readonly #clockUs: () => number
+  /** Each running attempt's recordings, by attempt id, and each attempt by its id for the policy's records. */
+  readonly #recorders = new Map<string, AttemptRecorder>()
+  readonly #attempts = new Map<string, Described>()
+  readonly #sequences = new ArtifactSequences()
+  /** Each attempt's lost or withheld failure screenshots, for its evidence. */
+  readonly #screenshotGaps = new Map<string, EvidenceGap[]>()
+  /** Every recording the run wrote down, and every partial file a record names, as retention reads them. */
+  readonly #recordingReferences: ArtifactReference[] = []
+  /** Recordings retention removed, by path, and why. */
+  readonly #partialReferences: ArtifactReference[] = []
+  #secretEntries = 0
+  /** The native fact accompanying the policy's synchronous stretch-close record. */
+  #nativeResumeReason: { sessionId: string; secret: string; reason: NonNullable<Extract<EventBody, { type: 'capture.resumed' }>['reason']> } | undefined
+  #nativeEntryField: { sessionId: string; secret: string; field: NativeSecretField; exposedFromUs?: number } | undefined
+  #mediaReleased = false
 
-  constructor({ options, reporters, launch, findExecutable, store, launchElectron, native }: RunSessionOptions) {
+  constructor({ options, reporters, launch, findExecutable, store, launchElectron, native, startMedia, discoverMedia }: RunSessionOptions) {
     const { apps, timeouts } = options
     this.#options = options
     this.#workers = options.workers ?? defaultWorkers()
@@ -267,6 +321,7 @@ export class RunSession {
         this.#stopReason ??= problem
       },
       redact: (event) => this.#redactor.redactFields(retestEventSchema, event),
+      redactText: (text) => this.#redactor.redact(text),
     })
     store.setClock(() => elapsedMs(this.#start))
     const named = apps.kind === 'config'
@@ -305,9 +360,10 @@ export class RunSession {
       timeouts,
       stopped: this.#stopped.promise,
       interruption: () => this.#interruption,
-      onStarted: ({ info, userAgent, pid, instance, instances }) => {
+      onStarted: ({ info, userAgent, pid, instance, instances, engine, build }) => {
         const numbered = { ...(instance === undefined ? {} : { instance }), ...(instances === undefined ? {} : { instances }) }
-        this.#events.emit({ type: 'browser.started', ...info, userAgent, pid, ...numbered })
+        const built = { ...(engine === undefined ? {} : { engine }), ...(build === undefined ? {} : { build }) }
+        this.#events.emit({ type: 'browser.started', ...info, ...built, userAgent, pid, ...numbered })
       },
       onLost: (browser, reason) => {
         for (const test of this.#running) if (test.browsers.includes(browser)) test.running.browserLost(reason)
@@ -337,6 +393,27 @@ export class RunSession {
     const diagnostics = resolveDiagnostics(options.diagnostics, apps.kind === 'config' ? apps.config.diagnostics : undefined)
     this.#diagnostics = diagnostics.ok ? diagnostics.policy : defaultDiagnosticsPolicy
     if (!diagnostics.ok) this.#hostProblems.push(diagnostics.failure)
+    // Recording is off unless asked. Secret entry still needs the pixel policy for screenshot checks, even when no
+    // app records or states pixel rules. A run that records nothing starts no media process and writes no evidence status.
+    const pixels = apps.kind === 'config' ? (apps.config.pixels ?? new Map<string, AppPixelRules>()) : new Map<string, AppPixelRules>()
+    const recording = resolveRecording(options.recording, apps.kind === 'config' ? apps.config.recording : undefined, appNames, pixels)
+    if (!recording.ok) this.#hostProblems.push(recording.failure)
+    this.#pixels = pixels
+    this.#recording = recording.ok ? recording.settings : defaultRecordingSettings
+    this.#recordsApps = appNames.some((app) => recordsApp(this.#recording, app, pixels))
+    this.#clockUs = microsecondsSince(this.#start)
+    this.#policy = this.#recordsApps || pixels.size > 0 || declared.size > 0 ? new PixelCapturePolicy({ rules: (app) => pixels.get(app) ?? defaultAppPixelRules, clock: this.#clockUs, record: (record) => this.#policyRecord(record) }) : undefined
+    this.#media = this.#recordsApps
+      ? new RunMedia({
+          location: startMedia !== undefined && discoverMedia === undefined && options.media !== undefined ? options.media : signal => (discoverMedia ?? discoverMediaLocation)(options.media, process.env, timeouts.setup, signal),
+          start: startMedia ?? startMediaProcess,
+          env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !this.#hiddenVariables.includes(name))),
+          signal: options.signal,
+          emit: (body) => void this.#events.emit(body),
+          timeouts: { start: timeouts.setup, close: timeouts.cleanup, leftovers: timeouts.cleanup },
+          runFolder: store.directory,
+        })
+      : undefined
   }
 
   async run(): Promise<RunResult> {
@@ -441,7 +518,7 @@ export class RunSession {
     const runnable = visits.map(({ file, attempts }) => ({
       file,
       attempts: attempts.filter((attempt) => {
-        const refusal = attemptRefusal(attempt.targets, planned.config.apps)
+        const refusal = attemptRefusal(attempt.targets, planned.config.apps, { setup: attempt.test.registered.setup === true })
         if (refusal === undefined) return true
         refused = true
         this.#record(file).tests.push(this.#notRun(this.#describe(attempt, planned), refusal))
@@ -766,7 +843,8 @@ export class RunSession {
     for (const [app, { browser }] of launched) {
       const resource = sessionResource(targetOf(config, app, targets[app]))
       if (browser instanceof NativeBrowserAdapter) {
-        await browser.close(cleanup).catch((error: unknown) => failures.push(failure('cleanup_failed', `Closing the native app ${app}: ${errorMessage(error)}`)))
+        const problem = await this.#native.closeApp(browser, cleanup)
+        if (problem !== undefined) failures.push(failure('cleanup_failed', `Closing the native app ${app}: ${problem}`))
         continue
       }
       if (resource !== 'app-launch' && resource !== 'data-folder') continue
@@ -816,13 +894,14 @@ export class RunSession {
   }
 
   // Sessions come back once the attempt's contexts are closed. Contexts it could not close still count until their
-  // browsers close, or the run ends, and the event says which it was.
+  // browsers close, or the run ends, and the event says which it was. A browser or native app whose close fails never
+  // says it is free, so only the run's end gives such sessions back.
   // Says whether the sessions came back now.
   #releaseSessions(described: Described, lease: SessionLease, count: number, leftOpen: readonly OwnedBrowser[]): boolean {
     const owner = this.#redactor.redact(this.#options.sessions?.owner ?? '')
     let released = false
     // The event is written before the sessions go, so no attempt they go to can be recorded as reserving them first.
-    const release = (after: 'contexts_closed' | 'browser_closed'): void => {
+    const release = (after: 'contexts_closed' | 'browser_closed' | 'run_ended'): void => {
       if (released) return
       released = true
       this.#emitFor(described, { type: 'session.released', testId: described.testId, attemptId: described.attemptId, owner, sessions: count, after })
@@ -833,15 +912,15 @@ export class RunSession {
       release('contexts_closed')
       return true
     }
-    const finish = (): void => {
+    const finish = (after: 'browser_closed' | 'run_ended'): void => {
       this.#heldSessions.delete(finish)
-      release('browser_closed')
+      release(after)
     }
     this.#heldSessions.add(finish)
     const free = open.map((browser) => browser instanceof NativeBrowserAdapter
       ? this.#native.heldApp(described.attemptId, browser.owner.app)?.whenFree?.() ?? new Promise<void>(() => undefined)
       : this.#browsers.whenFree(browser))
-    void Promise.all(free).then(finish, () => undefined)
+    void Promise.all(free).then(() => finish('browser_closed'), () => undefined)
     return false
   }
 
@@ -875,7 +954,8 @@ export class RunSession {
     const cleaned = await preparing.cleanUp(ran.kind === 'not_run' || ran.finished.failure !== undefined)
     const records = { execution, preparations: preparing.records, cleanups: cleaned.records }
     const leftOpen = ran.leftOpen === undefined ? {} : { leftOpen: ran.leftOpen }
-    if (ran.kind === 'not_run') return { result: this.#notRun(described, ran.reason, [...ran.cleanupFailures, ...quitFailures, ...cleaned.failures], records), ...leftOpen }
+    const recorded = ran.kind === 'not_run' && ran.recordings !== undefined ? { recordings: ran.recordings } : {}
+    if (ran.kind === 'not_run') return { result: this.#notRun(described, ran.reason, [...ran.cleanupFailures, ...quitFailures, ...cleaned.failures], { ...records, ...recorded }), ...leftOpen }
     const grown = this.#finalBundle(modules, ran.paths, execution)
     const result = this.#finishTest({ ...ran.finished, ...records, ...grown, cleanupFailures: [...ran.finished.cleanupFailures, ...quitFailures, ...cleaned.failures] })
     return { result, ...(ran.laterTests === undefined ? {} : { laterTests: ran.laterTests }), ...(ran.paths === undefined ? {} : { paths: ran.paths }), ...leftOpen }
@@ -923,13 +1003,13 @@ export class RunSession {
     const halfOpen = this.#interruption === undefined ? [] : [...prepared.values()].map((target) => target.browser)
     if (!opened.ok) {
       const { summaries } = await diagnostics.finishNative(this.#interruption === undefined ? 'attempt_ended' : 'run_interrupted')
-      return { kind: 'finished', finished: { ...finished, failure: opened.failure, seen: [opened.failure], diagnostics: summaries }, leftOpen: halfOpen }
+      return { kind: 'finished', finished: { ...finished, failure: opened.failure, seen: [opened.failure], diagnostics: this.#interruption === undefined ? summaries : this.#unstartedWebDiagnostics(described, prepared, summaries) }, leftOpen: halfOpen }
     }
     const interruption = this.#interruption
     if (interruption !== undefined) {
       const { summaries } = await diagnostics.finishNative('run_interrupted')
       const closed = await this.#closePages(context, opened.value)
-      return { kind: 'finished', finished: { ...finished, failure: interruption, seen: [interruption], diagnostics: summaries }, leftOpen: closed.leftOpen }
+      return { kind: 'finished', finished: { ...finished, failure: interruption, seen: [interruption], diagnostics: this.#unstartedWebDiagnostics(described, prepared, summaries) }, leftOpen: closed.leftOpen }
     }
     const pages = opened.value
     // Code the previous test left behind can end the process while the pages open.
@@ -937,15 +1017,35 @@ export class RunSession {
     // Capture starts on every page before the body runs, so before any page navigates. A run stopped meanwhile waits for
     // no page, and the attempt ends as interrupted.
     await diagnostics.start(pages.filter((page) => !(page.browser instanceof NativeBrowserAdapter)), this.#options.timeouts.setup, this.#stopped.promise)
+    // As for a stop that came while the pages opened: the pages are closed, and a context that stayed open keeps its sessions.
     if (this.#interruption !== undefined) {
+      const stoppedBy = this.#interruption
       const { summaries } = await diagnostics.finishNative('run_interrupted')
-      return { kind: 'finished', finished: { ...finished, failure: this.#interruption, diagnostics: summaries } }
+      const closed = await this.#closePages(context, pages)
+      return { kind: 'finished', finished: { ...finished, failure: stoppedBy, seen: [stoppedBy], diagnostics: this.#unstartedWebDiagnostics(described, prepared, summaries) }, leftOpen: closed.leftOpen }
     }
-    const evaluations = this.#evaluations.attempt({ context, pages, hostChecks: described.hostEvaluations, runSignal: this.#options.signal })
+    // Each recorded session's recording begins once capture of diagnostics has, before the body's first action; every
+    // way out below finishes them before the pages close, and a run that records nothing has no recorder.
+    const recorder = this.#recorderFor(described)
+    try {
+      await recorder?.start(pages)
+      return await this.#runRecorded(child, described, planned, finished, { context, pages, diagnostics, recorder })
+    } finally {
+      await recorder?.finish()
+      this.#recorders.delete(described.attemptId)
+      for (const { session } of pages) this.#policy?.pageLeft(recordIdentity(described, session.owner.app, session.sessionId), 'session_ended')
+    }
+  }
+
+  // The attempt once its pages are open and its recordings, if any, have begun: its body runs, the parent's checks
+  // follow, its recordings finish, and the pages close.
+  async #runRecorded(child: TestFileProcess, described: Described, planned: Planned, finished: Finished, opened: { context: PagesContext; pages: readonly AppPage[]; diagnostics: AttemptDiagnostics; recorder: AttemptRecorder | undefined }): Promise<Ran> {
+    const { context, pages, diagnostics, recorder } = opened
+    const evaluations = this.#evaluations.attempt({ context, pages, hostChecks: described.hostEvaluations, runSignal: this.#options.signal, diagnostics: Object.freeze({ snapshot: (app: string) => diagnostics.snapshot(app) }), ...(recorder === undefined ? {} : { recordings: recorder }) })
     const { report, running } = await this.#runBody(child, pages, described, planned.config, evaluations)
     let checked: CheckedPages | undefined
     try {
-      if (report.endedBeforeStart !== undefined) return await this.#bodyNotRun(context, pages, report.endedBeforeStart, diagnostics)
+      if (report.endedBeforeStart !== undefined) return await this.#bodyNotRun(context, pages, report.endedBeforeStart, diagnostics, recorder)
       // The body passed only if its required AI checks passed too, by the parent's own records, whatever the test
       // file's process reported about them. Host checks read the pages as the body left them, so they come before the
       // screenshot and the saved state. The pages' navigations are still written while they run, since a check may
@@ -963,6 +1063,8 @@ export class RunSession {
     // before any app is closed. A diagnostics policy's failure follows any failure the test already had, and never
     // replaces it.
     const diagnosed = await diagnostics.finishNative(this.#interruption === undefined ? 'attempt_ended' : 'run_interrupted')
+    // Recordings end after the last check and before the screenshot, so their frames stop before anything is closed.
+    const recordings = recorder === undefined ? {} : { recordings: await recorder.finish() }
     const verdict = withDiagnosticsFailure(withEvaluationFailures({ reported: report.failure ?? checked?.failure, recorded: await evaluations.failures(), observed }), diagnosed.failure)
     const evidence = verdict === undefined ? [] : await captureFailure(context, pages)
     const unsaved = verdict === undefined ? await this.#saveSetupState(context, described, pages) : undefined
@@ -975,7 +1077,7 @@ export class RunSession {
     const laterTests = laterTestsReason(described.test.registered.name, report)
     return {
       kind: 'finished',
-      finished: { ...finished, failure: problem, assertionCount: report.assertionCount, evidence, cleanupFailures, ...hostChecks, evaluated: [...evaluations.records], ...crashed, seen, browserLost, diagnostics: diagnosed.summaries },
+      finished: { ...finished, failure: problem, assertionCount: report.assertionCount, evidence, cleanupFailures, ...hostChecks, evaluated: [...evaluations.records], ...crashed, seen, browserLost, diagnostics: diagnosed.summaries, ...recordings },
       ...(laterTests === undefined ? {} : { laterTests }),
       ...(report.modules === undefined ? {} : { paths: report.modules }),
       leftOpen,
@@ -1017,7 +1119,7 @@ export class RunSession {
     const startingState = test.apps.map((app) => {
       const state = test.states.get(app)
       const native = prepared.get(app)?.browser
-      if (native instanceof NativeBrowserAdapter) return { app, native: native.startingState, backendData: declaredBackend(described.hostPreparations, app) }
+      if (native instanceof NativeBrowserAdapter) return { app, browserStorage: 'none' as const, native: native.startingState, backendData: declaredBackend(described.hostPreparations, app) }
       const storage = state === undefined ? { browserStorage: freshOrReused(planned.config, app, targets[app]) } : { browserStorage: 'saved' as const, state }
       return { app, ...storage, backendData: declaredBackend(described.hostPreparations, app) }
     })
@@ -1162,7 +1264,9 @@ export class RunSession {
     const { test, testId: id, attemptId, variant } = described
     const timeouts = { ...this.#options.timeouts, ...(test.registered.timeout === undefined ? {} : { test: test.registered.timeout }) }
     const appOrigins = test.apps.flatMap((app) => originOf(config.apps.get(app)?.baseUrl) ?? [])
-    const fillSecret: RunningTestOptions['fillSecret'] = (command, context) => this.#secrets.resolve(command, { ...context, appOrigins })
+    // An Electron app shows whatever origin it serves, so a fill on its window takes only the origins `secretOrigins` lists.
+    const electron = new Set(test.apps.filter((app) => isElectronTarget(targetOf(config, app, described.targets[app]))))
+    const fillSecret: RunningTestOptions['fillSecret'] = (command, context) => this.#secrets.resolve(command, { ...context, appOrigins, ...(electron.has(context.app) ? { target: 'electron' as const } : {}) })
     const running = new RunningTest({
       process: child,
       pages: new Map(pages.map(({ app, page }) => [app, page])),
@@ -1175,6 +1279,7 @@ export class RunSession {
       redactor: this.#redactor,
       touch: new Set(pages.filter((page) => page.touch).map(({ app }) => app)),
       evaluations,
+      ...(this.#policy === undefined ? {} : { secretEntry: (app: string, secret: string) => this.#secretEntry(described, pages, app, secret) }),
     })
     // The test is known as running only while its body runs, as before: a browser lost while it settles is the
     // next test's problem, not this one's.
@@ -1197,10 +1302,11 @@ export class RunSession {
 
   // A body that never ran leaves only blank pages: they are released, and nothing is captured from them. A capture
   // that started is ended and written, though no result names it.
-  async #bodyNotRun(context: PagesContext, pages: readonly AppPage[], exit: ProcessExit, diagnostics?: AttemptDiagnostics): Promise<Ran> {
+  async #bodyNotRun(context: PagesContext, pages: readonly AppPage[], exit: ProcessExit, diagnostics?: AttemptDiagnostics, recorder?: AttemptRecorder): Promise<Ran> {
     await diagnostics?.finishNative('attempt_ended')
+    const recordings = recorder === undefined ? {} : { recordings: await recorder.finish() }
     const { cleanupFailures, leftOpen } = await this.#closePages(context, pages)
-    return { kind: 'not_run', reason: endedBeforeTest(exit), cleanupFailures, leftOpen }
+    return { kind: 'not_run', reason: endedBeforeTest(exit), cleanupFailures, leftOpen, ...recordings }
   }
 
   #finishTest(finished: Finished): TestResult {
@@ -1227,11 +1333,13 @@ export class RunSession {
     })
     const { finalBundle } = finished
     const bundle = finalBundle === undefined ? {} : { bundle: finalBundle }
-    this.#emitFor(finished, { type: 'test.finished', testId: id, attemptId, status, durationMs, assertionCount, ...outcome, ending, ...bundle })
+    const evidenceStatus = this.#evidenceOf(attemptId, finished.recordings)
+    this.#emitFor(finished, { type: 'test.finished', testId: id, attemptId, status, durationMs, assertionCount, ...outcome, ending, ...bundle, ...checksNotRun(checks.hostChecks), ...evidenceStatus })
+    const recordings = this.#retain(attemptId, status, finished.recordings)
     const execution = finished.execution === undefined ? undefined : withFinalBundle(finished.execution, finalBundle)
     const records = attemptRecords({ ...finished, ...(execution === undefined ? {} : { execution }) })
     const diagnostics = finished.diagnostics === undefined || finished.diagnostics.length === 0 ? {} : { diagnostics: finished.diagnostics }
-    return this.#settled(finished, { ...this.#resultHead(finished), status, durationMs, assertionCount, ...outcome, ...checks, ...evaluated, ...records, ending, ...diagnostics, evidence: finished.evidence })
+    return this.#settled(finished, { ...this.#resultHead(finished), status, durationMs, assertionCount, ...outcome, ...checks, ...evaluated, ...records, ending, ...diagnostics, ...recordings, ...evidenceStatus, evidence: finished.evidence })
   }
 
   // A check the host required of a skipped test is never made, and test code cannot waive it, so it fails the run.
@@ -1246,10 +1354,11 @@ export class RunSession {
   #skipped(described: Described): TestResult {
     const { testId: id, attemptId } = described
     const ending = { kind: 'skipped' as const }
-    this.#emitFor(described, { type: 'test.finished', testId: id, attemptId, status: 'skipped', durationMs: 0, assertionCount: 0, ending })
     const checks = hostCheckResults(notRunHostChecks(described.hostChecks))
     const evaluated = evaluationResults(this.#notRunEvaluations(described))
-    return { ...this.#resultHead(described), status: 'skipped', durationMs: 0, assertionCount: 0, ...checks, ...evaluated, ending, evidence: [] }
+    const evidenceStatus = this.#evidenceOf(attemptId, undefined)
+    this.#emitFor(described, { type: 'test.finished', testId: id, attemptId, status: 'skipped', durationMs: 0, assertionCount: 0, ending, ...checksNotRun(checks.hostChecks), ...evidenceStatus })
+    return { ...this.#resultHead(described), status: 'skipped', durationMs: 0, assertionCount: 0, ...checks, ...evaluated, ending, ...evidenceStatus, evidence: [] }
   }
 
   #notRun(described: Described, reason: Failure, cleanupFailures: Failure[] = [], attempt: AttemptRecords = {}): TestResult {
@@ -1258,13 +1367,19 @@ export class RunSession {
     const checks = hostCheckResults(notRunHostChecks(described.hostChecks))
     const evaluated = evaluationResults(this.#notRunEvaluations(described))
     const ending = attemptEnding({ status: 'not_run', failure: reason, cleanupFailures, hostChecks: checks.hostChecks, evaluations: evaluated.evaluations, interruption: this.#interruption })
-    this.#emitFor(described, { type: 'test.finished', testId: id, attemptId, status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup, ending })
+    const evidenceStatus = this.#evidenceOf(attemptId, attempt.recordings)
+    this.#emitFor(described, { type: 'test.finished', testId: id, attemptId, status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup, ending, ...checksNotRun(checks.hostChecks), ...evidenceStatus })
     const records = attemptRecords(attempt)
-    return this.#settled(described, { ...this.#resultHead(described), status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup, ...checks, ...evaluated, ...records, ending, evidence: [] })
+    const recordings = this.#retain(attemptId, 'not_run', attempt.recordings)
+    return this.#settled(described, { ...this.#resultHead(described), status: 'not_run', durationMs: 0, assertionCount: 0, failure: reason, ...cleanup, ...checks, ...evaluated, ...records, ending, ...recordings, ...evidenceStatus, evidence: [] })
   }
 
+  // The host's AI checks of an attempt that never reached them, each written as it is listed, so a result rebuilt from the
+  // events lists them as result.json does. An attempt that reached them wrote its own.
   #notRunEvaluations(described: Described): EvaluationRecord[] {
-    return notRunRecords(described.hostEvaluations, (text) => this.#redactor.redact(text))
+    const records = notRunRecords(described.hostEvaluations, (text) => this.#redactor.redact(text))
+    for (const evaluation of records) this.#emitFor(described, { type: 'evaluation.finished', testId: described.testId, attemptId: described.attemptId, evaluation })
+    return records
   }
 
   #resultHead({ test, testId: id, attemptId, variant }: Described): Pick<TestResult, 'testId' | 'name' | 'file' | 'location' | 'describePath' | 'variant' | 'variantKey' | 'setup' | 'attemptId'> {
@@ -1289,11 +1404,191 @@ export class RunSession {
   // Every event of an attempt carries its variant, which the child never sends.
   #emitFor({ variant }: Pick<Described, 'variant'>, body: EventBody, origin?: EventOrigin): void {
     if (body.type === 'native.ended') this.#nativeEnded.add(body.sessionId)
-    if (variant === undefined || !('attemptId' in body)) {
-      this.#events.emit(body, origin)
+    if (variant === undefined || !('attemptId' in body)) this.#events.emit(body, origin)
+    else this.#events.emit({ ...body, variant, variantKey: variantKey(variant) }, origin)
+    this.#observe(body)
+  }
+
+  // What a run that records, or has a capture policy, reads of its attempts' events once they are written: steps for AI
+  // checks of a step's frames, a page that opened another document, which ends a withheld stretch, and failure
+  // screenshots that were lost or withheld, for the attempt's evidence.
+  #observe(body: EventBody): void {
+    if (this.#policy === undefined || !('attemptId' in body)) return
+    this.#recorders.get(body.attemptId)?.noteEvent(body)
+    if (body.type === 'navigation' && body.document === 'new' && body.sessionId !== undefined && body.session !== undefined) {
+      this.#policy.pageLeft({ testId: body.testId, attemptId: body.attemptId, app: body.session, sessionId: body.sessionId }, 'new_document')
+    }
+    if (body.type === 'evidence.failed' && this.#recordsApps) {
+      const gaps = this.#screenshotGaps.get(body.attemptId) ?? []
+      gaps.push({ code: body.withheld === undefined ? 'screenshot_failed' : 'screenshot_withheld', message: body.message, ...(body.session === undefined ? {} : { app: body.session }), ...(body.sessionId === undefined ? {} : { sessionId: body.sessionId }) })
+      this.#screenshotGaps.set(body.attemptId, gaps)
+    }
+  }
+
+  // The attempt's recorder, in a run that records. The attempt is known by its id from now on, so the capture policy's
+  // records name its variant.
+  #recorderFor(described: Described): AttemptRecorder | undefined {
+    this.#attempts.set(described.attemptId, described)
+    const media = this.#media
+    if (media === undefined) return undefined
+    const { cleanup, setup } = this.#options.timeouts
+    const recorder = new AttemptRecorder({
+      media,
+      runId: this.#runId,
+      runFolder: this.#store.directory,
+      testId: described.testId,
+      attemptId: described.attemptId,
+      settings: this.#recording,
+      records: (app) => recordsApp(this.#recording, app, this.#pixels),
+      withheldFrom: (app) => (this.#pixels.get(app)?.recordings === 'never' ? `The config does not allow recordings of ${app}, so Retest recorded none.` : undefined),
+      judge: this.#policy,
+      runSignal: this.#options.signal,
+      clock: this.#clockUs,
+      sequences: this.#sequences,
+      // The media process finishes a video within the cleanup budget; the wait for its end allows a little more.
+      timeouts: { start: setup, stop: cleanup, deadline: cleanup, finish: cleanup + finishMarginMs, release: cleanup },
+      keepFrames: this.#options.apps.kind === 'config' && this.#options.apps.config.evaluation !== undefined,
+      emit: (body) => this.#emitFor(described, body),
+    })
+    this.#recorders.set(described.attemptId, recorder)
+    return recorder
+  }
+
+  // The pixel policy's records, as events of the attempt they belong to, and the stretch's start and end, applied to the
+  // session's recording: a stretch withholds its frames; its end starts the capture afresh.
+  #policyRecord(record: PixelPolicyRecord): void {
+    const described = this.#attempts.get(record.attemptId)
+    const scope = { testId: record.testId, attemptId: record.attemptId, session: record.session, sessionId: record.sessionId }
+    const recorder = this.#recorders.get(record.attemptId)
+    if (record.type === 'capture.withheld') {
+      recorder?.withhold(record.sessionId)
+      const native = this.#nativeEntryField
+      const field = native?.sessionId === record.sessionId && native.secret === record.secret ? { nativeField: native.field } : {}
+      const from = field.nativeField === 'secure' ? native?.exposedFromUs : record.exposedFromUs
+      const exposed = from === undefined ? {} : { exposedFromUs: from }
+      this.#emitFor(described ?? {}, { type: 'capture.withheld', ...scope, secret: record.secret, cause: from === undefined ? record.cause : 'unmasked_while_typed', fromUs: record.fromUs, ...exposed, ...field })
       return
     }
-    this.#events.emit({ ...body, variant, variantKey: variantKey(variant) }, origin)
+    if (record.type === 'capture.resumed') {
+      const native = this.#nativeResumeReason
+      const reason = native?.sessionId === record.sessionId && native.secret === record.secret ? { reason: native.reason } : {}
+      this.#emitFor(described ?? {}, { type: 'capture.resumed', ...scope, secret: record.secret, endedBy: record.endedBy, ...reason, fromUs: record.fromUs, untilUs: record.untilUs })
+      void recorder?.resume(record.sessionId)
+      return
+    }
+    this.#emitFor(described ?? {}, { type: 'capture.masked_entry', ...scope, secret: record.secret, atUs: record.atUs })
+  }
+
+  // Native secret entry keeps pixels by default. The opt-in withholds plain or unreadable fields and uses guarded
+  // clearance. Secure fields always keep pixels, and their required masked read-back still judges the fill.
+  #secretEntry(described: Described, pages: readonly AppPage[], app: string, secret: string): SecretEntryEnd {
+    const policy = this.#policy
+    const page = pages.find((each) => each.app === app)
+    if (policy === undefined || page === undefined) return () => undefined
+    this.#secretEntries += 1
+    const fact = { kind: 'unread', reason: 'the driver does not report yet which field a secret is typed into' } as const
+    const identity = recordIdentity(described, app, page.session.sessionId)
+    const field = `fill-${this.#secretEntries}`
+    if (page.page instanceof NativePageAdapter) {
+      let entry: SecretEntry | undefined
+      let nativeField: NativeSecretField = 'unreadable'
+      let beganUs: number | undefined
+      const beginWithheld = (): SecretEntry => {
+        const previous = this.#nativeEntryField
+        const exposed = nativeField === 'secure' && beganUs !== undefined ? { exposedFromUs: beganUs } : {}
+        this.#nativeEntryField = { sessionId: page.session.sessionId, secret, field: nativeField, ...exposed }
+        try {
+          return policy.beginSecretEntry({ identity, secret, field, fact: { kind: 'unread', reason: nativeField === 'plain' ? 'the native field shows its text' : 'native secure masking could not be verified' } })
+        } finally {
+          this.#nativeEntryField = previous
+        }
+      }
+      const cleared = (change: 'gone' | 'empty' | 'masked'): void => {
+        const previous = this.#nativeResumeReason
+        this.#nativeResumeReason = { sessionId: page.session.sessionId, secret, reason: change === 'gone' ? 'the field that received the secret is gone' : 'the field reads back masked' }
+        try {
+          policy.fieldChanged(identity, field, change)
+        } finally {
+          this.#nativeResumeReason = previous
+        }
+      }
+      page.page.native.prepareSecretEntry({
+        begin: type => {
+          nativeField = type
+          beganUs = this.#clockUs()
+          const withheld = this.#recording.nativeWithholding && type !== 'secure'
+          const branch = type === 'secure' ? 'typed into a secure field' : type === 'plain' ? withheld ? 'typed into a plain field, pixels withheld' : 'typed into a plain field, pixels kept' : withheld ? 'field type unreadable, pixels withheld' : 'field type unreadable, pixels kept'
+          this.#emitFor(described, { type: 'capture.native_entry', testId: described.testId, attemptId: described.attemptId, session: app, sessionId: page.session.sessionId, secret, nativeField: type, branch, atUs: beganUs })
+          if (withheld) entry = beginWithheld()
+        },
+        end: (input, verified) => {
+          if (nativeField === 'secure' && verified && beganUs !== undefined) this.#emitFor(described, { type: 'capture.masked_entry', testId: described.testId, attemptId: described.attemptId, session: app, sessionId: page.session.sessionId, secret, nativeField, readBack: 'length_matched', atUs: beganUs })
+          // Failed read-back and unknown input remain failures; they do not change the selected pixel mode.
+          if (entry !== undefined) policy.endSecretEntry(entry, { fact, input })
+        },
+        ...(this.#recording.nativeWithholding ? { cleared } : {}),
+      })
+      return () => undefined
+    }
+    const entry = policy.beginSecretEntry({ identity, secret, field, fact })
+    return (input) => policy.endSecretEntry(entry, { fact, input })
+  }
+
+  // An attempt's evidence, in a run that records: from its recordings, and from its failure screenshots when it recorded
+  // anything. A run that records nothing writes none.
+  #evidenceOf(attemptId: string, recordings: readonly RecordingRecord[] | undefined): { evidenceStatus?: EvidenceStatus } {
+    const gaps = this.#screenshotGaps.get(attemptId) ?? []
+    this.#screenshotGaps.delete(attemptId)
+    return this.#recordsApps ? { evidenceStatus: attemptEvidence(recordings ?? [], gaps) } : {}
+  }
+
+  // An attempt's recordings once it has finished: kept, or, when the config keeps only failures and it passed, removed by
+  // retention, each removal written before the file goes and named on the record.
+  #retain(attemptId: string, status: TestStatus, recordings: readonly RecordingRecord[] | undefined): { recordings?: RecordingRecord[] } {
+    if (recordings === undefined || recordings.length === 0) return {}
+    for (const record of recordings) {
+      for (const reference of recordingArtifactReferences(record, 'recording.finished')) {
+        if (reference.path === record.partialPath) this.#partialReferences.push(reference)
+        else this.#recordingReferences.push(reference)
+      }
+    }
+    if (this.#recording.keep !== 'failures' || status !== 'passed') return { recordings: [...recordings] }
+    const removed = this.#applyRetention({ kind: 'attempt_finished', attemptId, status }, this.#recordingReferences)
+    return { recordings: recordings.map((record) => (record.path !== undefined && removed.has(record.path) ? { ...record, removed: 'passed_attempt_recording' as const } : record)) }
+  }
+
+  // Applies the retention rules at one moment, inside the run folder only, and says which files it removed.
+  #applyRetention(moment: RetentionMoment, references: readonly ArtifactReference[]): Set<string> {
+    const folder = this.#store.directory
+    try {
+      const inventory = inventoryArtifacts(folder, references)
+      const plan = planRetention({ moment, rules: { recordings: this.#recording.keep }, references, inventory })
+      if (plan.removals.length === 0) return new Set()
+      const outcome = applyRetention(folder, plan, { removing: (record) => this.#events.emitPersisted({ ...record }), removed: (record) => { this.#events.emit({ ...record }) }, failed: (record) => { this.#events.emit({ ...record }) } })
+      return new Set(outcome.removed.map((record) => record.path))
+    } catch (error) {
+      this.#events.reportFailure(failure('cleanup_failed', `Retest could not apply its rules for keeping recordings: ${errorMessage(error)}`))
+      return new Set()
+    }
+  }
+
+  // Prepared web sessions have explicit capture status even when cancellation stopped page opening.
+  #unstartedWebDiagnostics(described: Described, prepared: ReadonlyMap<string, ReadyTarget>, summaries: readonly DiagnosticsSummary[]): DiagnosticsSummary[] {
+    const merged = [...summaries]
+    const registered = new Set(summaries.map(summary => summary.sessionId))
+    for (const [app, target] of prepared) {
+      if (target.runtime.kind !== 'web') continue
+      const sessionId = formatSessionId(described.attemptId, app)
+      if (registered.has(sessionId)) continue
+      const capture: DiagnosticsSummary['console'] = this.#diagnostics.capture
+        ? { state: 'unavailable', reason: 'the run was interrupted before capture started' }
+        : { state: 'disabled' }
+      const diagnostics: DiagnosticsSummary = { app, sessionId, console: capture, network: { ...capture } }
+      merged.push(diagnostics)
+      registered.add(sessionId)
+      this.#emitFor(described, { type: 'diagnostics.finished', testId: described.testId, attemptId: described.attemptId, session: app, sessionId, diagnostics })
+    }
+    return merged
   }
 
   // The attempt's diagnostics, before any capture starts. Each web page's capture starts within the setup budget once
@@ -1316,7 +1611,7 @@ export class RunSession {
   // so; one whose target keeps no log, or in a run that captures nothing, is launched by its executor.
   async #watchNative(diagnostics: AttemptDiagnostics, browser: NativeBrowserAdapter, session: SessionIdentity): Promise<Failure | undefined> {
     try {
-      const sources = await diagnostics.startNative(session.owner.app, session, browser.target.diagnostics?.network)
+      const sources = await diagnostics.startNative(session.owner.app, session, browser.target.diagnostics?.network, { logs: this.#diagnostics.capture && browser.keepsStdout })
       if (this.#diagnostics.capture) browser.keepLogs(sources.logs)
       return undefined
     } catch (error) {
@@ -1327,7 +1622,9 @@ export class RunSession {
   #connected(browser: OwnedBrowser): boolean { return browser instanceof NativeBrowserAdapter ? this.#native.connected(browser) : this.#browsers.connected(browser) }
 
   #pagesContext(described: Described): PagesContext {
+    const policy = this.#policy
     return {
+      ...(policy === undefined ? {} : { pixels: { decide: (request: PixelRequest) => policy.decide(request), clock: this.#clockUs } }),
       store: this.#store,
       timeouts: this.#options.timeouts,
       stopped: this.#stopped.promise,
@@ -1418,10 +1715,16 @@ export class RunSession {
   // Browsers close before the servers their pages talked to stop; saved states go last. A state that stays
   // behind holds session cookies, so failing to remove it fails the run.
   async #release(): Promise<void> {
+    await this.#releaseMedia()
     for (const failure of await this.#native.close()) this.#events.reportFailure(failure)
     try { await this.#browsers.close() }
     catch (error) { this.#events.reportFailure(failure('cleanup_failed', `Closing the run's browsers: ${errorMessage(error)}`)) }
     await bounded(Promise.all(this.#letting), this.#options.timeouts.cleanup)
+    // Every runtime has been asked to close and every lease to let go, so sessions still held for contexts that could not
+    // be closed come back now, so a host budget that outlives the run never loses them. A browser
+    // that closed meanwhile gives its own back first, as `browser_closed`; the rest say the run ended with them held.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    for (const finish of [...this.#heldSessions]) finish('run_ended')
     // The table the desktop, devices and data folders live in outlasts the run. What still comes free now is given back;
     // a part whose app is still there stays held, and its lease says so.
     await Promise.all([...this.#leases].map((lease) => lease.finish(this.#options.timeouts.cleanup)))
@@ -1447,6 +1750,18 @@ export class RunSession {
     }
   }
 
+  // Every recording is finished, and the media process closed and confirmed gone, before any browser, app or executor is
+  // asked to close, so evidence is saved first; then the partial files lost recordings left and no record names go. A
+  // run that records nothing has nothing here, and closes as it always has.
+  async #releaseMedia(): Promise<void> {
+    if (this.#media === undefined || this.#mediaReleased) return
+    this.#mediaReleased = true
+    await Promise.all([...this.#recorders.values()].map((recorder) => recorder.finish()))
+    const problem = await this.#media.close()
+    if (problem !== undefined) this.#events.reportFailure(problem)
+    if (this.#media.started) this.#applyRetention({ kind: 'run_finished' }, [...this.#recordingReferences, ...this.#partialReferences])
+  }
+
   // Browsers and servers write their own logs, and every log was redacted with what was known as it was written,
   // so all of them are read again once the browsers, the servers and the test file processes are gone.
   #redactLogs(): void {
@@ -1464,6 +1779,7 @@ export class RunSession {
   async #finish(files: FileResult[]): Promise<RunResult> {
     await this.#events.flush()
     const browsers = this.#browsers.started.map((started) => started.info)
+    const evidence = this.#recordsApps ? { evidenceStatus: runEvidence(files.flatMap((file) => file.tests), [], this.#recording.required) } : {}
     const facts: ResultFacts = {
       schemaVersion: 1,
       runId: this.#runId,
@@ -1475,12 +1791,13 @@ export class RunSession {
       ...(this.#nativeStarts.length === 0 ? {} : { natives: this.#nativeStarts }),
       ...(this.#options.apps.kind === 'config' ? { browsers } : {}),
       ...(this.#narrowed === undefined ? {} : { narrowed: this.#narrowed }),
+      ...evidence,
       files,
     }
     this.#writeLastRun(facts)
     const finished = this.#result(facts)
     const { status, exitCode, complete, counts, durationMs, failure: problem } = finished
-    this.#events.emit({ type: 'run.finished', resultFacts: { startedAt: facts.startedAt, finishedAt: facts.finishedAt, ...(this.#options.apps.kind === 'config' ? { namedApps: true as const } : {}) }, status, exitCode, complete, counts, durationMs, ...(problem === undefined ? {} : { failure: problem }) })
+    this.#events.emit({ type: 'run.finished', resultFacts: { startedAt: facts.startedAt, finishedAt: facts.finishedAt, ...(this.#options.apps.kind === 'config' ? { namedApps: true as const } : {}) }, status, exitCode, complete, counts, durationMs, ...(problem === undefined ? {} : { failure: problem }), ...evidence })
     await this.#events.end(finished)
     const settled = this.#result(facts)
     if (!isDeepStrictEqual(settled, finished)) this.#events.recordOutcome(settled)
@@ -1508,7 +1825,8 @@ export class RunSession {
   }
 
   #result(facts: ResultFacts): RunResult {
-    const outcome = runOutcome({ stoppedBy: this.#stoppedBy, runFailures: this.#runFailures, hostFailures: this.#hostFailures, outputFailures: this.#events.failures, files: facts.files })
+    const lacking = facts.evidenceStatus === undefined ? undefined : evidenceFailure(facts.evidenceStatus)
+    const outcome = runOutcome({ stoppedBy: this.#stoppedBy, runFailures: this.#runFailures, hostFailures: this.#hostFailures, outputFailures: this.#events.failures, ...(lacking === undefined ? {} : { evidenceFailure: lacking }), files: facts.files })
     return this.#redactor.redactFields(runResultSchema, withOutcome(facts, outcome))
   }
 }
@@ -1522,6 +1840,10 @@ function freshOrReused(config: RunConfig, app: string, target: string | undefine
 
 function targetOf(config: RunConfig, app: string, target: string | undefined): LoadedTarget | undefined {
   return target === undefined ? undefined : config.apps.get(app)?.targets.get(target)
+}
+
+function isElectronTarget(target: LoadedTarget | undefined): boolean {
+  return target !== undefined && 'browser' in target && target.browser === 'electron'
 }
 
 // The pool hands an Electron app out as a browser; only an Electron app says when its processes are gone.
@@ -1543,6 +1865,12 @@ function withOutcome(facts: ResultFacts, outcome: RunOutcome): RunResult {
 // A result lists host checks only for a test that had some.
 function hostCheckResults(results: HostCheckResult[]): { hostChecks?: HostCheckResult[] } {
   return results.length === 0 ? {} : { hostChecks: results }
+}
+
+// The host checks a test's end records as never run, so the events hold every check its result lists.
+function checksNotRun(results: readonly HostCheckResult[] | undefined): { hostChecksNotRun?: { check: HostCheckResult['check']; app: string }[] } {
+  const notRun = (results ?? []).filter((result) => result.status === 'not_run').map(({ check, app }) => ({ check, app }))
+  return notRun.length === 0 ? {} : { hostChecksNotRun: notRun }
 }
 
 // A result lists AI checks only for a test that had some.
@@ -1579,3 +1907,8 @@ function describeReporters(reporters: readonly Reporter[]): string {
 }
 
 function targetsName(targets: Variant, app: string): string { return targets[app] ?? app }
+
+// A session's record identity: the attempt that holds it, its app and its id.
+function recordIdentity({ testId, attemptId }: Pick<Described, 'testId' | 'attemptId'>, app: string, sessionId: string): RecordIdentity {
+  return { testId, attemptId, app, sessionId }
+}

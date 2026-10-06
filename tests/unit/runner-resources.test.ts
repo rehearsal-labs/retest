@@ -8,7 +8,7 @@ import type { LaunchElectron } from '../../src/runner/browser-pool.ts'
 import type { RunOptions } from '../../src/runner/contract.ts'
 import type { AcquiredStage, HeldApp, ResourceGrant, ResourceLease, ResourceNeed, ResourceRequest } from '../../src/runner/resources.ts'
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, test } from 'node:test'
@@ -181,6 +181,24 @@ describe('the acquisition order', () => {
     try {
       const app = new Map([['desk', { name: 'desk', targets: new Map<string, LoadedTarget>([['electron', folder(join(locked, 'data'))]]) }]])
       assert.throws(() => resourceNeeds({ apps: ['desk'], targets: { desk: 'electron' }, config: app, locks: [] }), /EACCES|permission denied/i)
+    } finally {
+      chmodSync(locked, 0o755)
+    }
+  })
+
+  test('a writable data folder under a folder Retest cannot write in is read where it is, and the probe leaves nothing', () => {
+    const root = tempFolder('locked-parent-')
+    const locked = join(root, 'locked')
+    const data = join(locked, 'data')
+    mkdirSync(data, { recursive: true })
+    chmodSync(locked, 0o555)
+    try {
+      const app = new Map([['desk', { name: 'desk', targets: new Map<string, LoadedTarget>([['electron', folder(data)]]) }]])
+      const needs = resourceNeeds({ apps: ['desk'], targets: { desk: 'electron' }, config: app, locks: [] })
+      assert.deepEqual(needs.map(({ kind }) => kind), ['data-folder'])
+      assert.equal(needs[0]?.key, folderKey(data))
+      assert.deepEqual(readdirSync(data), [], 'nothing is left in the data folder')
+      assert.deepEqual(readdirSync(locked), ['data'], 'nothing was written beside it')
     } finally {
       chmodSync(locked, 0o755)
     }

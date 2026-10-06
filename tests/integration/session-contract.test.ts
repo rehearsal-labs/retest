@@ -4,6 +4,7 @@ import type { Failure } from '../../src/protocol/failures.ts'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { awaitPosts, browserPath, byTestId, closeMs, groupExists, openApp, scratchFolder, servePages, setupMs } from './browser-harness.ts'
 
@@ -106,7 +107,8 @@ test('a browser killed after the press was sent answers outcome unknown, with th
   assert.equal((await page.dispatch({ kind: 'goto', url: '/' }, 5000)).result.ok, true)
   const clicking = page.dispatch({ kind: 'click', locator: byTestId('freeze') }, 10_000)
   await awaitPosts(site, '/pressed', 1)
-  process.kill(-browser.pid, 'SIGKILL')
+  // This process launched the browser, so its own launch record ends the group, each process checked first.
+  signalGroup(browser.pid, 'SIGKILL')
   const { result, input } = await clicking
   assert.equal(input, 'unknown')
   assert.ok(!result.ok)

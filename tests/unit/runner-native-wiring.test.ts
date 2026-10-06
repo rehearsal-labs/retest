@@ -3,6 +3,7 @@ import type { EventBody } from '../../src/protocol/events.ts'
 import type { PageCommand } from '../../src/protocol/commands.ts'
 import type { LoadedNativeTarget } from '../../src/config/loaded.ts'
 import type { ResourceNeed } from '../../src/runner/resources.ts'
+import type { RecordIdentity } from '../../src/protocol/identity.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setTimeout as pause } from 'node:timers/promises'
@@ -24,6 +25,37 @@ const owner = { runId: 'run', testId: 'test', attemptId: 'attempt', app: 'phone'
 const target: LoadedNativeTarget = { name: 'phone', platform: 'ios-simulator', appPath: '/fixture/TaskPhone.app', device: 'iPhone 17', runtime: '26.5' }
 const need: ResourceNeed = { kind: 'device', name: 'iPhone 17 on 26.5', key: 'native-device', apps: ['phone'] }
 const budgets = { collection: 2000, setup: 2000, action: 2000, assertion: 2000, navigation: 2000, cleanup: 2000, test: 5000 }
+
+for (const platform of ['ios-simulator', 'macos'] as const) {
+  test(`the ${platform} runner page delegates a fresh native recording source with its identity`, async (t) => {
+    const fake = await openFake(t, { platform, screen: () => [] })
+    const { testId, attemptId, app } = fake.session.identity.owner
+    const identity: RecordIdentity = { testId, attemptId, app, sessionId: fake.session.sessionId }
+    const requestsBefore = fake.app.requests.length
+    const delegated: RecordIdentity[] = []
+    const sources: ReturnType<typeof fake.interaction.frameSource>[] = []
+    const open = fake.interaction.frameSource.bind(fake.interaction)
+    fake.interaction.frameSource = (record) => {
+      delegated.push(record)
+      const source = open(record)
+      sources.push(source)
+      return source
+    }
+    const page = new NativePageAdapter(fake.interaction)
+    assert.equal(typeof page.frameSource, 'function', 'recorded native runs must receive the session frame hook')
+    assert.ok(page.frameSource)
+    const first = page.frameSource(identity)
+    const second = page.frameSource(identity)
+    assert.deepEqual(delegated, [identity, identity])
+    assert.equal(first, sources[0])
+    assert.equal(second, sources[1])
+    assert.notEqual(first, second, 'resuming after withheld pixels must open a fresh source')
+    assert.deepEqual(first.identity, identity)
+    assert.equal(first.name, platform === 'macos' ? 'window-crop' : 'simulator-display')
+    assert.equal(first.availability().available, true)
+    assert.equal(fake.app.requests.length, requestsBefore, 'opening the hook sends no request to the app')
+  })
+}
 
 function lease(needs: readonly ResourceNeed[]): ResourceLease {
   return new ResourceLease({ request: { attemptId: 'attempt', holder: 'test', scope: 'run', position: 0, needs, pastLeaseMs: 2000, releaseWithinMs: 2000, locks: new SharedLocks(), resources: new SharedLocks() }, locks: undefined, resources: undefined, sessions: undefined })
@@ -143,10 +175,13 @@ test('forged web actions and native secret input reach no executor input route',
 
 test('native execution records retain the app, operating system, executor pin and Xcode', async (t) => {
   const fake = await openFake(t, { platform: 'ios-simulator', launch: false, screen: () => [] })
-  const record = { configuration: { sha256: 'a'.repeat(64), settings: { apps: {}, timeouts: budgets, locks: [], diagnostics: { capture: false, limits: {} } } }, runtime: { retest: 'test', node: process.version, platform: process.platform }, sessions: [{ app: 'phone', sessionId: 'attempt:phone', engine: 'ios-simulator', product: 'TaskPhone', version: '1', resource: 'device', native: fake.session.execution }], startingState: [{ app: 'phone', backendData: 'external', native: { appData: 'reset', keychain: 'reset', boundary: 'fresh simulator', notIsolated: ['backend'] } }] }
+  const record = { configuration: { sha256: 'a'.repeat(64), settings: { apps: {}, timeouts: budgets, locks: [], diagnostics: { capture: false, limits: {} } } }, runtime: { retest: 'test', node: process.version, platform: process.platform }, sessions: [{ app: 'phone', sessionId: 'attempt:phone', engine: 'ios-simulator', product: 'TaskPhone', version: '1', resource: 'device', native: fake.session.execution }], startingState: [{ app: 'phone', browserStorage: 'none', backendData: 'external', native: { appData: 'reset', keychain: 'reset', boundary: 'fresh simulator', notIsolated: ['backend'] } }] }
   const parsed = parse(executionRecordSchema, record)
   assert.equal(parsed.ok, true, parsed.ok ? '' : JSON.stringify(parsed.issues))
   if (parsed.ok) assert.deepEqual(parsed.value.sessions[0]?.native, fake.session.execution)
+  // Every app says what browser storage it started from, a native app that it has none, so a reader never meets a gap.
+  const { browserStorage: _storage, ...withoutStorage } = record.startingState[0] ?? { browserStorage: 'none' }
+  assert.equal(parse(executionRecordSchema, { ...record, startingState: [withoutStorage] }).ok, false)
 })
 
 test('an uncertain native start keeps its resource reserved and reports cleanup uncertainty', async () => {

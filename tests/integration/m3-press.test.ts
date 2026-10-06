@@ -12,6 +12,7 @@ import {
   testNamed,
   waitFor,
 } from './cli-harness.ts'
+import { killBrowserFromOutside } from './outside-kill.ts'
 
 // Acceptance check 1, the short list's part: press on a locator and on the page's keyboard, through the command line
 // against real Chrome and the task app, which counts what reaches it.
@@ -75,7 +76,7 @@ test('a browser killed during a press leaves its outcome unknown, and the key is
   const browser = await started.retest.waitForEvent('browser.started')
   // The frozen field tells the server of its key down, then its page never answers, so the press is still in flight.
   await waitFor('the key down reaching the app', () => app.keyDowns() === 1)
-  process.kill(-browser.pid, 'SIGKILL')
+  killBrowserFromOutside(started.retest.pid, browser.pid)
   const run = await finishRun(started)
   assertStdoutIsEvents(run)
 

@@ -32,7 +32,9 @@ test('a failed assertion with a parent observation stays failed even when the ch
   assert.ok(look.ok && look.kind === 'observe' && look.observationId !== undefined && look.sessionId !== undefined, 'the parent served the look and named its session')
   run.event({ type: 'assertion.failed', testId: run.testId, attemptId: run.attemptId, matcher: 'toHaveText', locator: title, observationId: look.observationId, sessionId: look.sessionId, check: { matcher: 'toHaveText', text: 'A different title' }, expected: truncateText('A different title'), actual: truncateText('ignored'), attempts: 1, durationMs: 0, failure: { class: 'usage', message: 'The child calls this usage.' } })
   const report = await run.finish()
-  assert.deepEqual(report.observed?.map((entry) => entry.class), ['usage'])
+  // The parent's own rule fails on the look, so its check_failed leads and the class the child supplied follows.
+  assert.deepEqual(report.observed?.map((entry) => entry.class), ['check_failed'])
+  assert.match(String(report.observed?.[0]?.details?.['also'] ?? ''), /^usage: The child calls this usage\.$/)
 })
 
 test('an old attempt cannot send a command to the next attempt or name its identity in the failure', async () => {

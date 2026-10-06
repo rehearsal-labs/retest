@@ -42,7 +42,10 @@ test(${JSON.stringify(name)}, { apps: ['web', 'aside'] }, async ({ web }) => {
   await web.getByTestId('token').fill(secret('token'))
   await web.getByTestId('send').click()
   await expect(web.getByTestId('status')).toHaveText('Sent')
-  await test.evaluate({ judge: 'anthropic', requirement: { 'echo-secret': 'The page shows what was typed.' }, evidence: { app: 'web', capture: 'screenshot' } })
+  await test.evaluate({ judge: 'anthropic', mode: 'advisory', requirement: { 'blocked-secret': 'The page shows what was typed.' }, evidence: { app: 'web', capture: 'screenshot' } })
+  await web.goto('/')
+  await expect(web.getByTestId('task-title')).toBeVisible()
+  await test.evaluate({ judge: 'anthropic', requirement: { 'echo-secret': 'The fresh safe page shows the task-title field.' }, evidence: { app: 'web', capture: 'screenshot' } })
   await test.evaluate({ judge: 'openai', requirement: { 'echo-revision': 'The reply is polite.' }, evidence: { text: 'Thank you.' } })
 })
 
@@ -169,7 +172,7 @@ test('a proxy password, two judge keys and two typed secrets reach no file, no r
   // the host's check and a complete capture. The second failed through its proxy, as the setup it is.
   assert.equal(run.exit.code, 2, run.stderr)
   const result = testNamed(run, name)
-  assert.equal(result.status, 'passed')
+  assert.equal(result.status, 'passed', result.failure?.message)
   const through = testNamed(run, refused)
   assert.deepEqual([through.status, through.failure?.class], ['error', 'setup_failed'])
   // Chrome refuses a proxy address with a user name in it before it connects, so the error is that it has no usable
@@ -180,11 +183,14 @@ test('a proxy password, two judge keys and two typed secrets reach no file, no r
   assert.deepEqual(
     evaluations.map((each) => [each.checkId, each.source, each.judge, each.verdict]),
     [
-      ['evaluation-1', 'test', 'anthropic', 'pass'],
-      ['evaluation-2', 'test', 'openai', 'pass'],
+      ['evaluation-1', 'test', 'anthropic', 'error'],
+      ['evaluation-2', 'test', 'anthropic', 'pass'],
+      ['evaluation-3', 'test', 'openai', 'pass'],
       ['host-greeting', 'host', 'openai', 'pass'],
     ],
   )
+  assert.equal(evaluations[0]?.reason, 'Retest withheld this capture of web by policy: the secret "password" was typed into a field Retest could not read, and the field had not been seen to stop showing it.')
+  assert.deepEqual(evaluations[0]?.evidence, [], 'the refused secret scene supplies no pixels to the judge')
   const web = result.diagnostics?.find((summary) => summary.app === 'web')
   assert.ok(web?.path !== undefined && web.console.state === 'complete' && web.network.state === 'complete', JSON.stringify(result.diagnostics))
 
@@ -195,9 +201,9 @@ test('a proxy password, two judge keys and two typed secrets reach no file, no r
 
   // What the judges echoed is written as the credential's name: in a justification, in a model revision the record
   // and the evaluator's identity carry, and in the host check's justification.
-  assert.match(evaluations[0]?.justification ?? '', /\{\{anthropic\.apiKey\}\}/)
-  assert.equal(evaluations[1]?.evaluator?.modelRevision, 'proxy-for-{{openai.apiKey}}')
-  assert.match(evaluations[2]?.justification ?? '', /\{\{openai\.apiKey\}\}/)
+  assert.match(evaluations[1]?.justification ?? '', /\{\{anthropic\.apiKey\}\}/)
+  assert.equal(evaluations[2]?.evaluator?.modelRevision, 'proxy-for-{{openai.apiKey}}')
+  assert.match(evaluations[3]?.justification ?? '', /\{\{openai\.apiKey\}\}/)
 
   // The proxy is recorded without its user name or password, in the browser's start and in the execution record.
   const browsers = eventsOf(run.events, 'browser.started')
