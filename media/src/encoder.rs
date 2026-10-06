@@ -1,8 +1,10 @@
 //! The encoder: an ffmpeg the host provides, run as a child process the way Playwright runs it.
 //!
 //! The process asks the encoder once what it can do, then picks H.264 in MP4 when libx264 is there and VP8 in
-//! WebM otherwise. Each recording runs its own encoder, reading raw RGB frames on standard input, so a route also
-//! needs ffmpeg's `rawvideo` demuxer and the container's muxer; a minimal ffmpeg build can lack either.
+//! WebM otherwise. Each recording runs its own encoder, reading frames on standard input: raw RGB on the decoded
+//! route, which needs ffmpeg's `rawvideo` demuxer, or the images as they came on the encoded route, which needs its
+//! `image2pipe` demuxer and the image's decoder. Either needs the container's muxer; a minimal ffmpeg build can lack
+//! any of them.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -15,20 +17,21 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::process_ownership::Ownership;
-use crate::protocol::EncoderExit;
+use crate::protocol::{EncoderExit, FrameFormat};
 
 /// How many of the encoder's last lines a failure carries, and how long each may be.
 const TAIL_LINES: usize = 20;
 const TAIL_LINE_CHARACTERS: usize = 300;
 // A line is kept to this many bytes as it is read, enough for `TAIL_LINE_CHARACTERS` of any UTF-8 text.
 const LINE_BYTES: usize = TAIL_LINE_CHARACTERS * 4;
-/// How long the encoder may take to answer each question about what it can do.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the encoder may take to answer each question about what it can do. The three questions are asked at
+/// once, so the whole probe ends within this plus `READER_GRACE` and the time cleanup takes to confirm.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How much of a listing is kept. ffmpeg's encoder list is about 25 kB; the rest of a longer one is read and
 /// thrown away, so the encoder never blocks on a full pipe.
 const LISTING_BYTES: usize = 1024 * 1024;
 /// How long an encoder or its output reader gets to finish after cleanup.
-const READER_GRACE: Duration = Duration::from_secs(2);
+pub const READER_GRACE: Duration = Duration::from_secs(2);
 
 /// What the encoder can do, as it told us.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,9 +44,25 @@ pub struct Capabilities {
     pub reads_raw_video: bool,
     pub writes_mp4: bool,
     pub writes_webm: bool,
+    /// Whether it reads images one after another from a pipe: the `image2pipe` demuxer.
+    pub reads_image_pipe: bool,
+    pub decodes_png: bool,
+    pub decodes_jpeg: bool,
 }
 
 impl Capabilities {
+    /// The image formats the encoded route can hand it undecoded.
+    pub fn encoded_input(&self) -> Vec<FrameFormat> {
+        let mut formats = Vec::new();
+        if self.reads_image_pipe && self.decodes_png {
+            formats.push(FrameFormat::Png);
+        }
+        if self.reads_image_pipe && self.decodes_jpeg {
+            formats.push(FrameFormat::Jpeg);
+        }
+        formats
+    }
+
     /// Why no route is complete, for an `encoder_unavailable` message.
     pub fn missing(&self) -> String {
         let mut missing = Vec::new();
@@ -139,10 +158,21 @@ impl Codec {
     }
 }
 
-/// The encoder's arguments for one recording: raw RGB frames of `width` by `height` at `fps` on standard input,
-/// the video to `output`.
+/// What a recording's encoder reads on standard input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Input {
+    /// Raw RGB frames of the recording's size.
+    Raw,
+    /// Images of one format, one after another, each read as one frame.
+    Images(FrameFormat),
+}
+
+/// The encoder's arguments for one recording: frames of `width` by `height` at `fps` on standard input, the video
+/// to `output`. Images are timed by their order at `fps`, and the output keeps a constant rate, so an image the
+/// decoder cannot read leaves the frame before it on screen rather than moving every later frame earlier.
 pub fn encode_arguments(
     codec: Codec,
+    input: Input,
     width: u32,
     height: u32,
     fps: u32,
@@ -150,24 +180,24 @@ pub fn encode_arguments(
 ) -> Vec<OsString> {
     let size = format!("{width}x{height}");
     let rate = fps.to_string();
-    let input = [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostats",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "-video_size",
-        &size,
-        "-framerate",
-        &rate,
-        "-i",
-        "pipe:0",
-        "-an",
-    ];
-    let mut arguments: Vec<OsString> = input.iter().map(OsString::from).collect();
+    let mut arguments: Vec<OsString> = ["-hide_banner", "-loglevel", "error", "-nostats"]
+        .iter()
+        .map(OsString::from)
+        .collect();
+    let reading: Vec<&str> = match input {
+        Input::Raw => vec!["-f", "rawvideo", "-pix_fmt", "rgb24", "-video_size", &size],
+        Input::Images(FrameFormat::Png) => vec!["-f", "image2pipe", "-c:v", "png"],
+        Input::Images(FrameFormat::Jpeg) => vec!["-f", "image2pipe", "-c:v", "mjpeg"],
+    };
+    arguments.extend(reading.into_iter().map(OsString::from));
+    arguments.extend(
+        ["-framerate", &rate, "-i", "pipe:0", "-an"]
+            .iter()
+            .map(OsString::from),
+    );
+    if let Input::Images(_) = input {
+        arguments.extend(["-fps_mode", "cfr"].iter().map(OsString::from));
+    }
     arguments.extend(codec.codec_arguments().iter().map(OsString::from));
     // Never overwrite: the server checked nothing is there, and a file that appears since is not ours to replace.
     arguments.push(OsString::from("-n"));
@@ -182,7 +212,19 @@ pub fn spawn_in_group(
     stdin: Stdio,
     stdout: Stdio,
 ) -> io::Result<Child> {
+    // Some launch implementations return a child exiting 127 for an absent explicit path. Refuse a path already
+    // known absent before dispatch, so it cannot acquire a made-up encoder exit. Spawn still decides races.
+    if ffmpeg.components().count() > 1 {
+        std::fs::metadata(ffmpeg)?;
+    }
     Command::new(ffmpeg)
+        .env_clear()
+        .envs(
+            ["PATH", "TMPDIR"]
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        )
+        .env("LC_ALL", "C")
         .args(arguments)
         .process_group(0)
         .stdin(stdin)
@@ -204,11 +246,47 @@ pub fn join_within<T>(thread: JoinHandle<T>, limit: Duration) -> Option<T> {
     thread.join().ok()
 }
 
-/// Asks the encoder for its encoders, which also prints its version, then for its formats. Its standard input
-/// is empty, so a program that is not ffmpeg cannot wait for input, and one that never answers is stopped after
-/// `PROBE_TIMEOUT`.
+/// Asks the encoder for its encoders, which also prints its version, its formats and its decoders, all three at
+/// once. Its standard input is empty, so a program that is not ffmpeg cannot wait for input, and one that never
+/// answers is stopped after `PROBE_TIMEOUT`.
 pub fn probe(ffmpeg: &Path) -> Result<Capabilities, EncoderFailure> {
-    let encoders = listing(ffmpeg, &["-encoders"], "its encoders")?;
+    let ask = |arguments: &'static [&'static str], asked: &'static str| {
+        let ffmpeg = ffmpeg.to_path_buf();
+        thread::Builder::new()
+            .name("probe listing".to_owned())
+            .spawn(move || listing(&ffmpeg, arguments, asked))
+    };
+    let spawned = [
+        ask(&["-encoders"], "its encoders"),
+        ask(&["-hide_banner", "-formats"], "its formats"),
+        ask(&["-hide_banner", "-decoders"], "its decoders"),
+    ];
+    // Every listing that started is joined before any answer is used, so none is left running.
+    let answers: Vec<Result<Listing, EncoderFailure>> = spawned
+        .into_iter()
+        .map(|thread| match thread {
+            Ok(thread) => thread.join().unwrap_or_else(|_| {
+                Err(EncoderFailure {
+                    message: "asking the encoder failed inside the media process".to_owned(),
+                    exit: None,
+                })
+            }),
+            Err(error) => Err(EncoderFailure {
+                message: format!("the encoder could not be asked what it can do: {error}"),
+                exit: None,
+            }),
+        })
+        .collect();
+    let mut answers = answers.into_iter();
+    let (Some(encoders), Some(formats), Some(decoders)) =
+        (answers.next(), answers.next(), answers.next())
+    else {
+        return Err(EncoderFailure {
+            message: "the encoder could not be asked what it can do".to_owned(),
+            exit: None,
+        });
+    };
+    let encoders = encoders?;
     let version = encoders
         .stderr
         .lines()
@@ -224,7 +302,9 @@ pub fn probe(ffmpeg: &Path) -> Result<Capabilities, EncoderFailure> {
             exit: Some(encoders.exit),
         });
     };
-    let formats = listing(ffmpeg, &["-hide_banner", "-formats"], "its formats")?;
+    let formats = formats?;
+    // Decoders matter only for the encoded route; a build that cannot list them still records decoded.
+    let decoders = decoders.map(|listing| listing.stdout).unwrap_or_default();
     Ok(Capabilities {
         version,
         libx264: lists_encoder(&encoders.stdout, "libx264"),
@@ -232,6 +312,9 @@ pub fn probe(ffmpeg: &Path) -> Result<Capabilities, EncoderFailure> {
         reads_raw_video: lists_format(&formats.stdout, "rawvideo").demuxes,
         writes_mp4: lists_format(&formats.stdout, "mp4").muxes,
         writes_webm: lists_format(&formats.stdout, "webm").muxes,
+        reads_image_pipe: lists_format(&formats.stdout, "image2pipe").demuxes,
+        decodes_png: lists_encoder(&decoders, "png"),
+        decodes_jpeg: lists_encoder(&decoders, "mjpeg"),
     })
 }
 
@@ -256,18 +339,31 @@ fn listing(ffmpeg: &Path, arguments: &[&str], asked: &str) -> Result<Listing, En
     let mut problems = ownership.capture();
     let stdout = child.stdout.take().map(read_bounded);
     let stderr = child.stderr.take().map(read_bounded);
-    let status = wait_until(&mut child, &mut ownership, Instant::now() + PROBE_TIMEOUT, &mut problems);
-    problems.extend(ownership.cleanup(READER_GRACE));
+    let status = wait_until(
+        &mut child,
+        &mut ownership,
+        Instant::now() + PROBE_TIMEOUT,
+        &mut problems,
+    );
+    problems.extend(ownership.cleanup(&mut child, READER_GRACE));
     let stdout = read_listing(stdout, "standard output", &mut problems);
     let stderr = read_listing(stderr, "standard error", &mut problems);
     let exit = EncoderExit {
         exit_code: status.and_then(|status| status.code()),
         signal: status.and_then(signal_of),
         stderr: last_lines(&stderr),
+        lines: stderr
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count() as u64,
     };
     if !problems.is_empty() {
         return Err(EncoderFailure {
-            message: format!("{} could not safely answer for {asked}: cleanup or output was unknown: {}", ffmpeg.display(), problems.join("; ")),
+            message: format!(
+                "{} could not safely answer for {asked}: cleanup or output was unknown: {}",
+                ffmpeg.display(),
+                problems.join("; ")
+            ),
             exit: Some(exit),
         });
     }
@@ -304,8 +400,8 @@ fn version_line(line: &str) -> String {
         .join(" ")
 }
 
-/// Whether ffmpeg's encoder list names `encoder`. Each entry is a line of capability flags, the name, then a
-/// description, such as ` V....D libx264  libx264 H.264 / AVC`.
+/// Whether ffmpeg's encoder or decoder list names the video codec `encoder`. Each entry is a line of capability
+/// flags, the name, then a description, such as ` V....D libx264  libx264 H.264 / AVC`.
 pub fn lists_encoder(listing: &str, encoder: &str) -> bool {
     listing.lines().any(|line| {
         let mut words = line.split_whitespace();
@@ -368,9 +464,14 @@ fn read_listing(
 ) -> String {
     match reader.and_then(|reader| join_within(reader, READER_GRACE)) {
         Some(Ok(text)) => text,
-        Some(Err(error)) => { problems.push(error); String::new() }
+        Some(Err(error)) => {
+            problems.push(error);
+            String::new()
+        }
         None => {
-            problems.push(format!("the encoder's {stream} did not close; completion is unknown"));
+            problems.push(format!(
+                "the encoder's {stream} did not close; completion is unknown"
+            ));
             String::new()
         }
     }
@@ -388,7 +489,10 @@ pub fn wait_until(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
-            Err(_) => { problems.push("the encoder exit could not be read".to_owned()); return None; }
+            Err(_) => {
+                problems.push("the encoder exit could not be read".to_owned());
+                return None;
+            }
             Ok(None) => {}
         }
         if captured.elapsed() >= Duration::from_millis(100) {
@@ -401,7 +505,7 @@ pub fn wait_until(
                 return None;
             }
         } else if Instant::now() >= deadline {
-            problems.extend(ownership.stop());
+            problems.extend(ownership.stop(child));
             stop_deadline = Some(Instant::now() + READER_GRACE);
         }
         thread::sleep(Duration::from_millis(5));
@@ -446,10 +550,11 @@ fn clip(line: &str) -> String {
     line.chars().take(TAIL_LINE_CHARACTERS).collect()
 }
 
-/// The last lines an encoder printed, kept while it runs.
+/// The last lines an encoder printed, kept while it runs, and how many it printed in all.
 #[derive(Debug, Clone, Default)]
 pub struct StderrTail {
     lines: Arc<Mutex<VecDeque<String>>>,
+    printed: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl StderrTail {
@@ -457,6 +562,7 @@ impl StderrTail {
     /// so a stream with no line breaks costs no more memory than one line.
     pub fn follow(&self, mut stream: impl Read + Send + 'static) -> JoinHandle<Result<(), String>> {
         let lines = Arc::clone(&self.lines);
+        let printed = Arc::clone(&self.printed);
         thread::spawn(move || {
             let keep = |line: &[u8]| {
                 let text = String::from_utf8_lossy(line);
@@ -464,6 +570,7 @@ impl StderrTail {
                 if text.is_empty() {
                     return;
                 }
+                printed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let mut lines = lines
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -479,7 +586,9 @@ impl StderrTail {
                     Ok(0) => break,
                     Ok(read) => read,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(_) => return Err("the encoder stderr could not be read to its end".to_owned()),
+                    Err(_) => {
+                        return Err("the encoder stderr could not be read to its end".to_owned());
+                    }
                 };
                 for &byte in &chunk[..read] {
                     if byte == b'\n' || byte == b'\r' {
@@ -502,6 +611,11 @@ impl StderrTail {
             .iter()
             .cloned()
             .collect()
+    }
+
+    /// How many lines the encoder printed, kept or not.
+    pub fn printed(&self) -> u64 {
+        self.printed.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -532,6 +646,9 @@ mod tests {
             reads_raw_video: true,
             writes_mp4: true,
             writes_webm: true,
+            reads_image_pipe: true,
+            decodes_png: true,
+            decodes_jpeg: true,
         }
     }
 
@@ -610,21 +727,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_arguments_read_raw_frames_and_name_the_container() {
-        let arguments =
-            encode_arguments(Codec::H264, 800, 600, 30, Path::new("/tmp/out.mp4.partial"));
-        let text: Vec<String> = arguments
+    fn joined(arguments: &[OsString]) -> String {
+        arguments
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
-            .collect();
-        let joined = text.join(" ");
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn the_arguments_read_raw_frames_and_name_the_container() {
+        let raw = joined(&encode_arguments(
+            Codec::H264,
+            Input::Raw,
+            800,
+            600,
+            30,
+            Path::new("/tmp/out.mp4.partial"),
+        ));
         assert!(
-            joined
-                .contains("-f rawvideo -pix_fmt rgb24 -video_size 800x600 -framerate 30 -i pipe:0")
+            raw.contains("-f rawvideo -pix_fmt rgb24 -video_size 800x600 -framerate 30 -i pipe:0")
         );
-        assert!(joined.contains("-c:v libx264"));
-        assert!(joined.ends_with("-f mp4 -n /tmp/out.mp4.partial"));
+        assert!(raw.contains("-c:v libx264"));
+        assert!(!raw.contains("-fps_mode"));
+        assert!(raw.ends_with("-f mp4 -n /tmp/out.mp4.partial"));
+        let jpeg = joined(&encode_arguments(
+            Codec::Vp8,
+            Input::Images(FrameFormat::Jpeg),
+            800,
+            600,
+            10,
+            Path::new("/tmp/out.webm.partial"),
+        ));
+        assert!(
+            jpeg.contains(
+                "-f image2pipe -c:v mjpeg -framerate 10 -i pipe:0 -an -fps_mode cfr -c:v libvpx"
+            ),
+            "{jpeg}"
+        );
+        let png = joined(&encode_arguments(
+            Codec::H264,
+            Input::Images(FrameFormat::Png),
+            8,
+            6,
+            10,
+            Path::new("/tmp/o.mp4.partial"),
+        ));
+        assert!(
+            png.contains("-f image2pipe -c:v png -framerate 10"),
+            "{png}"
+        );
+    }
+
+    #[test]
+    fn the_encoded_route_needs_the_image_pipe_and_the_decoder() {
+        assert_eq!(
+            everything().encoded_input(),
+            vec![FrameFormat::Png, FrameFormat::Jpeg]
+        );
+        let no_pipe = Capabilities {
+            reads_image_pipe: false,
+            ..everything()
+        };
+        assert!(no_pipe.encoded_input().is_empty());
+        let no_mjpeg = Capabilities {
+            decodes_jpeg: false,
+            ..everything()
+        };
+        assert_eq!(no_mjpeg.encoded_input(), vec![FrameFormat::Png]);
+        let decoders =
+            "Decoders:\n V....D png                  PNG\n VFS..D mjpeg                MJPEG\n";
+        assert!(lists_encoder(decoders, "mjpeg") && lists_encoder(decoders, "png"));
     }
 
     #[test]
@@ -637,6 +810,7 @@ mod tests {
             .expect("the output is complete");
         let lines = tail.lines();
         assert_eq!(lines.len(), 2);
+        assert_eq!(tail.printed(), 2);
         assert_eq!(lines[0].chars().count(), TAIL_LINE_CHARACTERS);
         assert_eq!(lines[1], "last line");
     }

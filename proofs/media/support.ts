@@ -1,4 +1,4 @@
-import type { Recording } from '../../src/media/client.ts'
+import type { Recording, RecordingIdentity } from '../../src/media/client.ts'
 import type { RgbImage } from './png.ts'
 import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
@@ -10,6 +10,11 @@ import { isArray, isPlainObject } from '../../src/protocol/schema.ts'
 import { decodePng } from './png.ts'
 
 const run = promisify(execFile)
+
+/** The identity the proofs' recordings carry: Retest's own ids, as a run would give them. */
+export function proofIdentity(name: string): RecordingIdentity {
+  return { runId: 'media-proof', attemptId: name, testId: `proofs/media > ${name}`, app: 'web', sessionId: `${name}:web` }
+}
 
 /** The Retest checkout these proofs belong to. */
 export const repositoryRoot: string = resolve(import.meta.dirname, '../..')
@@ -38,7 +43,7 @@ export function mediaBinary(): string {
 }
 
 function newestSource(): { path: string; mtimeMs: number } {
-  const sources = [join(crateFolder, 'Cargo.toml'), join(crateFolder, 'Cargo.lock'), ...rustFiles(join(crateFolder, 'src'))]
+  const sources = [join(crateFolder, 'Cargo.toml'), join(crateFolder, 'Cargo.lock'), join(crateFolder, 'build.rs'), ...rustFiles(join(crateFolder, 'src'))]
   let newest = { path: '', mtimeMs: 0 }
   for (const path of sources) {
     const { mtimeMs } = statSync(path)
@@ -128,7 +133,7 @@ export async function frameUntilPartial(recording: Recording, bytes: Uint8Array,
   let sent = 0
   while (!existsSync(partial)) {
     if (performance.now() > end) throw new Error(`${partial} did not appear within ${timeoutMs} ms of ${sent} frames`)
-    const outcome = recording.frame({ timestampUs: sent * 100_000, format: 'png', bytes })
+    const outcome = recording.frame({ frameId: `partial-${sent}`, timestampUs: sent * 100_000, format: 'png', bytes })
     if (outcome !== 'sent') throw new Error(`frame ${sent} was ${outcome}`)
     sent += 1
     await wait(5)
@@ -136,9 +141,9 @@ export async function frameUntilPartial(recording: Recording, bytes: Uint8Array,
   return sent
 }
 
-/** Every process in a process group, as `ps` lists it: pid and command. */
+/** Every process in a process group: pid and executable name, without arguments from unrelated apps. */
 export function groupMembers(pgid: number): string[] {
-  const listing = execFileSync('ps', ['-axww', '-o', 'pid=,pgid=,command='], { encoding: 'utf8' })
+  const listing = execFileSync('ps', ['-ax', '-o', 'pid=,pgid=,comm='], { encoding: 'utf8' })
   return listing
     .split('\n')
     .map((line) => line.trim().split(/\s+/))

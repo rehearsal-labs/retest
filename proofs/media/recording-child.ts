@@ -9,7 +9,7 @@
 
 import { MediaProcess, mediaArguments } from '../../src/media/client.ts'
 import { encodePng, solidImage } from './png.ts'
-import { frameUntilPartial } from './support.ts'
+import { frameUntilPartial, proofIdentity } from './support.ts'
 
 const [binary, ffmpeg, output, mode] = process.argv.slice(2)
 if (binary === undefined || ffmpeg === undefined || output === undefined || (mode !== 'keep' && mode !== 'forget')) {
@@ -17,16 +17,16 @@ if (binary === undefined || ffmpeg === undefined || output === undefined || (mod
 }
 
 const media = await MediaProcess.start({ executable: binary, args: mediaArguments({ ffmpeg }), startTimeoutMs: 5000 })
-const start = await media.record({ recordingId: 'child', width: 64, height: 48, fps: 10, output, deadlineMs: 10_000 }, 5000)
+const start = await media.record({ recordingId: 'child', identity: proofIdentity('child'), width: 64, height: 48, fps: 10, output, deadlineMs: 10_000 }, 5000)
 if (start.kind !== 'started') throw new Error(`the recording did not start: ${JSON.stringify(start)}`)
 const { recording } = start
 const bytes = encodePng(solidImage(64, 48, [120, 40, 200]))
 let sent = await frameUntilPartial(recording, bytes)
-console.log(JSON.stringify({ mediaPid: media.pid, encoderPid: recording.started.encoderPid, partialPath: `${recording.started.path}.partial` }))
+console.log(JSON.stringify({ mediaPid: media.pid, encoderPid: recording.started.encoderPid, partialPath: `${recording.started.path}.partial`, framesPath: recording.started.framesPath }))
 
 if (mode === 'keep') {
   setInterval(() => {
-    recording.frame({ timestampUs: sent * 100_000, format: 'png', bytes })
+    recording.frame({ frameId: `keep-${sent}`, timestampUs: sent * 100_000, format: 'png', bytes })
     sent += 1
   }, 50)
 } else {

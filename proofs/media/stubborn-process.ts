@@ -1,5 +1,6 @@
 // Stands in for retest-media where a test needs a process that misbehaves in one chosen way. It greets with the
-// protocol argv[2] claims, then does what argv[3] says:
+// protocol argv[2] claims, in that version's shape (version 1's greeting for any other number), then does what
+// argv[3] says:
 //
 // - `stubborn` (the default): ignores its input, its input ending and SIGTERM, so only a kill ends it.
 // - `late-start`: answers a `start` 300 ms later with a `started` whose encoder is a `sleep` in a group of its
@@ -13,7 +14,7 @@
 import { spawn } from 'node:child_process'
 import { closeSync, writeFileSync } from 'node:fs'
 
-const protocol = Number(process.argv[2] ?? '1')
+const protocol = Number(process.argv[2] ?? '2')
 const mode = process.argv[3] ?? 'stubborn'
 
 function reply(message: Record<string, unknown>): void {
@@ -23,7 +24,8 @@ function reply(message: Record<string, unknown>): void {
   process.stdout.write(Buffer.concat([prefix, header]))
 }
 
-reply({ type: 'hello', protocol, version: '0.0.0-stub', target: 'stub', ffmpeg: 'none' })
+if (protocol === 2) reply({ type: 'hello', protocol, version: '0.0.0-stub', build: { target: 'stub', profile: 'stub' }, ffmpeg: 'none', encoder: { state: 'probing' } })
+else reply({ type: 'hello', protocol, version: '0.0.0-stub', target: 'stub', ffmpeg: 'none' })
 process.on('SIGTERM', () => {})
 setInterval(() => {}, 60_000)
 
@@ -51,6 +53,7 @@ if (mode === 'close-input') {
 function startLate(request: object): void {
   const recordingId = 'recordingId' in request && typeof request.recordingId === 'string' ? request.recordingId : ''
   const output = 'output' in request && typeof request.output === 'string' ? request.output : ''
+  const identity = 'identity' in request ? request.identity : undefined
   setTimeout(() => {
     const encoder = spawn('/bin/sleep', ['30'], { detached: true, stdio: 'ignore' })
     encoder.unref()
@@ -58,12 +61,14 @@ function startLate(request: object): void {
     reply({
       type: 'started',
       recordingId,
+      identity,
       codec: 'h264',
       container: 'mp4',
       encoder: 'sleep',
       encoderVersion: 'sleep',
       encoderPid: encoder.pid ?? 0,
       path: `${output}.mp4`,
+      route: 'decoded',
       width: 64,
       height: 48,
       fps: 10,

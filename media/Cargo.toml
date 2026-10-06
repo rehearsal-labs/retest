@@ -2,8 +2,9 @@
 name = "retest-media"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "Apache-2.0"
-description = "Retest's media process: turns timestamped screenshots into a video through an existing encoder."
+description = "Retest's media process: turns timestamped screenshots into a video through an existing encoder, and makes thumbnails, frame sequences and live views of them."
 repository = "https://github.com/rehearsal-labs/retest"
 publish = false
 
@@ -16,6 +17,15 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+# Counts heap allocations and prints them at exit, for measuring one route against another. Never in a shipped build.
+allocation-counts = []
+
+[profile.dev]
+# Frame decoding and resizing must drain within the same bounded finish budget in local debug runs.
+# Keep debug assertions and symbols, but optimize the image-processing loops.
+opt-level = 1
 
 [profile.release]
 lto = true
