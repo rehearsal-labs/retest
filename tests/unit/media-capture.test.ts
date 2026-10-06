@@ -1,15 +1,19 @@
-import type { CaptureAvailability, CaptureStart, CaptureStats, CapturedFrame, FrameSource, MediaRecorder, RecordingTarget, RecordSourceOptions, StartCapture } from '../../src/media/capture.ts'
-import type { Ended, FrameOutcome, StartRecording, Started } from '../../src/media/client.ts'
+import type { CaptureAvailability, CaptureStart, CaptureStats, CapturedFrame, FrameSource, GapTally, MediaRecorder, RecordingTarget, RecordSourceOptions, SourceRecording, StartCapture } from '../../src/media/capture.ts'
+import type { CaptureGap, Ended, Frame, FrameOutcome, RecordingIdentity, StartRecording, Started } from '../../src/media/client.ts'
 import type { OwnedProcessIdentity, ProcessOwnershipSystem } from '../../src/shared/process-ownership.ts'
 import type { CaptureSourceName, RecordIdentity } from '../../src/protocol/identity.ts'
 import assert from 'node:assert/strict'
 import { getEventListeners } from 'node:events'
 import { describe, test } from 'node:test'
-import { microsecondsSince, recordSource } from '../../src/media/capture.ts'
+import { CaptureSuspension, microsecondsSince, recordSource } from '../../src/media/capture.ts'
+import { ChromiumFrameSource } from '../../src/browser/capture.ts'
+import { WebKitFrameSource } from '../../src/browser/webkit/capture.ts'
+import type { PageProxyEvent } from '../../src/browser/webkit/connection.ts'
 import { captureEncoderOwnership, MAX_FRAME_BYTES } from '../../src/media/client.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 
 const identity: RecordIdentity = { testId: 'tests/tasks.retest.ts > saves', attemptId: 'k3v9q0x2mb', app: 'web', sessionId: 'k3v9q0x2mb:web' }
+const recordingIdentity: RecordingIdentity = { runId: 'run-7', testId: identity.testId, attemptId: identity.attemptId, app: identity.app, sessionId: identity.sessionId }
 const jpeg = Uint8Array.of(0xff, 0xd8, 0xff, 0xd9)
 
 function frame(timestampUs: number, overrides: Partial<CapturedFrame> = {}): CapturedFrame {
@@ -24,9 +28,10 @@ function ended(status: Ended['status'], received = 0): Ended {
   return {
     type: 'ended',
     recordingId: 'rec-1',
+    identity: { ...recordingIdentity },
     status,
     message: status === 'ok' ? 'The video is written.' : `The recording ended ${status}.`,
-    frames: { received, shown: received, superseded: 0, dropped: 0, outOfOrder: 0, outOfRange: 0, undecodable: 0, unprocessed: 0, resized: 0 },
+    frames: { received, shown: received, superseded: 0, dropped: 0, outOfOrder: 0, outOfRange: 0, undecodable: 0, duplicate: 0, unprocessed: 0, resized: 0 },
     framesBeforeFirst: 0,
     gaps: [],
     gapsShortened: 0,
@@ -35,12 +40,21 @@ function ended(status: Ended['status'], received = 0): Ended {
     durationUs: 0,
     bytesReceived: 0,
     bytesToEncoder: 0,
+    queue: { peakFrames: 0, peakBytes: 0, saturated: 0 },
+    captureGaps: [],
+    captureGapsReported: 0,
+    evidence: status === 'ok' ? { status: 'complete', reasons: [] } : { status: 'unavailable', reasons: [status] },
+    frameMapEntries: 0,
+    frameMapOmitted: 0,
+    frameMap: [],
   }
 }
 
 const started: Started = {
   type: 'started',
   recordingId: 'rec-1',
+  identity: { ...recordingIdentity },
+  route: 'decoded',
   codec: 'h264',
   container: 'mp4',
   encoder: 'libx264',
@@ -60,15 +74,20 @@ const started: Started = {
 /** A recording that keeps what it was sent and answers each frame as `outcome` says. */
 class FakeRecording implements RecordingTarget {
   readonly started: Started = started
-  readonly sent: { timestampUs: number; byteLength: number }[] = []
+  readonly sent: { frameId: string; observationId?: string; timestampUs: number; byteLength: number }[] = []
+  readonly gaps: CaptureGap[] = []
   readonly finishes: (number | undefined)[] = []
+  /** Everything the recording was told, in order: `frame <id>`, `gap <reason>` and `finish`. */
+  readonly calls: string[] = []
   readonly #ended = Promise.withResolvers<Ended>()
   readonly #outcome: (index: number) => FrameOutcome
   readonly #finish: 'ok' | 'lost'
+  readonly #frameThrows: boolean
 
-  constructor(options: { outcome?: (index: number) => FrameOutcome; finish?: 'ok' | 'lost' } = {}) {
+  constructor(options: { outcome?: (index: number) => FrameOutcome; finish?: 'ok' | 'lost'; frameThrows?: true } = {}) {
     this.#outcome = options.outcome ?? (() => 'sent')
     this.#finish = options.finish ?? 'ok'
+    this.#frameThrows = options.frameThrows === true
     this.#ended.promise.catch(() => {})
   }
 
@@ -76,13 +95,22 @@ class FakeRecording implements RecordingTarget {
     return this.#ended.promise
   }
 
-  frame(sent: { timestampUs: number; bytes: Uint8Array }): FrameOutcome {
+  frame(sent: Frame): FrameOutcome {
+    if (this.#frameThrows) throw new RangeError('the frame id has 129 characters; the most is 128')
+    this.calls.push(`frame ${sent.frameId}`)
     const outcome = this.#outcome(this.sent.length)
-    if (outcome === 'sent') this.sent.push({ timestampUs: sent.timestampUs, byteLength: sent.bytes.byteLength })
+    if (outcome === 'sent') this.sent.push({ frameId: sent.frameId, ...(sent.observationId === undefined ? {} : { observationId: sent.observationId }), timestampUs: sent.timestampUs, byteLength: sent.bytes.byteLength })
     return outcome
   }
 
+  captureGap(gap: CaptureGap): boolean {
+    this.calls.push(`gap ${gap.reason}`)
+    this.gaps.push({ ...gap })
+    return this.finishes.length === 0
+  }
+
   finish(_timeoutMs: number, endTimestampUs?: number): Promise<Ended> {
+    this.calls.push('finish')
     this.finishes.push(endTimestampUs)
     if (this.#finish === 'lost') return Promise.reject(new Error('the media process ended with signal SIGKILL; recording rec-1 did not end'))
     this.end(ended('ok', this.sent.length))
@@ -116,6 +144,8 @@ class FakeMedia implements MediaRecorder {
 
 type FakeSourceOptions = {
   name?: CaptureSourceName
+  /** The session the source names, when not the shared one. */
+  identity?: RecordIdentity
   availability?: CaptureAvailability
   /** What start does: deliver these frames and answer, or answer as told. */
   start?: (capture: StartCapture) => Promise<CaptureStart>
@@ -127,13 +157,14 @@ type FakeSourceOptions = {
 /** A source a test drives: it delivers frames when told, and counts its starts and stops. */
 class FakeSource implements FrameSource {
   readonly name: CaptureSourceName
-  readonly identity: RecordIdentity = identity
+  readonly identity: RecordIdentity
   capture: StartCapture | undefined
   stops = 0
   readonly #options: FakeSourceOptions
 
   constructor(options: FakeSourceOptions = {}) {
     this.name = options.name ?? 'chromium'
+    this.identity = options.identity ?? identity
     this.#options = options
   }
 
@@ -166,6 +197,7 @@ class TestClock {
 function options(signal: AbortSignal, overrides: Partial<RecordSourceOptions> = {}, clock: TestClock = new TestClock()): RecordSourceOptions {
   return {
     recordingId: 'rec-1',
+    runId: 'run-7',
     output: '/tmp/rec-1',
     width: 800,
     height: 600,
@@ -187,7 +219,18 @@ async function captureStarted(source: FakeSource): Promise<StartCapture> {
   return source.capture
 }
 
+// Records the source until its capture has started, then aborts, as a caller that stops at once would; a signal that
+// had aborted before the call would start nothing.
+async function recordBriefly(source: FakeSource, media: MediaRecorder, overrides: Partial<RecordSourceOptions> = {}): Promise<SourceRecording> {
+  const stop = new AbortController()
+  const running = recordSource(source, media, options(stop.signal, overrides))
+  await captureStarted(source)
+  stop.abort()
+  return running
+}
+
 const noneRefused = { identity: 0, timestamp: 0, clock: 0, outOfOrder: 0, outOfRange: 0, tooLarge: 0, empty: 0 }
+const noGaps: GapTally = { reported: 0, sent: 0, notSent: 0, refused: 0, withheldStretches: 0, withheldUs: 0 }
 
 describe('recordSource sends what the media protocol accepts and counts every frame once', () => {
   test('frames outside the bounds or clock rules, or of another session, are refused before they are sent', async () => {
@@ -214,8 +257,9 @@ describe('recordSource sends what the media protocol accepts and counts every fr
     source.deliver(frame(1000 + 2000 * 1000 + 1))
     stop.abort()
     const report = await running
-    assert.deepEqual(report.frames, { delivered: 10, sent: 3, dropped: 0, notSent: 0, refused: { ...noneRefused, identity: 1, timestamp: 2, outOfOrder: 1, outOfRange: 1, tooLarge: 1, empty: 1 } })
+    assert.deepEqual(report.frames, { delivered: 10, sent: 3, dropped: 0, notSent: 0, withheld: 0, refused: { ...noneRefused, identity: 1, timestamp: 2, outOfOrder: 1, outOfRange: 1, tooLarge: 1, empty: 1 } })
     assert.deepEqual(recording.sent.map((each) => each.timestampUs), [1000, 2000, 4000], 'a frame naming its own look in the same session is sent')
+    assert.deepEqual(recording.sent.map((each) => [each.frameId, each.observationId]), [['1', undefined], ['2', 'o4'], ['9', undefined]], 'each frame keeps its place in the delivery order as its id, and its look id')
     assert.equal(report.status, 'ended')
     assert.equal(report.stoppedBy, 'signal')
     assert.deepEqual(report.identity, identity)
@@ -297,16 +341,204 @@ describe('recordSource sends what the media protocol accepts and counts every fr
 
   test('a still page is held for as long as it stood still: the gap a frame may be held for is the whole recording', async () => {
     const plain = FakeMedia.starting(new FakeRecording())
-    const stop = new AbortController()
-    stop.abort()
-    await recordSource(new FakeSource(), plain, options(stop.signal))
+    await recordBriefly(new FakeSource(), plain)
     assert.deepEqual([plain.starts[0]?.maxDurationMs, plain.starts[0]?.maxGapMs], [30 * 60 * 1000, 30 * 60 * 1000])
     const bounded = FakeMedia.starting(new FakeRecording())
-    await recordSource(new FakeSource(), bounded, options(stop.signal, { limits: { maxDurationMs: 120_000 } }))
+    await recordBriefly(new FakeSource(), bounded, { limits: { maxDurationMs: 120_000 } })
     assert.deepEqual([bounded.starts[0]?.maxDurationMs, bounded.starts[0]?.maxGapMs], [120_000, 120_000])
     const shortened = FakeMedia.starting(new FakeRecording())
-    await recordSource(new FakeSource(), shortened, options(stop.signal, { limits: { maxGapMs: 5000 } }))
+    await recordBriefly(new FakeSource(), shortened, { limits: { maxGapMs: 5000 } })
     assert.equal(shortened.starts[0]?.maxGapMs, 5000, 'a caller who asks for shorter gaps gets them')
+  })
+
+  test('at most sixteen frames wait for the capture’s start: the older ones are not sent, and the newest sixteen go in order', async () => {
+    const recording = new FakeRecording()
+    const clock = new TestClock()
+    const source = new FakeSource({
+      start: (capture) => {
+        clock.now = 100
+        for (let timestampUs = 1; timestampUs <= 20; timestampUs++) capture.deliver(frame(timestampUs))
+        return Promise.resolve({ ok: true, mode: 'screencast' })
+      },
+    })
+    const stop = new AbortController()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, {}, clock))
+    await captureStarted(source)
+    stop.abort()
+    const report = await running
+    assert.deepEqual(recording.sent.map((each) => each.timestampUs), Array.from({ length: 16 }, (_, index) => index + 5))
+    assert.deepEqual(report.frames, { delivered: 20, sent: 16, dropped: 0, notSent: 4, withheld: 0, refused: noneRefused })
+    assert.deepEqual(recording.sent.map((each) => each.frameId), Array.from({ length: 16 }, (_, index) => String(index + 5)), 'a frame keeps the id it was given when it came, however long it waited')
+  })
+})
+
+describe('recordSource names the recording and every frame, and reports what capture could not hand over', () => {
+  test('the recording’s identity is the run and the source’s own session; a look id never names the recording', async () => {
+    const media = FakeMedia.starting(new FakeRecording())
+    await recordBriefly(new FakeSource({ identity: { ...identity, observationId: 'o12' } }), media)
+    assert.deepEqual(media.starts[0]?.identity, recordingIdentity)
+  })
+
+  test('a recording the client refuses to start, such as one whose identity it cannot take, starts no capture and says why', async () => {
+    const source = new FakeSource()
+    const media = new FakeMedia(() => Promise.reject(new RangeError('the identity’s runId is empty')))
+    const report = await recordSource(source, media, options(new AbortController().signal, { runId: '' }))
+    assert.deepEqual([report.status, report.reason], ['not_started', 'The media process started no recording: the identity’s runId is empty'])
+    assert.equal(media.starts[0]?.identity.runId, '')
+    assert.equal(source.capture, undefined)
+  })
+
+  test('gaps the source reports reach the recording when they are on its clock, and the rest are counted apart', async () => {
+    const recording = new FakeRecording()
+    const clock = new TestClock()
+    clock.now = 1000
+    const source = new FakeSource({
+      start: (capture) => {
+        clock.now = 1500
+        capture.gap?.({ fromUs: 1000, toUs: 1200, reason: 'capture_failed' })
+        return Promise.resolve({ ok: true, mode: 'screenshot-loop' })
+      },
+    })
+    const stop = new AbortController()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, {}, clock))
+    const capture = await captureStarted(source)
+    clock.now = 5000
+    capture.gap?.({ fromUs: 2000, toUs: 3000, reason: 'target_lost' })
+    capture.gap?.({ fromUs: 500, toUs: 900, reason: 'capture_failed' })
+    capture.gap?.({ fromUs: 3000, toUs: 2000, reason: 'capture_failed' })
+    capture.gap?.({ fromUs: 3000, toUs: 9000, reason: 'capture_failed' })
+    capture.gap?.({ fromUs: 3000.5, toUs: 4000, reason: 'capture_failed' })
+    stop.abort()
+    const report = await running
+    capture.gap?.({ fromUs: 4000, toUs: 4500, reason: 'capture_failed' })
+    assert.deepEqual(recording.gaps, [
+      { fromUs: 1000, toUs: 1200, reason: 'capture_failed' },
+      { fromUs: 2000, toUs: 3000, reason: 'target_lost' },
+    ])
+    assert.deepEqual(report.gaps, { ...noGaps, reported: 6, sent: 2, refused: 4 })
+  })
+
+  test('a gap the recording no longer takes, once it is finishing, is counted as not sent', async () => {
+    const recording = new FakeRecording()
+    const clock = new TestClock()
+    const source = new FakeSource({
+      stop: () => {
+        clock.now = 400
+        source.capture?.gap?.({ fromUs: 100, toUs: 300, reason: 'capture_failed' })
+        return Promise.resolve(stats())
+      },
+    })
+    const report = await recordBriefly(source, FakeMedia.starting(recording), { clock: clock.read })
+    assert.deepEqual(report.gaps, { ...noGaps, reported: 1, sent: 1 }, 'a gap the source reports as it stops still reaches the recording')
+    recording.finishes.push(0)
+    assert.equal(recording.captureGap({ fromUs: 0, toUs: 1, reason: 'capture_failed' }), false)
+  })
+
+  test('a suspension withholds every frame, however late it comes, and the recording is told of the stretch', async () => {
+    const recording = new FakeRecording()
+    const clock = new TestClock()
+    const suspension = new CaptureSuspension()
+    const stop = new AbortController()
+    const source = new FakeSource()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, { suspension }, clock))
+    await captureStarted(source)
+    clock.now = 1000
+    source.deliver(frame(1000))
+    clock.now = 2000
+    suspension.suspend()
+    clock.now = 2500
+    source.deliver(frame(2100), frame(2500))
+    suspension.suspend()
+    clock.now = 3000
+    suspension.resume()
+    suspension.resume()
+    clock.now = 3500
+    // Stamped inside the stretch and handed over after it, as a source that held a frame back for its cadence would.
+    source.deliver(frame(2900), frame(3500))
+    stop.abort()
+    const report = await running
+    assert.deepEqual(recording.sent.map((each) => [each.frameId, each.timestampUs]), [['1', 1000], ['5', 3500]])
+    assert.deepEqual(report.frames, { delivered: 5, sent: 2, dropped: 0, notSent: 0, withheld: 3, refused: noneRefused })
+    assert.deepEqual(recording.gaps, [{ fromUs: 2000, toUs: 3000, reason: 'pixels_withheld' }])
+    assert.deepEqual(report.gaps, { ...noGaps, reported: 1, sent: 1, withheldStretches: 1, withheldUs: 1000 })
+    assert.deepEqual(recording.calls, ['frame 1', 'gap pixels_withheld', 'frame 5', 'finish'])
+  })
+
+  test('a read begun before suspension stays withheld after resume when its pixel interval overlaps the stretch', async () => {
+    const recording = new FakeRecording()
+    const clock = new TestClock()
+    const suspension = new CaptureSuspension()
+    const stop = new AbortController()
+    const source = new FakeSource()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, { suspension }, clock))
+    await captureStarted(source)
+    clock.now = 2000
+    suspension.suspend()
+    clock.now = 3000
+    suspension.resume()
+    clock.now = 4000
+    source.deliver(frame(4000, { earliestUs: 1000 }))
+    source.deliver(frame(4000, { earliestUs: -1 }), frame(4000, { earliestUs: 4001 }))
+    source.deliver(frame(4000, { earliestUs: 3500 }))
+    stop.abort()
+    const report = await running
+    assert.deepEqual(recording.sent.map((each) => each.frameId), ['4'])
+    assert.equal(report.frames.withheld, 1)
+    assert.equal(report.frames.dropped, 0)
+    assert.deepEqual(report.frames.refused, { ...noneRefused, clock: 2 })
+    assert.deepEqual(recording.gaps, [{ fromUs: 2000, toUs: 3000, reason: 'pixels_withheld' }])
+  })
+
+  test('a suspension still on when capture stops ends there, and reaches the recording before it is finished', async () => {
+    const recording = new FakeRecording()
+    const clock = new TestClock()
+    const suspension = new CaptureSuspension()
+    suspension.suspend()
+    clock.now = 100
+    const stop = new AbortController()
+    const source = new FakeSource()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, { suspension }, clock))
+    await captureStarted(source)
+    clock.now = 4000
+    source.deliver(frame(2000))
+    stop.abort()
+    const report = await running
+    assert.deepEqual(recording.gaps, [{ fromUs: 100, toUs: 4000, reason: 'pixels_withheld' }], 'a suspension already on starts the stretch when capture was asked to start')
+    assert.deepEqual(recording.calls, ['gap pixels_withheld', 'finish'])
+    assert.deepEqual([report.frames.withheld, report.frames.sent, report.gaps.withheldStretches, report.gaps.withheldUs], [1, 0, 1, 3900])
+    suspension.resume()
+    suspension.suspend()
+    assert.equal(recording.gaps.length, 1, 'a suspension after the report changes nothing in it')
+  })
+
+  test('a frame the recording throws on is not sent and is named, and the capture goes on', async () => {
+    const recording = new FakeRecording({ frameThrows: true })
+    const source = new FakeSource()
+    const clock = new TestClock()
+    const stop = new AbortController()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, {}, clock))
+    await captureStarted(source)
+    clock.now = 100
+    source.deliver(frame(10), frame(20))
+    stop.abort()
+    const report = await running
+    assert.deepEqual([report.frames.delivered, report.frames.notSent, report.status], [2, 2, 'ended'])
+    assert.deepEqual(report.problems, ['The recording refused a frame: the frame id has 129 characters; the most is 128'], 'the same failure is named once')
+  })
+
+  test('a look id the media process does not take is left off the frame, which is still sent', async () => {
+    const recording = new FakeRecording()
+    const source = new FakeSource()
+    const clock = new TestClock()
+    const stop = new AbortController()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, {}, clock))
+    await captureStarted(source)
+    clock.now = 100
+    source.deliver(frame(10, { identity: { ...identity, observationId: 'o'.repeat(129) } }))
+    stop.abort()
+    const report = await running
+    assert.deepEqual(recording.sent.map((each) => [each.frameId, each.observationId]), [['1', undefined]])
+    assert.deepEqual(report.problems, ['A frame named a look id the media process does not take, so it was sent without one.'])
   })
 })
 
@@ -343,6 +575,95 @@ describe('recordSource stops on time, whatever the source does', () => {
     source.deliver(frame(1500))
     assert.deepEqual([report.frames.delivered, report.frames.notSent], [1, 0])
     assert.ok(Object.isFrozen(report) && Object.isFrozen(report.frames) && Object.isFrozen(report.frames.refused) && Object.isFrozen(report.problems))
+  })
+
+  test('the report shares no object with the source or the recording, and nothing in it can be changed', async () => {
+    const own: RecordIdentity = { ...identity }
+    const problems = ['Chrome did not take a frame’s acknowledgement']
+    const recording = new FakeRecording()
+    const source = new FakeSource({ identity: own, stop: () => Promise.resolve(stats({ problems })) })
+    const running = recordSource(source, FakeMedia.starting(recording), options(new AbortController().signal))
+    await captureStarted(source)
+    const gap = { captureUs: 1000, shortenedByUs: 500 }
+    const stderr = ['frame=    1']
+    const captureGap = { fromUs: 10, toUs: 20, reason: 'pixels_withheld' }
+    const entry = { frameId: '1', captureUs: 10, fate: 'shown' as const, videoUs: 0, outputFrames: 1 }
+    const reasons: Ended['evidence']['reasons'] = ['capture_gaps']
+    const ending: Ended = { ...ended('ok'), gaps: [gap], captureGaps: [captureGap], frameMap: [entry], evidence: { status: 'partial', reasons }, encoder: { exitCode: 0, signal: null, stderr, lines: 1 } }
+    recording.end(ending)
+    const report = await running
+    own.sessionId = 'k3v9q0x2mb:phone'
+    problems.push('added afterwards')
+    gap.shortenedByUs = 0
+    stderr.push('added afterwards')
+    captureGap.toUs = 99
+    entry.videoUs = 99
+    reasons.push('frames_dropped')
+    ending.frames.received = 99
+    ending.identity.runId = 'run-8'
+    assert.deepEqual(report.identity, identity, 'changing the source’s identity changes nothing in the report')
+    assert.deepEqual(report.capture?.problems, ['Chrome did not take a frame’s acknowledgement'])
+    assert.deepEqual(report.ended?.gaps, [{ captureUs: 1000, shortenedByUs: 500 }])
+    assert.deepEqual(report.ended?.encoder?.stderr, ['frame=    1'])
+    assert.deepEqual(report.ended?.captureGaps, [{ fromUs: 10, toUs: 20, reason: 'pixels_withheld' }])
+    assert.equal(report.ended?.frameMap[0]?.videoUs, 0)
+    assert.deepEqual(report.ended?.evidence.reasons, ['capture_gaps'])
+    assert.equal(report.ended?.frames.received, 0)
+    assert.equal(report.ended?.identity.runId, 'run-7')
+    assert.deepEqual(report.started, started)
+    assert.notEqual(report.started, recording.started, 'the start reply is the report’s own copy')
+    assert.notEqual(report.started?.identity, recording.started.identity, 'the start reply’s identity is the report’s own copy')
+    const kept = report.ended
+    const held = [
+      report.identity,
+      report.started,
+      report.started?.identity,
+      report.capture,
+      report.capture?.problems,
+      report.gaps,
+      kept,
+      kept?.identity,
+      kept?.frames,
+      kept?.gaps,
+      kept?.gaps[0],
+      kept?.queue,
+      kept?.captureGaps,
+      kept?.captureGaps[0],
+      kept?.evidence,
+      kept?.evidence.reasons,
+      kept?.frameMap,
+      kept?.frameMap[0],
+      kept?.encoder,
+      kept?.encoder?.stderr,
+    ]
+    assert.ok(held.every((each) => each !== undefined && Object.isFrozen(each)), 'every object in the report is there and frozen')
+  })
+
+  test('a signal that had aborted before the call starts no recording and no capture', async () => {
+    const media = FakeMedia.starting(new FakeRecording())
+    const source = new FakeSource()
+    const stop = new AbortController()
+    stop.abort()
+    const report = await recordSource(source, media, options(stop.signal))
+    assert.equal(media.starts.length, 0, 'no recording was started')
+    assert.equal(source.capture, undefined, 'no capture was started')
+    assert.equal(source.stops, 0)
+    assert.deepEqual([report.status, report.stoppedBy, report.reason], ['not_started', 'signal', 'The signal had aborted before anything started, so no recording or capture began.'])
+  })
+
+  test('a signal that aborts while the process starts the recording starts no capture, and the empty recording is finished', async () => {
+    const recording = new FakeRecording()
+    const stop = new AbortController()
+    const media = new FakeMedia(() => {
+      stop.abort()
+      return Promise.resolve({ kind: 'started', recording })
+    })
+    const source = new FakeSource()
+    const report = await recordSource(source, media, options(stop.signal))
+    assert.equal(source.capture, undefined, 'no capture was started')
+    assert.deepEqual(recording.finishes, [undefined], 'the recording was finished, with no frame to hold')
+    assert.deepEqual([report.status, report.stoppedBy, report.ended?.frames.received, report.capture], ['ended', 'signal', 0, undefined])
+    assert.equal(getEventListeners(stop.signal, 'abort').length, 0, 'nothing is left listening to the signal')
   })
 
   test('a clock behind the last frame gives no end time rather than one before it', async () => {
@@ -392,9 +713,7 @@ describe('recordSource stops on time, whatever the source does', () => {
     ] as const) {
       const recording = new FakeRecording()
       const source = new FakeSource({ stop: stopping })
-      const stop = new AbortController()
-      stop.abort()
-      const report = await recordSource(source, FakeMedia.starting(recording), options(stop.signal))
+      const report = await recordBriefly(source, FakeMedia.starting(recording))
       assert.equal(report.status, 'ended')
       assert.deepEqual(recording.finishes.length, 1)
       assert.deepEqual(report.problems, [`Stopping the chromium capture failed: ${said}`])
@@ -429,16 +748,16 @@ describe('recordSource stops on time, whatever the source does', () => {
     const report = await running
     assert.equal(report.stoppedBy, 'recording')
     assert.equal(report.status, 'ended')
-    assert.equal(report.ended, failed)
+    // The report keeps its own frozen copy of the ending, so it is equal to the process's and is not the same object.
+    assert.deepEqual(report.ended, failed)
+    assert.notEqual(report.ended, failed)
     assert.equal(source.stops, 1)
   })
 
   test('a recording that ends without its ending is lost, and says why', async () => {
     const recording = new FakeRecording({ finish: 'lost' })
     const source = new FakeSource()
-    const stop = new AbortController()
-    stop.abort()
-    const report = await recordSource(source, FakeMedia.starting(recording), options(stop.signal))
+    const report = await recordBriefly(source, FakeMedia.starting(recording))
     assert.equal(report.status, 'lost')
     assert.match(report.reason ?? '', /did not end/)
     assert.equal(report.ended, undefined)
@@ -465,7 +784,8 @@ describe('a source that cannot capture says so, and nothing pretends it recorded
       identity,
       status: 'unavailable',
       reason: 'The page is gone, so Chrome cannot capture it: target closed.',
-      frames: { delivered: 0, sent: 0, dropped: 0, notSent: 0, refused: noneRefused },
+      frames: { delivered: 0, sent: 0, dropped: 0, notSent: 0, withheld: 0, refused: noneRefused },
+      gaps: noGaps,
       problems: [],
     })
     assert.equal(media.starts.length, 0)
@@ -488,6 +808,14 @@ describe('a source that cannot capture says so, and nothing pretends it recorded
     assert.equal(report.reason, 'The window is off screen.')
     assert.equal(report.ended?.frames.received, 0)
     assert.equal(source.stops, 1, 'a start that failed is still stopped, in case it answers late')
+  })
+
+  test('a recording lost as it is finished after a failed start keeps both reasons: the start’s as the reason, the loss among the problems', async () => {
+    const recording = new FakeRecording({ finish: 'lost' })
+    const source = new FakeSource({ name: 'window-crop', start: () => Promise.resolve({ ok: false, reason: 'The window is off screen.' }) })
+    const report = await recordSource(source, FakeMedia.starting(recording), options(new AbortController().signal))
+    assert.deepEqual([report.status, report.reason, report.ended], ['unavailable', 'The window is off screen.', undefined])
+    assert.deepEqual(report.problems, ['The recording was lost as it was finished: the media process ended with signal SIGKILL; recording rec-1 did not end'])
   })
 
   test('a start that throws at once or later, or does not answer in time, is unavailable, and nothing is left listening', async () => {
@@ -540,7 +868,8 @@ describe('a source that cannot capture says so, and nothing pretends it recorded
     const missing = ended('encoder_unavailable')
     const refused = await recordSource(source, new FakeMedia(() => Promise.resolve({ kind: 'ended', ended: missing })), options(new AbortController().signal))
     assert.equal(refused.status, 'not_started')
-    assert.equal(refused.ended, missing)
+    assert.deepEqual(refused.ended, missing)
+    assert.notEqual(refused.ended, missing, 'the report keeps its own copy of the ending')
     const gone = await recordSource(source, new FakeMedia(() => Promise.reject(new Error('the media process has ended with code 2'))), options(new AbortController().signal))
     assert.equal(gone.status, 'not_started')
     assert.equal(gone.reason, 'The media process started no recording: the media process has ended with code 2')
@@ -746,3 +1075,58 @@ describe('media cleanup uses recorded launch ownership', () => {
     assert.equal(ownership.owner.remains(), false)
   })
 })
+
+for (const engine of ['chromium', 'webkit'] as const) {
+  test(`${engine}: a delayed frame read during withholding is refused after the previous frame's cadence delivery`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const clock = new TestClock()
+    let receive: ((params: unknown) => void) | undefined
+    let proxyReceive: ((event: PageProxyEvent) => void) | undefined
+    const acks: number[] = []
+    const source = engine === 'chromium' ? new ChromiumFrameSource({
+      id: 'c', detachReason: undefined, blockReason: undefined,
+      send: async (method) => { if (method.endsWith('FrameAck')) acks.push(clock.now); return {} },
+      on: (_method, listener) => { receive = listener; return () => { receive = undefined } },
+      onDetach: () => () => undefined,
+    }, identity) : new WebKitFrameSource({
+      screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined,
+      proxy: async (method) => { if (method.endsWith('FrameAck')) acks.push(clock.now); return method.endsWith('startScreencast') ? { generation: 1 } : {} },
+      onPageProxyEvent: (listener) => { proxyReceive = listener; return () => { proxyReceive = undefined } },
+      onLost: () => () => undefined,
+    }, identity)
+    const suspension = new CaptureSuspension()
+    const recording = new FakeRecording()
+    const stop = new AbortController()
+    const frames: CapturedFrame[] = []
+    // Isolate the read-window contract: the sender sees suspension; this adversarial source keeps sending old frames.
+    const unpaused: FrameSource = { name: source.name, identity, availability: () => source.availability(), stop: (ms) => source.stop(ms),
+      start: (capture) => source.start({ fps: capture.fps, clock: capture.clock, timeoutMs: capture.timeoutMs, ended: capture.ended, deliver: (frame) => { frames.push(frame); capture.deliver(frame) } }) }
+    const running = recordSource(unpaused, FakeMedia.starting(recording), options(stop.signal, { suspension }, clock))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const paint = (data = Buffer.from(jpeg).toString('base64')): void => {
+      const params = { data, sessionId: frames.length + 1 }
+      receive?.(params); proxyReceive?.({ method: 'Screencast.screencastFrame', params })
+    }
+    try {
+      clock.now = 100_000; paint()
+      clock.now = 110_000; paint()
+      assert.deepEqual(acks, [100_000, 110_000])
+      clock.now = 150_000; suspension.suspend()
+      clock.now = 155_000
+      const delayedC = { readAtUs: clock.now, data: Buffer.from([...jpeg, 3]).toString('base64') }
+      // The fake target has read C; its transport withholds that event until 210000.
+      clock.now = 160_000; suspension.resume()
+      clock.now = 200_000; t.mock.timers.tick(90)
+      assert.deepEqual(frames.map(frame => frame.timestampUs), [100_000, 110_000])
+      clock.now = 210_000; paint(delayedC.data)
+      clock.now = 300_000; t.mock.timers.tick(90)
+      stop.abort()
+      const report = await running
+      assert.ok((frames[2]?.earliestUs ?? Infinity) <= delayedC.readAtUs, 'the lower bound must precede the actual fake-target pixel read')
+      assert.equal(frames[2]?.earliestUs, 110_000, 'C can have been read after B was acknowledged, before B was delivered')
+      assert.deepEqual(recording.sent.map(frame => frame.timestampUs), [100_000, 110_000], 'C overlaps withholding and must never reach the recording')
+      assert.equal(report.frames.withheld, 1)
+      assert.equal(report.gaps.withheldStretches, 1)
+    } finally { stop.abort(); await running }
+  })
+}
