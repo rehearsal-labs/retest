@@ -1,7 +1,14 @@
-import type { NativeCheckRecord } from '../../src/native/assertions.ts'
+import type { NativeKind } from '../../src/browser/contract.ts'
+import type { NativeCheckRecord, NativeLook } from '../../src/native/assertions.ts'
+import type { Failure } from '../../src/protocol/failures.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
+import type { FakeElement } from './native-interaction-fake.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { observeTree, pollNative, unsupportedCheck } from '../../src/native/assertions.ts'
+import { manualTime } from '../support/manual-time.ts'
+import { parseNativeTree } from '../../src/native/locators.ts'
 import { openFake } from './native-interaction-fake.ts'
 
 // Native checks judged from the session's scoped tree, with the web's `.not` rules and poll shape, and each check the
@@ -51,14 +58,19 @@ test('visible and hidden follow the web\'s rules: no element is not visible and 
   assert.equal((await verdict(t, { matcher: 'toBeHidden', not: true }, { by: 'testId', value: 'nothing' })).failureClass, 'not_found')
 })
 
-test('enabled, disabled, value and count are judged from the tree, an iOS placeholder reading as an empty value', async (t) => {
+test('enabled, disabled, value and count are judged from the tree; an iOS value equal to its placeholder passes no value check either way', async (t) => {
   const button: LocatorRecipe = { by: 'testId', value: 'create-task-button' }
   assert.equal((await verdict(t, { matcher: 'toBeDisabled' }, button)).passed, true)
   assert.equal((await verdict(t, { matcher: 'toBeEnabled' }, button)).failureClass, 'check_failed')
   assert.equal((await verdict(t, { matcher: 'toBeEnabled', not: true }, button)).passed, true)
+  // An empty field shows its placeholder as its value, and so does one holding the placeholder's text.
   const field: LocatorRecipe = { by: 'testId', value: 'new-task-title-field' }
-  assert.equal((await verdict(t, { matcher: 'toHaveValue', value: '' }, field)).passed, true)
+  const empty = await verdict(t, { matcher: 'toHaveValue', value: '' }, field)
+  assert.equal(empty.failureClass, 'check_failed')
+  assert.match(empty.message ?? '', /whose value reads as its placeholder "Title": iOS's executor writes the placeholder as the value of an empty field, so Retest cannot tell an empty field from one holding that text, and toHaveValue passes in neither direction/)
   assert.equal((await verdict(t, { matcher: 'toHaveValue', value: 'Title' }, field)).failureClass, 'check_failed')
+  assert.equal((await verdict(t, { matcher: 'toHaveValue', value: '', not: true }, field)).failureClass, 'check_failed')
+  assert.equal((await verdict(t, { matcher: 'toHaveValue', value: 'Title', not: true }, field)).failureClass, 'check_failed')
   assert.equal((await verdict(t, { matcher: 'toHaveCount', count: 2 }, { by: 'role', role: 'cell' })).passed, true)
   assert.equal((await verdict(t, { matcher: 'toHaveCount', count: 2, not: true }, { by: 'role', role: 'cell' })).failureClass, 'check_failed')
 })
@@ -107,4 +119,121 @@ test('a look at nothing fails as not found, naming the step that kept nothing', 
   const result = await verdict(t, { matcher: 'toHaveText', text: 'Open' }, { by: 'testId', value: 'created-task-state', within: [{ by: 'testId', value: 'created-section' }] })
   assert.equal(result.failureClass, 'not_found')
   assert.match(result.message ?? '', /matched no element\. getByTestId\('created-section'\) matched no element\. Looked \d+ times in 300 ms\./)
+})
+
+function treeOf(xml: string, platform: NativeKind): NativeLook['tree'] {
+  const parsed = parseNativeTree(xml, platform)
+  if (!parsed.ok) throw new Error(parsed.problem)
+  return parsed.tree
+}
+
+const openTree = treeOf('<XCUIElementTypeApplication type="XCUIElementTypeApplication" name="TaskPhone" label="TaskPhone" enabled="true" visible="true" x="0" y="0" width="402" height="874"><XCUIElementTypeStaticText type="XCUIElementTypeStaticText" value="Open" name="created-task-state" label="Open" enabled="true" visible="true" x="300" y="600" width="50" height="20" traits=""/></XCUIElementTypeApplication>', 'ios-simulator')
+
+function lookAt(tree: NativeLook['tree']): NativeLook {
+  const observed = observeTree(tree, state)
+  if (!observed.ok) throw new Error(observed.failure.message)
+  return { observation: observed.observation, matches: observed.matches, reference: { sessionId: 'attempt:phone', instance: 'i', generation: 1, observationId: 'o1' }, tree }
+}
+
+for (const earlyMs of [0, 0.6, 0.9]) {
+  test(`a native check reads at or after its fractional-clock deadline when waits fire ${earlyMs} ms early`, async () => {
+    const clock = manualTime()
+    let spent = 0
+    const looks: number[] = []
+    const time = { now: () => clock.now() + spent, sleep: (ms: number, signal?: AbortSignal) => clock.sleep(Math.max(0, ms - earlyMs), signal) }
+    const result = await clock.runUntil(pollNative({
+      recipe: state, record: { matcher: 'toHaveText', text: 'Done' }, timeoutMs: 120,
+      platform: 'ios-simulator', signal: new AbortController().signal, time,
+      look: async () => {
+        looks.push(time.now())
+        spent += earlyMs === 0.9 ? 0.2 : 0.1
+        return { ok: true, look: lookAt(openTree) }
+      },
+    }))
+    assert.equal(result.failure?.class, 'check_failed')
+    assert.ok((looks.at(-1) ?? 0) >= 120, `last read at ${looks.at(-1)}: ${looks.join(', ')}`)
+    assert.ok(time.now() < 122, `the wait ended at ${time.now()}`)
+  })
+}
+
+test('a look that runs out of time before the check\'s deadline preserves the last observation and waits through the deadline', async () => {
+  for (const earlyMs of [2, 8, 30]) {
+    let looks = 0
+    const startedAt = performance.now()
+    const result = await pollNative({
+      recipe: state,
+      record: { matcher: 'toHaveText', text: 'Done' },
+      timeoutMs: 600,
+      platform: 'ios-simulator',
+      signal: new AbortController().signal,
+      // The first look sees "Open"; every later one sits under budgets that end it before the check's own deadline.
+      look: async (timeoutMs) => {
+        looks += 1
+        if (looks === 1) return { ok: true, look: lookAt(openTree) }
+        await sleep(Math.max(1, timeoutMs - earlyMs))
+        const failure: Failure = { class: 'timeout', message: 'Reading the app\'s tree: no answer in time.' }
+        return { ok: false, failure }
+      },
+    })
+    assert.equal(result.failure?.class, 'check_failed', `${earlyMs} ms early: ${result.failure?.message ?? 'it passed'}`)
+    assert.match(result.failure?.message ?? '', /has text "Open", expected "Done"/)
+    assert.equal(result.actual?.text, 'Open')
+    assert.ok(performance.now() - startedAt >= 600, 'an early read timeout cannot end the check early')
+  }
+  // With no look answered, a timeout says so and observes nothing.
+  const none = await pollNative({ recipe: state, record: { matcher: 'toHaveText', text: 'Done' }, timeoutMs: 200, platform: 'ios-simulator', signal: new AbortController().signal, look: async (timeoutMs) => {
+    await sleep(timeoutMs)
+    return { ok: false, failure: { class: 'timeout', message: 'Reading the app\'s tree: no answer in time.' } }
+  } })
+  assert.equal(none.failure?.class, 'timeout')
+  assert.equal(none.actual, null)
+})
+
+test('a native read timeout preserves the last look and reads once more at the exact deadline', async () => {
+  const clock = manualTime()
+  let spent = 0
+  const looks: number[] = []
+  const time = { now: () => clock.now() + spent, sleep: clock.sleep }
+  const result = await clock.runUntil(pollNative({
+    recipe: state, record: { matcher: 'toHaveText', text: 'Done' }, timeoutMs: 120,
+    platform: 'ios-simulator', signal: new AbortController().signal, time,
+    look: async () => {
+      looks.push(time.now())
+      if (looks.length === 1) {
+        spent += 0.1
+        return { ok: true, look: lookAt(openTree) }
+      }
+      if (looks.length === 2) spent += 69.5
+      return { ok: false, failure: { class: 'timeout', message: 'Tree read timed out.' } }
+    },
+  }))
+  assert.equal(result.failure?.class, 'check_failed')
+  assert.equal(result.actual?.text, 'Open')
+  assert.ok((looks.at(-1) ?? 0) >= 120, `last read at ${looks.at(-1)}: ${looks.join(', ')}`)
+})
+
+test('a state the executor did not report passes no check in either direction and fails naming what was not reported', async (t) => {
+  const unreported = (platform: NativeKind, element: Partial<FakeElement>): Parameters<typeof openFake>[1] => ({ platform, screen: () => [{ type: 'Button', identifier: 'subject', label: 'Subject', frame: platform === 'macos' ? { x: 40, y: 100, width: 80, height: 24 } : { x: 16, y: 300, width: 100, height: 44 }, ...element }] })
+  const subject: LocatorRecipe = { by: 'testId', value: 'subject' }
+  const cases: { options: Parameters<typeof openFake>[1]; records: NativeCheckRecord[]; attribute: string }[] = [
+    { options: unreported('ios-simulator', { omit: ['enabled'] }), records: [{ matcher: 'toBeDisabled' }, { matcher: 'toBeEnabled' }, { matcher: 'toBeEnabled', not: true }], attribute: 'enabled' },
+    { options: unreported('macos', { type: 'Cell', omit: ['selected'] }), records: [{ matcher: 'toBeSelected', not: true }, { matcher: 'toBeSelected' }], attribute: 'selected' },
+    { options: unreported('ios-simulator', { type: 'Cell', omit: ['traits'] }), records: [{ matcher: 'toBeSelected', not: true }, { matcher: 'toBeSelected' }], attribute: 'traits' },
+    { options: unreported('ios-simulator', { type: 'TextField', text: 'x', omit: ['value'] }), records: [{ matcher: 'toHaveValue', value: '' }, { matcher: 'toHaveValue', value: 'x', not: true }], attribute: 'value' },
+    { options: unreported('ios-simulator', { omit: ['visible'] }), records: [{ matcher: 'toBeHidden' }, { matcher: 'toBeVisible' }], attribute: 'visible' },
+  ]
+  for (const { options, records, attribute } of cases) {
+    for (const record of records) {
+      const { interaction } = await openFake(t, options)
+      const result = await interaction.expect(subject, record, 300)
+      assert.equal(result.passed, false, `${attribute} ${JSON.stringify(record)} passed`)
+      assert.equal(result.failure?.class, 'check_failed', `${attribute} ${JSON.stringify(record)}: ${result.failure?.message ?? ''}`)
+      assert.match(result.failure?.message ?? '', new RegExp(`the executor did not report its ${attribute} in the tree`), JSON.stringify(record))
+      assert.equal(result.failure?.details?.['unreported'], attribute)
+      // The parent, judging the same look, names the same thing.
+      const look = result.look
+      assert.ok(look !== undefined)
+      assert.equal(unsupportedCheck(record, look.matches, subject, look.tree.platform)?.details?.['unreported'], attribute)
+    }
+  }
 })

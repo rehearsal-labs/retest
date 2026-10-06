@@ -3,7 +3,7 @@ import type { NativeTree } from '../../src/native/locators.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { describeElement, elementTypeNumbers, identifierOf, locate, nativeLocatorProblem, nativeRoleTypes, parseNativeTree, predicateFor, quotePredicate, resolutionKeys, resolutionPlan, textOf, valueOf } from '../../src/native/locators.ts'
+import { describeElement, elementTypeNumbers, enabledReading, identifierOf, locate, nativeLocatorProblem, nativeRoleTypes, parseNativeTree, predicateFor, quotePredicate, resolutionKeys, resolutionPlan, selectedReading, textOf, textReading, valueOf, valueReading, visibilityReading } from '../../src/native/locators.ts'
 import { ariaRoles } from '../../src/protocol/aria-role.ts'
 
 // The native locator mappings, read from scoped trees written as each executor writes them: WebDriverAgent with `type`,
@@ -138,11 +138,11 @@ test('CSS, placeholders, Playwright\'s rules and unreadable patterns are refused
   assert.equal(nativeLocatorProblem({ by: 'testId', value: 'x', within: [{ by: 'css', selector: 'li' }] }, 'macos')?.class, 'unsupported')
 })
 
-test('the executor is asked by an exact predicate in each executor\'s own attribute names, quoted literally', () => {
+test('the executor is asked by an exact predicate in each executor\'s own attribute names, quoted literally, the label kept beside an identifier', () => {
   const phone = ios(iosElement('Button', { name: 'save-task', label: 'Save' }))
   const mac = macos(macElement('Button', { identifier: 'save-task', label: 'Save' }))
-  assert.equal(predicateFor(resolutionKeys(phone.elements[1] ?? phone.root, 'ios-simulator'), 'ios-simulator'), 'type == "XCUIElementTypeButton" AND name == "save-task"')
-  assert.equal(predicateFor(resolutionKeys(mac.elements[1] ?? mac.root, 'macos'), 'macos'), 'elementType == 9 AND identifier == "save-task"')
+  assert.equal(predicateFor(resolutionKeys(phone.elements[1] ?? phone.root, 'ios-simulator'), 'ios-simulator'), 'type == "XCUIElementTypeButton" AND name == "save-task" AND label == "Save"')
+  assert.equal(predicateFor(resolutionKeys(mac.elements[1] ?? mac.root, 'macos'), 'macos'), 'elementType == 9 AND identifier == "save-task" AND label == "Save"')
   const unnamed = macos(macElement('Button', { label: 'Say &quot;hi&quot; \\ %@', title: 'T' }))
   assert.equal(predicateFor(resolutionKeys(unnamed.elements[1] ?? unnamed.root, 'macos'), 'macos'), 'elementType == 9 AND label == "Say \\"hi\\" \\\\ %@" AND title == "T"')
   assert.equal(quotePredicate('a\nb\tc'), '"a\\nb\\tc"')
@@ -161,9 +161,30 @@ test('an element named alone is resolved by its own keys; one among alike elemen
   assert.deepEqual(resolutionPlan(alone, alone.elements[1] ?? alone.root), { keys: { type: 'Button', identifier: 'only' }, count: 1 })
 })
 
-test('an iOS field\'s placeholder, written as its value while it is empty, reads as empty; a static text has no value', () => {
-  const phone = ios(iosElement('TextField', { name: 'title', label: '', value: 'Title', placeholderValue: 'Title' }) + iosElement('StaticText', { name: 'id', label: 'task-1', value: 'task-1' }))
-  assert.equal(valueOf(phone.elements[1] ?? phone.root, 'ios-simulator'), '')
-  assert.equal(valueOf(phone.elements[2] ?? phone.root, 'ios-simulator'), undefined)
-  assert.equal(describeElement(phone.elements[1] ?? phone.root, 'ios-simulator'), 'the TextField "title"')
+test('an iOS field\'s value equal to its placeholder cannot be told from an empty field; a static text has no value', () => {
+  const phone = ios(iosElement('TextField', { name: 'title', label: '', value: 'Title', placeholderValue: 'Title' }) + iosElement('StaticText', { name: 'id', label: 'task-1', value: 'task-1' }) + iosElement('TextField', { name: 'note', label: '', value: 'Buy milk', placeholderValue: 'Note' }))
+  const [, title, id, note] = phone.elements
+  assert.ok(title !== undefined && id !== undefined && note !== undefined)
+  assert.deepEqual(valueReading(title, 'ios-simulator'), { kind: 'placeholder', placeholder: 'Title' })
+  assert.equal(valueOf(title, 'ios-simulator'), 'Title', 'the raw value is what the executor wrote')
+  assert.deepEqual(valueReading(note, 'ios-simulator'), { kind: 'read', value: 'Buy milk' })
+  assert.deepEqual(valueReading(id, 'ios-simulator'), { kind: 'none' })
+  assert.equal(valueOf(id, 'ios-simulator'), undefined)
+  assert.equal(describeElement(title, 'ios-simulator'), 'the TextField "title"')
+})
+
+test('an attribute the tree does not carry is not reported, never false or empty', () => {
+  const phone = ios('<XCUIElementTypeButton type="XCUIElementTypeButton" name="go" label="Go" x="10" y="10" width="50" height="20"/><XCUIElementTypeCell type="XCUIElementTypeCell" name="row" label="Row" enabled="true" visible="true" x="10" y="40" width="50" height="20"/><XCUIElementTypeTextField type="XCUIElementTypeTextField" name="field" label="" enabled="true" visible="true" x="10" y="70" width="50" height="20"/><XCUIElementTypeStaticText type="XCUIElementTypeStaticText" name="blank" enabled="true" visible="true" x="10" y="100" width="50" height="20"/>')
+  const [, button, cell, field, blank] = phone.elements
+  assert.ok(button !== undefined && cell !== undefined && field !== undefined && blank !== undefined)
+  assert.deepEqual(enabledReading(button), { kind: 'unreported', attribute: 'enabled' })
+  assert.deepEqual(visibilityReading(button, 'ios-simulator'), { kind: 'unreported', attribute: 'visible' })
+  assert.deepEqual(selectedReading(cell, 'ios-simulator'), { kind: 'unreported', attribute: 'traits' })
+  assert.deepEqual(valueReading(field, 'ios-simulator'), { kind: 'unreported', attribute: 'value' })
+  assert.deepEqual(textReading(blank, 'ios-simulator'), { kind: 'unreported', attribute: 'value' })
+  const mac = macos('<XCUIElementTypeCell elementType="75" identifier="row" label="" title="" x="30" y="70" width="50" height="20"/>')
+  const [, row] = mac.elements
+  assert.ok(row !== undefined)
+  assert.deepEqual(selectedReading(row, 'macos'), { kind: 'unreported', attribute: 'selected' })
+  assert.deepEqual(enabledReading(row), { kind: 'unreported', attribute: 'enabled' })
 })

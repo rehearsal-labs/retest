@@ -54,6 +54,13 @@ class MemoryDriver implements NativeAppDriver {
   forceEnded: number[][] = []
   forceEndedProcesses: RecordedProcess[][] = []
   releases = 0
+  // The app's start as the operating system reads it; with none set, readings carry no start, as a fake host's did.
+  startedAt: string | undefined
+  // Readings after a terminate during which the app still shows by its short name, as it does while it exits.
+  exitingReadings = 0
+  #exiting = 0
+  // The redactor the session handed to the last tree reading.
+  sourceRedact: ((text: string) => string) | undefined
   inFlight = 0
   mostInFlight = 0
   dispatched: (() => void) | undefined
@@ -107,6 +114,7 @@ class MemoryDriver implements NativeAppDriver {
     return this.#call('terminate', bounds, () => {
       const was = this.running
       this.running = false
+      if (was) this.#exiting = this.exitingReadings
       return was
     })
   }
@@ -125,13 +133,18 @@ class MemoryDriver implements NativeAppDriver {
       this.failingReadings -= 1
       return { ok: false, problem: 'ps could not run' }
     }
-    const processes = [...(this.running ? [{ pid: this.pid, command: this.command }] : []), ...this.foreignPids.map((pid) => ({ pid, command: '/Elsewhere/TaskDesk.app/Contents/MacOS/TaskDesk' }))]
+    const start = this.startedAt === undefined ? {} : { startedAt: this.startedAt }
+    const exiting = !this.running && this.#exiting > 0
+    if (exiting) this.#exiting -= 1
+    const own = this.running ? [{ pid: this.pid, command: this.command, ...start }] : exiting ? [{ pid: this.pid, command: '(TaskDesk)', ...start }] : []
+    const processes = [...own, ...this.foreignPids.map((pid) => ({ pid, command: '/Elsewhere/TaskDesk.app/Contents/MacOS/TaskDesk' }))]
     return { ok: true, running: processes.length > 0, pids: processes.map((entry) => entry.pid), processes }
   }
   capture(_source: CaptureSource, bounds: RequestBounds): Promise<DriverAnswer<Uint8Array>> {
     return this.#call('capture', bounds, () => solidPng(8, 6))
   }
-  source(bounds: RequestBounds): Promise<DriverAnswer<ScopedSource>> {
+  source(bounds: RequestBounds, redact?: (text: string) => string): Promise<DriverAnswer<ScopedSource>> {
+    this.sourceRedact = redact
     return this.#call('source', bounds, () => ({ xml: '<XCUIElementTypeWindow title="hunter2"/>', elements: 1, hashedMenuElements: 0 }))
   }
   async forceEnd(processes: readonly RecordedProcess[]): Promise<string[]> {
@@ -155,6 +168,22 @@ function stopped(bounds: RequestBounds): Promise<void> {
     bounds.signal?.addEventListener('abort', () => resolve(), { once: true })
   })
 }
+
+test('scope retries pass only the remaining source budget to each driver read', async () => {
+  const driver = new MemoryDriver()
+  const budgets: number[] = []
+  const source = driver.source.bind(driver)
+  driver.source = async (bounds, redact) => {
+    budgets.push(bounds.timeoutMs)
+    if (budgets.length < 3) return { status: 'unknown', reason: 'unreadable', message: 'The app has no window in its tree.', durationMs: 0 }
+    return source(bounds, redact)
+  }
+  const read = await open(driver).readSource(1000)
+  assert.equal(read.ok, true)
+  assert.equal(budgets.length, 3)
+  assert.ok(budgets.every(budget => budget > 0 && budget <= 1000))
+  for (let index = 1; index < budgets.length; index++) assert.ok((budgets[index] ?? 1000) < (budgets[index - 1] ?? 0), 'a retry never resets the read budget')
+})
 
 async function untilCalled(driver: MemoryDriver, call: string, times: number): Promise<void> {
   while (driver.calls.filter((made) => made === call).length < times) await new Promise((resolve) => setTimeout(resolve, 5))
@@ -625,4 +654,64 @@ test('disposal never resends an unanswered terminate and ends only its retained 
   assert.deepEqual(driver.forceEndedProcesses, [[{ pid: driver.pid, command: driver.command }]])
   assert.equal(driver.running, false)
   assert.equal(session.unknownOutcomes[0]?.kind, 'terminate', 'the unanswered request stays unknown after cleanup')
+})
+
+test('a terminate waits while the app it launched still shows by its short name as it exits', async () => {
+  const driver = new MemoryDriver()
+  driver.startedAt = 'Mon Oct 5 09:00:00 2026'
+  driver.exitingReadings = 3
+  const session = open(driver)
+  assert.deepEqual(await session.launch(5000), { result: { ok: true }, input: 'sent' })
+  assert.deepEqual(await session.terminate(5000), { result: { ok: true }, input: 'sent' })
+  const afterTerminate = driver.calls.slice(driver.calls.lastIndexOf('terminate') + 1).filter((call) => call === 'processState').length
+  assert.ok(afterTerminate >= 4, `the session read until the exiting app was gone (${afterTerminate} readings), never taking it for another process`)
+  await session.dispose(5000)
+})
+
+test('a process under a recorded pid with another start is not the session\'s: terminate refuses it and dispose ends nothing', async () => {
+  const driver = new MemoryDriver()
+  driver.startedAt = 'Mon Oct 5 09:00:00 2026'
+  const session = open(driver)
+  await session.launch(5000)
+  // The app ended and its pid went to a new process with the same command line.
+  driver.startedAt = 'Mon Oct 5 09:05:00 2026'
+  const terminated = await session.terminate(5000)
+  assert.equal(terminated.input, 'not_sent')
+  assert.match(!terminated.result.ok ? terminated.result.failure.message : '', /did not launch runs \(pid 4242\)/)
+  assert.equal(driver.calls.includes('terminate'), false)
+  await session.dispose(5000).catch(() => undefined)
+  assert.deepEqual(driver.forceEnded, [], 'the process of another start is never ended')
+})
+
+test('a cancelled session refuses its references and every new request, and says it is cancelled; disposed, it says it has ended', async () => {
+  const driver = new MemoryDriver()
+  const session = open(driver)
+  await session.launch(5000)
+  const taken = await session.capture(5000)
+  if (!taken.ok) throw new Error(taken.failure.message)
+  assert.deepEqual([session.cancelled, session.ended], [false, false])
+  assert.equal(session.checkReference(taken.capture.reference), undefined)
+  session.cancel(interrupted)
+  assert.deepEqual([session.cancelled, session.ended], [true, false])
+  const refusal = session.checkReference(taken.capture.reference)
+  assert.equal(refusal?.class, 'interrupted')
+  assert.equal(refusal?.details?.['stale'], true)
+  assert.match(refusal?.message ?? '', /belongs to a session that was cancelled/)
+  const activated = await session.activate(5000)
+  assert.deepEqual([activated.input, !activated.result.ok && activated.result.failure.class], ['not_sent', 'interrupted'])
+  await session.dispose(5000)
+  assert.deepEqual([session.cancelled, session.ended], [true, true])
+})
+
+test('a lost session says it has ended', () => {
+  const session = open(new MemoryDriver())
+  session.markLost({ class: 'session_lost', message: 'The runner app ended.' })
+  assert.deepEqual([session.cancelled, session.ended], [false, true])
+})
+
+test('a tree is read with the session\'s redactor, so menu text is redacted before it is hashed', async () => {
+  const driver = new MemoryDriver()
+  const session = open(driver)
+  await session.readSource(5000)
+  assert.equal(driver.sourceRedact?.('Signed in as hunter2'), 'Signed in as {{password}}')
 })

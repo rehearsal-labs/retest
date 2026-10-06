@@ -1,7 +1,8 @@
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChildProcess, spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { once } from 'node:events'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -13,7 +14,7 @@ import { systemTools } from '../../src/native/processes.ts'
 import { NativeError } from '../../src/native/session.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
 import { alive } from './native-fake-executor.ts'
-import { fakeTools } from './native-fake-tools.ts'
+import { endedPid, fakeTools, processStart } from './native-fake-tools.ts'
 
 // The desktop lock stands on the kernel lock `lockf` takes, which only macOS and the BSDs ship at /usr/bin/lockf.
 const darwinOnly = { skip: process.platform === 'darwin' ? false : 'the desktop lock runs only on macOS' }
@@ -116,7 +117,7 @@ test('a refusal names the live holder by pid, how it was started and when it too
   await holder.exited
 })
 
-test('a desktop this very process holds says so, and a record left by a gone process with this pid does not', darwinOnly, async (t) => {
+test('a desktop this process holds says so, and a mismatched record with its live pid is refused by name', darwinOnly, async (t) => {
   const root = await folder(t)
   const lock = join(root, 'desktop.lock')
   const first = await takeDesktopLock({ path: lock, tools: systemTools })
@@ -126,11 +127,28 @@ test('a desktop this very process holds says so, and a record left by a gone pro
   const second = await takeDesktopLock({ path: lock, tools: systemTools })
   assert.match(!second.ok ? second.failure.message : '', /This process already holds the desktop lock/)
   await first.lock.release()
-  // A record that names this process's pid, left by an earlier process that had the same pid, is a gone holder's.
-  await writeFile(join(root, 'desktop.json'), JSON.stringify({ pid: process.pid, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node earlier', runnerApps: [] }))
-  const third = await takeDesktopLock({ path: lock, tools: systemTools })
-  assert.ok(third.ok, !third.ok ? third.failure.message : '')
-  if (third.ok) await third.lock.release()
+  // Presence wins over a mismatched or missing start, for both current and legacy records.
+  const file = join(root, 'desktop.json')
+  for (const startTimeVersion of [1, undefined]) {
+    const original = JSON.stringify({ ...(startTimeVersion === undefined ? {} : { startTimeVersion }), pid: process.pid, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node earlier', runnerApps: [] })
+    await writeFile(file, original)
+    const third = await takeDesktopLock({ path: lock, tools: systemTools })
+    try {
+      assert.equal(third.ok, false)
+      assert.equal(!third.ok && third.idle, true)
+      assert.equal(third.ok ? '' : third.failure.message, startTimeVersion === 1
+        ? `The Retest process recorded as the previous desktop holder (pid ${process.pid}) is present. A start-time mismatch cannot confirm it is gone. The record ${file} is kept. Remove ${file} once no runner is running.`
+        : `Retest cannot confirm the recorded start time zone in the desktop record ${file}; recorded pid(s) ${process.pid} are present. The record and processes were left alone. Remove ${file} once no runner is running.`)
+      assert.equal(await readFile(file, 'utf8'), original)
+    } finally { if (third.ok) await third.lock.release() }
+    await writeFile(file, JSON.stringify({ ...(startTimeVersion === undefined ? {} : { startTimeVersion }), pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [] }))
+    const gone = await takeDesktopLock({ path: lock, tools: systemTools })
+    assert.ok(gone.ok, !gone.ok ? gone.failure.message : '')
+    if (gone.ok) {
+      assert.deepEqual(gone.recovered, [])
+      await gone.lock.release()
+    }
+  }
 })
 
 test('a holder killed outright lets the desktop go at once, and the next taker recovers what its record names', darwinOnly, async (t) => {
@@ -144,7 +162,7 @@ test('a holder killed outright lets the desktop go at once, and the next taker r
   const runnerCommand = '/Products/Debug/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner'
   await writeFile(join(fake.root, 'processes.json'), JSON.stringify([{ pid: runner.pid, command: runnerCommand }]))
   const record = await recordOf(lock)
-  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify({ ...record, runnerApps: [{ pid: runner.pid, command: runnerCommand }] }))
+  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify({ ...record, runnerApps: [{ pid: runner.pid, command: runnerCommand, startedAt: processStart(runner.pid ?? 0) }] }))
   process.kill(holder.pid, 'SIGKILL')
   await holder.exited
   const taken = await takeDesktopLock({ path: lock, tools: fake.tools })
@@ -177,24 +195,33 @@ test('stale recovery ends recorded pids but refuses a group with unrecorded memb
     { pid: stranger.pid, command: '/Products/Debug/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner -other' },
   ]
   await writeFile(join(fake.root, 'processes.json'), JSON.stringify(listed))
-  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify({ pid: 1, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', xcodebuild: listed[1], runnerApps: [listed[0], { pid: stranger.pid, command: listed[0]?.command }] }))
+  const started = (pid: number | undefined): string => processStart(pid ?? 0)
+  const holder = await endedPid()
+  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify({ startTimeVersion: 1, pid: holder, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', holderStartedAt: 'Sat Oct 3 00:00:00 2026', xcodebuild: { ...listed[1], startedAt: started(xcodebuild.pid) }, runnerApps: [{ ...listed[0], startedAt: started(runner.pid) }, { pid: stranger.pid, command: listed[0]?.command, startedAt: started(stranger.pid) }] }))
   const refused = await takeDesktopLock({ path: lock, tools: fake.tools })
   assert.equal(refused.ok, false)
   assert.match(!refused.ok ? refused.failure.message : '', /still has members whose launch ownership was not recorded; Retest left them alone/)
   assert.equal(alive(runner.pid), false)
   assert.equal(alive(xcodebuild.pid), false, 'only the persisted leader pid was ended')
   assert.equal(alive(stranger.pid), true, 'a process whose command line is not the recorded one is left alone')
-  assert.equal((await recordOf(lock))?.['pid'], 1, 'the old record stays until its unrecorded members are gone')
+  assert.equal((await recordOf(lock))?.['pid'], holder, 'the old record stays until its unrecorded members are gone')
 })
 
 test('a gone holder\'s record is kept, and the desktop refused, until what it names is confirmed ended', darwinOnly, async (t) => {
   const fake = await fakeTools(t)
   await fake.configure({ psFails: true })
   const lock = join(fake.root, 'desktop.lock')
-  const left = { pid: 1, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [{ pid: 1234, command: 'x' }] }
+  const left = { startTimeVersion: 1, pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [{ pid: 1234, command: 'x' }] }
   await writeFile(join(fake.root, 'desktop.json'), JSON.stringify(left))
   const refused = await takeDesktopLock({ path: lock, tools: fake.tools })
-  assert.match(!refused.ok ? refused.failure.message : '', /could not read whether pid 1234 is still running.*is kept, so a later start can try again/)
+  assert.match(!refused.ok ? refused.failure.message : '', new RegExp(`could not read whether the Retest process that held the desktop before \\(pid ${left.pid}\\) still runs.*The record`))
+  assert.deepEqual(await recordOf(lock), left, 'a failed holder identity reading does not release the record')
+  await fake.configure({})
+  const ps = join(fake.root, 'runner-reading-ps')
+  await writeFile(ps, `#!/bin/sh\nif [ \"$5\" = \"1234\" ]; then echo \"ps: could not run\" >&2; exit 1; fi\nexec \"${fake.tools.ps}\" \"$@\"\n`)
+  await chmod(ps, 0o755)
+  const runnerRefused = await takeDesktopLock({ path: lock, tools: { ...fake.tools, ps } })
+  assert.match(!runnerRefused.ok ? runnerRefused.failure.message : '', /could not read whether pid 1234 is still running.*is kept, so a later start can try again/)
   assert.deepEqual(await recordOf(lock), left, 'the record still names what is left')
   // Once the processes can be read, a later start finds pid 1234 gone and takes the desktop.
   await fake.configure({})
@@ -210,7 +237,7 @@ test('a runner app the gone holder never tied to its start is named and never en
   t.after(() => untied.kill('SIGKILL'))
   const command = '/Products/Debug/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner'
   await writeFile(join(fake.root, 'processes.json'), JSON.stringify([{ pid: untied.pid, command }]))
-  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify({ pid: 1, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [], untied: [{ pid: untied.pid, command }] }))
+  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify({ startTimeVersion: 1, pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [], untied: [{ pid: untied.pid, command, startedAt: processStart(untied.pid ?? 0) }] }))
   const refused = await takeDesktopLock({ path: lock, tools: fake.tools })
   assert.match(!refused.ok ? refused.failure.message : '', new RegExp(`A runner app \\(pid ${untied.pid}\\) appeared during that process's start, which ended before tying it to the start, so Retest did not end it`))
   assert.equal(alive(untied.pid), true)
@@ -242,7 +269,7 @@ test('a holder writes the record only while it holds the lock and the record is 
   taken.lock.note({ runnerApps: [{ pid: 4242, command: 'runner' }] })
   assert.deepEqual((await recordOf(lock))?.['runnerApps'], [{ pid: 4242, command: 'runner' }])
   // Something replaced the record: this holder no longer writes it.
-  await writeFile(join(root, 'desktop.json'), JSON.stringify({ pid: 99, startedAt: '2026-10-04T00:00:00.000Z', holderCommand: 'other', runnerApps: [] }))
+  await writeFile(join(root, 'desktop.json'), JSON.stringify({ startTimeVersion: 1, pid: 99, startedAt: '2026-10-04T00:00:00.000Z', holderCommand: 'other', runnerApps: [] }))
   assert.throws(() => taken.lock.note({ runnerApps: [] }), /is not this process's/)
   await taken.lock.release()
   assert.equal((await recordOf(lock))?.['pid'], 99, 'a record that is not this holder\'s is not removed on release')
@@ -252,7 +279,7 @@ test('a holder writes the record only while it holds the lock and the record is 
 test('a racer that took over keeps writing its own record while the others stay refused', darwinOnly, async (t) => {
   const root = await folder(t)
   const lock = join(root, 'desktop.lock')
-  await writeFile(join(root, 'desktop.json'), JSON.stringify({ pid: 1, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [] }))
+  await writeFile(join(root, 'desktop.json'), JSON.stringify({ startTimeVersion: 1, pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [] }))
   const at = Date.now() + 1500
   const racers = await Promise.all([0, 1, 2].map(() => racer(t, root, lock, at)))
   const said = await Promise.all(racers.map((entry) => entry.said))
@@ -339,4 +366,94 @@ test('an exit hook leaves both unconfirmed and exited holder records for the nex
   ended.lock.releaseNow()
   assert.deepEqual(await recordOf(ended.lock.path), ended.lock.record)
   assert.equal(ended.signaled.mock.callCount(), 0)
+})
+
+test('a holder clears its record once everything it named ended, and keeps naming itself', darwinOnly, async (t) => {
+  const root = await folder(t)
+  const lock = join(root, 'desktop.lock')
+  const taken = await takeDesktopLock({ path: lock, tools: systemTools })
+  assert.ok(taken.ok, !taken.ok ? taken.failure.message : '')
+  if (!taken.ok) return
+  t.after(() => taken.lock.release())
+  taken.lock.note({ xcodebuild: { pid: 4241, command: 'xcodebuild test-without-building', startedAt: 'Mon Oct 5 09:00:00 2026' }, runnerApps: [{ pid: 4242, command: 'runner', startedAt: 'Mon Oct 5 09:00:01 2026' }], untied: [] })
+  taken.lock.clear()
+  const record = await recordOf(lock)
+  assert.equal(record?.['pid'], process.pid)
+  assert.equal(record?.['holderStartedAt'], processStart(process.pid), 'the holder names itself by pid and start')
+  assert.deepEqual([record?.['xcodebuild'], record?.['runnerApps'], record?.['untied']], [undefined, [], []], 'no pid of the runner is left for a later start to read')
+  await taken.lock.release()
+  // A process group under the pid xcodebuild had no longer refuses the next start: the record names nothing.
+  const leader = spawn('/bin/sleep', ['600'], { detached: true, stdio: 'ignore' })
+  t.after(() => leader.kill('SIGKILL'))
+  const next = await takeDesktopLock({ path: lock, tools: systemTools })
+  assert.ok(next.ok, !next.ok ? next.failure.message : '')
+  if (next.ok) await next.lock.release()
+})
+
+test('a record whose holder still runs is refused whole: nothing it names is ended or its group read', darwinOnly, async (t) => {
+  const fake = await fakeTools(t)
+  const lock = join(fake.root, 'desktop.lock')
+  const runner = spawn('sleep', ['600'], { detached: true, stdio: 'ignore' })
+  t.after(() => runner.kill('SIGKILL'))
+  const command = '/Products/Debug/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner'
+  // The holder runs, and its lock is free, as when its lock holder was ended by someone else.
+  const holder = spawn('sleep', ['600'], { stdio: 'ignore' })
+  t.after(() => holder.kill('SIGKILL'))
+  await writeFile(join(fake.root, 'processes.json'), JSON.stringify([{ pid: runner.pid, command }, { pid: holder.pid, command: 'node holder' }]))
+  const record = { startTimeVersion: 1, pid: holder.pid, startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node holder', holderStartedAt: processStart(holder.pid ?? 0), xcodebuild: { pid: runner.pid, command, startedAt: processStart(runner.pid ?? 0) }, runnerApps: [{ pid: runner.pid, command, startedAt: processStart(runner.pid ?? 0) }] }
+  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify(record))
+  const refused = await takeDesktopLock({ path: lock, tools: fake.tools })
+  assert.equal(!refused.ok ? refused.failure.message : '', `The Retest process recorded as the previous desktop holder (pid ${holder.pid}) is present. A start-time mismatch cannot confirm it is gone. The record ${join(fake.root, 'desktop.json')} is kept. Remove ${join(fake.root, 'desktop.json')} once no runner is running.`)
+  assert.equal((await fake.calls()).some(call => call.tool === 'ps' && (call.args.includes(String(runner.pid)) || call.args.includes('-g'))), false, 'no runner identity or group read follows a live-holder refusal')
+  assert.equal(!refused.ok && refused.idle, true, 'the refusal let the lock go and started nothing')
+  assert.equal(alive(runner.pid), true, 'a running holder\'s runner is not ended')
+  assert.deepEqual(await recordOf(lock), record)
+})
+
+test('a process a record names without a start is never ended: recovery refuses while its command runs', darwinOnly, async (t) => {
+  const fake = await fakeTools(t)
+  const lock = join(fake.root, 'desktop.lock')
+  const runner = spawn('sleep', ['600'], { detached: true, stdio: 'ignore' })
+  t.after(() => runner.kill('SIGKILL'))
+  const command = '/Products/Debug/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner'
+  await writeFile(join(fake.root, 'processes.json'), JSON.stringify([{ pid: runner.pid, command }]))
+  await writeFile(join(fake.root, 'desktop.json'), JSON.stringify({ startTimeVersion: 1, pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [{ pid: runner.pid, command }] }))
+  const refused = await takeDesktopLock({ path: lock, tools: fake.tools })
+  assert.match(!refused.ok ? refused.failure.message : '', new RegExp(`pid ${runner.pid} runs the command line the record names, which was written before records kept a start, so Retest did not end it`))
+  assert.equal(alive(runner.pid), true)
+})
+
+test('a recorded runner with a mismatched start is left alive and its record kept until its pid is absent', darwinOnly, async (t) => {
+  const fake = await fakeTools(t)
+  const lock = join(fake.root, 'desktop.lock')
+  const runner = spawn('sleep', ['600'], { detached: true, stdio: 'ignore' })
+  t.after(() => runner.kill('SIGKILL'))
+  const command = '/Products/Debug/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner'
+  await writeFile(join(fake.root, 'processes.json'), JSON.stringify([{ pid: runner.pid, command }]))
+  const file = join(fake.root, 'desktop.json')
+  const original = JSON.stringify({ startTimeVersion: 1, pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [{ pid: runner.pid, command, startedAt: 'Thu Jan 1 00:00:00 1970' }] })
+  await writeFile(file, original)
+  const refused = await takeDesktopLock({ path: lock, tools: fake.tools })
+  assert.equal(refused.ok, false)
+  assert.equal(!refused.ok && refused.idle, true)
+  assert.ok((!refused.ok ? refused.failure.message : '').includes(`pid ${runner.pid} is present with a different identity; Retest left it alone. Remove ${file} once no runner is running.`))
+  assert.equal(await readFile(file, 'utf8'), original)
+  assert.equal(alive(runner.pid), true, 'the same command line under another start is not the recorded runner app')
+  const ended = once(runner, 'exit')
+  runner.kill('SIGKILL')
+  await ended
+  const gone = await takeDesktopLock({ path: lock, tools: fake.tools })
+  assert.ok(gone.ok, !gone.ok ? gone.failure.message : '')
+  if (gone.ok) await gone.lock.release()
+})
+
+test('a refusal because another process holds the desktop says it left nothing behind', darwinOnly, async (t) => {
+  const root = await folder(t)
+  const lock = join(root, 'desktop.lock')
+  const holder = await racer(t, root, lock, Date.now())
+  assert.equal((await holder.said).took, true)
+  const refused = await takeDesktopLock({ path: lock, tools: systemTools })
+  assert.deepEqual(!refused.ok && [refused.failure.class, refused.idle], ['setup_failed', true])
+  holder.end()
+  await holder.exited
 })

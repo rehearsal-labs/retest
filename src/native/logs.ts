@@ -7,7 +7,8 @@ import { spawn } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { boundText, sanitizeText } from '../diagnostics/sanitize.ts'
-import { childEnvironment, commandOf, endProblem, endRecorded } from './processes.ts'
+import { errorMessage } from '../protocol/failures.ts'
+import { childEnvironment, commandOf, endProblem, endRecorded, killRecordedNow } from './processes.ts'
 import { simulatorAppProcesses } from './ios-simulator.ts'
 
 export type NativeLogSourceName = 'simctl-stdout' | 'macos-stdout'
@@ -133,7 +134,7 @@ export class NativeLogSource {
 export type LoggedNativeLaunch = {
   readonly process: RecordedProcess
   readonly launcher?: RecordedProcess
-  /** Ends only this launch's recorded pid after checking its command, and removes its pipe. */
+  /** Ends only this launch's recorded pid after checking it is still the recorded process, and removes its pipe. */
   stop(): Promise<void>
 }
 export type LoggedNativeLaunchOptions = {
@@ -146,20 +147,32 @@ export type LoggedNativeLaunchOptions = {
   target: { platform: 'macos'; executable: string } | { platform: 'ios-simulator'; udid: string; bundleId: string; executable: string }
 }
 
-/** Launch hook for a NativeAppDriver wrapper. The session must check its launch blocker before calling it. */
+/**
+ * Launch hook for a NativeAppDriver wrapper. The session must check its launch blocker before calling it. A macOS app
+ * runs in a process group of its own, so a stop meant for Retest's group never reaches it, and is killed by an exit
+ * hook if Retest exits before stopping it; a SIGKILL of Retest runs no hook, and the next launch blocker names the copy.
+ */
 export async function launchLoggedNativeApp(options: LoggedNativeLaunchOptions): Promise<LoggedNativeLaunch> {
   const { source, tools, target, launch, timeoutMs } = options
   source.assertLaunchable()
   if (target.platform === 'macos') {
     // Give the app only the explicitly declared environment; no judge or host credential is inherited.
-    const child = spawn(target.executable, [...launch.arguments], { env: { ...launch.environment }, stdio: ['ignore', 'pipe', 'ignore'] })
+    const child = spawn(target.executable, [...launch.arguments], { env: { ...launch.environment }, stdio: ['ignore', 'pipe', 'ignore'], detached: true })
     const started = await new Promise<number>((resolve, reject) => { child.once('spawn', () => child.pid === undefined ? reject(new Error('The app launch names no pid.')) : resolve(child.pid)); child.once('error', () => { source.unavailable('the app log source could not be opened'); reject(new Error('The app log source could not be opened.')) }) })
     const presence = await commandOf(tools, started)
     if (presence.state !== 'present' || !(presence.command === target.executable || presence.command.startsWith(`${target.executable} `))) { source.unavailable('the app log source could not be opened'); throw new Error('The launched app command could not be reconciled.') }
-    const process = { pid: started, command: presence.command }
-    source.bind(process, 'macos-stdout'); source.attach(child.stdout)
+    const app = { pid: started, command: presence.command, startedAt: presence.startedAt }
+    const lastResort = (): void => killRecordedNow([app], tools)
+    process.on('exit', lastResort)
+    source.bind(app, 'macos-stdout'); source.attach(child.stdout)
     let stopping: Promise<void> | undefined
-    return { process, stop: () => stopping ??= (async () => { const problem = endProblem(process, await endRecorded(tools, process, timeoutMs)); child.stdout.destroy(); if (problem !== undefined) throw new Error(problem) })() }
+    return { process: app, stop: () => stopping ??= (async () => {
+      const problem = endProblem(app, await endRecorded(tools, app, timeoutMs))
+      child.stdout.destroy()
+      // The hook stays while the app may still run.
+      if (problem !== undefined) throw new Error(problem)
+      process.off('exit', lastResort)
+    })() }
   }
   // Console mode streams the owned app without a raw spool. It does not reliably print a launch pid.
   // Reconcile through the parent's app-scoped OS reading, never a pid chosen by app text.
@@ -183,12 +196,14 @@ export async function launchLoggedNativeApp(options: LoggedNativeLaunchOptions):
   child.stdout.on('data', data).on('error', readError)
   child.once('error', () => { unavailable = true })
   child.once('exit', () => { unavailable = true })
+  let launcher: RecordedProcess | undefined
   try {
     const launcherPid = child.pid
     if (launcherPid === undefined) throw new Error('The log launcher names no pid.')
     const launcherPresence = await commandOf(tools, launcherPid)
     if (launcherPresence.state !== 'present') throw new Error('The log launcher command could not be recorded.')
-    const launcher = { pid: launcherPid, command: launcherPresence.command }
+    launcher = { pid: launcherPid, command: launcherPresence.command, startedAt: launcherPresence.startedAt }
+    const recordedLauncher = launcher
     const started = performance.now()
     let process: RecordedProcess | undefined
     while (!unavailable && performance.now() - started < timeoutMs) {
@@ -197,8 +212,8 @@ export async function launchLoggedNativeApp(options: LoggedNativeLaunchOptions):
       const candidate = scoped.processes[0]
       if (candidate !== undefined) {
         const presence = await commandOf(tools, candidate.pid)
-        if (presence.state !== 'present' || presence.command !== candidate.command || !presence.command.includes(`/Devices/${target.udid}/`) || !(presence.command.endsWith(`/${target.executable}`) || presence.command.includes(`/${target.executable} `))) throw new Error('The launched app command could not be reconciled; the launch remains unreconciled.')
-        process = { pid: candidate.pid, command: presence.command }; break
+        if (presence.state !== 'present' || presence.command !== candidate.command || (candidate.startedAt !== undefined && presence.startedAt !== candidate.startedAt) || !presence.command.includes(`/Devices/${target.udid}/`) || !(presence.command.endsWith(`/${target.executable}`) || presence.command.includes(`/${target.executable} `))) throw new Error('The launched app command could not be reconciled; the launch remains unreconciled.')
+        process = { pid: candidate.pid, command: presence.command, startedAt: presence.startedAt }; break
       }
       await sleep(25)
     }
@@ -211,17 +226,20 @@ export async function launchLoggedNativeApp(options: LoggedNativeLaunchOptions):
     ready = true; bootstrap = Buffer.alloc(0); source.push(Buffer.from(initial, 'latin1'))
     const app = process
     let stopping: Promise<void> | undefined
-    return { process: app, launcher, stop: () => stopping ??= (async () => {
+    return { process: app, launcher: recordedLauncher, stop: () => stopping ??= (async () => {
       const appProblem = endProblem(app, await endRecorded(tools, app, timeoutMs))
       if (appProblem !== undefined) { source.partial('the owned app shutdown could not be reconciled'); throw new Error(appProblem) }
-      const launcherProblem = endProblem(launcher, await endRecorded(tools, launcher, timeoutMs))
+      const launcherProblem = endProblem(recordedLauncher, await endRecorded(tools, recordedLauncher, timeoutMs))
       child.stdout.off('data', data).off('error', readError); child.stdout.destroy()
       if (launcherProblem !== undefined) { source.partial('the owned log launcher shutdown could not be reconciled'); throw new Error(launcherProblem) }
     })() }
   } catch (error) {
     source.unavailable('the app log source could not be opened')
     child.stdout.off('data', data).off('error', readError); child.stdout.resume()
-    // No signal is sent when app ownership is unresolved. Stopping a proxy cannot undo the dispatched launch.
+    // No signal is sent to the app while its ownership is unresolved, and ending the launcher cannot undo the launch it
+    // dispatched. The launcher is Retest's own child, recorded right after it started, so it is ended.
+    const ended = launcher === undefined ? undefined : endProblem(launcher, await endRecorded(tools, launcher, Math.min(timeoutMs, 2000)))
+    if (ended !== undefined) throw new Error(`${errorMessage(error)} The log launcher could not be ended: ${ended}`, { cause: error })
     throw error
   }
 }

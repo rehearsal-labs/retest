@@ -5,10 +5,13 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { test } from 'node:test'
 import { isListening } from '../../src/native/executor-process.ts'
 import { IosSimulatorRuntime, simulatorAppProcesses, sweepOrphanedSimulators } from '../../src/native/ios-simulator.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
+import { OwnedProcess } from '../../src/native/processes.ts'
+import { readProcessTable, readProcessTableAsync } from '../../src/shared/process-ownership.ts'
 import { alive, readApps, readJsonFile } from './native-fake-executor.ts'
 import { fakeAppBundle, fakeTools, fakeWindowProcess, startedProcesses } from './native-fake-tools.ts'
 
@@ -94,6 +97,28 @@ test('an Xcode other than the pinned build fails setup before simctl runs', darw
   const started = await start(setup)
   assert.match(!started.ok ? started.failure.message : '', /pinned to Xcode 26.5 \(17F42\)/)
   assert.deepEqual(await simctlCalls(setup.fake), [])
+})
+
+test('a refused bootstatus whose created simulator was proved removed releases startup ownership', darwinOnly, async (t) => {
+  const setup = await setUp(t, { simctl: { bootstatus: { fail: 'boot status unavailable' } } })
+  const started = await start(setup)
+  assert.equal(started.ok, false)
+  if (started.ok) throw new Error('expected the bootstatus refusal')
+  assert.equal(started.failure.class, 'setup_failed')
+  assert.match(started.failure.message, /bootstatus.*boot status unavailable/)
+  assert.equal(started.idle, undefined, 'idle must still mean the start created nothing')
+  assert.equal(started.cleaned, true, 'proved cleanup must release the failed startup lease')
+  await nothingLeft(setup.fake)
+})
+
+test('a refused bootstatus whose simulator deletion is unproved keeps startup ownership held', darwinOnly, async (t) => {
+  const setup = await setUp(t, { simctl: { bootstatus: { fail: 'boot status unavailable' }, delete: { fail: 'deletion unavailable' } } })
+  const started = await start(setup)
+  assert.equal(started.ok, false)
+  if (started.ok) throw new Error('expected the bootstatus refusal')
+  assert.notEqual(started.idle, true)
+  assert.notEqual(started.cleaned, true)
+  assert.match(String(started.failure.details?.['also']), /cleanup_failed.*deletion unavailable/)
 })
 
 for (const step of ['create', 'boot', 'bootstatus'] as const) {
@@ -215,9 +240,11 @@ test('the sweep reports an orphan name without claiming or deleting its device',
   ]
   await writeFile(join(setup.fake.root, 'devices.json'), JSON.stringify(records))
   const swept = await sweepOrphanedSimulators(setup.fake.tools, { timeoutMs: 10_000 })
-  assert.deepEqual(swept.deleted, [])
+  // It reports and claims no deletion: the answer holds nothing but the reports.
+  assert.deepEqual(Object.keys(swept), ['problems'])
   assert.equal(swept.problems.length, 1)
   assert.match(swept.problems[0] ?? '', /no retained ownership record/)
+  assert.match(swept.problems[0] ?? '', /remove it with `xcrun simctl delete AAAAAAAA-0000-0000-0000-000000000001`/)
   assert.deepEqual(devices(setup.fake.root), records)
   assert.equal((await simctlCalls(setup.fake)).some((call) => call === 'shutdown' || call === 'delete'), false)
 })
@@ -378,4 +405,57 @@ test('an unanswered create reports its unclaimed device and never adopts a name 
   assert.match(!started.ok ? String(started.failure.details?.['also'] ?? '') : '', /cleanup_failed: .*id was never recorded/)
   assert.equal(devices(setup.fake.root).length, 1)
   assert.equal((await simctlCalls(setup.fake)).some((call) => call === 'shutdown' || call === 'delete'), false)
+})
+
+test('an iOS start refused before any simulator could exist says it left nothing behind', darwinOnly, async (t) => {
+  const setup = await setUp(t)
+  const wrong = await IosSimulatorRuntime.start({ target: { appPath: setup.appPath, device: 'iPhone 17', runtime: '26.5' }, build: { ...setup.build, executor: 'mac2' }, tools: setup.fake.tools, logFolder: join(setup.fake.root, 'logs'), timeoutMs: 30_000 })
+  assert.deepEqual(!wrong.ok && wrong.idle, true, 'the wrong executor')
+  const missing = await IosSimulatorRuntime.start({ target: { appPath: setup.appPath, device: 'iPhone 17', runtime: '27.0' }, build: setup.build, tools: setup.fake.tools, logFolder: join(setup.fake.root, 'logs'), timeoutMs: 30_000 })
+  assert.match(!missing.ok ? missing.failure.message : '', /No iOS 27\.0 simulator runtime is available/)
+  assert.equal(!missing.ok && missing.idle, true, 'a missing runtime')
+  const gone = spawn('true')
+  await new Promise((resolve) => gone.once('exit', resolve))
+  await writeFile(join(setup.fake.root, 'devices.json'), JSON.stringify([{ udid: 'AAAAAAAA-0000-0000-0000-000000000001', name: `retest-native-${gone.pid}-0011aabb`, state: 'Booted', runtime: 'iOS-26-5' }]))
+  const orphan = await start(setup)
+  assert.equal(!orphan.ok && orphan.idle, true, 'an orphan simulator refuses before creating one')
+  await setup.fake.configure({ xcodeBuild: '17A1' })
+  const xcode = await start(setup)
+  assert.equal(!xcode.ok && xcode.idle, true, 'another Xcode')
+  assert.equal((await simctlCalls(setup.fake)).includes('create'), false)
+})
+
+test('an iOS start that created its simulator never says it left nothing behind', darwinOnly, async (t) => {
+  const setup = await setUp(t, { executorStart: 'fail' })
+  const failed = await start(setup)
+  assert.equal(failed.ok, false)
+  assert.equal(!failed.ok && failed.idle, undefined)
+  await nothingLeft(setup.fake)
+})
+
+
+test('iOS close accepts a confirmed ownership reading within the cleanup budget and leaves no runtime to hold a lease', darwinOnly, async (t) => {
+  const launch = OwnedProcess.start.bind(OwnedProcess)
+  let cleaning = false
+  t.mock.method(OwnedProcess, 'start', (options: Parameters<typeof OwnedProcess.start>[0]) => launch({
+    ...options,
+    ownershipSystem: {
+      read: (deadline) => readProcessTable(deadline),
+      readAsync: async (deadline) => {
+        // A loaded host can answer after the short output-deletion wait, while still inside native close's budget.
+        // The reply is a real complete table. An expired cleanup budget must still refuse it.
+        if (cleaning) await sleep(3500)
+        return readProcessTableAsync(deadline)
+      },
+      signal: (pid, signal) => { process.kill(pid, signal) },
+    },
+  }))
+  const setup = await setUp(t)
+  const started = await start(setup)
+  if (!started.ok) throw new Error(started.failure.message)
+  cleaning = true
+  await started.runtime.close(30_000)
+  assert.equal(started.runtime.connected, false)
+  assert.equal(await isListening('127.0.0.1', started.runtime.port), false)
+  await nothingLeft(setup.fake)
 })

@@ -1,5 +1,6 @@
 import type { FakeApp } from './native-interaction-fake.ts'
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { elementRoutes, ExecutorElements, executorRoutes } from '../../src/native/webdriver-client.ts'
 import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
@@ -61,13 +62,34 @@ test('an iOS fill clears with one backspace and forward delete per character it 
   noRepeatingRoute(app)
 })
 
-test('an empty field is typed into without a clear; its placeholder is not taken for text', async (t) => {
+test('a field that reads as its placeholder is cleared before typing, since one holding the placeholder\'s text reads the same', async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
   assert.equal((await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'account-field' }, value: 'ada' }, 4000)).input, 'sent')
-  assert.deepEqual(inputBodies(app), ['click {}', 'keys {"value":["ada"]}'])
+  // "Account" has seven characters, so seven backspace and forward delete pairs, then the text once.
+  assert.deepEqual(inputBodies(app), ['click {}', `keys {"value":["${'\\b\u007f'.repeat(7)}"]}`, 'keys {"value":["ada"]}'])
+  assert.equal(app.find('account-field').text, 'ada')
 })
 
-test('a secure field reads back as masking characters, counted and never shown; a macOS secure field is always cleared, and one that shows nothing is said unread', async (t) => {
+test('a field holding exactly its placeholder\'s text is cleared before the fill types, so the text is not typed onto it', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  app.find('account-field').text = 'Account'
+  const filled = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'account-field' }, value: 'ada' }, 4000)
+  assert.deepEqual(filled, { result: { ok: true, kind: 'fill' }, input: 'sent' })
+  assert.equal(app.find('account-field').text, 'ada', 'the old text was removed, not typed onto')
+  noRepeatingRoute(app)
+})
+
+test('a fill whose read-back is the field\'s placeholder cannot be verified: it fails with the input sent, and nothing is typed again', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  const filled = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'account-field' }, value: 'Account' }, 4000)
+  assert.equal(filled.input, 'sent')
+  assert.equal(!filled.result.ok && filled.result.failure.details?.['check'], 'read-back')
+  assert.match(!filled.result.ok ? filled.result.failure.message : '', /reads back as its placeholder, which an empty field shows too, so Retest could not verify what it holds\. The input was sent/)
+  assert.equal(app.on(keys).length, 2, 'one clear and one typing, nothing more')
+  assert.equal(interaction.inputs.at(-1)?.readBack, undefined)
+})
+
+test('a secure field reads back as masking characters, counted and never shown; a macOS secure field is always cleared, and one that shows nothing after typing fails as unverified with the input sent', async (t) => {
   const phone = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
   assert.equal((await phone.interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value: 'hunter2-secret', secret: 'password' }, 4000)).input, 'sent')
   assert.equal(phone.interaction.inputs.at(-1)?.readBack, 'length_matched')
@@ -77,8 +99,12 @@ test('a secure field reads back as masking characters, counted and never shown; 
   assert.equal(desk.interaction.inputs.at(-1)?.readBack, 'length_matched', "AppKit masks the text it is editing with U+F79A, one per character")
   const blank = await openFake(t, { platform: 'macos', screen: deskSignIn })
   blank.app.find('password-field').showsNothing = true
-  assert.equal((await blank.interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value: 'hunter2-secret', secret: 'password' }, 4000)).input, 'sent')
-  assert.equal(blank.interaction.inputs.at(-1)?.readBack, 'not_exposed')
+  const unverified = await blank.interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value: 'hunter2-secret', secret: 'password' }, 4000)
+  assert.equal(unverified.input, 'sent')
+  assert.equal(!unverified.result.ok && unverified.result.failure.class, 'not_actionable')
+  assert.match(!unverified.result.ok ? unverified.result.failure.message : 'it passed', /Filled getByTestId\('password-field'\) with \{\{password\}\} once, and the secure field read back no masking characters, so Retest could not verify what it holds\. The input was sent/)
+  assert.equal(blank.interaction.inputs.at(-1)?.readBack, undefined, 'nothing is recorded as read back')
+  assert.doesNotMatch(JSON.stringify(unverified), /hunter2/)
   // A secure field whose read-back disagrees is said with counts only.
   const lost = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
   lost.app.behaviours.set(keys, { answer: null })
@@ -251,3 +277,206 @@ test('press sends no iOS key when the executor cannot confirm the requested fiel
   assert.deepEqual(inputBodies(app), ['click {}'])
   assert.equal(field.text, '')
 })
+
+test('on macOS a key with no element goes only while the app is in front, after the same checks an element\'s input passes', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
+  app.inFront = false
+  const pressed = await interaction.dispatch({ kind: 'press', key: 'Meta+W' }, 1500)
+  assert.equal(pressed.input, 'not_sent')
+  assert.match(!pressed.result.ok ? pressed.result.failure.message : 'it pressed', /Could not press Meta\+W in the app within 1500 ms: the app is not in front with nothing over it: the app is not in front/)
+  assert.deepEqual(inputBodies(app), [])
+  app.inFront = true
+  app.alert = { type: 'Sheet', frame: { x: 40, y: 100, width: 300, height: 160 }, children: [{ type: 'Button', label: 'Cancel', frame: { x: 60, y: 200, width: 100, height: 40 } }] }
+  const blocked = await interaction.dispatch({ kind: 'press', key: 'Enter' }, 1500)
+  assert.match(!blocked.result.ok ? blocked.result.failure.message : 'it pressed', /an alert blocks it: the Sheet with buttons "Cancel" is open/)
+  assert.deepEqual(inputBodies(app), [])
+})
+
+test('on macOS a fill sends no key once the app has left the front after its focusing click', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
+  app.once(click, (fake) => {
+    fake.inFront = false
+  })
+  const filled = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'account-field' }, value: 'ada' }, 3000)
+  assert.equal(filled.input, 'sent', 'the focusing click went')
+  assert.match(!filled.result.ok ? filled.result.failure.message : 'it typed', /Typing "ada" into getByTestId\('account-field'\): the app is not in front, so Retest sent no key/)
+  assert.deepEqual(inputBodies(app), ['click {}'])
+})
+
+test('a scroll or swipe over the app with no element waits while an alert is open, and nothing is sent', async (t) => {
+  const phone = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  phone.app.alert = { type: 'Alert', frame: { x: 40, y: 300, width: 300, height: 160 }, children: [{ type: 'Button', label: 'OK', frame: { x: 60, y: 400, width: 100, height: 40 } }] }
+  const swiped = await phone.interaction.gesture({ kind: 'swipe', direction: 'up' }, 800)
+  assert.match(!swiped.result.ok ? swiped.result.failure.message : 'it swiped', /Could not swipe the app within 800 ms: an alert blocks it: the Alert with buttons "OK" is open/)
+  assert.equal(phone.app.on(actions).length, 0)
+  phone.app.alert = undefined
+  assert.equal((await phone.interaction.gesture({ kind: 'swipe', direction: 'up' }, 3000)).input, 'sent')
+  assert.deepEqual(JSON.parse(phone.app.on(actions)[0]?.body ?? '{}').actions[0].actions.map((step: { x?: number; y?: number }) => [step.x, step.y]), [[201, 437], [undefined, undefined], [201, 146], [undefined, undefined]])
+})
+
+test('a cancel made on the wrapped session directly stops the interaction session too: nothing is pressed after it', async (t) => {
+  const { app, interaction, session } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  // The cancel lands after the checks, while the last of them is read, before the tap would go.
+  app.once('GET /session/:session/element/:element/attribute/:name', (fake) => fake.once('GET /session/:session/element/:element/attribute/:name', (again) => again.once('GET /session/:session/element/:element/attribute/:name', () => session.cancel(interrupted))))
+  const tapped = await interaction.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 2000)
+  assert.equal(tapped.input, 'not_sent', !tapped.result.ok ? tapped.result.failure.message : 'it tapped')
+  assert.equal(!tapped.result.ok && tapped.result.failure.class, 'interrupted')
+  assert.equal(app.on(click).length, 0)
+  const later = await interaction.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 1000)
+  assert.equal(!later.result.ok && later.result.failure.class, 'interrupted')
+  assert.equal(app.on(click).length, 0)
+})
+
+test('an element resolved before a cancel made on the wrapped session is not pressed', async (t) => {
+  const { app, interaction, session } = await openFake(t, { platform: 'macos', screen: deskSignIn })
+  const resolved = await interaction.resolve({ by: 'testId', value: 'sign-in-button' }, 2000)
+  if (!resolved.ok) throw new Error(resolved.failure.message)
+  session.cancel(interrupted)
+  const pressed = await interaction.pressResolved(resolved.element, 2000)
+  assert.equal(pressed.input, 'not_sent')
+  assert.equal(!pressed.result.ok && pressed.result.failure.class, 'interrupted')
+  assert.equal(app.on(click).length, 0)
+})
+
+test('a resolved element is checked again before it is pressed: one disabled since it was resolved is not pressed', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  const resolved = await interaction.resolve({ by: 'testId', value: 'sign-in-button' }, 2000)
+  if (!resolved.ok) throw new Error(resolved.failure.message)
+  app.find('sign-in-button').enabled = false
+  const pressed = await interaction.pressResolved(resolved.element, 500)
+  assert.equal(pressed.input, 'not_sent')
+  assert.match(!pressed.result.ok ? pressed.result.failure.message : 'it pressed', /Could not tap getByTestId\('sign-in-button'\) within 500 ms: it is disabled/)
+  assert.equal(app.on(click).length, 0)
+  app.find('sign-in-button').enabled = true
+  assert.deepEqual(await interaction.pressResolved(resolved.element, 2000), { result: { ok: true }, input: 'sent' })
+  assert.equal(app.on(click).length, 1)
+})
+
+test('once a lookup learns the executor no longer knows the session, the session\'s own input routes send nothing either', async (t) => {
+  // The session cannot end an executor session the executor no longer knows, so its disposal says so.
+  const { app, client, executor } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn, disposal: /The executor no longer knows session/ })
+  const elements = new ExecutorElements(client, executor)
+  app.behaviours.set('POST /session/:session/elements', { error: 'invalid session id' })
+  const found = await elements.findElements('type == "XCUIElementTypeButton"', undefined, { timeoutMs: 1000 })
+  assert.equal(found.status === 'refused' && found.error, 'invalid session id')
+  const clicked = await executor.click('el-1', { timeoutMs: 1000 })
+  assert.deepEqual(clicked.status === 'not_sent' && clicked.reason, 'session_ended')
+  const typed = await executor.typeText('a', { timeoutMs: 1000 })
+  assert.deepEqual(typed.status === 'not_sent' && typed.reason, 'session_ended')
+  assert.equal(app.on(click).length + app.on(keys).length, 0)
+})
+
+for (const platform of ['macos', 'ios-simulator'] as const) {
+  for (const type of ['secure', 'plain', 'unreadable'] as const) {
+    test(`${platform} reads ${type} secret field type from the owned target before secret keys`, async t => {
+      const value = randomBytes(18).toString('hex')
+      const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
+      const field = app.find('password-field')
+      if (type === 'plain') field.type = 'TextField'
+      if (type === 'unreadable') field.omit = [platform === 'macos' ? 'elementType' : 'type']
+      const facts: object[] = []
+      interaction.prepareSecretEntry({
+        begin: read => {
+          assert.equal(app.requests.some(request => request.route === keys && request.body.includes(value)), false, 'the exact field type is read before the secret is typed')
+          assert.equal(read, type)
+          facts.push({ type: read })
+        },
+        end: (input, verified) => facts.push({ input, verified }),
+      })
+      const filled = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value, secret: 'password' }, 4000)
+      assert.equal(filled.result.ok, true)
+      assert.deepEqual(facts, [{ type }, { input: 'sent', verified: true }])
+      assert.equal(interaction.inputs.at(-1)?.readBack, type === 'plain' ? 'matched' : 'length_matched')
+      assert.equal(JSON.stringify(interaction.inputs).includes(value), false)
+      noRepeatingRoute(app)
+    })
+  }
+
+  test(`${platform} a secure field changed to plain after typing fails its masked read-back`, async t => {
+    const value = randomBytes(18).toString('hex')
+    const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
+    const changeAfterTyping = (): void => {
+      if (app.find('password-field').text) app.find('password-field').type = 'TextField'
+      else app.once('GET /session/:session/source', changeAfterTyping)
+    }
+    app.once('GET /session/:session/source', changeAfterTyping)
+    const facts: object[] = []
+    interaction.prepareSecretEntry({ begin: type => facts.push({ type }), end: (input, verified) => facts.push({ input, verified }) })
+    const fill = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value, secret: 'password' }, 4000)
+    assert.equal(fill.result.ok, false)
+    assert.equal(fill.input, 'sent')
+    assert.deepEqual(facts, [{ type: 'secure' }, { input: 'sent', verified: false }])
+    assert.equal(JSON.stringify(fill).includes(value), false)
+    noRepeatingRoute(app)
+  })
+
+  test(`${platform} a focus change to plain uses the latest type before secret keys`, async t => {
+    const value = randomBytes(18).toString('hex')
+    const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
+    const field = app.find('password-field')
+    field.onClick = () => { field.type = 'TextField' }
+    const facts: object[] = []
+    interaction.prepareSecretEntry({ begin: type => facts.push({ type }), end: (input, verified) => facts.push({ input, verified }) })
+    const fill = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value, secret: 'password' }, 4000)
+    assert.equal(fill.result.ok, false, 'an originally secure fill still requires its masked read-back')
+    assert.deepEqual(facts, [{ type: 'plain' }, { input: 'sent', verified: false }])
+    assert.equal(JSON.stringify(fill).includes(value), false)
+    noRepeatingRoute(app)
+  })
+
+  test(`${platform} a field made secure by focus still requires a masked read-back`, async t => {
+    const value = randomBytes(18).toString('hex')
+    const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
+    const field = app.find('password-field')
+    field.type = 'TextField'
+    field.onClick = () => { field.type = 'SecureTextField' }
+    const changeAfterTyping = (): void => {
+      if (field.text) field.type = 'TextField'
+      else app.once('GET /session/:session/source', changeAfterTyping)
+    }
+    app.once('GET /session/:session/source', changeAfterTyping)
+    const facts: object[] = []
+    interaction.prepareSecretEntry({ begin: type => facts.push({ type }), end: (input, verified) => facts.push({ input, verified }) })
+    const fill = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value, secret: 'password' }, 4000)
+    assert.equal(fill.result.ok, false, 'the secure branch requires masked read-back even when the earlier field was plain')
+    assert.deepEqual(facts, [{ type: 'secure' }, { input: 'sent', verified: false }])
+    assert.equal(JSON.stringify(fill).includes(value), false)
+    noRepeatingRoute(app)
+  })
+
+  test(`${platform} field disappearance after an unverified fill keeps capture withheld`, async t => {
+    const secretValue = randomBytes(18).toString('hex')
+    const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(secretValue, '{{password}}') })
+    const field = app.find('password-field')
+    field.showsNothing = true
+    if (platform === 'ios-simulator') app.behaviours.set(keys, { answer: null })
+    const cleared: string[] = []
+    interaction.withholdSecretEntry(change => cleared.push(change))
+    const fill = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value: secretValue, secret: 'password' }, 3000)
+    assert.equal(fill.result.ok, false)
+    assert.equal(fill.input, 'sent')
+    app.elements = app.elements.filter(element => element !== field)
+    app.focused = undefined
+    app.keyboardShown = false
+    const next = await interaction.dispatch({ kind: platform === 'macos' ? 'click' : 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 2000)
+    assert.equal(next.result.ok, true)
+    assert.deepEqual(cleared, [])
+  })
+
+  test(`${platform} field disappearance without a verified identifier keeps capture withheld`, async t => {
+    const secretValue = randomBytes(18).toString('hex')
+    const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(secretValue, '{{password}}') })
+    const field = app.find('password-field')
+    field.identifier = ''
+    field.label = 'Password'
+    const cleared: string[] = []
+    interaction.withholdSecretEntry(change => cleared.push(change))
+    const fill = await interaction.dispatch({ kind: 'fill', locator: { by: 'label', text: 'Password' }, value: secretValue, secret: 'password' }, 3000)
+    assert.equal(fill.result.ok, true)
+    app.elements = app.elements.filter(element => element !== field)
+    app.focused = undefined
+    app.keyboardShown = false
+    await interaction.dispatch({ kind: platform === 'macos' ? 'click' : 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 2000)
+    assert.deepEqual(cleared, [])
+  })
+}

@@ -1,20 +1,25 @@
 import type { DispatchedRequest, NativeKind } from '../browser/contract.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
-import type { NativePort } from './actionability.ts'
+import type { ActionSubject, NativePort } from './actionability.ts'
 import type { NativeElement, NativeTree } from './locators.ts'
 import type { NativeReference } from './session.ts'
-import { setTimeout as sleep } from 'node:timers/promises'
+import { waitBeforeRead } from '../assertions/wait-before-read.ts'
 import { quoteText } from '../protocol/text.ts'
-import { clickTreeElement } from './input.ts'
+import { waitUntilActionable } from './actionability.ts'
+import { pressSubject } from './input.ts'
+import { readTreeSteadily } from './keyboard.ts'
 import { isWithin, nameOf, textOf } from './locators.ts'
 import { inputDispatch } from './webdriver-client.ts'
 
 // Basic app alerts and dialogs. An alert the app shows is part of its own tree: on iOS an `Alert` element, on macOS an
 // `Alert`, a `Sheet` or a `Dialog` inside the owned window. An action on anything outside the alert while it is open is
-// blocked and fails naming the alert; Retest never taps through one. Answering an alert presses one named button once:
-// on iOS through WebDriverAgent's alert routes, after its button list shows exactly one button with that label, and on
-// macOS, whose runner has no alert routes, by clicking that button, resolved exactly as any element is.
+// blocked and fails naming the alert; Retest never taps through one. Answering an alert presses one named button once,
+// after the button passes the checks any element passes before input: on iOS through WebDriverAgent's alert routes,
+// after its button list shows exactly one button with that label, and on macOS, whose runner has no alert routes, by
+// clicking that button. A system alert on iOS is not in the app's tree, so its button has no frame to check; it is
+// pressed once its button list names it alone. Once the press went, the alert counts as closed only when the tree
+// shows none and, on iOS, the alert route answers that no alert is open.
 
 const alertTypes: Readonly<Record<NativeKind, ReadonlySet<string>>> = { 'ios-simulator': new Set(['Alert']), macos: new Set(['Alert', 'Sheet', 'Dialog']) }
 
@@ -65,7 +70,7 @@ export type AlertReading = { readonly open: false } | { readonly open: true; rea
  * alert routes are asked as well, since a system alert over the app is not part of the app's tree. Sends no input.
  */
 export async function readAlert(port: NativePort, deadline: Deadline, signal: AbortSignal, redact: (text: string) => string): Promise<{ readonly ok: true; readonly alert: AlertReading } | { readonly ok: false; readonly failure: Failure }> {
-  const read = await port.readTree(deadline.commandTimeoutMs, signal)
+  const read = await readTreeSteadily(port, deadline, signal)
   if (!read.ok) return read
   const [alert] = alertsOf(read.tree)
   if (alert !== undefined) return { ok: true, alert: { open: true, source: 'tree', text: redact(alert.text), buttons: alert.buttons.map((button) => redact(nameOf(button, read.tree.platform))) } }
@@ -74,7 +79,7 @@ export async function readAlert(port: NativePort, deadline: Deadline, signal: Ab
   const text = await port.elements.alertText(bounds)
   if (text.status === 'refused' && text.error === 'no such alert') return { ok: true, alert: { open: false } }
   if (text.status !== 'answered') return { ok: false, failure: port.readFailure(text, "Reading the alert's text", signal) }
-  const buttons = await port.elements.alertButtons(bounds)
+  const buttons = await port.elements.alertButtons({ timeoutMs: deadline.commandTimeoutMs, signal })
   if (buttons.status === 'refused' && buttons.error === 'no such alert') return { ok: true, alert: { open: false } }
   if (buttons.status !== 'answered') return { ok: false, failure: port.readFailure(buttons, "Reading the alert's buttons", signal) }
   return { ok: true, alert: { open: true, source: 'executor', text: redact(text.value), buttons: buttons.value.map(redact) } }
@@ -89,63 +94,96 @@ export type AlertAnswer = { readonly button: string; readonly route: 'accept' | 
  * nothing is pressed again.
  */
 export async function answerAlert(port: NativePort, answer: AlertAnswer, deadline: Deadline, signal: AbortSignal, redact: (text: string) => string): Promise<DispatchedRequest> {
-  const read = await port.readTree(deadline.commandTimeoutMs, signal)
-  if (!read.ok) return { result: { ok: false, failure: read.failure }, input: 'not_sent' }
+  const read = await readTreeSteadily(port, deadline, signal)
+  if (!read.ok) return refused(read.failure)
   const [alert] = alertsOf(read.tree)
-  if (port.platform === 'macos') return clickAlertButton(port, read.tree, read.reference, alert, answer, deadline, signal)
-  return pressThroughAlertRoute(port, read.reference, answer, deadline, signal, redact)
+  if (port.platform === 'macos') return clickAlertButton(port, alert, answer, deadline, signal)
+  return pressThroughAlertRoute(port, read.reference, alert, answer, deadline, signal, redact)
 }
 
-async function clickAlertButton(port: NativePort, tree: NativeTree, reference: NativeReference, alert: NativeAlert | undefined, answer: AlertAnswer, deadline: Deadline, signal: AbortSignal): Promise<DispatchedRequest> {
+// The named button of the alert each fresh tree shows, so the press waits for it as for any element: steady, hittable,
+// resolved exactly, and on macOS the app in front with nothing over it.
+function alertButtonSubject(answer: AlertAnswer): ActionSubject {
+  return {
+    describe: `the ${quoteText(answer.button)} button of the alert`,
+    pick: (tree) => {
+      const [alert] = alertsOf(tree)
+      if (alert === undefined) return { kind: 'missing', detail: 'no alert is open any more' }
+      const matching = alert.buttons.filter((button) => nameOf(button, tree.platform) === answer.button)
+      const [button, ...others] = matching
+      if (button === undefined || others.length > 0) return { kind: 'refused', failure: buttonCountFailure(matching.length, answer.button, describeAlert(alert, tree.platform)) }
+      return { kind: 'found', element: button }
+    },
+  }
+}
+
+async function clickAlertButton(port: NativePort, alert: NativeAlert | undefined, answer: AlertAnswer, deadline: Deadline, signal: AbortSignal): Promise<DispatchedRequest> {
   if (alert === undefined) return refused({ class: 'not_actionable', message: `No alert is open, so Retest pressed no ${quoteText(answer.button)} button.` })
-  const matching = alert.buttons.filter((button) => nameOf(button, tree.platform) === answer.button)
-  const [button, ...others] = matching
-  if (button === undefined || others.length > 0) return refused(buttonCountFailure(matching.length, answer.button, describeAlert(alert, tree.platform)))
-  const pressed = await clickTreeElement(port, tree, reference, button, 'alert', `Clicking the ${quoteText(answer.button)} button of ${describeAlert(alert, tree.platform)}`, deadline, signal)
-  if (!pressed.ok) return { result: { ok: false, failure: pressed.failure }, input: pressed.input }
+  const pressed = await pressSubject(port, alertButtonSubject(answer), 'alert', `Clicking the ${quoteText(answer.button)} button of ${describeAlert(alert, port.platform)}`, deadline, signal)
+  if (!pressed.ok) return { result: { ok: false, failure: { ...pressed.failure, details: { ...pressed.failure.details, inputSent: pressed.input } } }, input: pressed.input }
   return waitUntilClosed(port, answer, deadline, signal)
 }
 
 // The button labels come from WebDriverAgent rather than the session's tree, so they are redacted before a message quotes them.
-async function pressThroughAlertRoute(port: NativePort, reference: NativeReference, answer: AlertAnswer, deadline: Deadline, signal: AbortSignal, redact: (text: string) => string): Promise<DispatchedRequest> {
-  const bounds = { timeoutMs: deadline.commandTimeoutMs, signal }
-  const buttons = await port.elements.alertButtons(bounds)
+async function pressThroughAlertRoute(port: NativePort, reference: NativeReference, alert: NativeAlert | undefined, answer: AlertAnswer, deadline: Deadline, signal: AbortSignal, redact: (text: string) => string): Promise<DispatchedRequest> {
+  let pressReference = reference
+  // An alert of the app's own is in the tree, so its button is checked as any element is before the route presses it.
+  if (alert !== undefined) {
+    const ready = await waitUntilActionable(port, alertButtonSubject(answer), { verb: 'press', enabled: true }, deadline, signal)
+    if (!ready.ok) return refused(ready.failure)
+    pressReference = ready.target.reference
+  }
+  const buttons = await port.elements.alertButtons({ timeoutMs: deadline.commandTimeoutMs, signal })
   if (buttons.status === 'refused' && buttons.error === 'no such alert') return refused({ class: 'not_actionable', message: `No alert is open, so Retest pressed no ${quoteText(answer.button)} button.` })
   if (buttons.status !== 'answered') return refused(port.readFailure(buttons, "Reading the alert's buttons", signal))
   const count = buttons.value.filter((label) => label === answer.button).length
   if (count !== 1) return refused(buttonCountFailure(count, answer.button, `the alert with buttons ${buttons.value.map((label) => quoteText(redact(label))).join(', ')}`))
-  const stale = port.checkReference(reference)
+  const stale = await port.checkReference(pressReference)
   if (stale !== undefined) return refused(stale)
   const route = answer.route === 'accept' ? 'POST /session/:session/alert/accept' : 'POST /session/:session/alert/dismiss'
-  port.aboutToSend('alert', route, reference)
+  const what = `Pressing the alert's ${quoteText(answer.button)} button`
+  port.aboutToSend('alert', route, pressReference)
+  const bounds = { timeoutMs: deadline.commandTimeoutMs, signal }
   const pressed = answer.route === 'accept' ? await port.elements.acceptAlert(answer.button, bounds) : await port.elements.dismissAlert(answer.button, bounds)
   // The alert routes raise "no such alert" before they tap anything, so that answer sent no input.
   const input = pressed.status === 'refused' && pressed.error === 'no such alert' ? 'not_sent' : inputDispatch(pressed)
   if (pressed.status !== 'answered') {
-    const failure = { ...port.readFailure(pressed, `Pressing the alert's ${quoteText(answer.button)} button`, signal), details: { inputSent: input } }
-    port.recordInput({ kind: 'alert', route, input, reference, failure })
-    return { result: { ok: false, failure }, input }
+    const failure = port.readFailure(pressed, what, signal, input !== 'not_sent')
+    const withInput: Failure = { ...failure, details: { ...failure.details, inputSent: input } }
+    port.recordInput({ kind: 'alert', route, input, reference: pressReference, failure: withInput })
+    return { result: { ok: false, failure: withInput }, input }
   }
-  port.recordInput({ kind: 'alert', route, input, reference })
+  port.recordInput({ kind: 'alert', route, input, reference: pressReference })
   return waitUntilClosed(port, answer, deadline, signal)
 }
 
-// Once the press went, the alert is looked at until it has gone; one that stays is said, and pressed no more.
+// Once the press went, the alert is looked at until it has gone; one that stays is said, and pressed no more. A tree
+// that could not be read is looked at again, and on iOS only the alert route's own "no such alert" says no system
+// alert is left: an answer that timed out, lost its connection or could not be read says nothing, so it fails.
 async function waitUntilClosed(port: NativePort, answer: AlertAnswer, deadline: Deadline, signal: AbortSignal): Promise<DispatchedRequest> {
   const stayed: DispatchedRequest = { result: { ok: false, failure: { class: 'not_actionable', message: `Retest pressed the ${quoteText(answer.button)} button once, and an alert was still open when the time ran out. It pressed nothing more.`, details: { inputSent: 'sent' } } }, input: 'sent' }
+  const sent = (failure: Failure): DispatchedRequest => ({ result: { ok: false, failure: { ...failure, details: { ...failure.details, inputSent: 'sent' } } }, input: 'sent' })
   for (;;) {
+    const finalRead = deadline.reached
     const read = await port.readTree(deadline.commandTimeoutMs, signal)
-    if (!read.ok) return read.failure.class === 'timeout' && deadline.expired ? stayed : { result: { ok: false, failure: { ...read.failure, details: { ...read.failure.details, inputSent: 'sent' } } }, input: 'sent' }
-    const open = alertsOf(read.tree).length > 0 || (port.platform === 'ios-simulator' && (await executorAlertOpen(port, deadline, signal)))
-    if (!open) return { result: { ok: true }, input: 'sent' }
-    if (deadline.expired || signal.aborted) return stayed
-    await sleep(Math.min(100, deadline.remainingMs), undefined, { signal }).catch(() => undefined)
+    if (!read.ok && read.failure.details?.['check'] !== 'tree' && read.failure.class !== 'timeout') return sent(read.failure)
+    if (read.ok && alertsOf(read.tree).length === 0) {
+      if (port.platform !== 'ios-simulator') return { result: { ok: true }, input: 'sent' }
+      const executor = await executorAlert(port, deadline, signal)
+      if (executor.kind === 'closed') return { result: { ok: true }, input: 'sent' }
+      if (executor.kind === 'failed' && executor.failure.class !== 'timeout') return sent(executor.failure)
+    }
+    if (finalRead || signal.aborted) return stayed
+    await waitBeforeRead(deadline, 100, signal).catch(() => undefined)
   }
 }
 
-async function executorAlertOpen(port: NativePort, deadline: Deadline, signal: AbortSignal): Promise<boolean> {
+async function executorAlert(port: NativePort, deadline: Deadline, signal: AbortSignal): Promise<{ readonly kind: 'open' | 'closed' } | { readonly kind: 'failed'; readonly failure: Failure }> {
   const text = await port.elements.alertText({ timeoutMs: deadline.commandTimeoutMs, signal })
-  return text.status === 'answered'
+  if (text.status === 'answered') return { kind: 'open' }
+  if (text.status === 'refused' && text.error === 'no such alert') return { kind: 'closed' }
+  const failure = port.readFailure(text, 'Reading whether an alert is still open after the press', signal)
+  return { kind: 'failed', failure: { ...failure, message: `${failure.message} Retest cannot tell whether the alert closed.` } }
 }
 
 function buttonCountFailure(count: number, button: string, alert: string): Failure {
@@ -160,4 +198,3 @@ function capitalise(text: string): string {
 function refused(failure: Failure): DispatchedRequest {
   return { result: { ok: false, failure: { ...failure, details: { ...failure.details, inputSent: 'not_sent' } } }, input: 'not_sent' }
 }
-

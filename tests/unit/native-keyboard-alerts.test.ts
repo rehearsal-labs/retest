@@ -9,6 +9,8 @@ import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
 
 const click = 'POST /session/:session/element/:element/click'
 const elements = 'POST /session/:session/elements'
+const within = 'POST /session/:session/element/:element/elements'
+const interrupted = { class: 'interrupted', message: 'The run was interrupted.' } as const
 
 function deleteAlert(platform: 'ios-simulator' | 'macos'): FakeElement {
   const y = platform === 'macos' ? 100 : 300
@@ -29,7 +31,7 @@ test('the keyboard is waited for after a field is tapped, and its return key dis
   const before = app.on(click).length
   assert.deepEqual(await interaction.dismissKeyboard(2000), { result: { ok: true }, input: 'sent' })
   assert.equal(app.on(click).length, before + 1)
-  assert.deepEqual(JSON.parse(app.on(elements).at(-1)?.body ?? '{}').value, 'type == "XCUIElementTypeButton" AND name == "Return"')
+  assert.deepEqual(JSON.parse(app.on(elements).at(-1)?.body ?? '{}').value, 'type == "XCUIElementTypeButton" AND name == "Return" AND label == "done"')
   assert.deepEqual(await interaction.keyboardState(1000), { ok: true, state: { shown: false, firstRunCard: false } })
   assert.deepEqual(await interaction.dismissKeyboard(1000), { result: { ok: true }, input: 'not_sent' }, 'no keyboard, nothing pressed')
 })
@@ -121,8 +123,9 @@ test('a system alert outside the app\'s tree is read through WebDriverAgent\'s a
   const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn, redact: (text) => text.replaceAll('hunter2', '{{password}}') })
   app.systemAlert = { text: 'Save hunter2 for this app?', buttons: ['Not Now', 'Save'] }
   assert.deepEqual(await interaction.readAlert(1000), { ok: true, alert: { open: true, source: 'executor', text: 'Save {{password}} for this app?', buttons: ['Not Now', 'Save'] } })
-  assert.equal((await interaction.answerAlert({ button: 'Not Now', route: 'dismiss' }, 2000)).input, 'sent')
+  assert.deepEqual(await interaction.answerAlert({ button: 'Not Now', route: 'dismiss' }, 2000), { result: { ok: true }, input: 'sent' })
   assert.deepEqual(app.on('POST /session/:session/alert/dismiss').map((request) => request.body), ['{"name":"Not Now"}'])
+  assert.deepEqual(await interaction.readAlert(1000), { ok: true, alert: { open: false } }, 'the alert closed')
 })
 
 test('on macOS, whose runner has no alert routes, a sheet\'s named button is clicked once, resolved exactly inside the sheet', async (t) => {
@@ -133,6 +136,96 @@ test('on macOS, whose runner has no alert routes, a sheet\'s named button is cli
   assert.deepEqual(await interaction.readAlert(1000), { ok: true, alert: { open: true, source: 'tree', text: 'Delete this task?', buttons: ['Cancel', 'Delete'] } })
   assert.deepEqual(await interaction.answerAlert({ button: 'Delete', route: 'accept' }, 2000), { result: { ok: true }, input: 'sent' })
   assert.equal(app.on(click).length, 1)
-  assert.deepEqual(JSON.parse(app.on(elements).at(-1)?.body ?? '{}').value, 'elementType == 9 AND label == "Delete"')
+  assert.deepEqual(JSON.parse(app.on(within).at(-1)?.body ?? '{}').value, 'elementType == 9 AND label == "Delete"')
   assert.equal(app.requests.some((request) => request.route.includes('/alert/')), false)
+})
+
+test('after an iOS alert press, an alert route answer other than "no such alert" is no proof the alert closed: the answer fails with the press sent', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  app.systemAlert = { text: 'Allow access?', buttons: ['Allow', "Don't Allow"] }
+  app.once('POST /session/:session/alert/accept', (fake) => fake.behaviours.set('GET /session/:session/alert/text', { error: 'unknown error' }))
+  const answered = await interaction.answerAlert({ button: 'Allow', route: 'accept' }, 2000)
+  assert.equal(answered.input, 'sent')
+  assert.equal(answered.result.ok, false, 'an unreadable alert route is not a closed alert')
+  assert.equal(!answered.result.ok && answered.result.failure.details?.['inputSent'], 'sent')
+  assert.match(!answered.result.ok ? answered.result.failure.message : '', /Retest cannot tell whether the alert closed/)
+  assert.equal(app.on('POST /session/:session/alert/accept').length, 1)
+})
+
+test('an alert press that went and got no answer is an unknown outcome, said as one, with the executor\'s error kept', async (t) => {
+  const refused = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  refused.app.systemAlert = { text: 'Allow access?', buttons: ['Allow'] }
+  refused.app.behaviours.set('POST /session/:session/alert/accept', { error: 'unknown error' })
+  const failed = await refused.interaction.answerAlert({ button: 'Allow', route: 'accept' }, 2000)
+  assert.equal(failed.input, 'unknown')
+  assert.equal(!failed.result.ok && failed.result.failure.class, 'outcome_unknown')
+  assert.equal(!failed.result.ok && failed.result.failure.details?.['executorError'], 'unknown error')
+  assert.equal(!failed.result.ok && failed.result.failure.details?.['inputSent'], 'unknown')
+  const cancelled = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  cancelled.app.systemAlert = { text: 'Allow access?', buttons: ['Allow'] }
+  cancelled.app.behaviours.set('POST /session/:session/alert/accept', { hang: true })
+  cancelled.interaction.onInput((sending) => {
+    if (sending.kind === 'alert') setTimeout(() => cancelled.interaction.cancel(interrupted), 50)
+  })
+  const stopped = await cancelled.interaction.answerAlert({ button: 'Allow', route: 'accept' }, 3000)
+  assert.equal(stopped.input, 'unknown')
+  assert.match(!stopped.result.ok ? stopped.result.failure.message : '', /The request had gone; it is not taken back/)
+  assert.doesNotMatch(!stopped.result.ok ? stopped.result.failure.message : '', /stopped before it sent/)
+  assert.equal(cancelled.interaction.unknownOutcomes.filter((entry) => entry.source === 'input').length, 1)
+})
+
+test('an app\'s own text about sliding to type with a Continue button is never taken for the keyboard\'s first-run card', async (t) => {
+  const screen = (): FakeElement[] => [
+    { type: 'Other', frame: { x: 0, y: 400, width: 402, height: 200 }, children: [
+      { type: 'StaticText', label: 'Slide to type faster with our keyboard', frame: { x: 20, y: 410, width: 360, height: 40 } },
+      { type: 'Button', label: 'Continue', frame: { x: 150, y: 460, width: 100, height: 44 } },
+    ] },
+    ...phoneSignIn(),
+  ]
+  const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen })
+  // No keyboard: nothing to dismiss, and the app's Continue is not pressed.
+  assert.deepEqual(await interaction.keyboardState(1000), { ok: true, state: { shown: false, firstRunCard: false } })
+  assert.deepEqual(await interaction.dismissKeyboard(1000), { result: { ok: true }, input: 'not_sent' })
+  assert.deepEqual(await interaction.dismissFirstRunCard(1000), { result: { ok: true }, input: 'not_sent' })
+  // With the keyboard up the app's text is still in the app's own window, so it is still not the card.
+  app.find('account-field').returnDismisses = true
+  await interaction.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'account-field' } }, 2000)
+  assert.deepEqual(await interaction.keyboardState(1000), { ok: true, state: { shown: true, firstRunCard: false } })
+  const clicks = app.on(click).length
+  assert.deepEqual(await interaction.dismissKeyboard(2000), { result: { ok: true }, input: 'sent' })
+  assert.equal(app.on(click).length, clicks + 1, 'only the return key was pressed')
+  assert.equal(app.requests.filter((request) => request.route === elements && request.body.includes('Continue')).length, 0)
+})
+
+test('an alert button still moving into place is not pressed: the press waits for a steady frame and fails naming it', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
+  app.alert = deleteAlert('macos')
+  const button = app.alert.children?.[2]
+  if (button !== undefined) button.moving = true
+  const answered = await interaction.answerAlert({ button: 'Delete', route: 'accept' }, 800)
+  assert.equal(answered.input, 'not_sent')
+  assert.match(!answered.result.ok ? answered.result.failure.message : 'it pressed', /it kept moving/)
+  assert.equal(app.on(click).length, 0)
+})
+
+test('a tree of another app read in passing is looked at again, while waiting for the keyboard and after its return key is pressed', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
+  app.find('account-field').returnDismisses = true
+  await interaction.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'account-field' } }, 2000)
+  app.foreignReads = 1
+  assert.deepEqual(await interaction.waitForKeyboard(2000), { ok: true, state: { shown: true, firstRunCard: false } })
+  app.once(click, (fake) => {
+    fake.foreignReads = 1
+  })
+  assert.deepEqual(await interaction.dismissKeyboard(3000), { result: { ok: true }, input: 'sent' })
+  assert.equal(app.foreignReads, 0, 'the other app\'s tree was served and looked past')
+})
+
+test('a macOS app has no first-run card either: dismissing it is refused by name and sends nothing', async (t) => {
+  const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
+  const result = await interaction.dismissFirstRunCard(1000)
+  assert.equal(result.input, 'not_sent')
+  assert.equal(!result.result.ok && result.result.failure.class, 'unsupported')
+  assert.equal(!result.result.ok && result.result.failure.message, 'A macOS app has no software keyboard.')
+  assert.equal(app.requests.length, 0)
 })

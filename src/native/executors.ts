@@ -4,14 +4,15 @@ import type { Schema } from '../protocol/schema.ts'
 import type { NativeTools } from './processes.ts'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative } from 'node:path'
 import { errorMessage } from '../protocol/failures.ts'
 import { parse, s } from '../protocol/schema.ts'
-import { isMissingFile } from '../shared/error-code.ts'
+import { readFileSha256, readRecordText } from '../shared/regular-file.ts'
 import { sha256Hex } from '../shared/sha256.ts'
-import { describeCommand, processExists, runCommand } from './processes.ts'
+import { endHolder, holdKernelLock } from './desktop-lock.ts'
+import { describeCommand, runCommand } from './processes.ts'
 
 // The two XCTest executors Retest drives native apps through, pinned with the Xcode build and simulator runtime they
 // were tested with as one set. Both depend on XCTest internals, so a new Xcode can break them: a build is keyed by the
@@ -266,7 +267,7 @@ export async function ensureExecutorBuild(options: EnsureBuildOptions): Promise<
   const key = pinKey(pin, pins.toolchain, architecture)
   const folder = join(options.cacheRoot ?? defaultExecutorCache(), `${pin.name}-${pin.version}-${key}`)
   await mkdir(folder, { recursive: true })
-  const lock = await takeBuildLock(folder)
+  const lock = await takeBuildLock(folder, options.tools)
   if (!lock.ok) return { ok: false, failure: lock.failure }
   try {
     const recorded = await readBuildRecord(folder)
@@ -289,20 +290,18 @@ export async function ensureExecutorBuild(options: EnsureBuildOptions): Promise<
 }
 
 /**
- * The record of the build in a cache folder, if it has one.
+ * The record of the build in a cache folder, if it has one. Only a regular file no larger than a record is read: a link
+ * there is never followed and a FIFO never waited on, so a run that reads the record can neither hang on it nor take
+ * another file for it.
  *
  * @example (await readBuildRecord(folder)).kind // 'found'
  */
 export async function readBuildRecord(folder: string): Promise<{ readonly kind: 'found'; readonly build: ExecutorBuild } | { readonly kind: 'missing' } | { readonly kind: 'unreadable'; readonly problem: string }> {
-  let text: string
-  try {
-    text = await readFile(join(folder, recordFile), 'utf8')
-  } catch (error) {
-    return isMissingFile(error) ? { kind: 'missing' } : { kind: 'unreadable', problem: errorMessage(error) }
-  }
+  const reading = await readRecordText(join(folder, recordFile))
+  if (reading.kind !== 'text') return reading
   let value: unknown
   try {
-    value = JSON.parse(text)
+    value = JSON.parse(reading.text)
   } catch (error) {
     return { kind: 'unreadable', problem: errorMessage(error) }
   }
@@ -413,8 +412,10 @@ async function verifyRecordedBuild(build: ExecutorBuild, pin: ExecutorPin, key: 
   if (build.executor !== pin.name || build.commit !== pin.commit || build.key !== key) return `The build record names ${build.executor} at ${build.commit} with key ${build.key}, not the pinned build.`
   const products = await folderChecksum(build.products).catch((error: unknown) => `unreadable (${errorMessage(error)})`)
   if (products !== build.productsSha256) return `The products of the recorded ${pin.title} build at ${build.products} have checksum ${products}, not the recorded ${build.productsSha256}.`
-  const xctestrun = await readFile(build.xctestrun).then(sha256Hex, () => 'missing')
-  if (xctestrun !== build.xctestrunSha256) return `The recorded ${pin.title} test run file ${build.xctestrun} is ${xctestrun === 'missing' ? 'missing' : 'changed'}.`
+  // The record names this path, so it is read as the record is: a FIFO there would hold every run that reuses the build.
+  const xctestrun = await readFileSha256(build.xctestrun)
+  if (xctestrun.kind === 'other') return `The recorded ${pin.title} test run file cannot be read: ${xctestrun.problem}`
+  if (xctestrun.kind === 'missing' || xctestrun.sha256 !== build.xctestrunSha256) return `The recorded ${pin.title} test run file ${build.xctestrun} is ${xctestrun.kind === 'missing' ? 'missing' : 'changed'}.`
   return undefined
 }
 
@@ -596,24 +597,12 @@ async function readCodeDirectoryHash(app: string, tools: NativeTools): Promise<s
   return /^CDHash=([0-9a-f]+)$/m.exec(`${result.stderr}\n${result.stdout}`)?.[1]
 }
 
-// One build at a time per cache folder, across processes: a lock file holds the builder's pid, and a lock whose
-// process is gone is taken over.
-async function takeBuildLock(folder: string): Promise<{ readonly ok: true; release(): Promise<void> } | { readonly ok: false; readonly failure: Failure }> {
+// One build at a time per cache folder, across processes, held by the same kernel lock as the desktop: the kernel
+// lets it go when its holder ends in any way, so no taker judges whether a holder is alive and two never both build.
+async function takeBuildLock(folder: string, tools: NativeTools): Promise<{ readonly ok: true; release(): Promise<void> } | { readonly ok: false; readonly failure: Failure }> {
   const path = join(folder, lockFile)
-  for (let tries = 0; tries < 2; tries += 1) {
-    try {
-      const handle = await open(path, 'wx')
-      await handle.writeFile(String(process.pid))
-      await handle.close()
-      return { ok: true, release: () => rm(path, { force: true }) }
-    } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error
-      const holder = Number((await readFile(path, 'utf8').catch(() => '')).trim())
-      if (Number.isSafeInteger(holder) && holder > 0 && processExists(holder)) {
-        return refused(`Another Retest process (pid ${holder}) is building this executor into ${folder}.`)
-      }
-      await rm(path, { force: true })
-    }
-  }
-  return refused(`Retest could not take the build lock ${path}.`)
+  const held = await holdKernelLock({ path, tools, name: 'build lock' })
+  if (held.ok) return { ok: true, release: () => endHolder(held.holder) }
+  if (held.reason === 'held') return refused(`Another process holds the build lock ${path}: it is building this executor into ${folder}.`)
+  return refused(held.reason)
 }

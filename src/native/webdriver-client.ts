@@ -16,8 +16,8 @@ import { scopeSource } from './source-scope.ts'
 // have landed, so those routes are never called.
 
 /**
- * Every route the client can send, as `METHOD path` with `:session` and `:element` standing for ids. Nothing else
- * reaches an executor through it.
+ * The lifecycle client's routes, as `METHOD path` with `:session` and `:element` standing for ids. With the
+ * interaction layer's `ElementRoute` they are every route Retest sends an executor; nothing else reaches one.
  */
 export type ExecutorRoute =
   | 'GET /status'
@@ -37,7 +37,7 @@ export type ExecutorRoute =
   | 'DELETE /'
   | 'GET /wda/shutdown'
 
-/** The routes, for a reader that checks what the client can send. */
+/** The lifecycle client's routes, for a reader that checks what it can send; `elementRoutes` lists the rest. */
 export const executorRoutes: readonly ExecutorRoute[] = [
   'GET /status',
   'POST /session',
@@ -198,6 +198,14 @@ export class ExecutorSession {
   /** Why nothing more is sent on this session, or undefined while it is live. */
   get ended(): string | undefined {
     return this.#ended
+  }
+
+  /**
+   * Marks the session ended when another layer sending on it learned that the executor no longer knows it, so nothing
+   * more goes from either. The first reason stays.
+   */
+  markEnded(reason: string): void {
+    this.#ended ??= reason
   }
 
   /** Ends the session on the executor. The executor keeps serving. */
@@ -495,29 +503,15 @@ function routeTarget(route: ExecutorRoute | ElementRoute, session: string, ids: 
 }
 
 /**
- * An executor session that is already open under `id`, for another layer of the same Retest session to send its
- * requests on, with the same deadlines and outcomes as the session that opened it. It opens nothing: `POST /session`
- * would replace the open session.
- *
- * @example const executorSession = attachExecutorSession(client, 'AB12-…')
- */
-export function attachExecutorSession(client: ExecutorClient, id: string): ExecutorSession {
-  return new ExecutorSession(client.executor, id, (route, ids, body, bounds) => {
-    const target = routeTarget(route, ids.session ?? id, ids)
-    return exchange({ host: client.host, port: client.port, ...target, body, kind: 'json', ...bounds })
-  })
-}
-
-/**
  * The interaction layer's requests on one executor session: finding elements by an exact predicate, reading one
  * element's attribute and frame, WebDriverAgent's alert routes and the macOS runner's element scroll. Each request has
- * its own deadline and outcome, as `ExecutorSession`'s do, and nothing goes once either knows the session has ended.
+ * its own deadline and outcome, as `ExecutorSession`'s do. Both share one ended state: once either learns the session
+ * has ended, nothing more goes from either.
  */
 export class ExecutorElements {
   readonly executor: ExecutorName
   readonly #client: ExecutorClient
   readonly #session: ExecutorSession
-  #ended: string | undefined
 
   constructor(client: ExecutorClient, session: ExecutorSession) {
     this.executor = session.executor
@@ -527,7 +521,7 @@ export class ExecutorElements {
 
   /** Why nothing more is sent on this session, or undefined while it is live. */
   get ended(): string | undefined {
-    return this.#ended ?? this.#session.ended
+    return this.#session.ended
   }
 
   /**
@@ -596,8 +590,8 @@ export class ExecutorElements {
     if (ended !== undefined) return { status: 'not_sent', reason: 'session_ended', message: ended }
     const target = routeTarget(route, this.#session.id, ids)
     const answer = await exchange({ host: this.#client.host, port: this.#client.port, ...target, body, kind: 'json', ...bounds })
-    // The executor no longer knows this session: nothing more goes on it from this layer either.
-    if (answer.status === 'refused' && answer.error === 'invalid session id') this.#ended = `The executor no longer knows session ${this.#session.id}: ${answer.message}`
+    // The executor no longer knows this session: nothing more goes on it from this layer or the session's own.
+    if (answer.status === 'refused' && answer.error === 'invalid session id') this.#session.markEnded(`The executor no longer knows session ${this.#session.id}: ${answer.message}`)
     return answer
   }
 }

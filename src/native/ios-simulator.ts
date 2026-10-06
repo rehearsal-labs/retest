@@ -2,7 +2,7 @@ import type { AppBuild, NativeRuntime, NativeRuntimeIdentity, ResetPolicy } from
 import type { Failure } from '../protocol/failures.ts'
 import type { ExecutorBuild, NativePinSet } from './executors.ts'
 import type { AppBundle, NativeExecutionIdentity, SimulatorDevice } from './identity.ts'
-import type { CommandResult, NativeTools, RecordedProcess } from './processes.ts'
+import type { CommandResult, NativeTools, RecordedProcess, StartedProcess } from './processes.ts'
 import type { AppProcessReading, CaptureSource, DriverAnswer, LaunchSpec, NativeAppDriver, NativeSessionOptions } from './session.ts'
 import type { ScopedSource } from './source-scope.ts'
 import type { ExecutorAppState, ExecutorSession, RequestBounds } from './webdriver-client.ts'
@@ -18,9 +18,10 @@ import { isPlainObject } from '../protocol/schema.ts'
 import { freePort, holdPort, isListening, screenStreamRefused, startExecutor, watchExecutor } from './executor-process.ts'
 import { checkXcode, nativePins } from './executors.ts'
 import { appNames, nativeExecutionIdentity, readAppBundle, runtimeIdentity } from './identity.ts'
-import { childEnvironment, commandOf, describeCommand, endProblem, endRecorded, killRecordedNow, listProcesses, OwnedProcess, processExists, runCommand } from './processes.ts'
+import { childEnvironment, commandOf, describeCommand, endProblem, endRecorded, killRecordedNow, listProcesses, OwnedProcess, processExists, recordedIdentity, runCommand } from './processes.ts'
 import { iosSimulatorResetPolicy } from './reset-policy.ts'
 import { NativeAppSession, NativeError, SerialLane } from './session.ts'
+import { makeOwnedFolder } from './temporary-folders.ts'
 import { ExecutorClient } from './webdriver-client.ts'
 
 // The iOS simulator lifecycle through simctl, and WebDriverAgent inside it. Each runtime creates a simulator of its
@@ -172,20 +173,20 @@ export async function terminateOnSimulator(tools: NativeTools, udid: string, bun
 /**
  * Whether an app's process runs on a simulator, from the simulator's own launchd: a running app is listed as
  * `UIKitApplication:<bundle id>[…]` with its pid. A simulator's processes are the Mac's own, so each comes with its
- * command line as `ps` shows it; one that ended since the listing is left out.
+ * command line and start as `ps` shows them; one that ended since the listing is left out.
  *
- * @example await simulatorAppProcesses(systemTools, udid, 'dev.retest.fixtures.taskphone', { timeoutMs: 10_000 }) // { ok: true, running: true, pids: [4242], processes: [{ pid: 4242, command: '/…/TaskPhone.app/TaskPhone' }] }
+ * @example await simulatorAppProcesses(systemTools, udid, 'dev.retest.fixtures.taskphone', { timeoutMs: 10_000 }) // { ok: true, running: true, pids: [4242], processes: [{ pid: 4242, command: '/…/TaskPhone.app/TaskPhone', startedAt: 'Mon Oct 5 11:18:31 2026' }] }
  */
 export async function simulatorAppProcesses(tools: NativeTools, udid: string, bundleId: string, bounds: RequestBounds): Promise<AppProcessReading> {
   const result = await simctl(tools, ['spawn', udid, 'launchctl', 'list'], bounds)
   if (result.code !== 0) return { ok: false, problem: describeCommand('xcrun simctl spawn launchctl list', result) }
-  const processes: RecordedProcess[] = []
+  const processes: StartedProcess[] = []
   for (const line of result.stdout.split('\n')) {
     const [pid, , label] = line.split('\t')
     if (label?.startsWith(`UIKitApplication:${bundleId}[`) !== true || pid === undefined || !/^\d+$/.test(pid)) continue
     const presence = await commandOf(tools, Number(pid))
     if (presence.state === 'unreadable') return { ok: false, problem: presence.problem }
-    if (presence.state === 'present') processes.push({ pid: Number(pid), command: presence.command })
+    if (presence.state === 'present') processes.push({ pid: Number(pid), command: presence.command, startedAt: presence.startedAt })
   }
   return { ok: true, running: processes.length > 0, pids: processes.map((entry) => entry.pid), processes }
 }
@@ -225,27 +226,27 @@ export async function simulatorScreenshot(tools: NativeTools, udid: string, boun
 }
 
 /**
- * Reports devices bearing an earlier, ended Retest process's name. A name is not a retained creation record, so
- * these devices are left alone and require their owner to remove them.
+ * Reports simulators named for a Retest process that is gone, such as one a SIGKILLed run left. Only reports: a name
+ * is no record that Retest made the device, so Retest never shuts one down or deletes it, and each report names the
+ * command that removes it. A simulator whose maker's pid runs again, as another process, is not seen.
  *
- * @example await sweepOrphanedSimulators(systemTools, { timeoutMs: 60_000 }) // { deleted: [], problems: [] }
+ * @example await sweepOrphanedSimulators(systemTools, { timeoutMs: 60_000 }) // { problems: [] }
  */
-export async function sweepOrphanedSimulators(tools: NativeTools, bounds: RequestBounds): Promise<{ readonly deleted: readonly string[]; readonly problems: readonly string[] }> {
+export async function sweepOrphanedSimulators(tools: NativeTools, bounds: RequestBounds): Promise<{ readonly problems: readonly string[] }> {
   const listed = await listSimulators(tools, bounds)
-  if (!Array.isArray(listed)) return { deleted: [], problems: [listed.message] }
-  const deleted: string[] = []
+  if (!Array.isArray(listed)) return { problems: [listed.message] }
   const problems: string[] = []
   for (const device of listed) {
     const maker = Number(simulatorName.exec(device.name)?.[1])
     if (!Number.isSafeInteger(maker) || maker === process.pid) continue
     try {
       if (processExists(maker)) continue
-      problems.push(`Simulator ${device.udid} has a Retest-style name but no retained ownership record; Retest did not shut it down or delete it.`)
+      problems.push(`Simulator ${device.udid} (${device.name}) is named for a Retest process that is gone and has no retained ownership record, so Retest did not shut it down or delete it. Once nothing uses it, remove it with \`xcrun simctl delete ${device.udid}\`.`)
     } catch (error) {
       problems.push(`Retest could not read whether simulator maker pid ${maker} remains: ${errorMessage(error)}`)
     }
   }
-  return { deleted, problems }
+  return { problems }
 }
 
 /**
@@ -257,7 +258,7 @@ export class IosSimulatorRuntime implements NativeRuntime {
   readonly port: number
   readonly #options: IosRuntimeOptions
   readonly #processIds: readonly number[]
-  readonly #executorProcesses: readonly RecordedProcess[]
+  readonly #executorProcesses: readonly StartedProcess[]
   // The app as it is installed on the simulator now: the one the runtime started with, until a session installs a
   // build, whose copy on the simulator every later session names.
   #bundle: AppBundle
@@ -274,31 +275,44 @@ export class IosSimulatorRuntime implements NativeRuntime {
   #closing: Promise<void> | undefined
 
   /**
-   * Starts a runtime: checks Xcode and the target against the tested set, reads the app's bundle, deletes simulators
-   * earlier processes left, creates and boots a simulator, and starts WebDriverAgent in it. Whatever it created is
-   * removed again when a later step fails or the start is stopped.
+   * Starts a runtime: checks Xcode and the target against the tested set, reads the app's bundle, refuses while a
+   * simulator an earlier Retest process left is still there, creates and boots a simulator, and starts WebDriverAgent
+   * in it. Whatever it created is removed again when a later step fails or the start is stopped. A refusal that comes
+   * before any simulator could have been created says it is `idle`. A recorded runtime proved removed after a failed
+   * start says it is `cleaned`, while keeping the startup failure.
    */
-  static async start(options: IosRuntimeOptions): Promise<{ readonly ok: true; readonly runtime: IosSimulatorRuntime } | { readonly ok: false; readonly failure: Failure }> {
+  static async start(options: IosRuntimeOptions): Promise<{ readonly ok: true; readonly runtime: IosSimulatorRuntime } | { readonly ok: false; readonly failure: Failure; readonly idle?: true; readonly cleaned?: true }> {
     options = { ...options, tools: { ...options.tools, hiddenVariables: options.hiddenVariables ?? options.tools.hiddenVariables, redact: options.redact ?? options.tools.redact } }
     const pins = options.pins ?? nativePins
     const deadline = new Deadline(options.timeoutMs)
     const bounds = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: options.signal })
-    if (process.platform !== 'darwin') return refused('iOS simulator apps need macOS with Xcode.')
-    if (options.build.executor !== 'webdriveragent') return refused(`An iOS simulator runtime needs a WebDriverAgent build, not ${options.build.executor}.`)
+    if (process.platform !== 'darwin') return idle(refused('iOS simulator apps need macOS with Xcode.'))
+    if (options.build.executor !== 'webdriveragent') return idle(refused(`An iOS simulator runtime needs a WebDriverAgent build, not ${options.build.executor}.`))
+    // Until a simulator is created, every step runs short tools that hold no device.
     const xcode = await checkXcode(options.tools, pins.toolchain, options.signal)
-    if (xcode !== undefined) return { ok: false, failure: xcode }
+    if (xcode !== undefined) return idle({ ok: false, failure: xcode })
     const resolved = await resolveSimulatorTarget(options.target, pins, options.tools, bounds())
-    if (!resolved.ok) return resolved
+    if (!resolved.ok) return idle(resolved)
     const bundle = await readAppBundle(options.target.appPath, 'ios-simulator', options.tools, options.signal)
-    if (!bundle.ok) return bundle
+    if (!bundle.ok) return idle(bundle)
     const swept = await sweepOrphanedSimulators(options.tools, bounds())
-    if (swept.problems.length > 0) return refused(swept.problems.join(' '))
-    const created: Created = { folder: await mkdtemp(join(tmpdir(), 'retest-ios-')), tools: options.tools }
+    if (swept.problems.length > 0) return idle(refused(swept.problems.join(' ')))
+    let folder: string
+    try {
+      folder = await makeOwnedFolder('retest-ios-', options.tools)
+    } catch (error) {
+      return idle(refused(`Retest could not make the runtime's temporary folder: ${errorMessage(error)}`))
+    }
+    const created: Created = { folder, tools: options.tools }
     try {
       const name = `retest-native-${process.pid}-${randomBytes(4).toString('hex')}`
       const simulator = await createSimulator(options.tools, { name, deviceType: resolved.deviceType.identifier, runtime: resolved.runtime.identifier }, bounds())
       // An unanswered create may have made a device. Its name permits a warning, never an ownership claim.
-      if (!simulator.ok) return await failStart(simulator.failure, created, options, simulator.started ? name : undefined)
+      if (!simulator.ok) {
+        const failed = await failStart(simulator.failure, created, options, simulator.started ? name : undefined)
+        // A create that never ran made no device; with nothing left to clean up, the start left nothing behind.
+        return !simulator.started && failed.failure.details?.['also'] === undefined ? idle(failed) : failed
+      }
       created.udid = simulator.udid
       created.exitHook = simulatorExitHook(simulator.udid, created)
       process.on('exit', created.exitHook)
@@ -345,7 +359,7 @@ export class IosSimulatorRuntime implements NativeRuntime {
     }
   }
 
-  private constructor(parts: { readonly options: IosRuntimeOptions; readonly udid: string; readonly port: number; readonly bundle: AppBundle; readonly execution: NativeExecutionIdentity; readonly runner: OwnedProcess; readonly runnerApps: readonly RecordedProcess[]; readonly xcodebuild: RecordedProcess; readonly folder: string; readonly lastResort: () => void }) {
+  private constructor(parts: { readonly options: IosRuntimeOptions; readonly udid: string; readonly port: number; readonly bundle: AppBundle; readonly execution: NativeExecutionIdentity; readonly runner: OwnedProcess; readonly runnerApps: readonly StartedProcess[]; readonly xcodebuild: StartedProcess; readonly folder: string; readonly lastResort: () => void }) {
     this.#options = parts.options
     this.udid = parts.udid
     this.port = parts.port
@@ -366,8 +380,8 @@ export class IosSimulatorRuntime implements NativeRuntime {
     })
   }
 
-  /** The executor processes this runtime recorded at startup, with their exact command lines. */
-  get executorProcesses(): readonly RecordedProcess[] {
+  /** The executor processes this runtime recorded at startup, with their command lines and starts. */
+  get executorProcesses(): readonly StartedProcess[] {
     return this.#executorProcesses
   }
 
@@ -467,7 +481,7 @@ export class IosSimulatorRuntime implements NativeRuntime {
 type Created = { folder: string; tools: NativeTools; udid?: string; runner?: OwnedProcess; runnerApps?: readonly RecordedProcess[]; exitHook?: () => void }
 
 // Undoes a start that did not finish, within its own time: a stopped start still removes what it made.
-async function failStart(failure: Failure, created: Created, options: IosRuntimeOptions, orphanName?: string): Promise<{ readonly ok: false; readonly failure: Failure }> {
+async function failStart(failure: Failure, created: Created, options: IosRuntimeOptions, orphanName?: string): Promise<{ readonly ok: false; readonly failure: Failure; readonly cleaned?: true }> {
   const deadline = new Deadline(120_000)
   const problems: string[] = []
   if (created.runner !== undefined) problems.push(...(await created.runner.stop(0)))
@@ -483,16 +497,18 @@ async function failStart(failure: Failure, created: Created, options: IosRuntime
   }
   if (created.exitHook !== undefined) process.off('exit', created.exitHook)
   await rm(created.folder, { recursive: true, force: true }).catch(() => undefined)
-  if (problems.length === 0) return { ok: false, failure }
+  // Only the recorded device's verified removal proves the runtime is free. An unanswered creation or a command
+  // with unproved process cleanup still holds ownership, even if no simulator is listed by a later read.
+  if (problems.length === 0) return { ok: false, failure, ...(created.udid !== undefined && failure.class !== 'cleanup_failed' ? { cleaned: true as const } : {}) }
   return { ok: false, failure: { ...failure, details: { ...failure.details, also: `cleanup_failed: ${problems.join(' ')}` } } }
 }
 
 // A runner asked to stop ends its test and xcodebuild exits; one that is already lost has nothing to stop, and its
 // xcodebuild can take tens of seconds to notice, so it is ended at once.
 async function stopExecutor(client: ExecutorClient, runner: OwnedProcess, deadline: Deadline, lost: boolean): Promise<string[]> {
-  if (lost) return runner.stop(0)
+  if (lost) return runner.stop(0, deadline)
   if (runner.exit === undefined) await client.shutdown({ timeoutMs: Math.min(5000, deadline.commandTimeoutMs) })
-  return runner.stop(Math.min(30_000, deadline.remainingMs))
+  return runner.stop(Math.min(30_000, deadline.remainingMs), deadline)
 }
 
 // Shuts the simulator down and deletes it, then checks nothing of it is left: no process running from its folder, no
@@ -529,7 +545,7 @@ async function leftProcesses(tools: NativeTools, udid: string, deadline: Deadlin
     if (deadline.remainingMs < 2000) {
       const problems: string[] = []
       for (const entry of left) {
-        const own = recorded.find((record) => record.pid === entry.pid && record.command === entry.command)
+        const own = recorded.find((record) => recordedIdentity(record, entry) === 'same')
         if (own === undefined) { problems.push(`pid ${entry.pid} uses the simulator path but was not recorded as this runtime's launch; Retest did not end it.`); continue }
         const problem = endProblem(own, await endRecorded(tools, own, 1000))
         if (problem !== undefined) problems.push(problem)
@@ -650,8 +666,8 @@ class IosAppDriver implements NativeAppDriver {
     return { status: 'failed', failure: simctlFailure('xcrun simctl io screenshot', taken.result), input: 'not_sent' }
   }
 
-  source(bounds: RequestBounds): Promise<DriverAnswer<ScopedSource>> {
-    return this.#executor.ownedSource({ platform: 'ios-simulator', bundleId: this.bundle.bundleId, appNames: appNames(this.bundle) }, bounds)
+  source(bounds: RequestBounds, redact?: (text: string) => string): Promise<DriverAnswer<ScopedSource>> {
+    return this.#executor.ownedSource({ platform: 'ios-simulator', bundleId: this.bundle.bundleId, appNames: appNames(this.bundle), ...(redact === undefined ? {} : { redact }) }, bounds)
   }
 
   // A simulator's processes are the Mac's own, so the session's recorded processes are ended as on macOS: each only
@@ -706,6 +722,11 @@ function simctlFailure(name: string, result: CommandResult): Failure {
 
 function refused(message: string): { readonly ok: false; readonly failure: Failure } {
   return { ok: false, failure: { class: 'setup_failed', message } }
+}
+
+// Marks a refusal that came before any simulator could exist and left nothing running.
+function idle(refusal: { readonly ok: false; readonly failure: Failure }): { readonly ok: false; readonly failure: Failure; readonly idle: true } {
+  return { ...refusal, idle: true }
 }
 
 function text(value: unknown): string {

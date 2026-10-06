@@ -173,6 +173,7 @@ describe('the commands a native helper sends', () => {
     ['keyboard.dismissFirstRunCard', (handle) => handle.keyboard, 'dismissFirstRunCard', [{ force: true }]],
     ['alert.accept', (handle) => handle.alert, 'accept', ['Allow', { force: true }]],
     ['alert.dismiss', (handle) => handle.alert, 'dismiss', ['Not Now', { force: true }]],
+    ['keyboard.press', (handle) => handle.keyboard, 'press', ['Enter', { force: true }]],
   ]
   for (const [call, on, method, args] of optionRefusals) {
     test(`${call}() with an option other than timeout is refused under its own name before anything is sent`, async () => {
@@ -180,6 +181,20 @@ describe('the commands a native helper sends', () => {
       assert.deepEqual(run.commands, [])
       assert.equal(verdict.failure?.class, 'usage')
       assert.equal(verdict.failure?.message, `Unknown ${call}() option "force". Its only option is timeout.`)
+    })
+  }
+
+  // A timeout outside its range: [the call, its owner, the method, the arguments].
+  const timeoutRefusals: [string, (handle: AppPage) => unknown, string, readonly unknown[]][] = [
+    ['keyboard.dismiss', (handle) => handle.keyboard, 'dismiss', [{ timeout: 0 }]],
+    ['alert.accept', (handle) => handle.alert, 'accept', ['Allow', { timeout: 1.5 }]],
+  ]
+  for (const [call, on, method, args] of timeoutRefusals) {
+    test(`${call}() with a timeout out of range names the call before anything is sent`, async () => {
+      const { verdict, run } = await sentBy((handle) => callLoosely(on(handle), method, args))
+      assert.deepEqual(run.commands, [])
+      assert.equal(verdict.failure?.class, 'usage')
+      assert.match(verdict.failure?.message ?? '', new RegExp(`^The timeout option of ${call.replace('.', '\\.')}\\(\\) must be a whole number of milliseconds from 1 to \\d+, received `))
     })
   }
 })
@@ -253,7 +268,7 @@ describe('the parent routes each native helper to the native interaction layer',
     assert.equal(verdict.status, 'passed', verdict.failure?.message)
     assert.equal(fake.app.on(click).length, 1)
     // The role step found the Sign in button in the tree, and the executor resolved that element by its identifier.
-    assert.deepEqual(fake.app.on(elements).map((request) => JSON.parse(request.body).value)[0], 'type == "XCUIElementTypeButton" AND name == "sign-in-button"')
+    assert.deepEqual(fake.app.on(elements).map((request) => JSON.parse(request.body).value)[0], 'type == "XCUIElementTypeButton" AND name == "sign-in-button" AND label == "Sign in"')
     const drags = fake.app.on(actions).map((request) => JSON.parse(request.body).actions[0].actions.map((step: { x?: number; y?: number }) => [step.x, step.y]))
     assert.deepEqual(drags, [
       // From the centre of the app's 402 by 874 screen, a third of its height up.
@@ -294,7 +309,7 @@ describe('the parent routes each native helper to the native interaction layer',
     })
     assert.equal(verdict.status, 'passed', verdict.failure?.message)
     assert.deepEqual(clicksAt, [1, 1, 2, 3], 'the wait pressed nothing, and each dismissal pressed once')
-    assert.deepEqual(queries, ['type == "XCUIElementTypeButton" AND label == "Continue"', 'type == "XCUIElementTypeButton" AND name == "Return"'])
+    assert.deepEqual(queries, ['type == "XCUIElementTypeButton" AND label == "Continue"', 'type == "XCUIElementTypeButton" AND name == "Return" AND label == "done"'])
     assert.equal(fake.app.keyboardShown, false)
     assert.deepEqual((await finish()).observed ?? [], [])
     assert.deepEqual(actionsOf(events), [
@@ -354,7 +369,7 @@ describe('the parent routes each native helper to the native interaction layer',
         const desk = appOf(context, app)
         await desk.alert.accept('Delete')
         expect(fake.app.alert).toBe(undefined)
-        queries.push(JSON.parse(fake.app.on(elements).at(-1)?.body ?? '{}').value)
+        queries.push(JSON.parse(fake.app.on('POST /session/:session/element/:element/elements').at(-1)?.body ?? '{}').value)
         await desk.locator({ by: 'testId', value: 'sign-in-button' }).click()
       },
     })

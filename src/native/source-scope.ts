@@ -3,13 +3,15 @@ import { sha256Hex } from '../shared/sha256.ts'
 
 // A native app's element tree carries the user's own data: on macOS the Apple menu's Recent Items and an app's Open
 // Recent name recent files, recent apps and the user. A tree is cut to what the session owns before anything keeps it,
-// and the text of any menu left inside is hashed, so no report, artifact or model input ever holds the rest.
+// and the text of any menu left inside is hashed, so no report, artifact or model input ever holds the rest. The text is
+// decoded and redacted before it is hashed: a hash of a secret would let a weak one be guessed offline, and a hash of
+// its placeholder stays the same when the secret changes.
 
 /**
  * What a session owns of an app's tree: the app with `bundleId`, or named by any of `appNames` when the executor gives
- * the root no bundle id, and on macOS its first window.
+ * the root no bundle id, and on macOS its first window. `redact` is the session's, run on menu text before it is hashed.
  */
-export type SourceScope = { readonly platform: 'ios-simulator' | 'macos'; readonly bundleId: string; readonly appNames: readonly string[] }
+export type SourceScope = { readonly platform: 'ios-simulator' | 'macos'; readonly bundleId: string; readonly appNames: readonly string[]; readonly redact?: ((text: string) => string) | undefined }
 
 /**
  * The part of a tree a session may keep: its XML, how many elements it holds, how many of them sat under a menu and
@@ -46,14 +48,21 @@ export function scopeSource(xml: string, scope: SourceScope): { readonly ok: tru
   }
   const startIndex = scope.platform === 'macos' ? tags.findIndex((tag, index) => index > rootIndex && tag[1] !== '/' && tag[2] === 'XCUIElementTypeWindow') : rootIndex
   if (startIndex === -1) return { ok: false, problem: 'The app has no window in its tree.' }
-  const cut = cutSubtree(xml, tags, startIndex)
+  const cut = cutSubtree(xml, tags, startIndex, scope.redact ?? ((text: string) => text))
   if (cut === undefined) return { ok: false, problem: 'The tree ends before its element closes.' }
   const start = tags[startIndex]
   const window = scope.platform === 'macos' && start !== undefined ? readFrame(readAttributes(start[3] ?? '')) : undefined
   return { ok: true, source: { ...cut, ...(window === undefined ? {} : { window }) } }
 }
 
-function cutSubtree(xml: string, tags: readonly RegExpExecArray[], startIndex: number): Omit<ScopedSource, 'window'> | undefined {
+/** Scope refusals that can clear after app launch; retry only these reads, without accepting their trees. */
+export function transientSourceProblem(problem: string): boolean {
+  return problem === 'The app has no window in its tree.'
+    || problem.startsWith('The tree is of another app, not ')
+    || problem.startsWith('The tree is not of the owned app: its root names ')
+}
+
+function cutSubtree(xml: string, tags: readonly RegExpExecArray[], startIndex: number, redact: (text: string) => string): Omit<ScopedSource, 'window'> | undefined {
   const parts: string[] = []
   const open: string[] = []
   let elements = 0
@@ -72,7 +81,7 @@ function cutSubtree(xml: string, tags: readonly RegExpExecArray[], startIndex: n
     elements += 1
     const underMenu = menuTypes.has(type) || open.some((ancestor) => menuTypes.has(ancestor))
     if (underMenu) hashedMenuElements += 1
-    parts.push(underMenu ? `<${type}${attributes.replace(textAttributes, (_, name: string, value: string) => `${name}="${hashText(value)}"`)}${selfClosing ?? ''}>` : text)
+    parts.push(underMenu ? `<${type}${attributes.replace(textAttributes, (_, name: string, value: string) => `${name}="${hashText(redact(decodeEntities(value)))}"`)}${selfClosing ?? ''}>` : text)
     if (selfClosing === '/') {
       if (open.length === 0) return { xml: parts.join(''), elements, hashedMenuElements }
     } else {
@@ -86,9 +95,18 @@ function readAttributes(text: string): Record<string, string> {
   const attributes: Record<string, string> = {}
   for (const match of text.matchAll(/(\w+)="([^"]*)"/g)) {
     const [, name, value = ''] = match
-    if (name !== undefined) attributes[name] = value.replace(/&(quot|apos|lt|gt|amp);/g, (entity) => entities[entity] ?? entity)
+    if (name !== undefined) attributes[name] = decodeEntities(value)
   }
   return attributes
+}
+
+// The executors escape the five XML entities and write characters outside them as numeric references.
+function decodeEntities(value: string): string {
+  return value.replace(/&(?:(quot|apos|lt|gt|amp)|#(\d+)|#x([0-9a-fA-F]+));/g, (entity, named: string | undefined, decimal: string | undefined, hex: string | undefined) => {
+    if (named !== undefined) return entities[entity] ?? entity
+    const code = decimal !== undefined ? Number(decimal) : Number.parseInt(hex ?? '', 16)
+    return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity
+  })
 }
 
 function readFrame(attributes: Readonly<Record<string, string>>): Rect | undefined {

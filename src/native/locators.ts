@@ -248,58 +248,139 @@ export function textOf(element: NativeElement, platform: NativeKind): string | u
 }
 
 /**
- * A field's value as typed, or a toggle's state as the platform writes it, `0` or `1`; undefined for an element that
- * has no value to read. On iOS WebDriverAgent writes a field's placeholder as its value while the field is empty, so a
- * value equal to the placeholder reads as empty.
+ * A state of an element as its tree gives it: `read` with the state; `none` when the element's type has no such state
+ * on the platform; `unreported` when the executor left out the attribute the state is read from, which says nothing
+ * about the state; and, for an iOS field's value only, `placeholder`, a value equal to the field's placeholder, which
+ * WebDriverAgent writes alike for an empty field and for one holding that text.
  */
-export function valueOf(element: NativeElement, platform: NativeKind): string | undefined {
-  if (!fieldTypes.has(element.type) && !toggleTypes.has(element.type) && element.type !== 'Slider' && element.type !== 'Stepper') return undefined
-  const value = attribute(element, 'value')
+export type StateReading<T> =
+  | { readonly kind: 'read'; readonly value: T }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unreported'; readonly attribute: string }
+  | { readonly kind: 'placeholder'; readonly placeholder: string }
+
+// The executors write a boolean attribute as `true` or `false`; anything else, or nothing, is not a reading of it.
+function booleanAttribute(element: NativeElement, name: string): StateReading<boolean> {
+  const value = element.attributes[name]
+  if (value === 'true') return { kind: 'read', value: true }
+  if (value === 'false') return { kind: 'read', value: false }
+  return { kind: 'unreported', attribute: name }
+}
+
+/** Whether an element's type holds a value: a field's text, a toggle's state, a slider's or a stepper's number. */
+export function holdsValue(element: NativeElement): boolean {
+  return fieldTypes.has(element.type) || toggleTypes.has(element.type) || element.type === 'Slider' || element.type === 'Stepper'
+}
+
+/**
+ * The `value` attribute exactly as the executor wrote it for an element that holds a value, the empty string when it
+ * wrote none, and undefined for an element that holds no value. For the fill's own read in the parent, which compares
+ * it with the typed text; `valueReading` says whether the attribute was there and whether it can be told from a
+ * placeholder.
+ */
+export function valueOf(element: NativeElement, _platform: NativeKind): string | undefined {
+  if (!holdsValue(element)) return undefined
+  return attribute(element, 'value')
+}
+
+/**
+ * A field's value as typed, or a toggle's state as the platform writes it, `0` or `1`. An absent `value` attribute is
+ * `unreported`, never empty: WebDriverAgent leaves it out when a field is empty and has no placeholder, and the macOS
+ * runner when XCTest gives none. On iOS a value equal to the field's placeholder is `placeholder`: WebDriverAgent
+ * writes the placeholder as the value of an empty field (`wdValue`), so that reading cannot tell an empty field from
+ * one holding the placeholder's text.
+ *
+ * @example valueReading(titleField, 'ios-simulator') // { kind: 'placeholder', placeholder: 'Title' }
+ */
+export function valueReading(element: NativeElement, platform: NativeKind): StateReading<string> {
+  if (!holdsValue(element)) return { kind: 'none' }
+  const value = element.attributes['value']
+  if (value === undefined) return { kind: 'unreported', attribute: 'value' }
   if (platform === 'ios-simulator' && fieldTypes.has(element.type)) {
     const placeholder = attribute(element, 'placeholderValue')
-    if (placeholder !== '' && value === placeholder) return ''
+    if (placeholder !== '' && value === placeholder) return { kind: 'placeholder', placeholder }
   }
-  return value
+  return { kind: 'read', value }
 }
 
 /**
- * Whether the element is on screen: on iOS as WebDriverAgent judges it; on macOS, whose runner writes no visibility, a
- * frame with area inside the owned window and inside every scroll view around it, since a list keeps rows scrolled out
- * of view in its tree.
+ * Whether the element is on screen: on iOS as WebDriverAgent judges it, `unreported` when its tree carries no
+ * `visible`; on macOS, whose runner writes no visibility, a frame with area inside the owned window, the tree's root,
+ * and inside every scroll view around it, since a list keeps rows scrolled out of view in its tree, and `unreported`
+ * when the element carries no frame at all.
  */
-export function visibleOf(element: NativeElement, tree: NativeTree): boolean {
-  if (tree.platform === 'ios-simulator') return attribute(element, 'visible') === 'true'
+export function visibilityReading(element: NativeElement, platform: NativeKind): StateReading<boolean> {
+  if (platform === 'ios-simulator') return booleanAttribute(element, 'visible')
   const frame = element.frame
-  if (frame === undefined || frame.width <= 0 || frame.height <= 0) return false
+  if (frame === undefined) return { kind: 'unreported', attribute: 'frame' }
+  if (frame.width <= 0 || frame.height <= 0) return { kind: 'read', value: false }
   for (let ancestor = element.parent; ancestor !== undefined; ancestor = ancestor.parent) {
     const clip = ancestor.frame
-    if ((ancestor === tree.root || ancestor.type === 'ScrollView') && clip !== undefined && !intersects(frame, clip)) return false
+    if ((ancestor.parent === undefined || ancestor.type === 'ScrollView') && clip !== undefined && !intersects(frame, clip)) return { kind: 'read', value: false }
   }
-  return true
+  return { kind: 'read', value: true }
 }
 
-/** Whether the element is enabled, as the platform reports it. */
-export function enabledOf(element: NativeElement): boolean {
-  return attribute(element, 'enabled') === 'true'
+/** Whether the element is on screen as `visibilityReading` reads it; a visibility the executor did not report is not on screen. */
+export function visibleOf(element: NativeElement, tree: NativeTree): boolean {
+  const reading = visibilityReading(element, tree.platform)
+  return reading.kind === 'read' && reading.value
 }
 
 /**
- * Whether the element is selected, or undefined when its type has no selected state on the platform: on macOS the
- * runner's `selected`, on iOS the `Selected` trait.
+ * The element's own text as `textOf` reads it, `none` for a field, and `unreported` when the tree carries none of the
+ * attributes it is read from: a static text with neither `value` nor `label`, or another element with no `label` (and on
+ * macOS no `title`), which WebDriverAgent leaves out when they are empty and an executor leaves out when it cannot read
+ * them alike.
  */
-export function selectedOf(element: NativeElement, platform: NativeKind): boolean | undefined {
-  if (!selectableTypes[platform].has(element.type)) return undefined
-  if (platform === 'macos') return attribute(element, 'selected') === 'true'
-  return attribute(element, 'traits').split(',').some((trait) => trait.trim() === 'Selected')
+export function textReading(element: NativeElement, platform: NativeKind): StateReading<string> {
+  if (fieldTypes.has(element.type)) return { kind: 'none' }
+  const value = element.attributes['value']
+  const label = element.attributes['label']
+  const title = element.attributes['title']
+  if (element.type === 'StaticText') {
+    if (value !== undefined && value !== '') return { kind: 'read', value }
+    if (label !== undefined) return { kind: 'read', value: label }
+    return value === undefined ? { kind: 'unreported', attribute: 'value' } : { kind: 'read', value }
+  }
+  if (label !== undefined && (label !== '' || platform === 'ios-simulator')) return { kind: 'read', value: label }
+  if (platform === 'macos' && title !== undefined) return { kind: 'read', value: title }
+  return label === undefined ? { kind: 'unreported', attribute: 'label' } : { kind: 'read', value: label }
 }
 
-/** Whether a switch, toggle, checkbox or radio button is on, or undefined for any other element. */
-export function checkedOf(element: NativeElement): boolean | undefined {
-  if (!toggleTypes.has(element.type)) return undefined
-  const value = attribute(element, 'value')
-  if (value === '1' || value === 'true') return true
-  if (value === '0' || value === 'false') return false
-  return undefined
+/** Whether the element is enabled, as the platform reports it; `unreported` when its tree carries no `enabled`. */
+export function enabledReading(element: NativeElement): StateReading<boolean> {
+  return booleanAttribute(element, 'enabled')
+}
+
+/**
+ * Whether the element is selected: on macOS the runner's `selected`, on iOS the `Selected` trait among its `traits`;
+ * `none` when its type has no selected state on the platform, and `unreported` when the attribute is missing.
+ */
+export function selectedReading(element: NativeElement, platform: NativeKind): StateReading<boolean> {
+  if (!selectableTypes[platform].has(element.type)) return { kind: 'none' }
+  if (platform === 'macos') return booleanAttribute(element, 'selected')
+  const traits = element.attributes['traits']
+  if (traits === undefined) return { kind: 'unreported', attribute: 'traits' }
+  return { kind: 'read', value: traits.split(',').some((trait) => trait.trim() === 'Selected') }
+}
+
+/**
+ * Whether a switch, toggle, checkbox or radio button is on: `none` for any other element or for a value that is
+ * neither on nor off, and `unreported` when the executor wrote no `value`.
+ */
+export function checkedReading(element: NativeElement): StateReading<boolean> {
+  if (!toggleTypes.has(element.type)) return { kind: 'none' }
+  const value = element.attributes['value']
+  if (value === undefined) return { kind: 'unreported', attribute: 'value' }
+  if (value === '1' || value === 'true') return { kind: 'read', value: true }
+  if (value === '0' || value === 'false') return { kind: 'read', value: false }
+  return { kind: 'none' }
+}
+
+/** The state a reading holds, or null when it holds none: the type has no such state, or the tree did not report it. */
+export function readValue<T>(reading: StateReading<T>): T | null {
+  return reading.kind === 'read' ? reading.value : null
 }
 
 function intersects(first: Rect, second: Rect): boolean {
@@ -449,22 +530,23 @@ function pick(matches: readonly NativeElement[], choice: LocatorPick | undefined
 }
 
 /**
- * What tells the executor which element to act on: its type, and its identifier when it has one, else its label and,
- * on macOS, its title. Empty values are left out, since the executors leave an empty label unset.
+ * What tells the executor which element to act on: its type, its identifier when it has one, its label and, on macOS,
+ * its title. The label and title stay beside an identifier, so an element whose identifier stayed while its name
+ * changed after the tree was read is not taken. Empty values are left out, since the executors leave an empty label
+ * unset.
  */
 export type ResolutionKeys = { readonly type: string; readonly identifier?: string; readonly label?: string; readonly title?: string }
 
 /**
  * The keys that name an element to the executor.
  *
- * @example resolutionKeys(saveButton, 'macos') // { type: 'Button', identifier: 'save-task' }
+ * @example resolutionKeys(saveButton, 'macos') // { type: 'Button', identifier: 'save-task', label: 'Save' }
  */
 export function resolutionKeys(element: NativeElement, platform: NativeKind): ResolutionKeys {
   const identifier = identifierOf(element, platform)
-  if (identifier.kind === 'verified') return { type: element.type, identifier: identifier.identifier }
   const label = attribute(element, 'label')
   const title = platform === 'macos' ? attribute(element, 'title') : ''
-  return { type: element.type, ...(label === '' ? {} : { label }), ...(title === '' ? {} : { title }) }
+  return { type: element.type, ...(identifier.kind === 'verified' ? { identifier: identifier.identifier } : {}), ...(label === '' ? {} : { label }), ...(title === '' ? {} : { title }) }
 }
 
 // Whether an element of the tree answers the keys as the executor's predicate would.
