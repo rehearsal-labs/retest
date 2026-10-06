@@ -1,8 +1,8 @@
 import type { TaskService } from '../../fixtures/cross-platform/service/task-service.ts'
 import type { NativeAppSession } from '../../src/native/session.ts'
 import assert from 'node:assert/strict'
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { access, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, afterEach, before, describe, test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -10,7 +10,8 @@ import { startTaskService } from '../../fixtures/cross-platform/service/task-ser
 import { IosSimulatorRuntime, listSimulators, simulatorAppProcesses } from '../../src/native/ios-simulator.ts'
 import { decodePng, distinctColours } from '../../src/native/png.ts'
 import { iosSimulatorResetPolicy } from '../../src/native/reset-policy.ts'
-import { runCommand, systemTools } from '../../src/native/processes.ts'
+import { selectedXcodebuild } from '../../src/native/executor-process.ts'
+import { commandOf, endRecorded, recordedIdentity, runCommand, systemTools } from '../../src/native/processes.ts'
 import { ExecutorClient } from '../../src/native/webdriver-client.ts'
 import { executorBuild, listeningAddresses, listeningOf, logFolder, nativeSkipReason, prepareFixtureService, processesWith, taskPhoneApp, within } from './native-harness.ts'
 
@@ -36,6 +37,32 @@ async function nothingLeft(runtime: IosSimulatorRuntime): Promise<void> {
   assert.equal(listed.some((device) => device.udid === runtime.udid), false, 'the simulator is deleted')
   assert.deepEqual(await processesWith(`/Devices/${runtime.udid}/`), [], 'no process of the simulator is left')
   assert.deepEqual(await listeningAddresses(runtime.port), [], 'nothing listens on the executor port')
+}
+
+// How many certificates the simulator's keychain holds, read from a copy of its database, which the simulator keeps open.
+async function keychainCertificates(udid: string, scratch: string): Promise<number> {
+  const keychains = join(homedir(), 'Library', 'Developer', 'CoreSimulator', 'Devices', udid, 'data', 'Library', 'Keychains')
+  const copy = await mkdtemp(join(scratch, 'keychain-'))
+  try {
+    for (const name of await readdir(keychains)) if (name.startsWith('keychain-2-debug.db')) await copyFile(join(keychains, name), join(copy, name))
+    const counted = await runCommand('/usr/bin/sqlite3', [join(copy, 'keychain-2-debug.db'), 'select count(*) from cert'], { timeoutMs: 30_000 })
+    assert.equal(counted.code, 0, counted.stderr)
+    return Number(counted.stdout.trim())
+  } finally {
+    await rm(copy, { recursive: true, force: true })
+  }
+}
+
+// The app's tree, looked at again within `timeoutMs` only while the session refuses the tree as another app's: a new
+// simulator posts a system banner a short while after it boots, and while it shows WebDriverAgent serves the home
+// screen's tree. Any other refusal, and the last one at the end of the time, is the answer.
+async function ownTree(session: NativeAppSession, timeoutMs: number): ReturnType<NativeAppSession['readSource']> {
+  const until = performance.now() + timeoutMs
+  for (;;) {
+    const tree = await session.readSource(Math.max(1, Math.floor(until - performance.now())))
+    if (tree.ok || !/The tree is of another app/.test(tree.failure.message) || performance.now() >= until) return tree
+    await sleep(250)
+  }
 }
 
 async function appContainer(runtime: IosSimulatorRuntime): Promise<string> {
@@ -92,6 +119,13 @@ describe('the iOS simulator lifecycle on a real simulator', { skip }, () => {
     assert.equal(runtime.execution.app.bundleId, bundleId)
     assert.equal(runtime.execution.xcode.build, '17F42')
     assert.deepEqual(runtime.resetPolicy, iosSimulatorResetPolicy.contract)
+    // xcodebuild runs as the selected Xcode's own tool, so the process ps shows now is still the one recorded at the start.
+    const [xcodebuild] = runtime.executorProcesses
+    if (xcodebuild === undefined) throw new Error('the runtime recorded no xcodebuild')
+    const selected = await selectedXcodebuild(systemTools)
+    assert.equal(xcodebuild.command.startsWith(`${typeof selected === 'string' ? selected : ''} test-without-building `), true, xcodebuild.command)
+    const now = await commandOf(systemTools, xcodebuild.pid)
+    assert.equal(now.state === 'present' ? recordedIdentity(xcodebuild, { pid: xcodebuild.pid, command: now.command, startedAt: now.startedAt }) : now.state, 'same')
   })
 
   test('the host prepares the fixture service, and the app installs, launches with its arguments, captures with the session id and terminates', async () => {
@@ -115,7 +149,7 @@ describe('the iOS simulator lifecycle on a real simulator', { skip }, () => {
       assert.deepEqual([image.width, image.height], [1206, 2622], `${source} is the iPhone 17 screen at scale 3`)
       assert.ok(distinctColours(image) > 16, `${source} is a picture, not one colour`)
     }
-    const tree = await session.readSource(30_000)
+    const tree = await ownTree(session, 30_000)
     assert.ok(tree.ok, tree.ok ? '' : tree.failure.message)
     assert.match(tree.ok ? tree.tree.source.xml : '', new RegExp(`^<XCUIElementTypeApplication [^>]*bundleId="${bundleId}"`))
     assert.deepEqual(await session.terminate(60_000), { result: { ok: true }, input: 'sent' })
@@ -171,8 +205,12 @@ describe('the iOS simulator lifecycle on a real simulator', { skip }, () => {
     assert.deepEqual(await session.launch(120_000), { result: { ok: true }, input: 'sent' })
     const [pid] = session.processIds
     if (pid === undefined) throw new Error('the launch named no process')
-    // The simulator's processes are the Mac's own, so the app is ended from outside, as a crash ends it.
-    process.kill(pid, 'SIGKILL')
+    // The simulator's processes are the Mac's own, so the app is ended from outside, as a crash ends it, and only as the
+    // process the launch recorded: by its pid, start and command.
+    const reading = await simulatorAppProcesses(systemTools, runtime.udid, bundleId, { timeoutMs: 10_000 })
+    const launched = reading.ok ? reading.processes.find((entry) => entry.pid === pid) : undefined
+    if (launched === undefined) throw new Error('the launched TaskPhone could not be read')
+    assert.equal(await endRecorded(systemTools, launched, 0), 'ended')
     await sleep(500)
     assert.deepEqual(await session.appState(10_000), { ok: true, state: 'not_running' })
     assert.equal(session.appStatus.endedUnexpectedly, true)
@@ -210,12 +248,11 @@ describe('the iOS simulator lifecycle on a real simulator', { skip }, () => {
     const session = await open('ios-lost')
     await session.launch(120_000)
     const lost = new Promise<string>((resolve) => runtime.onDisconnect(resolve))
-    // The runner app the runtime recorded as its own, and nothing found by a pattern.
-    const runnerApp = runtime.identity.processIds[1]
-    if (runnerApp === undefined) throw new Error('the runtime recorded no runner app')
-    const runners = [{ pid: runnerApp }]
+    // The runner app the runtime recorded as its own, by its pid, start and command, and nothing found by a pattern.
+    const runnerApps = runtime.executorProcesses.slice(1)
+    assert.equal(runnerApps.length, 1, 'the runtime recorded one runner app')
     const killedAt = performance.now()
-    for (const runner of runners) process.kill(runner.pid, 'SIGKILL')
+    for (const runnerApp of runnerApps) assert.equal(await endRecorded(systemTools, runnerApp, 0), 'ended')
     const said = await within(lost, 30_000, 'the runtime did not report the lost runner within 30 s')
     const seenAfterMs = Math.round(performance.now() - killedAt)
     t.diagnostic(`the lost runner app was reported ${seenAfterMs} ms after it was killed`)
@@ -228,8 +265,12 @@ describe('the iOS simulator lifecycle on a real simulator', { skip }, () => {
 })
 
 describe('a second runtime starts clean', { skip }, () => {
-  test('nothing the app wrote in one runtime is there in the next', async (t) => {
+  test('nothing the app wrote in one runtime is there in the next, and its keychain starts empty', async (t) => {
     const logs = await logFolder(t, 'ios-second')
+    // A throwaway self-signed certificate, the one kind of keychain item simctl adds from outside an app.
+    const certificate = join(logs, 'retest-keychain-marker.pem')
+    const made = await runCommand('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(logs, 'retest-keychain-marker.key'), '-out', certificate, '-subj', '/CN=retest-keychain-marker', '-days', '1'], { timeoutMs: 30_000 })
+    assert.equal(made.code, 0, made.stderr)
     const first = await startRuntime(logs)
     let marker: string
     try {
@@ -239,6 +280,10 @@ describe('a second runtime starts clean', { skip }, () => {
       marker = join(await appContainer(first), 'Documents', 'retest-isolation-marker.txt')
       await mkdir(join(marker, '..'), { recursive: true })
       await writeFile(marker, 'written in the first runtime')
+      assert.equal(await keychainCertificates(first.udid, logs), 0, 'a new simulator\'s keychain holds no certificate')
+      const added = await runCommand(systemTools.xcrun, ['simctl', 'keychain', first.udid, 'add-cert', certificate], { timeoutMs: 60_000 })
+      assert.equal(added.code, 0, added.stderr)
+      assert.equal(await keychainCertificates(first.udid, logs), 1, 'the keychain item was written in the first runtime')
       await opened.session.dispose(30_000)
     } finally {
       await first.close(180_000)
@@ -253,6 +298,7 @@ describe('a second runtime starts clean', { skip }, () => {
       await opened.session.install({ appPath: taskPhoneApp }, 120_000)
       const container = await appContainer(second)
       assert.equal(await access(join(container, 'Documents', 'retest-isolation-marker.txt')).then(() => true, () => false), false)
+      assert.equal(await keychainCertificates(second.udid, logs), 0, 'the keychain item of the first runtime is not in the second')
       await opened.session.dispose(30_000)
     } finally {
       await second.close(180_000)

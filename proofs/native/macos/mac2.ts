@@ -1,8 +1,10 @@
+import type { StartedProcess } from '../../../src/native/processes.ts'
 import type { ProofRecord } from '../shared/evidence.ts'
 import type { KnownFailure } from '../shared/processes.ts'
 import type { JsonObject } from '../shared/webdriver.ts'
 import { access, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { commandOf, recordedIdentity, systemTools } from '../../../src/native/processes.ts'
 import { Blocked, CACHE_ROOT } from '../shared/evidence.ts'
 import { capture, describeExit, isListening, logTail, processIds, RunnerProcess, RunnerStartError } from '../shared/processes.ts'
 import { observe } from '../shared/source.ts'
@@ -140,12 +142,12 @@ export async function launchTextEdit(client: WebDriverClient, capabilities: Json
   const session = await WebDriverSession.create(client, capabilities, 120_000)
   const after = await processIds({ name: APP_NAME })
   const [pid] = after
-  const command = pid === undefined ? '' : (await capture('/bin/ps', ['-ww', '-o', 'args=', '-p', String(pid)])).stdout.trim()
-  if (pid === undefined || after.length !== 1 || command.length === 0) {
+  const reading = pid === undefined ? undefined : await commandOf(systemTools, pid)
+  if (pid === undefined || after.length !== 1 || reading?.state !== 'present') {
     await session.end().catch(() => undefined)
     throw new Error(`expected exactly one ${APP_NAME} process with a command line after the launch, found ${after.length}`)
   }
-  return { session, launched: { pid, command } }
+  return { session, launched: { pid, command: reading.command, startedAt: reading.startedAt } }
 }
 
 /**
@@ -164,19 +166,20 @@ export async function waitUntilSteady(session: WebDriverSession, element: string
   return steady.met
 }
 
-/** A process this script recorded as its own: its pid and its command line as `ps` showed it. */
-export type OwnProcess = { readonly pid: number; readonly command: string }
+/** A process this script recorded as its own: its pid, its command line and its start, as `ps` showed them. */
+export type OwnProcess = StartedProcess
 
 /**
- * Whether a recorded process still runs under its pid with its recorded command line. `gone` covers a pid that is free
- * and one another process has now; a `ps` that failed is `unreadable`, never taken for either.
+ * Whether a recorded process still runs under its pid, by its start and, where `ps` can read it, its command line, as
+ * Retest's own rule says. `gone` covers a pid that is free and one another process has now; a `ps` that failed is
+ * `unreadable`, never taken for either.
  */
 export async function recordedState(entry: OwnProcess): Promise<'running' | 'gone' | 'unreadable'> {
-  const shown = await capture('/bin/ps', ['-ww', '-o', 'args=', '-p', String(entry.pid)])
-  if (shown.exitCode === 0) return shown.stdout.trim() === entry.command ? 'running' : 'gone'
-  // ps answers 1 and prints nothing, not even to stderr, when no process has the pid.
-  if (shown.exitCode === 1 && shown.stdout.trim() === '' && shown.stderr.trim() === '') return 'gone'
-  return 'unreadable'
+  const shown = await commandOf(systemTools, entry.pid)
+  if (shown.state === 'absent') return 'gone'
+  if (shown.state === 'unreadable') return 'unreadable'
+  const identity = recordedIdentity(entry, { pid: entry.pid, command: shown.command, startedAt: shown.startedAt })
+  return identity === 'same' ? 'running' : identity === 'other' ? 'gone' : 'unreadable'
 }
 
 // Sends SIGTERM to a recorded process only while it is still the recorded one, read right before the signal.
@@ -196,8 +199,8 @@ export async function findOwnRunnerApp(port: number): Promise<OwnProcess | undef
   const pids = listening.stdout.split('\n').filter((line) => /^p\d+$/.test(line)).map((line) => Number(line.slice(1)))
   const [pid] = pids
   if (pid === undefined || pids.length !== 1) return undefined
-  const command = (await capture('/bin/ps', ['-ww', '-o', 'args=', '-p', String(pid)])).stdout.trim()
-  return command.includes(RUNNER_PROCESS) ? { pid, command } : undefined
+  const reading = await commandOf(systemTools, pid)
+  return reading.state === 'present' && reading.command.includes(RUNNER_PROCESS) ? { pid, command: reading.command, startedAt: reading.startedAt } : undefined
 }
 
 /** What teardown needs: the record, the runner and its runner app, and the one TextEdit process this script launched. */
@@ -214,8 +217,8 @@ export type TearDown = {
 
 /**
  * Ends what this script started, each as its own cleanup step: the TextEdit it launched, the session, the runner. Then
- * it checks that none of them is left. A process is ended only by the pid and command line this script recorded for
- * it; a TextEdit it did not record is never touched.
+ * it checks that none of them is left. A process is ended only as this script recorded it, by pid, start and command
+ * line; a TextEdit it did not record is never touched.
  */
 export async function tearDown(state: TearDown): Promise<void> {
   const { record, client, port, runner, runnerApp, session, launched } = state

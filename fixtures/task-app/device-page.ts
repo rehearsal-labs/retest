@@ -3,7 +3,8 @@ import { escapeHtml } from './html.ts'
 /** What the device page's server saw of the request, which the page shows beside what its scripts read. */
 export type RequestHeaders = { userAgent: string | undefined; clientHints: string | undefined }
 
-// Reads the screen a page sees, and lists the touch and click events its button hears.
+// Reads the screen a page sees, and lists the touch and click events its button hears. Client hints are read only
+// where the browser has them: Firefox and Safari have none, and show none, and their button still hears its events.
 const SCRIPT = `
 const show = (testId, value) => { document.querySelector('[data-testid="' + testId + '"]').textContent = String(value) }
 show('width', innerWidth)
@@ -11,7 +12,7 @@ show('height', innerHeight)
 show('pixel-ratio', devicePixelRatio)
 show('touch', 'ontouchstart' in window)
 show('user-agent', navigator.userAgent)
-show('client-hints', navigator.userAgentData.brands.map(({ brand }) => brand).join(', '))
+show('client-hints', 'userAgentData' in navigator ? navigator.userAgentData.brands.map(({ brand }) => brand).join(', ') : '')
 const heard = []
 const target = document.querySelector('[data-testid="touch-target"]')
 for (const type of ['touchstart', 'touchend', 'click']) {

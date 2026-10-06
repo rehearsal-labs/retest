@@ -223,7 +223,8 @@ byTestId('sign-in-form').addEventListener('submit', async (event) => {
   }
   token = result.data.token
   sessionStorage.setItem(TOKEN_KEY, token)
-  showSignedIn(result.data.account)
+  // Load the authenticated view in a fresh document before its state is checked and recorded.
+  location.replace(location.pathname)
 })
 
 byTestId('sign-out').addEventListener('click', async () => {

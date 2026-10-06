@@ -13,9 +13,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { formatRequestLine, parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
 import { ASSIGNED_ID_PATTERN, SEEDED_TASKS } from '../../fixtures/cross-platform/service/store.ts'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { within } from './browser-harness.ts'
 import { assertStdoutIsEvents, budgets, eventsOf, filesHolding, repositoryRoot, runProgram, runRetest, scratchFolder, testNamed, textHolds } from './cli-harness.ts'
+import { endService } from './service-teardown.ts'
 
 // The cross-platform fixture's local service, started the way its README starts it, as its own process: sign-in,
 // tasks by id, the sync delay, broken sync for every client or one, merged changes, reset, the state file, both
@@ -54,7 +54,10 @@ type Service = {
 
 type ServiceOptions = { flags?: readonly string[]; folder?: string }
 
-/** Starts the service on a free port in a process group of its own, killed after the test if it is still there. */
+/**
+ * Starts the service on a free port in a process group of its own. After the test it is ended through its own handle if
+ * it is still running, and anything of its group still there fails the test by name.
+ */
 async function startService(t: TestContext, options: ServiceOptions = {}): Promise<Service> {
   const folder = options.folder ?? (await scratchFolder(t, 'retest-cross-platform-'))
   const networkLog = join(folder, `network-${Date.now()}.jsonl`)
@@ -62,7 +65,7 @@ async function startService(t: TestContext, options: ServiceOptions = {}): Promi
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
   const { pid } = child
   assert.ok(pid !== undefined, 'the service did not start')
-  t.after(() => signalGroup(pid, 'SIGKILL'))
+  t.after(() => endService(child, 'the cross-platform service'))
   let stdout = ''
   let stderr = ''
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
@@ -482,8 +485,24 @@ test('breaks sync from one client to another only: the desktop sees the phone ta
     const task = await listed(service, desk, created.id)
     return task?.revision === 3 ? task : undefined
   }, syncDelayMs + 3000)
-  // The phone's change carries the whole task as it stood after the web change, so the desktop sees done here.
-  assert.deepEqual(shape(renamedOnDesk.value), { id: created.id, title: 'Renamed on the phone', done: true, revision: 3 })
+  // The phone's change set only the title. The done it was merged onto came from the web, which never reaches the
+  // desktop, so the desktop sees the rename on the task as the phone made it.
+  assert.deepEqual(shape(renamedOnDesk.value), { id: created.id, title: 'Renamed on the phone', done: false, revision: 3 })
+  assert.deepEqual(shape(await readTask(service, desk, created.id)), { id: created.id, title: 'Renamed on the phone', done: false, revision: 3 })
+  const renamedOnWeb = await firstSeen('the web seeing the phone rename', async () => {
+    const task = await readTask(service, web, created.id)
+    return task?.revision === 3 ? task : undefined
+  }, syncDelayMs + 3000)
+  assert.deepEqual(shape(renamedOnWeb.value), { id: created.id, title: 'Renamed on the phone', done: true, revision: 3 }, 'the web keeps its own done under the rename')
+
+  // A task the web created never reaches the desktop, even once the phone changes it.
+  const fromWeb = await createTask(service, web, 'Made on the web', 'web')
+  await firstSeen('the phone seeing the web task', () => listed(service, phone, fromWeb.id), syncDelayMs + 3000)
+  await changeTask(service, phone, fromWeb.id, { done: true }, 'ios')
+  await holdsFor(syncDelayMs * 5, async () => {
+    assert.equal(await readTask(service, desk, fromWeb.id), undefined, 'the desktop cannot read the web task')
+    assert.equal(await listed(service, desk, fromWeb.id), undefined, 'the desktop does not list the web task')
+  })
 
   for (const [args, problem] of [
     [['--broken-sync=web:nosuch'], /--broken-sync takes one of web, ios, macos, electron, test, as in --broken-sync=web:macos, not nosuch\./],

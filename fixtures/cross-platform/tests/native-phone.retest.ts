@@ -25,5 +25,6 @@ phoneTest('TaskPhone preserves a wrong task state failure', { apps: ['phone'] },
   await phone.getByTestId('new-task-title-field').fill('Wrong state task')
   await phone.getByTestId('create-task-button').tap()
   await expect(phone.getByTestId('created-task-id')).toHaveText(/^task-[0-9a-f]{12}$/)
-  await expect(phone.getByTestId('created-task-state')).toHaveText('Done', { timeout: 300 })
+  // Longer than one tree read on the simulator, so the check fails on a look that shows the state, never before any look.
+  await expect(phone.getByTestId('created-task-state')).toHaveText('Done', { timeout: 3000 })
 })

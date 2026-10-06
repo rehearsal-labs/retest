@@ -67,7 +67,11 @@ class PixelNativePage extends NativePageAdapter {
 
 async function open(runtime: IosSimulatorRuntime | MacosAppRuntime, app: 'phone' | 'desk', serviceUrl: string, redactor: Redactor, hashes: Record<string, string>, verdict: 'pass' | 'fail' = 'pass'): Promise<{ page: AppPage; session: NativeAppSession; pixels: PixelNativePage }> {
   const owner = { runId: 'native-evaluation', testId: 'native pixel checks', attemptId: 'evaluation-attempt', app }
-  const opened = await runtime.openSession({ owner, launch: { arguments: ['-reset', '-serviceURL', serviceUrl, ...(app === 'desk' ? ['-windowFrame', '20,60,640,480'] : [])], environment: {} }, redact: (text) => redactor.redact(text) }, 30_000)
+  // Give AppKit flag values and its open-URL guard at process launch, before SwiftUI creates a scene.
+  const argumentsForApp = app === 'desk'
+    ? ['-NSTreatUnknownArgumentsAsOpen', 'NO', '-reset', 'YES', '-serviceURL', serviceUrl, '-windowFrame', '20,60,640,480']
+    : ['-reset', '-serviceURL', serviceUrl]
+  const opened = await runtime.openSession({ owner, launch: { arguments: argumentsForApp, environment: {} }, redact: (text) => redactor.redact(text) }, 30_000)
   if (!opened.ok) throw new Error(opened.failure.message)
   const session = opened.session
   try {

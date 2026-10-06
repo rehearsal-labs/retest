@@ -13,11 +13,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { CLIENT_HEADER } from '../../fixtures/cross-platform/service/clients.ts'
 import { parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { nativePins } from '../../src/native/executors.ts'
 import { listSimulators } from '../../src/native/ios-simulator.ts'
 import { systemTools } from '../../src/native/processes.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
+import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { rebuildRecordedResult } from '../../src/store/rebuild-result.ts'
 import { budgets, eventsOf, filesHolding, repositoryRoot, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
 import { nativeSkipReason, processesWith, taskDeskApp, taskPhoneApp, within } from './native-harness.ts'
@@ -45,7 +45,11 @@ const flowTest = { timeout: 900_000, skip: unverified }
 
 type Service = { readonly url: string; readonly networkLog: string; requests(): RequestRecord[] }
 
-/** Starts the fixture service in a process group of its own; the test stops it with SIGTERM, and kills its group only if it stays. */
+/**
+ * Starts the fixture service in a process group of its own; the test stops it with SIGTERM. A service that stays is
+ * ended through the record of what this test launched, each process checked against its record first, and a service
+ * still there after that fails the test by name.
+ */
 async function startService(t: TestContext, flags: readonly string[]): Promise<Service> {
   const folder = await scratchFolder(t, 'retest-reference-service-')
   const networkLog = join(folder, 'network.jsonl')
@@ -54,9 +58,22 @@ async function startService(t: TestContext, flags: readonly string[]): Promise<S
   const { pid } = child
   assert.ok(pid !== undefined, 'the service did not start')
   const exited = new Promise<void>((resolve) => child.once('close', () => resolve()))
+  // Recorded only while Node has not reaped the service, so its pid can belong to nothing else.
+  let ownership: OwnedProcessGroup | undefined
+  const record = (): void => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    ownership ??= new OwnedProcessGroup(pid)
+    ownership.capture()
+  }
   t.after(async () => {
+    record()
     child.kill('SIGTERM')
-    await within(exited, 10_000, 'the service did not exit within 10 s of SIGTERM').catch(() => signalGroup(pid, 'SIGKILL'))
+    const stopped = await within(exited, 10_000, 'the service did not exit within 10 s of SIGTERM').then(() => true, () => false)
+    if (stopped) return
+    record()
+    const problems = ownership?.remains() === true ? ownership.signalReport('SIGKILL').problems : []
+    const ended = await within(exited, 5000, 'the service was still there 5 s after SIGKILL').then(() => true, () => false)
+    if (!ended) assert.fail(['The fixture service did not stop, and the test ends only what it recorded.', ...problems].join('\n'))
   })
   let stdout = ''
   let stderr = ''
@@ -70,6 +87,7 @@ async function startService(t: TestContext, flags: readonly string[]): Promise<S
   for (;;) {
     const url = /^(http:\/\/127\.0\.0\.1:\d+)\n/.exec(stdout)?.[1]
     if (url !== undefined) {
+      record()
       const requests = (): RequestRecord[] => (existsSync(networkLog) ? readFileSync(networkLog, 'utf8').split('\n').filter((line) => line !== '').flatMap((line) => parseRequestRecord(line) ?? []) : [])
       return { url, networkLog, requests }
     }

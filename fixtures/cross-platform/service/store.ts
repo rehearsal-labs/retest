@@ -65,10 +65,15 @@ const STATE_VERSION = 1
 /** Every client that never sees a change, or all but its maker. */
 type HiddenFrom = 'all' | ClientName[]
 
+/** A field a change can set. */
+type TaskField = 'title' | 'done'
+
 /** One change to a task: what the task became, which session made it, and when and to whom the others see it. */
 type Version = {
   title: string
   done: boolean
+  /** The fields this change itself set; absent for a whole task, as created, seeded or kept by an earlier service. */
+  changed?: TaskField[]
   at: string
   madeBy: string
   /** Epoch milliseconds from which the other sessions see this change, unless it is hidden from them. */
@@ -132,14 +137,16 @@ export class TaskStore {
 
   /**
    * Applies the fields the change holds to the newest state of the task, whoever made it, so a change another session
-   * made and this one has not seen yet is kept. Undefined when this session cannot see the task.
+   * made and this one has not seen yet is kept. A client a change is hidden from never sees its fields, not even
+   * through a later change merged onto it: see `viewOf`. Undefined when this session cannot see the task.
    */
   update(session: Session, id: string, change: TaskChange): TaskView | undefined {
     const task = this.#find(session, id)
     const newest = task?.versions.at(-1)
     if (task === undefined || newest === undefined || viewOf(task, session, this.#now()) === undefined) return undefined
     const fields = { title: change.title ?? newest.title, done: change.done ?? newest.done }
-    const changed: StoredTask = { ...task, versions: [...task.versions, this.#version(session, fields)] }
+    const set: TaskField[] = [...(change.title === undefined ? [] : ['title' as const]), ...(change.done === undefined ? [] : ['done' as const])]
+    const changed: StoredTask = { ...task, versions: [...task.versions, { ...this.#version(session, fields), changed: set }] }
     this.#tasks = this.#commit(this.#tasks.map((each) => (each === task ? changed : each)))
     return mustView(changed, session, this.#now())
   }
@@ -199,21 +206,42 @@ function seededTasks(now: number): StoredTask[] {
   }))
 }
 
-// The newest change the session made itself, or may already see from another session.
+// The newest change the session made itself, or may already see from another session. Each field is the one that
+// change holds unless it was merged from an earlier change hidden from this session's client: then the field is taken
+// from the newest change before it that set the field and is not hidden from the client. A change only waiting out
+// its delay is not hidden, so a change merged onto it keeps it, as the sync delay alone allows. A task whose creation
+// is hidden from the client is never seen by it, since a later change cannot tell it what was created.
 function viewOf(task: StoredTask, session: Session, now: number): TaskView | undefined {
   const [first] = task.versions
+  if (first === undefined || hiddenFromSession(first, session)) return undefined
   for (let index = task.versions.length - 1; index >= 0; index -= 1) {
     const version = task.versions[index]
-    if (version === undefined || first === undefined || !reaches(version, session, now)) continue
-    return { id: task.id, title: version.title, done: version.done, revision: index + 1, createdAt: first.at, updatedAt: version.at }
+    if (version === undefined || !reaches(version, session, now)) continue
+    const title = fieldAsSeen(task.versions, index, 'title', session, first)
+    const done = fieldAsSeen(task.versions, index, 'done', session, first)
+    return { id: task.id, title, done, revision: index + 1, createdAt: first.at, updatedAt: version.at }
   }
   return undefined
 }
 
+function fieldAsSeen<Field extends TaskField>(versions: readonly Version[], from: number, field: Field, session: Session, created: Version): Version[Field] {
+  for (let index = from; index > 0; index -= 1) {
+    const version = versions[index]
+    if (version === undefined || hiddenFromSession(version, session)) continue
+    if (version.changed === undefined || version.changed.includes(field)) return version[field]
+  }
+  return created[field]
+}
+
 function reaches(version: Version, session: Session, now: number): boolean {
   if (version.madeBy === session.id) return true
-  if (version.hiddenFrom === 'all' || version.hiddenFrom.includes(session.client)) return false
+  if (hiddenFromSession(version, session)) return false
   return version.visibleAt <= now
+}
+
+function hiddenFromSession(version: Version, session: Session): boolean {
+  if (version.madeBy === session.id) return false
+  return version.hiddenFrom === 'all' || version.hiddenFrom.includes(session.client)
 }
 
 function mustView(task: StoredTask, session: Session, now: number): TaskView {
@@ -269,19 +297,33 @@ function parseTask(value: unknown): Parsed<StoredTask> {
 
 function parseVersion(value: unknown): Parsed<Version> {
   if (!isRecord(value)) return refuse('a change is not an object')
-  const { title, done, at, madeBy, visibleAt, hiddenFrom: hidden } = value
+  const { title, done, at, madeBy, visibleAt, hiddenFrom: hidden, changed } = value
   if (typeof title !== 'string' || typeof done !== 'boolean' || typeof at !== 'string' || typeof madeBy !== 'string') {
     return refuse('a change needs text title, at and madeBy, and a true or false done')
   }
   if (typeof visibleAt !== 'number') return refuse('visibleAt must be a number')
-  if (hidden === 'all') return { ok: true, value: { title, done, at, madeBy, visibleAt, hiddenFrom: 'all' } }
+  const fields = parseChanged(changed)
+  if (!fields.ok) return refuse(fields.problem)
+  const set = fields.value === undefined ? {} : { changed: fields.value }
+  if (hidden === 'all') return { ok: true, value: { title, done, ...set, at, madeBy, visibleAt, hiddenFrom: 'all' } }
   if (!Array.isArray(hidden)) return refuse('hiddenFrom must be "all" or a list of clients')
   const clients: ClientName[] = []
   for (const client of hidden) {
     if (typeof client !== 'string' || !isClientName(client)) return refuse(`hiddenFrom names an unknown client ${String(client)}`)
     clients.push(client)
   }
-  return { ok: true, value: { title, done, at, madeBy, visibleAt, hiddenFrom: clients } }
+  return { ok: true, value: { title, done, ...set, at, madeBy, visibleAt, hiddenFrom: clients } }
+}
+
+function parseChanged(value: unknown): Parsed<TaskField[] | undefined> {
+  if (value === undefined) return { ok: true, value: undefined }
+  if (!Array.isArray(value)) return refuse('changed must be a list of fields')
+  const fields: TaskField[] = []
+  for (const field of value) {
+    if (field !== 'title' && field !== 'done') return refuse(`changed names an unknown field ${String(field)}`)
+    fields.push(field)
+  }
+  return { ok: true, value: fields }
 }
 
 function refuse(problem: string): { ok: false; problem: string } {

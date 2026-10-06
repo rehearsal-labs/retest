@@ -39,9 +39,13 @@ export const FIND_PAGE: string = htmlPage(
   FIND_SCRIPT,
 )
 
-// The button that waits is enabled 300 ms after the page loads, as a form that checks its fields first.
+// The button that waits is enabled 300 ms after the page loads, as a form that checks its fields first. It counts the
+// clicks it hears; a disabled button hears none, so a count of one shows a click came once, after it was enabled.
 const STATES_SCRIPT = `
-setTimeout(() => { document.querySelector('[data-testid="enabled-later"]').disabled = false }, 300)
+const later = document.querySelector('[data-testid="enabled-later"]')
+setTimeout(() => { later.disabled = false }, 300)
+let laterClicks = 0
+later.addEventListener('click', () => { document.querySelector('[data-testid="later-clicks"]').textContent = String((laterClicks += 1)) })
 `
 
 /** Checkable controls in each state, enabled and disabled elements in each way, and text and a value to compare. */
@@ -54,7 +58,7 @@ export const STATES_PAGE: string = htmlPage(
 <p><button data-testid="save">Save</button> <button data-testid="send" disabled>Send</button></p>
 <fieldset disabled><button data-testid="in-fieldset">In a fieldset</button></fieldset>
 <div aria-disabled="true"><button data-testid="in-group">In a group</button><div aria-disabled="false"><button data-testid="enabled-again">Enabled again</button></div></div>
-<p><button data-testid="enabled-later" disabled>Enabled later</button></p>
+<p><button data-testid="enabled-later" disabled>Enabled later</button> Clicks heard: <span data-testid="later-clicks">0</span></p>
 <p data-testid="status">Saved   3 tasks</p>
 <p><label>Release <input data-testid="release" value="Release 2"></label></p>`,
   STATES_SCRIPT,
