@@ -4,8 +4,8 @@ import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, describe, test } from 'node:test'
-import createAiSdkEvaluator, { AiSdkSetupError, aiSdkEvaluator, aiSdkEvaluatorVersion, createAiSdkEvaluatorWith, requestMessage } from '../../src/evaluation/ai-sdk.ts'
-import { readAnswer } from '../../src/evaluation/answer.ts'
+import createAiSdkEvaluator, { AiSdkAnswerError, AiSdkSetupError, aiSdkEvaluator, aiSdkEvaluatorVersion, createAiSdkEvaluatorWith, requestMessage } from '../../src/evaluation/ai-sdk.ts'
+import { readAnswer, unsentSettingsOf } from '../../src/evaluation/answer.ts'
 import { judgeInstructions, promptVersion } from '../../src/evaluation/instructions.ts'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
@@ -386,6 +386,26 @@ describe('what the adapter says each call sent', () => {
     }
   })
 
+  test('an answer that cannot be read still names, on its error, each setting the provider did not send', async () => {
+    const dropped = { type: 'unsupported', feature: 'temperature', details: 'temperature is not supported for reasoning models' }
+    const malformed = recording({ object: { criteria: 'none', justification: 'Saved.' }, warnings: [dropped] })
+    const evaluator = aiSdkEvaluator({ generateObject: malformed.generate, jsonSchema: identitySchema, model: 'model-instance', provider: 'azure', modelId: 'judge-deployment', sampling: { temperature: 0, topP: 0.5 } })
+    await assert.rejects(evaluator.evaluate(request()), (error: unknown) => {
+      assert.ok(error instanceof AiSdkAnswerError, String(error))
+      assert.match(error.message, /^The judge's answer breaks the contract: it does not have the shape of an answer/)
+      assert.deepEqual(error.samplingNotSent, [{ setting: 'temperature', reason: 'temperature is not supported for reasoning models' }])
+      assert.deepEqual(unsentSettingsOf(error), [{ setting: 'temperature', reason: 'temperature is not supported for reasoning models' }])
+      return true
+    })
+  })
+
+  test('an error claims no more than an answer could: a list that breaks the rules names nothing', () => {
+    assert.deepEqual(unsentSettingsOf(new Error('plain')), [])
+    assert.deepEqual(unsentSettingsOf(Object.assign(new Error('twice'), { samplingNotSent: [{ setting: 'topP', reason: 'a' }, { setting: 'topP', reason: 'b' }] })), [])
+    assert.deepEqual(unsentSettingsOf(Object.assign(new Error('unknown'), { samplingNotSent: [{ setting: 'frequencyPenalty', reason: 'dropped' }] })), [])
+    assert.deepEqual(unsentSettingsOf(Object.assign(new Error('empty'), { samplingNotSent: [{ setting: 'seed', reason: ' ' }] })), [])
+  })
+
   test("the parent refuses an answer that names an unsent setting twice or with no reason", () => {
     const offered = { criteria: ['saved'], evidence: ['e2'] }
     const answer = { criteria: [{ id: 'saved', verdict: 'pass', citations: ['e2'] }], justification: 'Saved.' }
@@ -589,6 +609,50 @@ test('rude', async () => {
     const files = readdirSync(record.folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
     assert.ok(files.length > 2)
     for (const entry of files) assert.ok(!readFileSync(join(entry.parentPath, entry.name), 'latin1').includes(azureKey), `${entry.name} holds the key`)
+  })
+})
+
+describe('a judge whose provider answered with something that is not an answer, through the parent', async () => {
+  // The provider drops the temperature for a model it takes to be a reasoning model, says so, and returns an object that
+  // is not an answer. The check is an evaluation error, and its record must not claim the temperature was sent.
+  const root = tempProject({
+    'retest.config.ts': `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+export default defineConfig({
+  apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
+  evaluation: {
+    judges: { azure: { adapter: './judges/azure.ts', credentials: { apiKey: env('${azureKeyVariable}') }, options: { provider: 'azure', resourceName: 'retest-unit', apiVersion: 'preview', model: 'judge-deployment', temperature: 0, topP: 0.5 }, accepts: ['text'] } },
+  },
+})
+`,
+    'judges/azure.ts': `import { createAiSdkEvaluatorWith } from '@rehearsal-labs/retest/evaluation/ai-sdk'
+
+const packages = {
+  ai: {
+    jsonSchema: (schema) => schema,
+    generateObject: async () => ({
+      object: { verdict: 'pass' },
+      warnings: [{ type: 'unsupported', feature: 'temperature', details: 'temperature is not supported for reasoning models' }],
+    }),
+  },
+  '@ai-sdk/azure': { createAzure: () => (id) => ({ deployment: id }) },
+}
+
+export default (setup) => createAiSdkEvaluatorWith(setup, async (name) => packages[name])
+`,
+    'tests/azure.retest.ts': `import { test } from '@rehearsal-labs/retest'
+test('polite', async () => {
+  await test.evaluate({ requirement: { polite: 'The reply is polite.' }, evidence: { text: 'Thank you.' } })
+})
+`,
+  })
+  const record = await runProject(root, { files: ['tests/azure.retest.ts'], timeouts: { test: 5000 } })
+  const evaluation = record.result.files.flatMap((file) => file.tests)[0]?.evaluations?.[0]
+
+  test('records an evaluation error, with only what the call sent under sampling and the dropped setting beside it', () => {
+    assert.equal(evaluation?.verdict, 'error')
+    assert.match(evaluation?.failure?.message ?? '', /The judge failed: The judge's answer breaks the contract/)
+    assert.deepEqual(evaluation?.evaluator?.sampling, { topP: 0.5, maxOutputTokens: 1000 }, 'the temperature the provider dropped is not claimed as sent')
+    assert.deepEqual(evaluation?.evaluator?.samplingNotSent, [{ setting: 'temperature', reason: 'temperature is not supported for reasoning models' }])
   })
 })
 
