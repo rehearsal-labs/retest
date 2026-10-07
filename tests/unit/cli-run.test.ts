@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
+import { commands } from '../../src/cli/cli.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
@@ -37,6 +38,9 @@ function resultWith(exitCode: RunResult['exitCode']): RunResult {
 }
 
 describe('run options', () => {
+  test('the command list includes licence reading without starting a run', () => {
+    assert.deepEqual(commands.map(command => command.name), ['init', 'doctor', 'install', 'licences', 'list', 'run', 'inspect', 'report'])
+  })
   test('passes the files, folders, browser, base URL and budgets to the runner', async () => {
     const { runs, code } = await run([
       `./${file}`,
@@ -151,7 +155,7 @@ describe('run usage errors', () => {
   test('rejects an unknown reporter with a suggestion', async () => {
     assert.match(
       await rejected([file, ...browser, '--reporter', 'json']),
-      /--reporter must be human, jsonl or agent, received "json"\. Did you mean jsonl\?/,
+      /--reporter must be human, jsonl, agent or html, received "json"\. Did you mean jsonl\?/,
     )
   })
 

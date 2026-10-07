@@ -66,10 +66,43 @@ describe('package smoke test', () => {
     if (root !== '') await rm(root, { recursive: true, force: true })
   })
 
-  test('the tarball holds built JavaScript with declarations, the license and the readme, and no source', () => {
+  test('the tarball holds built JavaScript, declarations, the media crate and notices, and no TypeScript source', () => {
     assert.ok(!consumer.startsWith(repositoryRoot), 'the consumer lives outside the repository')
     const outside = published.filter((path) => !path.startsWith('dist/'))
-    assert.deepEqual(outside.sort(), ['LICENSE', 'README.md', 'package.json'])
+    assert.deepEqual(outside.sort(), [
+      'LICENSE',
+      'README.md',
+      'media/Cargo.lock',
+      'media/Cargo.toml',
+      'media/build.rs',
+      'media/src/allocations.rs',
+      'media/src/encoder.rs',
+      'media/src/frame.rs',
+      'media/src/jobs.rs',
+      'media/src/ledger.rs',
+      'media/src/live.rs',
+      'media/src/main.rs',
+      'media/src/place.rs',
+      'media/src/process_ownership.rs',
+      'media/src/protocol.rs',
+      'media/src/queue.rs',
+      'media/src/recording.rs',
+      'media/src/replies.rs',
+      'media/src/server.rs',
+      'media/src/store.rs',
+      'media/src/timeline.rs',
+      'package.json',
+      'src/cli/install/licences/webkit/ANGLE-LICENSE.txt',
+      'src/cli/install/licences/webkit/BoringSSL-LICENSE.txt',
+      'src/cli/install/licences/webkit/SOURCE.txt',
+      'src/cli/install/licences/webkit/WebKit-BSD-2-Clause.txt',
+      'src/cli/install/licences/webkit/WebKit-LGPL-2.1.txt',
+      'src/cli/install/licences/webkit/WebRTC-LICENSE.txt',
+      'src/cli/install/licences/webkit/abseil-cpp-LICENSE.txt',
+      'src/cli/install/licences/webkit/libvpx-LICENSE.txt',
+      'src/cli/install/licences/webkit/swiftCompatibilitySpan-LICENSE.txt',
+      'src/cli/install/media-notices.txt',
+    ])
     assert.deepEqual(
       published.filter((path) => path.endsWith('.ts') && !path.endsWith('.d.ts')),
       [],

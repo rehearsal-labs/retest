@@ -11,6 +11,7 @@ import { defaultRunFolder } from '../../protocol/run-folder.ts'
 import { defaultTimeouts, formatTimeouts, mergeTimeouts, parseTimeouts, type Timeouts } from '../../protocol/timeouts.ts'
 import { createAgentReporter } from '../../reporters/agent.ts'
 import { retestCommand } from '../../reporters/commands.ts'
+import { createHtmlReporter } from '../../reporters/html/reporter.ts'
 import { createHumanReporter } from '../../reporters/human.ts'
 import { createJsonlReporter } from '../../reporters/jsonl.ts'
 import { createStyle } from '../../reporters/style.ts'
@@ -27,7 +28,7 @@ import { statIfPresent } from '../file-system.ts'
 import { readTestScope, selectionArguments, selectionOptions } from '../selection.ts'
 import { shouldUseColor } from '../terminal.ts'
 
-const reporterNames = ['human', 'jsonl', 'agent'] as const
+const reporterNames = ['human', 'jsonl', 'agent', 'html'] as const
 type ReporterName = (typeof reporterNames)[number]
 
 const timeoutList = formatTimeouts(defaultTimeouts)
@@ -45,7 +46,7 @@ const options = {
   ...selectionOptions,
   reporter: value({
     placeholder: '<name>',
-    description: `Terminal output: ${listWords(reporterNames)}. jsonl prints only event lines`,
+    description: `Terminal output: ${listWords(reporterNames)}. jsonl prints only event lines.\nhtml prints the human report and writes report.html in the run folder`,
     choices: reporterNames,
   }),
   output: value({ placeholder: '<dir>', description: 'New folder for the run. Default: .retest/runs/<time>' }),
@@ -240,5 +241,6 @@ function createReporter(name: ReporterName, runFolder: string, dependencies: Cli
   if (name === 'jsonl') return { reporter: createJsonlReporter({ stdout }) }
   if (name === 'agent') return { reporter: createAgentReporter({ stdout, runFolder }) }
   const human = createHumanReporter({ stdout, stderr, color: shouldUseColor(stdout, dependencies.env), runFolder })
-  return { reporter: human, onOutput: (output) => human.onOutput(output) }
+  const reporter = name === 'html' ? createHtmlReporter({ terminal: human, stdout, runFolder, directory: resolve(dependencies.cwd, runFolder) }) : human
+  return { reporter, onOutput: (output) => human.onOutput(output) }
 }

@@ -8,7 +8,10 @@ import { listWords } from '../shared/list-words.ts'
 import { doctorCommand } from './commands/doctor.ts'
 import { initCommand } from './commands/init.ts'
 import { inspectCommand } from './commands/inspect.ts'
+import { installCommand } from './commands/install.ts'
+import { licencesCommand } from './commands/licences.ts'
 import { listCommand } from './commands/list.ts'
+import { reportCommand } from './commands/report.ts'
 import { runCommand } from './commands/run.ts'
 import { CliError, UsageError } from './errors.ts'
 import { commandHelp, generalHelp } from './help.ts'
@@ -20,7 +23,7 @@ export type { CliDependencies } from './command.ts'
 /** Runs one command line to the end and returns the exit code. It never exits the process itself. */
 export type Cli = (argv: readonly string[]) => Promise<ExitCode>
 
-export const commands: readonly Command[] = [initCommand, doctorCommand, listCommand, runCommand, inspectCommand]
+export const commands: readonly Command[] = [initCommand, doctorCommand, installCommand, licencesCommand, listCommand, runCommand, inspectCommand, reportCommand]
 
 const commandNames = commands.map((command) => command.name)
 

@@ -25,7 +25,7 @@ describe('help', () => {
       assert.equal(code, 0)
       assert.equal(stderr, '')
       assert.match(stdout, /^retest 0\.0\.0\n/)
-      for (const name of ['init [options]', 'doctor [options]', 'list [files...]', 'run [files...]', 'inspect <run-folder>', 'help [command]']) {
+      for (const name of ['init [options]', 'doctor [options]', 'install <engine...>', 'licences [engine]', 'list [files...]', 'run [files...]', 'inspect <run-folder>', 'report <run-folder>', 'help [command]']) {
         assert.ok(stdout.includes(`  ${name}`), `${name} is missing from:\n${stdout}`)
       }
       assert.deepEqual(listedOptions(stdout), ['help', 'version'])
@@ -73,6 +73,7 @@ describe('help', () => {
     for (const unbuilt of ['--watch', '--retries', '--dry-run', '--repeat-each', 'github', 'junit', '--project']) {
       assert.ok(!stdout.includes(unbuilt), unbuilt)
     }
+    assert.match(stdout, /--reporter <name> {9}Terminal output: human, jsonl, agent or html\./)
     assert.match(stdout, /Add :line to a file/)
     assert.match(
       stdout,
@@ -131,7 +132,7 @@ describe('commands', () => {
     const far = await call(['deploy'])
     assert.equal(
       far.stderr,
-      'error: Unknown command deploy. The commands are init, doctor, list, run or inspect.\nSee retest --help.\n',
+      'error: Unknown command deploy. The commands are init, doctor, install, licences, list, run, inspect or report.\nSee retest --help.\n',
     )
   })
 
@@ -140,7 +141,7 @@ describe('commands', () => {
     assert.equal(typo.code, 2)
     assert.match(typo.stderr, /Unknown option --hepl\. Did you mean --help\?/)
     const other = await call(['--browser', '/bin/chrome'])
-    assert.match(other.stderr, /Unknown option --browser\. Name a command first: init, doctor, list, run or inspect\./)
+    assert.match(other.stderr, /Unknown option --browser\. Name a command first: init, doctor, install, licences, list, run, inspect or report\./)
     assert.equal(other.stdout, '')
   })
 

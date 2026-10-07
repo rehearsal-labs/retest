@@ -140,7 +140,7 @@ describe('consumer projects load through the packed package', () => {
       'tests/commonjs-helper.retest.ts': /support\/legacy\.cts uses the \.cts extension, so Node loads it as CommonJS\./,
       'tests/decorator.retest.ts': /SyntaxError: Invalid or unexpected token\. support\/decorated\.ts:6 has a decorator, which may be the cause: Node cannot run decorators, and Retest does not transform them\./,
       'tests/jsx-extensionless.retest.ts': /\.\.\/support\/view names support\/view\.tsx, a \.tsx file\. Retest does not load JSX\./,
-      'tests/jsx-helper.retest.ts': /support\/view\.tsx is a \.tsx file\. Retest does not load JSX\./,
+      'tests/jsx-helper.retest.ts': /^Could not load tests\/jsx-helper\.retest\.ts\. Error: \.\.\/support\/view\.tsx names support\/view\.tsx, a \.tsx file\. Retest does not load JSX\.$/,
       'tests/markup-in-typescript.retest.ts': /SyntaxError: Node's TypeScript transformer cannot read support\/markup\.ts:2: Expression expected\./,
       'tests/type-import.retest.ts': /does not provide an export named 'Title'\. support\/types\.ts declares Title only as a type: import it with import type\./,
     }
