@@ -8,7 +8,7 @@ import { pngSize } from '../../src/evaluation/evidence.ts'
 import { judgeInstructions, promptVersion } from '../../src/evaluation/instructions.ts'
 import { checkEffect, countsAsAssertion } from '../../src/evaluation/policy.ts'
 import { withEvaluationFailures } from '../../src/evaluation/run-evaluations.ts'
-import { evaluationRecordSchema, hostEvaluationProblems, hostEvaluationRecord } from '../../src/protocol/evaluation.ts'
+import { evaluationCallSchema, evaluationRecordSchema, hostEvaluationProblems, hostEvaluationRecord } from '../../src/protocol/evaluation.ts'
 import { failureSchema } from '../../src/protocol/failures.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { testStatus } from '../../src/runner/outcome.ts'
@@ -308,4 +308,13 @@ describe('evidence and records', () => {
     assert.ok(parse(evaluationRecordSchema, record).ok)
     assert.equal(parse(evaluationRecordSchema, { ...record, confidence: 1 }).ok, false)
   })
+})
+
+
+test('the additive criterion kinds validate without changing older evaluation calls', () => {
+  const base = { mode: 'required', evidence: [{ kind: 'recording', step: 'save' }] }
+  for (const kind of ['state', 'seen', 'never']) assert.equal(parse(evaluationCallSchema, { ...base, criteria: [{ id: 'claim', kind, requirement: 'Same words.' }] }).ok, true)
+  assert.equal(parse(evaluationCallSchema, { ...base, criteria: [{ id: 'claim', requirement: 'Same words.' }] }).ok, true)
+  assert.equal(parse(evaluationCallSchema, { ...base, criteria: [{ id: 'claim', absence: true, requirement: 'Same words.' }] }).ok, true)
+  for (const criterion of [{ id: 'claim', kind: 'sometimes', requirement: 'x' }, { id: 'claim', kind: 'seen', absence: true, requirement: 'x' }]) assert.equal(parse(evaluationCallSchema, { ...base, criteria: [criterion] }).ok, false)
 })

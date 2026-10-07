@@ -1,3 +1,4 @@
+import { withCriterionRequirement } from '../protocol/evaluation.ts'
 import type { LoadedEvaluation, LoadedJudge } from '../config/read-evaluation.ts'
 import type { EventBody } from '../protocol/events.ts'
 import type {
@@ -11,22 +12,24 @@ import type {
   EvaluationVerdict,
   EvaluatorRecord,
   EvidenceSelector,
+  UnsentSetting,
 } from '../protocol/evaluation.ts'
 import type { Failure, SourceLocation } from '../protocol/failures.ts'
 import type { AppPage, PagesContext } from '../runner/test-pages.ts'
 import type { CheckedAnswer } from './answer.ts'
 import type { CallBudget } from './budget.ts'
-import type { EvaluationRequest } from './contract.ts'
+import type { AttemptDiagnosticsView } from './diagnostics-evidence.ts'
 import type { HeldEvidence } from './evidence.ts'
+import type { AttemptRecordings } from './frames.ts'
 import type { Judges, PreparedJudge } from './judges.ts'
 import type { JudgedCheck } from './policy.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
 import { errorMessage, truncateText } from '../protocol/failures.ts'
 import { bounded } from '../runner/bounded.ts'
-import { aggregateVerdict, readAnswer } from './answer.ts'
+import { readAnswer, unsentSettingsOf } from './answer.ts'
 import { gatherEvidence, sha256 } from './evidence.ts'
-import { judgeInstructions, promptVersion } from './instructions.ts'
-import { judgeAccepts } from './judges.ts'
+import { buildRequest, citable, settle } from './judging.ts'
+import { evidenceKindOf, judgeAccepts } from './judges.ts'
 import { checkEffect } from './policy.ts'
 
 /**
@@ -60,6 +63,10 @@ export type AttemptEvaluationsOptions = {
   hostChecks: readonly AttemptHostCheck[]
   /** Aborted when the run is interrupted. Each check listens to it only while it runs. */
   runSignal: AbortSignal
+  /** The attempt's recordings, for checks of frames; absent in a run that records nothing. */
+  recordings?: AttemptRecordings | undefined
+  /** What the attempt's diagnostics have kept so far, for checks that select them; absent when the run gives none. */
+  diagnostics?: AttemptDiagnosticsView | undefined
 }
 
 /** One check as the attempt runs it. */
@@ -76,7 +83,9 @@ type CheckSpec = {
   stepId: string | undefined
 }
 
-/** What a check knows when it ends, before the policy reads it. */
+/**
+ * What a check knows when it ends, before the policy reads it. Settlement holds the parent's effective verdicts and rules.
+ */
 type Ending = {
   verdict: EvaluationVerdict
   judge?: string
@@ -84,6 +93,7 @@ type Ending = {
   evidence?: HeldEvidence[]
   answer?: CheckedAnswer
   evaluator?: EvaluatorRecord
+  settled?: ReturnType<typeof settle>
 }
 
 type Running = { stop: AbortController; spec: CheckSpec }
@@ -241,18 +251,22 @@ export class AttemptEvaluations implements EvaluationRequests {
     const named = { judge: judge.name }
     const refusal = acceptsProblem(judge, spec.evidence)
     if (refusal !== undefined) return { ...named, verdict: 'error', reason: refusal }
+    // Resolve credentials before freezing evidence, including values supplied by host callbacks.
+    const prepared = await bounded(judges.prepare(judge), deadline.commandTimeoutMs, stopped)
+    if (prepared.status === 'stopped') return { ...named, ...cancelled() }
+    if (prepared.status !== 'done') return { ...named, verdict: 'error', reason: prepared.status === 'timed_out' ? `The judge ${JSON.stringify(judge.name)} was not ready within the check's ${spec.timeoutMs} ms.` : errorMessage(prepared.error) }
+    if (!prepared.value.ok) return { ...named, verdict: 'error', reason: prepared.value.problem }
     const limits = this.#limits()
     const textBytes = Buffer.byteLength(JSON.stringify(spec.criteria)) + Buffer.byteLength(spec.context ?? '')
-    const gathered = await gatherEvidence(spec.evidence, { context, pages, checkId: spec.checkId, limits, timeoutMs: deadline.commandTimeoutMs, stop: stopped, textBytes })
+    const { recordings, diagnostics } = this.#options
+    const gathered = await gatherEvidence(spec.evidence, { context, pages, checkId: spec.checkId, limits, timeoutMs: deadline.commandTimeoutMs, stop: stopped, textBytes, recordings, diagnostics })
     if (signal.aborted) return { ...named, ...cancelled(), evidence: gathered.evidence }
     if (!gathered.ok) return { ...named, verdict: gathered.problem.kind === 'missing' ? 'inconclusive' : 'error', reason: gathered.problem.reason, evidence: gathered.evidence }
     const evidence = gathered.evidence
     const wrongAttempt = attemptProblem(evidence, context.attemptId, pages)
     if (wrongAttempt !== undefined) return { ...named, verdict: 'error', reason: wrongAttempt, evidence }
-    const prepared = await bounded(judges.prepare(judge), deadline.commandTimeoutMs, stopped)
-    if (prepared.status === 'stopped') return { ...named, ...cancelled(), evidence }
-    if (prepared.status !== 'done') return { ...named, verdict: 'error', reason: prepared.status === 'timed_out' ? `The judge ${JSON.stringify(judge.name)} was not ready within the check's ${spec.timeoutMs} ms.` : errorMessage(prepared.error), evidence }
-    if (!prepared.value.ok) return { ...named, verdict: 'error', reason: prepared.value.problem, evidence }
+    // Ask absence criteria too: a seen frame can show a violation. The parent sets aside unsupported judgments.
+    const asked = spec.criteria
     const slot = await budget.acquire(deadline.commandTimeoutMs, stopped)
     if (slot === 'stopped') return { ...named, ...cancelled(), evidence }
     if (slot === 'timed_out') return { ...named, verdict: 'error', reason: `No call slot came free within the check's ${spec.timeoutMs} ms (evaluation.limits.concurrentCalls is ${limits.concurrentCalls}).`, evidence }
@@ -261,14 +275,14 @@ export class AttemptEvaluations implements EvaluationRequests {
       if (signal.aborted) return { ...named, ...cancelled(), evidence }
       const reserved = budget.reserve(context.attemptId)
       if (!reserved.ok) return { ...named, verdict: 'error', reason: reserved.problem, evidence }
-      return await this.#call({ spec, judge, prepared: prepared.value, evidence, deadline, signal })
+      return await this.#call({ spec, judge, prepared: prepared.value, evidence, deadline, signal, asked })
     } finally {
       budget.release()
     }
   }
 
-  async #call(call: { spec: CheckSpec; judge: LoadedJudge; prepared: Extract<PreparedJudge, { ok: true }>; evidence: HeldEvidence[]; deadline: Deadline; signal: AbortSignal }): Promise<Ending> {
-    const { spec, judge, prepared, evidence, deadline, signal } = call
+  async #call(call: { spec: CheckSpec; judge: LoadedJudge; prepared: Extract<PreparedJudge, { ok: true }>; evidence: HeldEvidence[]; deadline: Deadline; signal: AbortSignal; asked: Criterion[] }): Promise<Ending> {
+    const { spec, judge, prepared, evidence, deadline, signal, asked } = call
     const { context } = this.#options
     const limits = this.#limits()
     const named = { judge: judge.name, evidence }
@@ -277,14 +291,13 @@ export class AttemptEvaluations implements EvaluationRequests {
     const stop = (): void => judging.abort(signal.reason)
     signal.addEventListener('abort', stop, { once: true })
     if (signal.aborted) stop()
-    const request: EvaluationRequest = deepFreeze({
+    const request = buildRequest({
       requestId: `${context.attemptId}:${spec.checkId}`,
       judge: judge.name,
-      instructions: judgeInstructions,
-      promptVersion,
-      criteria: spec.criteria.map(({ id, requirement }) => ({ id, requirement: context.redact(requirement) })),
-      ...(spec.context === undefined ? {} : { context: context.redact(spec.context) }),
-      evidence: evidence.map(judgedCopy),
+      asked,
+      context: spec.context,
+      evidence,
+      redact: (text) => context.redact(text),
       maxOutputTokens: limits.maxOutputTokens,
       timeoutMs,
       signal: judging.signal,
@@ -294,7 +307,7 @@ export class AttemptEvaluations implements EvaluationRequests {
     const answered = await bounded(prepared.call(request), timeoutMs, abortedPromise(signal))
     signal.removeEventListener('abort', stop)
     const latencyMs = elapsedMs(startedAt)
-    const evaluator = evaluatorRecord(prepared.identity, limits.maxOutputTokens, latencyMs)
+    const evaluator = evaluatorRecord(prepared.identity, request.promptVersion, limits.maxOutputTokens, latencyMs)
     if (answered.status === 'stopped') {
       stop()
       return { ...named, evaluator, verdict: 'cancelled', reason: stopReason(signal) }
@@ -303,12 +316,13 @@ export class AttemptEvaluations implements EvaluationRequests {
       judging.abort(new DOMException(`The judge did not answer within ${timeoutMs} ms.`, 'TimeoutError'))
       return { ...named, evaluator, verdict: 'error', reason: `The judge did not answer within ${timeoutMs} ms.` }
     }
-    if (answered.status === 'failed') return { ...named, evaluator, verdict: 'error', reason: `The judge failed: ${errorMessage(answered.error)}` }
-    const reading = readAnswer(answered.value, { criteria: spec.criteria.map((criterion) => criterion.id), evidence: evidence.map((held) => held.record.id) })
+    if (answered.status === 'failed') return { ...named, evaluator: withUnsent(evaluator, unsentSettingsOf(answered.error)), verdict: 'error', reason: `The judge failed: ${errorMessage(answered.error)}` }
+    const reading = readAnswer(answered.value, { criteria: asked.map((criterion) => criterion.id), evidence: citable(request) })
     if (!reading.ok) return { ...named, evaluator, verdict: 'error', reason: reading.problem }
     const { answer } = reading
-    const verdict = aggregateVerdict(answer.criteria.map((criterion) => criterion.verdict))
-    return { ...named, verdict, answer, evaluator: withAnswer(evaluator, answer) }
+    // The parent settles each declared kind against the capture facts.
+    const settled = settle(answer, spec.criteria, evidence)
+    return { ...named, verdict: settled.verdict, answer, settled, evaluator: withAnswer(evaluator, answer), ...(settled.reason === undefined ? {} : { reason: settled.reason }) }
   }
 
   // Everything a record says is redacted before it is kept: the judge's words, the reasons, which may quote a provider's
@@ -317,9 +331,12 @@ export class AttemptEvaluations implements EvaluationRequests {
     const { context } = this.#options
     const redact = (text: string): string => context.redact(text)
     const verdicts = new Map((ending.answer?.criteria ?? []).map((criterion) => [criterion.id, criterion]))
-    const criteria: CriterionRecord[] = spec.criteria.map(({ id, requirement }) => {
+    const criteria: CriterionRecord[] = spec.criteria.map((criterion) => {
+      const { id, requirement } = criterion
       const judged = verdicts.get(id)
-      return { id, requirement: redact(requirement), ...(judged === undefined ? {} : { verdict: judged.verdict, citations: judged.citations }) }
+      const declared = withCriterionRequirement(criterion, redact(requirement))
+      const rule = ending.settled?.rules.get(id)
+      return { ...declared, ...(judged === undefined ? {} : { verdict: ending.settled?.verdicts.get(id) ?? judged.verdict, citations: judged.citations }), ...(rule === undefined || judged === undefined ? {} : { rule, judgeVerdict: judged.verdict }) }
     })
     const recordedContext = spec.context === undefined ? undefined : redact(spec.context)
     const justification = ending.answer === undefined ? undefined : redact(ending.answer.justification)
@@ -345,7 +362,7 @@ export class AttemptEvaluations implements EvaluationRequests {
       verdict: ending.verdict,
       criteria,
       ...(recordedContext === undefined ? {} : { context: recordedContext }),
-      criteriaSha256: sha256(JSON.stringify({ criteria: spec.criteria.map(({ id, requirement }) => ({ id, requirement: redact(requirement) })), context: recordedContext ?? null })),
+      criteriaSha256: sha256(JSON.stringify({ criteria: spec.criteria.map((criterion) => withCriterionRequirement(criterion, redact(criterion.requirement))), context: recordedContext ?? null })),
       evidence: (ending.evidence ?? []).map((held) => held.record),
       ...(justification === undefined ? {} : { justification }),
       ...(reason === undefined ? {} : { reason }),
@@ -365,7 +382,7 @@ export class AttemptEvaluations implements EvaluationRequests {
   // A host check that never ran is written as such, so a result rebuilt from the events lists it as result.json does.
   #recordNotRun(check: AttemptHostCheck): void {
     const { context } = this.#options
-    const criteria = check.criteria.map(({ id, requirement }) => ({ id, requirement: context.redact(requirement) }))
+    const criteria = check.criteria.map((criterion) => withCriterionRequirement(criterion, context.redact(criterion.requirement)))
     const recordedContext = check.context === undefined ? undefined : context.redact(check.context)
     const record: EvaluationRecord = {
       checkId: check.id,
@@ -419,9 +436,8 @@ export function answerOf(record: EvaluationRecord): EvaluationAnswer {
 // A judge takes only what it accepts: a text-only judge never receives a screenshot read out as text.
 function acceptsProblem(judge: LoadedJudge, evidence: readonly EvidenceSelector[]): string | undefined {
   if (evidence.length === 0) return 'The check names no evidence.'
-  if (evidence.some((selector) => selector.kind === 'recording')) return "Evidence from a recorded step needs recordings, which Retest does not make yet. Use { capture: 'screenshot' } or text."
   for (const selector of evidence) {
-    const kind = selector.kind === 'text' ? 'text' : selector.kind === 'screenshot' ? 'images' : 'frames'
+    const kind = evidenceKindOf(selector)
     if (!judgeAccepts(judge, kind)) return `The judge ${JSON.stringify(judge.name)} does not accept ${kind}: its accepts lists ${judge.accepts.join(', ')}.`
   }
   return undefined
@@ -432,17 +448,17 @@ function acceptsProblem(judge: LoadedJudge, evidence: readonly EvidenceSelector[
 function attemptProblem(evidence: readonly HeldEvidence[], attemptId: string, pages: readonly AppPage[]): string | undefined {
   for (const { record } of evidence) {
     if (record.attemptId !== attemptId) return `The evidence ${record.id} belongs to another attempt, so Retest did not send it.`
-    if (record.kind === 'screenshot' && !pages.some((page) => page.session.sessionId === record.sessionId)) return `The screenshot ${record.id} came from no session of this attempt, so Retest did not send it.`
+    if (record.kind !== 'text' && !pages.some((page) => page.session.sessionId === record.sessionId)) return `The ${record.kind === 'screenshot' ? 'screenshot' : record.kind} ${record.id} came from no session of this attempt, so Retest did not send it.`
   }
   return undefined
 }
 
-function evaluatorRecord(identity: Extract<PreparedJudge, { ok: true }>['identity'], maxOutputTokens: number, latencyMs: number): EvaluatorRecord {
+function evaluatorRecord(identity: Extract<PreparedJudge, { ok: true }>['identity'], sentVersion: string, maxOutputTokens: number, latencyMs: number): EvaluatorRecord {
   return {
     provider: identity.provider,
     model: identity.model,
     evaluatorVersion: identity.version,
-    promptVersion: identity.promptVersion ?? promptVersion,
+    promptVersion: identity.promptVersion ?? sentVersion,
     sampling: { ...identity.sampling, maxOutputTokens },
     latencyMs,
   }
@@ -465,15 +481,21 @@ function redactedEvaluator(evaluator: EvaluatorRecord, redact: (text: string) =>
 // The record keeps under `sampling` only what the call sent: a setting the answer says was not sent as given leaves it,
 // and is named beside it with the provider's reason.
 function withAnswer(evaluator: EvaluatorRecord, answer: CheckedAnswer): EvaluatorRecord {
-  const notSent = answer.samplingNotSent ?? []
+  return {
+    ...withUnsent(evaluator, answer.samplingNotSent ?? []),
+    ...(answer.modelRevision === undefined ? {} : { modelRevision: answer.modelRevision }),
+    ...(answer.usage === undefined ? {} : { usage: answer.usage }),
+  }
+}
+
+// The same rule for a call whose answer could not be read: what its error says was not sent is not claimed as sent.
+function withUnsent(evaluator: EvaluatorRecord, notSent: readonly UnsentSetting[]): EvaluatorRecord {
   const sampling = evaluator.sampling === undefined ? undefined : { ...evaluator.sampling }
   if (sampling !== undefined) for (const { setting } of notSent) delete sampling[setting]
   return {
     ...evaluator,
     ...(sampling === undefined ? {} : { sampling }),
-    ...(notSent.length === 0 ? {} : { samplingNotSent: notSent }),
-    ...(answer.modelRevision === undefined ? {} : { modelRevision: answer.modelRevision }),
-    ...(answer.usage === undefined ? {} : { usage: answer.usage }),
+    ...(notSent.length === 0 ? {} : { samplingNotSent: [...notSent] }),
   }
 }
 
@@ -486,19 +508,4 @@ function stopReason(signal: AbortSignal): string {
 function abortedPromise(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve()
   return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
-}
-
-// A typed array cannot be frozen, so the judge gets a copy of a screenshot's bytes: the ones hashed and saved stay as
-// they were.
-function judgedCopy({ judged }: HeldEvidence): EvaluationRequest['evidence'][number] {
-  return judged.kind === 'image' ? { ...judged, data: judged.data.slice() } : judged
-}
-
-// The request is data the judge reads, so nothing in it can be changed on the way: not the criteria, not the evidence
-// list.
-function deepFreeze<T extends object>(value: T): T {
-  for (const item of Object.values(value)) {
-    if (typeof item === 'object' && item !== null && !ArrayBuffer.isView(item) && !(item instanceof AbortSignal) && !Object.isFrozen(item)) deepFreeze(item)
-  }
-  return Object.freeze(value)
 }

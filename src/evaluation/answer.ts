@@ -60,6 +60,20 @@ export function readAnswer(value: unknown, offered: Offered): AnswerReading {
 }
 
 /**
+ * The sampling settings an evaluator's error says its call did not send as given, as an answer's `samplingNotSent`
+ * says them, such as an answer the provider gave that could not be read. A list that breaks the answer's own rules for
+ * them names nothing, so an error never claims more than an answer could.
+ *
+ * @example unsentSettingsOf(new AiSdkAnswerError('…', [{ setting: 'temperature', reason: 'dropped' }])) // [{ setting: 'temperature', reason: 'dropped' }]
+ */
+export function unsentSettingsOf(error: unknown): UnsentSetting[] {
+  if (typeof error !== 'object' || error === null) return []
+  const parsed = parse(s.array(unsentSettingSchema), Reflect.get(error, 'samplingNotSent'))
+  if (!parsed.ok || unsentProblem(parsed.value) !== undefined) return []
+  return parsed.value
+}
+
+/**
  * A check's verdict from its criteria: fail when any failed, inconclusive when none failed and any could not be
  * judged, pass only when every one passed. Nothing turns an inconclusive criterion into a pass.
  *

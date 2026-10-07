@@ -6,7 +6,9 @@ import type { PlannedTest } from '../runner/plan.ts'
 import type { Redactor } from '../runner/redactor.ts'
 import type { AppPage, PagesContext } from '../runner/test-pages.ts'
 import type { AttemptHostCheck } from './attempt.ts'
-import { hostEvaluationProblems, hostEvaluationRecord, hostEvidence } from '../protocol/evaluation.ts'
+import type { AttemptDiagnosticsView } from './diagnostics-evidence.ts'
+import type { AttemptRecordings } from './frames.ts'
+import { withCriterionRequirement, hostCriteria, hostEvaluationProblems, hostEvaluationRecord, hostEvidence } from '../protocol/evaluation.ts'
 import { failure, failureSchema } from '../protocol/failures.ts'
 import { hostChecksFor, unmatchedHostCheckKeys } from '../protocol/host-check.ts'
 import { formatPath, isArray, isPlainObject, parse } from '../protocol/schema.ts'
@@ -14,7 +16,7 @@ import { isOurs } from '../runner/outcome.ts'
 import { AttemptEvaluations } from './attempt.ts'
 import { CallBudget, defaultEvaluationLimits } from './budget.ts'
 import { sha256 } from './evidence.ts'
-import { Judges } from './judges.ts'
+import { evidenceKindOf, Judges } from './judges.ts'
 
 /** Host checks by test id or by file, as `RunOptions.hostEvaluations` gives them. */
 export type HostEvaluations = Readonly<Record<string, readonly HostEvaluation[]>>
@@ -29,10 +31,18 @@ export type RunEvaluationsOptions = {
 }
 
 /**
- * What an attempt's checks need from the run: the attempt's pages and how it records, the host checks it has, and the
- * run's signal, aborted when the run is interrupted.
+ * What an attempt's checks need from the run: the attempt's pages and how it records, the host checks it has, the
+ * run's signal, aborted when the run is interrupted, and, from a run that has them, the attempt's recordings and a view
+ * of what its diagnostics have kept so far.
  */
-export type AttemptSetup = { context: PagesContext; pages: readonly AppPage[]; hostChecks: readonly AttemptHostCheck[]; runSignal: AbortSignal }
+export type AttemptSetup = {
+  context: PagesContext
+  pages: readonly AppPage[]
+  hostChecks: readonly AttemptHostCheck[]
+  runSignal: AbortSignal
+  recordings?: AttemptRecordings | undefined
+  diagnostics?: AttemptDiagnosticsView | undefined
+}
 
 /**
  * The run's AI checks: its judges, made once each and shared by every file worker, the call budget the parent holds for
@@ -88,7 +98,7 @@ export class RunEvaluations {
     return hostChecksFor(this.#host, test).map((check) => ({
       id: check.id,
       ...(check.judge === undefined ? {} : { judge: check.judge }),
-      criteria: Object.entries(check.criteria).map(([id, requirement]) => ({ id, requirement })),
+      criteria: hostCriteria(check.criteria),
       ...(check.context === undefined ? {} : { context: check.context }),
       evidence: hostEvidence(check.evidence),
       ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
@@ -96,8 +106,8 @@ export class RunEvaluations {
   }
 
   /** The checks of one attempt, sharing the run's judges and budget. */
-  attempt({ context, pages, hostChecks, runSignal }: AttemptSetup): AttemptEvaluations {
-    return new AttemptEvaluations({ context, pages, evaluation: this.#evaluation, judges: this.#judges, budget: this.#budget, hostChecks, runSignal })
+  attempt({ context, pages, hostChecks, runSignal, recordings, diagnostics }: AttemptSetup): AttemptEvaluations {
+    return new AttemptEvaluations({ context, pages, evaluation: this.#evaluation, judges: this.#judges, budget: this.#budget, hostChecks, runSignal, recordings, diagnostics })
   }
 
   /** Ends the judges: their signal is aborted and each evaluator closed, within `timeoutMs`. */
@@ -118,7 +128,7 @@ export class RunEvaluations {
         if (name === undefined) problems.push(`${at('judge')}: the config has several judges and no evaluation.defaultJudge. Name one.`)
         else if (judge === undefined) problems.push(`${at('judge')}: the config has no judge ${JSON.stringify(name)}.`)
         for (const selector of hostEvidence(check.evidence)) {
-          const kind = selector.kind === 'text' ? 'text' : 'images'
+          const kind = evidenceKindOf(selector)
           if (judge !== undefined && !judge.accepts.includes(kind)) problems.push(`${at('evidence')}: the judge ${JSON.stringify(judge.name)} does not accept ${kind}.`)
           const app = selector.kind === 'text' ? undefined : selector.app
           const lacking = app === undefined ? undefined : covered.find((test) => !test.apps.includes(app))
@@ -142,7 +152,7 @@ export class RunEvaluations {
  */
 export function notRunRecords(checks: readonly AttemptHostCheck[], redact: (text: string) => string): EvaluationRecord[] {
   return checks.map((check) => {
-    const criteria = check.criteria.map(({ id, requirement }) => ({ id, requirement: redact(requirement) }))
+    const criteria = check.criteria.map((criterion) => withCriterionRequirement(criterion, redact(criterion.requirement)))
     const context = check.context === undefined ? undefined : redact(check.context)
     return {
       checkId: check.id,

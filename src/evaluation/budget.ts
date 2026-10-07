@@ -1,7 +1,8 @@
 /**
  * The bounds a run's checks keep: calls per test attempt and per run, calls waiting on a judge at once, the tokens a
- * judge may write, and what one request may carry: its text and images in bytes, how many images, and how wide and
- * tall each may be. The defaults are bounds, not tuned numbers.
+ * judge may write, and what one request may carry: its text and images in bytes, how many screenshots, how wide and
+ * tall each image may be, how many frames of recordings in all, and how many diagnostics records. The defaults are
+ * bounds, not tuned numbers.
  */
 export type EvaluationLimits = {
   readonly callsPerTest: number
@@ -12,7 +13,12 @@ export type EvaluationLimits = {
   readonly maxImages: number
   readonly maxImageWidth: number
   readonly maxImageHeight: number
+  readonly maxFrames: number
+  readonly maxDiagnosticRecords: number
 }
+
+/** The most frames the media process sends for one interval, whatever `maxFrames` says. */
+export const mediaFramesCap = 64
 
 export const defaultEvaluationLimits: EvaluationLimits = Object.freeze({
   callsPerTest: 5,
@@ -23,6 +29,8 @@ export const defaultEvaluationLimits: EvaluationLimits = Object.freeze({
   maxImages: 4,
   maxImageWidth: 4096,
   maxImageHeight: 4096,
+  maxFrames: 16,
+  maxDiagnosticRecords: 200,
 })
 
 /** How waiting for a call slot ended. */

@@ -48,8 +48,10 @@ export function evaluationCardLines(records: readonly EvaluationRecord[], runFol
 }
 
 /**
- * What one check found, under its heading: each criterion's verdict and citations, what the judge said, why the check
- * has no verdict, and each piece of evidence, a screenshot by its path joined to the run folder as it was given.
+ * What one check found, under its heading: each criterion's verdict, the parent's rule when one set the judge aside,
+ * and its citations, what the judge said, why the check has no verdict, and each piece of evidence: a screenshot by its
+ * path joined to the run folder as it was given, frames by their count with what is missing, diagnostics by the parts
+ * sent.
  *
  * @example evaluationDetails(record, '.retest/runs/latest')[0] // { label: 'Criterion', value: 'saved: fail, cites e1' }
  */
@@ -58,7 +60,7 @@ export function evaluationDetails(record: EvaluationRecord, runFolder: string): 
   for (const criterion of record.criteria) {
     const verdict = criterion.verdict === undefined ? 'no verdict' : criterion.verdict
     const cites = criterion.citations === undefined || criterion.citations.length === 0 ? '' : `, cites ${criterion.citations.join(' ')}`
-    lines.push({ label: 'Criterion', value: `${criterion.id}: ${verdict}${cites}` })
+    lines.push({ label: 'Criterion', value: `${criterion.id}: ${verdict}${criterion.kind === undefined ? '' : `, kind ${criterion.kind}`}${ruleWords(criterion)}${cites}` })
   }
   if (record.justification !== undefined) lines.push({ label: 'Judge said', value: quoted(record.justification) })
   if (record.reason !== undefined) lines.push({ label: 'Reason', value: record.reason })
@@ -93,8 +95,28 @@ export function countEvaluations(tests: readonly Pick<TestResult, 'evaluations'>
   return [...parts, ...(advisoryPasses === 0 ? [] : [`${advisoryPasses} advisory passed`]), ...(warnings === 0 ? [] : [`${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`])]
 }
 
+// Retest's own words for a rule that set the judge aside, after the verdict that counts.
+function ruleWords(criterion: EvaluationRecord['criteria'][number]): string {
+  if (criterion.rule === 'absence_over_frames') return ` (the judge said ${criterion.judgeVerdict ?? 'inconclusive'}, but sampled frames cannot prove absence without a seen contradiction)`
+  if (criterion.rule === 'seen_over_frames') return ` (the judge said ${criterion.judgeVerdict ?? 'inconclusive'}, but a seen criterion needs a witnessed appearance and never fails)`
+  if (criterion.rule === 'never_over_frames') return ` (the judge said ${criterion.judgeVerdict ?? 'inconclusive'}, but a never failure needs a seen frame showing the violation)`
+  if (criterion.rule === 'frames_incomplete') return ` (the judge said ${criterion.judgeVerdict ?? 'pass'}, but frames are missing)`
+  return ''
+}
+
 function describeEvidence(evidence: EvaluationRecord['evidence'][number], runFolder: string): string {
   if (evidence.kind === 'text') return `${evidence.id} text${evidence.label === undefined ? '' : ` ${quoted(evidence.label)}`}, ${evidence.bytes} bytes`
+  const status = evidence.status === undefined || evidence.status === 'complete' ? '' : `, ${evidence.status}${evidence.reason === undefined ? '' : `: ${evidence.reason}`}`
+  if (evidence.kind === 'frames') {
+    const step = evidence.step === undefined ? '' : ` of the step ${quoted(evidence.step)}`
+    const count = evidence.frames?.length ?? 0
+    return `${evidence.id} ${count} ${count === 1 ? 'frame' : 'frames'} of ${evidence.app ?? 'the page'}${step}${status}`
+  }
+  if (evidence.kind === 'diagnostics') {
+    const sent = evidence.records?.length ?? 0
+    const path = evidence.path === undefined ? '' : ` ${join(runFolder, evidence.path)}`
+    return `${evidence.id} ${(evidence.include ?? []).join(' and ')} records of ${evidence.app ?? 'the page'}, ${sent} sent${status}${path}`
+  }
   const path = evidence.path === undefined ? 'not saved' : join(runFolder, evidence.path)
   const size = evidence.width === undefined || evidence.height === undefined ? '' : ` ${evidence.width}x${evidence.height}`
   return `${evidence.id} screenshot of ${evidence.app ?? 'the page'}${size} ${path}`

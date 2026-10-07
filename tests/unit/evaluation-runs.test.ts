@@ -247,7 +247,8 @@ describe('required AI checks through the parent', async () => {
     assert.match(reason('fabricated citation'), /cites evidence the check never supplied/)
     assert.match(reason('self-reported confidence'), /\$\.confidence unknown key/)
     assert.match(reason('text judge refuses a screenshot'), /The judge "words" does not accept images: its accepts lists text\./)
-    assert.match(reason('recording refused by name'), /Evidence from a recorded step needs recordings, which Retest does not make yet\./)
+    // Frames of a recording are judged now; this judge's accepts lists no frames, so the check is refused by that name.
+    assert.match(reason('recording refused by name'), /The judge "fake" does not accept frames: its accepts lists text, images\./)
     assert.match(reason('unreadable screenshot'), /The screenshot of web is not a PNG Retest can read, so Retest did not send it\./)
     assert.match(reason('unknown judge'), /The config has no judge "nobody"\. It has fake, words\./)
   })

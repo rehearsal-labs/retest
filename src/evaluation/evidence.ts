@@ -1,9 +1,12 @@
-import type { JudgedEvidence } from './contract.ts'
+import type { JudgedEvidence, JudgedFrames } from './contract.ts'
 import type { EvaluationLimits } from './budget.ts'
+import type { AttemptDiagnosticsView } from './diagnostics-evidence.ts'
+import type { AttemptRecordings } from './frames.ts'
 import type { EvidenceRecord, EvidenceSelector } from '../protocol/evaluation.ts'
 import type { AppPage, PagesContext } from '../runner/test-pages.ts'
 import type { NativeCapture } from '../native/session.ts'
-import type { RecordIdentity } from '../protocol/identity.ts'
+import type { CaptureSourceName, RecordIdentity } from '../protocol/identity.ts'
+import type { CaptureSpan } from '../media/policy.ts'
 import { createHash } from 'node:crypto'
 import { NativePageAdapter } from '../runner/native-pool.ts'
 import { decodePng } from '../native/png.ts'
@@ -13,9 +16,17 @@ import { errorMessage } from '../protocol/failures.ts'
 import { slug } from '../protocol/run-folder.ts'
 import { bounded } from '../runner/bounded.ts'
 import { screenshotSource } from '../runner/test-pages.ts'
+import { gatherDiagnostics } from './diagnostics-evidence.ts'
+import { gatherFrames } from './frames.ts'
 
-/** Evidence the parent holds for one check: what the judge receives, and what the record keeps of it. */
-export type HeldEvidence = { judged: JudgedEvidence; record: EvidenceRecord }
+/**
+ * Evidence the parent holds for one check: what the judge receives, as a piece of evidence or as a frame sequence,
+ * and what the record keeps of it; or, for evidence that could not be gathered, only what the record keeps.
+ */
+export type HeldEvidence = HeldPiece | { frames: JudgedFrames; record: EvidenceRecord } | { record: EvidenceRecord }
+
+/** A piece of evidence the judge receives as text or as an image, with what the record keeps of it. */
+export type HeldPiece = { judged: JudgedEvidence; record: EvidenceRecord }
 
 /**
  * Why evidence could not be gathered. `missing` is a capture that did not happen or cannot be read, which leaves the
@@ -36,6 +47,10 @@ export type GatherOptions = {
   stop: Promise<unknown>
   /** Bytes the criteria and context take, which count towards `maxInputBytes`. */
   textBytes: number
+  /** The attempt's recordings, which frame evidence is taken from; absent in a run that records nothing. */
+  recordings?: AttemptRecordings | undefined
+  /** What the attempt's diagnostics have kept so far; absent in a run that gives the checks none. */
+  diagnostics?: AttemptDiagnosticsView | undefined
 }
 
 const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
@@ -43,8 +58,11 @@ const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 /**
  * Gathers a check's evidence in the order named, each with an id the judge cites, `e1`, `e2` and so on. A screenshot
  * is taken now, by the parent, from the app's page in this attempt, saved in the run folder, and must be a PNG within
- * the limits; text is redacted before the judge sees it. Nothing here can act on a page. The first problem stops the
- * gathering, and what was gathered before it is returned with it, so the record still names it.
+ * the limits; text is redacted before the judge sees it; a recording's frames come from the app's recording over the
+ * interval named, saved and hashed, with the stretches that had no frame; diagnostics records are those the check
+ * selected, redacted again and bounded. Nothing here can act on a page. The first problem stops the gathering, and what
+ * was gathered before it is returned with it, with the unavailable evidence that stopped it, so the record still names
+ * it.
  *
  * @example const gathered = await gatherEvidence(selectors, options)
  */
@@ -53,18 +71,37 @@ export async function gatherEvidence(selectors: readonly EvidenceSelector[], opt
   const started = performance.now()
   let bytes = options.textBytes
   let images = 0
+  let frames = 0
   for (const [index, selector] of selectors.entries()) {
     const id = `e${index + 1}`
     const remainingMs = Math.max(1, Math.floor(options.timeoutMs - (performance.now() - started)))
-    const held = selector.kind === 'text' ? textEvidence(id, selector, options.context) : await screenshotEvidence(id, selector, { ...options, timeoutMs: remainingMs })
-    if (!held.ok) return { ok: false, problem: held.problem, evidence }
+    const held = await gatherOne(id, selector, { ...options, timeoutMs: remainingMs }, { bytesLeft: options.limits.maxInputBytes - bytes, framesLeft: options.limits.maxFrames - frames })
+    if (!held.ok) return { ok: false, problem: held.problem, evidence: held.record === undefined ? evidence : [...evidence, { record: held.record }] }
     bytes += held.value.record.bytes
     if (held.value.record.kind === 'screenshot') images++
+    frames += held.value.record.frames?.length ?? 0
     const limit = limitProblem({ bytes, images, held: held.value.record }, options.limits)
     if (limit !== undefined) return { ok: false, problem: { kind: 'refused', reason: limit }, evidence: [...evidence, held.value] }
     evidence.push(held.value)
   }
   return { ok: true, evidence }
+}
+
+type GatheredOne = { ok: true; value: HeldEvidence } | { ok: false; problem: EvidenceProblem; record?: EvidenceRecord }
+
+async function gatherOne(id: string, selector: EvidenceSelector, options: GatherOptions, room: { bytesLeft: number; framesLeft: number }): Promise<GatheredOne> {
+  const { context, pages } = options
+  if (selector.kind === 'text') return textEvidence(id, selector, context)
+  if (selector.kind === 'screenshot') return screenshotEvidence(id, selector, options)
+  const app = selector.app ?? pages[0]?.app
+  if (app === undefined || !pages.some((page) => page.app === app)) return refused(`The check names the app ${JSON.stringify(app ?? '')}, which this test does not use.`)
+  const shared = { id, app, store: context.store, redact: context.redact, testId: context.testId, attemptId: context.attemptId, checkId: options.checkId }
+  if (selector.kind === 'diagnostics') {
+    const gathered = gatherDiagnostics({ ...shared, selector, view: options.diagnostics, maxRecords: options.limits.maxDiagnosticRecords })
+    return gathered.ok ? { ok: true, value: gathered.value } : { ok: false, problem: { kind: gathered.problem.kind, reason: gathered.problem.reason }, record: gathered.problem.record }
+  }
+  const gathered = await gatherFrames({ ...shared, selector, recordings: options.recordings, limits: options.limits, framesLeft: room.framesLeft, bytesLeft: room.bytesLeft, timeoutMs: options.timeoutMs, stop: options.stop })
+  return gathered.ok ? { ok: true, value: gathered.value } : { ok: false, problem: { kind: gathered.problem.kind, reason: gathered.problem.reason }, record: gathered.problem.record }
 }
 
 /**
@@ -99,7 +136,7 @@ export function evaluationScreenshotFile(testId: string, attemptId: string, app:
   return `artifacts/${slug(testId, 40)}-${slug(attemptId, 24)}-${slug(app, 24)}-${slug(checkId, 32)}.png`
 }
 
-type Held = { ok: true; value: HeldEvidence } | { ok: false; problem: EvidenceProblem }
+type Held = { ok: true; value: HeldPiece } | { ok: false; problem: EvidenceProblem }
 
 function textEvidence(id: string, selector: Extract<EvidenceSelector, { kind: 'text' }>, context: PagesContext): Held {
   const text = context.redact(selector.text)
@@ -113,14 +150,22 @@ function textEvidence(id: string, selector: Extract<EvidenceSelector, { kind: 't
 
 // The page is only read. A page that is gone or does not answer leaves the check without its evidence, which says
 // nothing about the app.
-async function screenshotEvidence(id: string, selector: Extract<EvidenceSelector, { kind: 'screenshot' | 'recording' }>, options: GatherOptions): Promise<Held> {
+async function screenshotEvidence(id: string, selector: Extract<EvidenceSelector, { kind: 'screenshot' }>, options: GatherOptions): Promise<Held> {
   const { context, pages, checkId, timeoutMs, stop } = options
   const [first] = pages
   const app = selector.app ?? first?.app
-  if (selector.kind === 'recording') return refused(`Evidence from a recorded step needs recordings, which Retest does not make yet. Use { capture: 'screenshot' } or text.`)
   const page = pages.find((each) => each.app === app)
   if (app === undefined || page === undefined) return refused(`The check names the app ${JSON.stringify(app ?? '')}, which this test does not use.`)
   if (!context.connected(page.browser)) return missing(`The browser of ${app} was gone, so Retest captured no screenshot.`)
+  const identity = { testId: context.testId, attemptId: context.attemptId, app, sessionId: page.session.sessionId }
+  const source = screenshotSource(page.session.runtime)
+  const askedUs = context.pixels?.clock()
+  const before = pixelRefusal(context, identity, source)
+  if (before !== undefined) return refused(before)
+  const afterCapture = (capturedSource: CaptureSourceName | undefined): string | undefined => {
+    if (askedUs === undefined) return undefined
+    return pixelRefusal(context, identity, capturedSource, { earliestUs: askedUs, arrivedUs: context.pixels?.clock() ?? askedUs })
+  }
   if (page.page instanceof NativePageAdapter) {
     if (page.session.owner.testId !== context.testId || page.session.owner.attemptId !== context.attemptId || page.session.owner.app !== app) return refused('The native page belongs to another test, attempt or app.')
     const capture = await bounded(page.page.capture(timeoutMs), timeoutMs, stop)
@@ -128,7 +173,8 @@ async function screenshotEvidence(id: string, selector: Extract<EvidenceSelector
     if (capture.status === 'timed_out') return missing(`Taking the native screenshot of ${app} took longer than ${timeoutMs} ms.`)
     if (capture.status === 'failed') return missing(`Retest could not take a native screenshot of ${app}: ${context.redact(errorMessage(capture.error))}`)
     if (!capture.value.ok) return missing(context.redact(capture.value.failure.message))
-    const identity = { testId: context.testId, attemptId: context.attemptId, app, sessionId: page.session.sessionId }
+    const after = afterCapture(capture.value.capture.source)
+    if (after !== undefined) return refused(after)
     const held = freezeNativeScreenshot(id, capture.value.capture, identity, context, checkId, options.limits)
     return held
   }
@@ -136,6 +182,8 @@ async function screenshotEvidence(id: string, selector: Extract<EvidenceSelector
   if (shot.status === 'stopped') return missing('The check was stopped while Retest took its screenshot.')
   if (shot.status === 'timed_out') return missing(`Taking the screenshot of ${app} took longer than ${timeoutMs} ms.`)
   if (shot.status === 'failed') return missing(`Retest could not take a screenshot of ${app}: ${context.redact(errorMessage(shot.error))}`)
+  const after = afterCapture(source)
+  if (after !== undefined) return refused(after)
   const capturedAt = new Date().toISOString()
   const clock = capturedClock(context)
   const data = Uint8Array.from(shot.value)
@@ -147,13 +195,20 @@ async function screenshotEvidence(id: string, selector: Extract<EvidenceSelector
   } catch (error) {
     return refused(`Retest could not save the screenshot of ${app}, so it did not send it: ${errorMessage(error)}`)
   }
-  const sessionId = formatSessionId(context.attemptId, app)
-  const source = screenshotSource(page.session.runtime)
   const judged: JudgedEvidence = { id, kind: 'image', mediaType: 'image/png', data, width: size.width, height: size.height, app, capturedAt }
-  const identity = { testId: context.testId, app, sessionId, attemptId: context.attemptId }
   const captured = { capturedAt, ...clock, ...(source === undefined ? {} : { source }) }
   const record: EvidenceRecord = { id, kind: 'screenshot', ...identity, ...captured, path, sha256: sha256(data), bytes: data.byteLength, ...size }
   return { ok: true, value: { judged, record } }
+}
+
+// Text redaction cannot make pixels safe. A capture can overlap a withheld stretch even when it was allowed before
+// the request, so the policy sees both the request and the whole capture span before any bytes are saved or sent.
+function pixelRefusal(context: PagesContext, identity: RecordIdentity, source: CaptureSourceName | undefined, span?: CaptureSpan): string | undefined {
+  const { pixels } = context
+  if (pixels === undefined) return undefined
+  if (source === undefined) return `Retest does not know what takes a screenshot of ${identity.app}, so its capture policy withheld it.`
+  const decision = pixels.decide({ identity, use: 'evaluation', source, ...(span === undefined ? {} : { span }) })
+  return decision.capture ? undefined : context.redact(decision.message)
 }
 
 /** Freeze a parent-owned native capture as pixels. Text redaction does not alter PNGs. */

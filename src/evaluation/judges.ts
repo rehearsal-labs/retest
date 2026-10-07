@@ -1,6 +1,6 @@
 import type { LoadedAdapter, LoadedEvaluation, LoadedJudge, MakeEvaluator } from '../config/read-evaluation.ts'
 import type { LoadedSecretSource } from '../config/loaded.ts'
-import type { EvidenceKind } from '../protocol/evaluation.ts'
+import type { EvidenceKind, EvidenceSelector } from '../protocol/evaluation.ts'
 import type { Redactor } from '../runner/redactor.ts'
 import type { EvaluationRequest, EvaluatorIdentity } from './contract.ts'
 import { createRequire } from 'node:module'
@@ -181,7 +181,8 @@ export class Judges {
     if (read.status === 'done') return { ok: false, problem: `${label} is shorter than ${minCredentialLength} characters, too short to redact safely.` }
     if (read.status === 'timed_out') return { ok: false, problem: `${label} was not read within ${timeoutMs} ms.` }
     if (read.status === 'stopped') return { ok: false, problem: `${label} was not read: the run ended first.` }
-    return { ok: false, problem: `Retest could not read ${label.charAt(0).toLowerCase()}${label.slice(1)}: ${this.#redactor.redact(errorMessage(read.error))}` }
+    // A reader that failed has supplied no value for redaction. Its error may contain that unknown credential.
+    return { ok: false, problem: `Retest could not read ${label.charAt(0).toLowerCase()}${label.slice(1)}: the credential reader failed; its error text was withheld because it may contain credentials.` }
   }
 
   #problem(judge: LoadedJudge, detail: string): string {
@@ -192,6 +193,18 @@ export class Judges {
 /** Whether a judge takes a kind of evidence. A judge takes only what its `accepts` lists: nothing stands in for an image. */
 export function judgeAccepts(judge: LoadedJudge, kind: EvidenceKind): boolean {
   return judge.accepts.includes(kind)
+}
+
+/**
+ * The kind a judge must accept to receive a piece of evidence: a screenshot is `images`, a recording's frames are
+ * `frames`, and text and diagnostics records, which reach the judge as text, are `text`.
+ *
+ * @example evidenceKindOf({ kind: 'recording', step: 'save' }) // 'frames'
+ */
+export function evidenceKindOf(selector: EvidenceSelector): EvidenceKind {
+  if (selector.kind === 'screenshot') return 'images'
+  if (selector.kind === 'recording') return 'frames'
+  return 'text'
 }
 
 type LoadedFactory = { ok: true; make: MakeEvaluator } | { ok: false; problem: string }
