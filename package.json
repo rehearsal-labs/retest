@@ -40,6 +40,11 @@
       "types": "./dist/playwright/index.d.ts",
       "default": "./dist/playwright/index.js"
     },
+    "./agent": {
+      "retest-source": "./src/agent/index.ts",
+      "types": "./dist/agent/index.d.ts",
+      "default": "./dist/agent/index.js"
+    },
     "./evaluation/ai-sdk": {
       "retest-source": "./src/evaluation/ai-sdk.ts",
       "types": "./dist/evaluation/ai-sdk.d.ts",
@@ -48,7 +53,14 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "media/Cargo.toml",
+    "media/Cargo.lock",
+    "media/build.rs",
+    "media/src/*.rs",
+    "LICENSE",
+    "src/cli/install/media-notices.txt",
+    "src/cli/install/licences/**"
   ],
   "publishConfig": {
     "access": "public",

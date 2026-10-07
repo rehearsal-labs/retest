@@ -1,6 +1,6 @@
 # Handoff: speed, workers and Playwright compatibility
 
-2 October 2026. Written for the session that continues this work. It says what commit `09af8f2` holds, how to check it, what was decided and why, what is not built, and what cost time. Every number and every decision in full is in [plan.md](plan.md) beside this file. The months ahead are in [docs/roadmap.md](../../roadmap.md).
+2 October 2026. Written for the session that continues this work. It says what commit `09af8f2` holds, how to check it, what was decided and why, what is not built, and what cost time. Every number and every decision in full is in [plan.md](plan.md) beside this file. What comes next, in order, is in [docs/roadmap.md](../../roadmap.md).
 
 ## State
 
@@ -120,7 +120,7 @@ All additive, `schemaVersion` stays 1.
 
 ## Next
 
-The roadmap orders the months. The three things nearest to hand:
+The roadmap orders the work. The three things nearest to hand:
 
 1. The next compatibility slice, so the `npm init playwright` demo file runs: chained locators, `nth`, `filter`, CSS, `getByPlaceholder`, `.not`, `toHaveClass`, `toBeChecked`, `toBeEmpty`, `toContainText`, `dblclick`, `page.reload` and `page.waitForFunction`.
 2. `lock`, and the measurement of what a fresh renderer process costs each test, which is what both tools pay under load.

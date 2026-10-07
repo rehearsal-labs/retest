@@ -1,6 +1,6 @@
-# Roadmap, October 2026 to March 2027
+# Roadmap
 
-2 October 2026. A proposal for review. Nothing here is approved, and the months are targets, not promises. It orders work the existing plans already describe, and cites them: the design in `docs/plans/developer-experience/design.md` as [D1] to [D42], milestone 3 in `docs/plans/milestone-3/build-plan.md` as [M3-1] onwards, and the speed and compatibility plan in `docs/plans/speed/plan.md` as [S1] to [S14] and [C1] to [C13]. Where things stand today is in `docs/plans/speed/handoff.md`.
+A proposal for review. Nothing here is approved. It gives an order, not a schedule: no step has a date, and the work goes at the pace it goes. It orders work the existing plans already describe, and cites them: the design in `docs/plans/developer-experience/design.md` as [D1] to [D42], milestone 3 in `docs/plans/milestone-3/build-plan.md` as [M3-1] onwards, and the speed and compatibility plan in `docs/plans/speed/plan.md` as [S1] to [S14] and [C1] to [C13]. Where things stand is in `docs/plans/speed/handoff.md`.
 
 ## The aim
 
@@ -10,11 +10,11 @@ Retest is to Playwright what Bun is to Node. That is three things, in the order 
 2. **It is faster, and a pass means more.** Measured, with the script published, and with Retest's judgement behind every pass.
 3. **It goes where Playwright does not.** Native mobile and desktop apps, and AI checks, in the same test.
 
-Three rules hold in every month. No speed claim before it is measured. Nothing loosens what a pass means. No browser, platform or compatibility is claimed before it is exercised and verified [AGENTS.md].
+Three rules hold at every step. No speed claim before it is measured. Nothing loosens what a pass means. No browser, platform or compatibility is claimed before it is exercised and verified [AGENTS.md].
 
 ## Where Retest is
 
-| | Today |
+| | State |
 | --- | --- |
 | Browsers | Chromium, Chrome and Edge. No Firefox, no WebKit |
 | Platforms | macOS, and Linux in a container. No Windows |
@@ -34,9 +34,9 @@ Three rules hold in every month. No speed claim before it is measured. Nothing l
 | AI | Judged checks and evals |
 | Proof | Releases, the benchmark page, the compatibility table |
 
-The tracks touch different code, so separate sessions can run them side by side. What cannot be run in parallel is deciding: each month below lists the decisions it waits on.
+The tracks touch different code, so separate sessions can run them side by side. What cannot be run in parallel is deciding: each step below lists the decisions it waits on.
 
-## October 2026: a base people can try
+## Step 1. A base people can try
 
 | Item | Track | Done when |
 | --- | --- | --- |
@@ -48,9 +48,9 @@ The tracks touch different code, so separate sessions can run them side by side.
 | What a fresh renderer process costs each test | Speed | Measured in real Chrome and written down as a fact, with what follows from it |
 | The benchmark page | Proof | The full matrix, five runs, on macOS and in the Linux container, with the script and the rows where Retest loses |
 
-Waits on: when 0.1.0 goes out, whether parallel stays the default, and what to do with `pnpm-lock.yaml`.
+Waits on: whether 0.1.0 goes out now, whether parallel stays the default, and what to do with `pnpm-lock.yaml`.
 
-## November 2026: ordinary Playwright suites run
+## Step 2. Ordinary Playwright suites run
 
 | Item | Track | Done when |
 | --- | --- | --- |
@@ -60,11 +60,11 @@ Waits on: when 0.1.0 goes out, whether parallel stays the default, and what to d
 | Custom fixtures, `test.extend` [D15] | Core | Retest's own API and the compatibility layer share one implementation |
 | `retest report`, an HTML file, and JUnit output [D26, D41] | Proof | One file a person can open, and a CI system can read the other |
 | Watch mode with a kept browser [S7] | Speed | A warm rerun of one test in 300 ms or less |
-| Windows | Reach | A decision first: what stops it today, and whether it is in or out |
+| Windows | Reach | A decision first: what stops it, and whether it is in or out |
 
 Waits on: findings as `passed` or failed by default, `--playwright` as a flag or automatic, and the three suites.
 
-## December 2026: the edges, and agents
+## Step 3. The edges, and agents
 
 | Item | Track | Done when |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ Waits on: findings as `passed` or failed by default, `--playwright` as a flag or
 
 Waits on: which judge providers ship first, and whether fast mode is on the command line or for hosts only.
 
-## January 2027: a second browser, and the first phone
+## Step 4. A second browser, and the first phone
 
 | Item | Track | Done when |
 | --- | --- | --- |
@@ -87,7 +87,7 @@ Waits on: which judge providers ship first, and whether fast mode is on the comm
 
 Waits on: which Android devices are in the lab, and how they are leased.
 
-## February and March 2027: one test across web, mobile and desktop
+## Step 5. One test across web, mobile and desktop
 
 | Item | Track | Done when |
 | --- | --- | --- |
@@ -105,22 +105,22 @@ Waits on: which Android devices are in the lab, and how they are leased.
 
 ## What decides the order
 
-- **A host comes first.** Milestone 3 wave 2 is what a host needs before it runs Retest for customers, so it leads October.
+- **A host comes first.** Milestone 3 wave 2 is what a host needs before it runs Retest for customers, so it leads.
 - **Running what people have comes before reaching further.** Until a Playwright suite runs, trying Retest costs a rewrite. Stages A to C are that cost coming down.
-- **The reach is the reason.** Native apps are where Playwright does not go, and they are the README's promise. They sit in January to March because each platform is new driver work that tokens alone do not buy: devices, simulators, signing and leases.
+- **The reach is the reason.** Native apps are where Playwright does not go, and they are the README's promise. They come after compatibility because each platform is new driver work that tokens alone do not buy: devices, simulators, signing and leases.
 
-If the headline matters more than Playwright suites, the first swap is Android from January into November, and compatibility stage B a month later. That is a decision for the founder, and the first one to make.
+If the headline matters more than Playwright suites, the first swap is Android moving up from step 4 to step 2, with compatibility stage B after it. That is a decision for the founder, and the first one to make.
 
 ## Decisions this roadmap waits on
 
-| Decision | Needed by |
+| Decision | Needed before |
 | --- | --- |
-| Compatibility first, or native first | Before November is planned |
-| When 0.1.0 is published | October |
-| Parallel by default, or `--workers 1` by default | October |
-| A test with findings: `passed`, or failed | November |
-| `--playwright` as a flag, or automatic | November |
-| The three public Playwright suites | November |
-| Windows in or out | November |
-| Judge providers for `toMeet` | December |
-| The device lab for Android and iOS | January |
+| Compatibility first, or native first | Step 2 begins |
+| Whether 0.1.0 is published now | Step 1 ends |
+| Parallel by default, or `--workers 1` by default | Step 1 ends |
+| A test with findings: `passed`, or failed | Findings are built |
+| `--playwright` as a flag, or automatic | Stage B is built |
+| The three public Playwright suites | Stage B is built |
+| Windows in or out | Step 2 ends |
+| Judge providers for `toMeet` | Judged checks are built |
+| The device lab for Android and iOS | Step 4 begins |
