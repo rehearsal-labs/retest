@@ -1,9 +1,9 @@
 import type { NavigationCause } from '../../protocol/page-facts.ts'
 import type { TestResult } from '../../protocol/result.ts'
-import type { EventOfType, TestEvent } from '../../reporters/run-record.ts'
+import type { EventOfType } from '../../reporters/run-record.ts'
 import type { Style } from '../../reporters/style.ts'
 import type { RunTargets } from '../../reporters/targets.ts'
-import type { Look, TimelineEntry } from './looks.ts'
+import type { Look, TimelineEntry, TimelineEvent } from './looks.ts'
 import { join } from 'node:path'
 import { describeConsole, describeNetwork } from '../../diagnostics/report.ts'
 import { describeEvaluation, evaluationDetails } from '../../evaluation/report.ts'
@@ -33,7 +33,7 @@ type Described = [string, ...string[]]
  *
  * @example stdout.write(renderTimeline(test, events, { style, runFolder, targets }))
  */
-export function renderTimeline(test: TestResult, events: TestEvent[], options: TimelineOptions): string {
+export function renderTimeline(test: TestResult, events: TimelineEvent[], options: TimelineOptions): string {
   const { style } = options
   const label = describeVariant(test.variant, options.targets)
   const variant = label === undefined ? '' : `  ${style.cyan(label)}`
@@ -63,7 +63,7 @@ export function renderTimeline(test: TestResult, events: TestEvent[], options: T
   return `${lines.join('\n')}\n`
 }
 
-function isPageEvent(event: TestEvent): boolean {
+function isPageEvent(event: TimelineEvent): boolean {
   switch (event.type) {
     case 'action.completed':
     case 'action.failed':
@@ -73,6 +73,12 @@ function isPageEvent(event: TestEvent): boolean {
     case 'host_check.failed':
     case 'diagnostics.started':
     case 'diagnostics.finished':
+    case 'recording.started':
+    case 'recording.finished':
+    case 'capture.withheld':
+    case 'capture.resumed':
+    case 'capture.native_entry':
+    case 'capture.masked_entry':
       return true
     default:
       return false
@@ -148,6 +154,36 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       return [style.dim('diagnostics capture started')]
     case 'diagnostics.finished':
       return [style.dim(`diagnostics ${describeConsole(event.diagnostics.console)} · ${describeNetwork(event.diagnostics.network)}`)]
+    case 'recording.started':
+      return [`recording ${event.number} started: ${event.source}, ${event.mode}, ${event.fps} fps`, `session ${event.sessionId}`, `output ${join(options.runFolder, event.path)}`]
+    case 'recording.finished': {
+      const record = event.recording
+      return [`recording ${record.sequence} ${record.status}${record.removed === undefined ? '' : ', removed after the attempt passed'}`, `session ${record.sessionId}`, ...record.gaps.map(gap => `${gap.code}: ${gap.message}`), ...(record.path === undefined ? [] : [`video ${join(options.runFolder, record.path)}`]), ...(record.partialPath === undefined ? [] : [`partial file ${join(options.runFolder, record.partialPath)}`])]
+    }
+    case 'media.started':
+      return [`media started: pid ${event.media.pid}, start ${event.media.start}, protocol ${event.media.protocol}`]
+    case 'media.failed':
+      return [style.yellow(`media setup failed: ${event.code}: ${event.message}`)]
+    case 'media.lost':
+      return [style.yellow(`media lost: pid ${event.pid}, ${event.recordings} recordings, exit ${event.exit.code ?? event.exit.signal ?? 'unknown'}${event.restart ? ', replacement allowed' : ', no replacement allowed'}`)]
+    case 'media.closed':
+      return [`media closed: pid ${event.pid}${event.forced ? ', forced' : ''}`, ...(event.problems ?? [])]
+    case 'media.leftovers':
+      return [`media leftovers from ${event.previousRunId}: ${event.status}, ${event.removed.length} removed, ${event.skipped} skipped`, event.reference]
+    case 'capture.withheld':
+      return [style.yellow(`capture withheld for ${secretPlaceholder(event.secret)}: ${event.cause}`), `session ${event.sessionId}, from ${event.fromUs} us`, ...(event.exposedFromUs === undefined ? [] : [`possible exposure from ${event.exposedFromUs} us`])]
+    case 'capture.resumed':
+      return [`capture resumed for ${secretPlaceholder(event.secret)}: ${event.reason ?? event.endedBy}`, `session ${event.sessionId}, withheld from ${event.fromUs} to ${event.untilUs} us`]
+    case 'capture.native_entry':
+      return [`${event.branch}: ${secretPlaceholder(event.secret)}`, `session ${event.sessionId}, at ${event.atUs} us`]
+    case 'capture.masked_entry':
+      return [`capture continued during masked entry of ${secretPlaceholder(event.secret)}`, `session ${event.sessionId}, at ${event.atUs} us`, ...(event.readBack === undefined ? [] : ['secure masked read-back: length_matched'])]
+    case 'artifact.removal_requested':
+      return [`retention removal requested: ${event.kind} ${event.path}`, `${event.reason}, ${event.moment}, ${event.bytes} bytes`]
+    case 'artifact.removed':
+      return [`retention removed: ${event.kind} ${event.path}`, `${event.reason}, ${event.moment}, ${event.bytes} bytes`]
+    case 'artifact.removal_failed':
+      return [style.yellow(`retention removal failed: ${event.kind} ${event.path}`), `${event.reason}, ${event.moment}: ${event.message}`]
     case 'test.finished': {
       const duration = event.status === 'not_run' || event.status === 'skipped' ? '' : `  ${style.dim(formatDuration(event.durationMs))}`
       return [`${statusLabel(event.status).toLowerCase()}${duration}`]

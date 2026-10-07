@@ -162,3 +162,19 @@ describe('agent reporter', () => {
     assert.ok(!render(failingRun(root)).includes('\u001b['))
   })
 })
+
+test('the agent report names missing evidence separately from a passing test', () => {
+  const events = passingRun(root)
+  const result = resultOf(events)
+  const first = result.files[0]?.tests[0]
+  assert.ok(first)
+  const gap = { code: 'media_process_lost' as const, message: 'The media process ended.' }
+  first.evidenceStatus = { state: 'unavailable', gaps: [gap] }
+  result.evidenceStatus = { state: 'unavailable', attempts: { complete: 0, partial: 0, unavailable: 1, notRequested: 1 }, gaps: [gap] }
+  const output = render(events, result)
+  assert.match(output, /evidence: unavailable/)
+  assert.match(output, /evidence unavailable .*saves a task/)
+  assert.match(output, /media_process_lost: The media process ended\./)
+  assert.match(output, /2 passed/)
+  assert.equal(result.exitCode, 0)
+})

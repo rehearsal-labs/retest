@@ -1,6 +1,8 @@
 import type { SourceLocation } from '../protocol/failures.ts'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstat, realpath } from 'node:fs/promises'
+import { readRecordText } from '../shared/regular-file.ts'
 import { errorCode } from '../shared/error-code.ts'
 import { splitLines } from './diff.ts'
 
@@ -46,4 +48,33 @@ function describeReadError(error: unknown): string {
   const code = errorCode(error)
   if (code === 'ENOENT') return 'the file is gone'
   return code === undefined ? 'the file could not be read' : `the file could not be read (${code})`
+}
+
+/** Reads approved report source without following links, with the regular-file reader's byte bound. */
+export async function readReportCodeFrame(rootDir: string, location: SourceLocation, redact: (text: string) => string): Promise<CodeFrame> {
+  const root = await realpath(rootDir)
+  const path = resolve(root, location.file)
+  const within = relative(root, path)
+  if (within === '' || within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) return { ok: false, problem: 'the file is outside the project folder' }
+  const entry = await lstat(path)
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) return { ok: false, problem: 'the source is not a regular file with one name' }
+  const parents: { path: string; dev: number; ino: number }[] = []
+  for (let parent = dirname(path); ; parent = dirname(parent)) {
+    const stats = await lstat(parent)
+    if (!stats.isDirectory() || stats.isSymbolicLink()) return { ok: false, problem: 'a source folder is not an owned regular folder' }
+    parents.push({ path: parent, dev: stats.dev, ino: stats.ino })
+    if (parent === root) break
+  }
+  const verify = async (): Promise<void> => {
+    const current = await lstat(path)
+    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || current.dev !== entry.dev || current.ino !== entry.ino) throw new Error('the source file changed while it was read')
+    for (const parent of parents) {
+      const stats = await lstat(parent.path)
+      if (!stats.isDirectory() || stats.isSymbolicLink() || stats.dev !== parent.dev || stats.ino !== parent.ino) throw new Error('a source folder changed while it was read')
+    }
+  }
+  const read = await readRecordText(path, { afterCheck: verify, afterOpen: verify })
+  await verify()
+  if (read.kind !== 'text') return { ok: false, problem: read.kind === 'missing' ? 'the file is gone' : read.problem }
+  return codeFrame(redact(read.text), location.line)
 }

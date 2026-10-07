@@ -167,3 +167,32 @@ describe('inspect a run cut off during its host checks', () => {
 function renumbered(events: RetestEvent[]): RetestEvent[] {
   return events.map((event, sequence) => ({ ...event, sequence, elapsedMs: sequence * 10, time: new Date(Date.UTC(2026, 8, 30, 9, 15, 0, sequence * 10)).toISOString() }))
 }
+
+test('inspect associates variantless retention records by attempt and distinguishes request from completion', async () => {
+  const events = hostChecksPassRun(root)
+  const started = events.find((event) => event.type === 'test.started')
+  assert.ok(started?.type === 'test.started')
+  const requested: RetestEvent = { schemaVersion: 1, runId: started.runId, sequence: events.length, time: started.time, elapsedMs: 910, origin: 'parent', type: 'artifact.removal_requested', testId: started.testId, attemptId: started.attemptId, path: 'artifacts/recording.mp4', kind: 'recording', reason: 'passed_attempt_recording', moment: 'attempt_finished', bytes: 5 }
+  const completed: RetestEvent = { ...requested, type: 'artifact.removed', sequence: events.length + 1, elapsedMs: 920 }
+  const shown = await inspect([folder('retention-completed', renumbered([...events, requested, completed])), '--test', started.testId])
+  assert.equal(shown.code, 0, shown.stderr)
+  const request = shown.stdout.indexOf('retention removal requested: recording artifacts/recording.mp4')
+  const completion = shown.stdout.indexOf('retention removed: recording artifacts/recording.mp4')
+  assert.ok(request >= 0)
+  assert.ok(completion > request)
+})
+
+for (const reason of ['the field reads back masked', 'the field that received the secret is gone'] as const) {
+  test(`inspect names native resume: ${reason}`, async () => {
+    const events = hostChecksPassRun(root)
+    const started = events.find(event => event.type === 'test.started')
+    assert.ok(started?.type === 'test.started')
+    const { schemaVersion, runId, sequence, time, elapsedMs, origin, testId, attemptId, variant, variantKey } = started
+    assert.ok(variant)
+    assert.ok(variantKey)
+    const resumed: RetestEvent = { schemaVersion, runId, sequence, time, elapsedMs, origin, testId, attemptId, variant, variantKey, type: 'capture.resumed', sessionId: `${started.attemptId}:desk`, session: 'desk', secret: 'password', endedBy: reason === 'the field reads back masked' ? 'field_masked' : 'field_gone', reason, fromUs: 10, untilUs: 20 }
+    const shown = await inspect([folder(`resume-${resumed.endedBy}`, renumbered(edited(events, event => event.type === 'test.finished' ? [resumed, event] : [event]))), '--test', started.testId])
+    assert.equal(shown.code, 0, shown.stderr)
+    assert.ok(shown.stdout.includes(`capture resumed for {{password}}: ${reason}`), shown.stdout)
+  })
+}

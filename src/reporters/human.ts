@@ -1,4 +1,5 @@
 import type { TestStatus } from '../protocol/events.ts'
+import type { EvidenceGap, EvidenceStatus, RunEvidenceStatus } from '../protocol/recording.ts'
 import type { RunResult } from '../protocol/result.ts'
 import type { ChildOutput } from '../runner/contract.ts'
 import type { Reporter } from './reporter.ts'
@@ -75,6 +76,8 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
     options.stdout.write(text)
   }
   let headed = false
+  const shownGaps = new Set<string>()
+  const gapKey = (attemptId: string, gap: EvidenceGap): string => JSON.stringify([attemptId, gap.code, gap.app, gap.sessionId, gap.message])
 
   const head = (): void => {
     if (headed) return
@@ -128,6 +131,9 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
           head()
           const test = record.test(event.testId, event.variantKey)
           write(testLines(event, test, { style, targets: runTargets(record) }))
+          if (event.evidenceStatus?.state === 'partial' || event.evidenceStatus?.state === 'unavailable') {
+            for (const gap of event.evidenceStatus.gaps ?? []) shownGaps.add(gapKey(event.attemptId, gap))
+          }
         }
       }
     },
@@ -145,6 +151,25 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
       }
       write(notRunLines(result, targets, style))
       write(runFailureLines(result, style))
+      // A cut-off recording's gaps exist only in the rebuilt result. Print those too, without repeating
+      // reasons already shown under a finished test, and retain the attempt and app they belong to.
+      for (const file of result.files) for (const test of file.tests) {
+        const gaps = [...(test.evidenceStatus?.gaps ?? []), ...(test.recordings ?? []).flatMap(recording => recording.gaps)]
+          .filter(gap => {
+            const key = gapKey(test.attemptId, gap)
+            if (shownGaps.has(key)) return false
+            shownGaps.add(key)
+            return true
+          })
+        if (gaps.length > 0) {
+          const variant = variantLabel(test.variant, targets)
+          write(`\n  ${style.yellow('!')} ${test.file} › ${test.name}${variant === undefined ? '' : ` [${variant}]`}\n`)
+          write(gapLines(gaps, style))
+        }
+      }
+      if ((result.evidenceStatus?.gaps?.length ?? 0) > 0) {
+        write(`\n  ${style.yellow('!')} Run evidence\n${gapLines(result.evidenceStatus?.gaps ?? [], style)}`)
+      }
       if (result.narrowed !== undefined) write(`\n  ${style.yellow('!')} ${describeNarrowed(result.narrowed)}\n`)
       write(summaryLines(result, { record, targets, runFolder, style }))
     },
@@ -192,7 +217,18 @@ function testLines(event: EventOfType<'test.finished'>, test: TestRecord | undef
   // An advisory AI check that did not pass is a warning, shown whatever the test's status.
   const warnings = (test?.events ?? []).flatMap((noted) => (noted.type === 'evaluation.finished' && noted.attemptId === event.attemptId && noted.evaluation.warning !== undefined ? [noted.evaluation.warning] : []))
   const warned = warnings.map((warning) => `      ${style.yellow('!')} ${warning}\n`)
-  return `    ${marks[event.status]} ${name}${setup}${variant}  ${style.dim(after)}\n${notes.join('')}${warned.join('')}`
+  return `    ${marks[event.status]} ${name}${setup}${variant}  ${style.dim(after)}\n${notes.join('')}${warned.join('')}${evidenceLines(event.evidenceStatus, style)}`
+}
+
+// Evidence that is not complete is said under its test, apart from the test's mark, with each thing it lacks; complete
+// evidence, or none asked for, adds nothing.
+function evidenceLines(status: EvidenceStatus | undefined, style: Style): string {
+  if (status === undefined || status.state === 'complete' || status.state === 'not_requested') return ''
+  return `      ${style.yellow('!')} ${style.dim(`evidence ${status.state}`)}\n${gapLines(status.gaps ?? [], style)}`
+}
+
+function gapLines(gaps: readonly EvidenceGap[], style: Style): string {
+  return gaps.map(gap => `        ${style.dim(`${gap.app === undefined ? '' : `${gap.app}: `}${gap.code}: ${gap.message}`)}\n`).join('')
 }
 
 // What an attempt took and, when it had to wait, who held it as it asked: a line of its own under the first.
@@ -237,6 +273,7 @@ function summaryLines(result: RunResult, context: SummaryContext): string {
   if (diagnostics !== undefined) rows.push(['Diagnostics', [...diagnostics, diagnosticsLocation(context.runFolder)].join(' · ')])
   const files = fileProblemCounts(result)
   if (files.length > 0) rows.push(['Files', files.join(' · ')])
+  if (result.evidenceStatus !== undefined) rows.push(['Evidence', describeEvidence(result.evidenceStatus)])
   rows.push(['Time', formatDuration(result.durationMs)], ['Output', context.runFolder])
   const notes = runNotes(result)
   const exit = `${result.exitCode}${notes.length === 0 ? '' : ` · ${notes.join(', ')}`}`
@@ -245,6 +282,14 @@ function summaryLines(result: RunResult, context: SummaryContext): string {
   const lines = rows.map(([label, value]) => `  ${label.padEnd(width)}${value}`)
   const perTarget = summaries.length > 1 ? `\n${targetLines(summaries, style).join('\n')}\n` : ''
   return `${perTarget}\n${lines.join('\n')}\n\n`
+}
+
+// The run's evidence on one line: its state, how many attempts ended each way, and whether the run required it.
+function describeEvidence(status: RunEvidenceStatus): string {
+  const { complete, partial, unavailable, notRequested } = status.attempts
+  const counts = [[complete, 'complete'], [partial, 'partial'], [unavailable, 'unavailable'], [notRequested, 'not recorded']] as const
+  const parts = counts.flatMap(([count, label]) => (count === 0 ? [] : [`${count} ${label}`]))
+  return [status.state === 'not_requested' ? 'nothing recorded' : status.state, ...parts, ...(status.required === true ? ['required'] : [])].join(' · ')
 }
 
 // One line per target, as the columns of a table: the variant, its browser, how its tests ended and their time.

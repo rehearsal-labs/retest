@@ -70,13 +70,25 @@ function renderAgentReport(result: RunResult, record: RunRecord, runFolder: stri
   const targets = runTargets(record, result)
   const cards = failureCards(result, { record, runFolder, targets })
   const narrowed = result.narrowed === undefined ? [] : [`warning: ${describeNarrowed(result.narrowed)}`]
-  const lines = [firstLine(result, targets), ...narrowed, ...runFailureLines(result), ...diagnosticsLines(result, runFolder)]
+  const lines = [firstLine(result, targets), ...narrowed, ...runFailureLines(result), ...diagnosticsLines(result, runFolder), ...evidenceLines(result)]
   for (const card of cards) lines.push(...cardLines(card))
   for (const test of result.files.flatMap((file) => file.tests)) if (test.status === 'passed') lines.push(...warningLines(test))
   for (const test of testsNotRun(result)) lines.push(...notRunLines(test, notRunReason(result, test), targets))
   const first = cards.find((card) => card.test !== undefined)?.test
   lines.push(`next: ${formatInspectCommand({ runFolder, testId: first?.testId, targets: first?.targets, json: true })}`)
   return `${lines.join('\n')}\n`
+}
+
+function evidenceLines(result: RunResult): string[] {
+  if (result.evidenceStatus === undefined) return []
+  const lines = [`evidence: ${result.evidenceStatus.state}${result.evidenceStatus.required ? ', required' : ''}`]
+  for (const test of result.files.flatMap(file => file.tests)) {
+    const status = test.evidenceStatus
+    if (status === undefined || status.state === 'complete' || status.state === 'not_requested') continue
+    lines.push(`evidence ${status.state} ${formatLine(test.location)} ${titleWithin(test.name, test.describePath)}`)
+    lines.push(...(status.gaps ?? []).flatMap(gap => messageLines(`${gap.code}: ${gap.message}`).map(line => `  ${line}`)))
+  }
+  return lines
 }
 
 function firstLine(result: RunResult, targets: RunTargets): string {

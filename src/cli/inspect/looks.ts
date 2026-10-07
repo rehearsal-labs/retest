@@ -4,13 +4,15 @@ import { isDeepStrictEqual } from 'node:util'
 import { quoteRecorded } from '../../reporters/format.ts'
 
 export type Look = EventOfType<'observation'>
+export type TimelineEvent = TestEvent | EventOfType<'media.started' | 'media.failed' | 'media.lost' | 'media.closed' | 'media.leftovers' | 'artifact.removal_requested' | 'artifact.removed' | 'artifact.removal_failed'>
+
 type Assertion = EventOfType<'assertion.passed'> | EventOfType<'assertion.failed'>
 
 /**
  * One line of a timeline: an event with the looks it rested on, which only a locator assertion has, or looks no
  * assertion claimed, such as those of a check the run stopped in the middle of.
  */
-export type TimelineEntry = { kind: 'event'; event: Exclude<TestEvent, Look>; looks: Look[] } | { kind: 'looks'; looks: Look[]; last: Look }
+export type TimelineEntry<T extends TimelineEvent = TimelineEvent> = { kind: 'event'; event: Exclude<T, Look>; looks: Look[] } | { kind: 'looks'; looks: Look[]; last: Look }
 
 /** How many matches a line lists by their text. */
 const listedItems = 3
@@ -22,7 +24,9 @@ const listedItems = 3
  *
  * @example timelineEntries(record.events).filter((entry) => entry.kind === 'looks')
  */
-export function timelineEntries(events: readonly TestEvent[]): TimelineEntry[] {
+export function timelineEntries(events: readonly TestEvent[]): TimelineEntry<TestEvent>[]
+export function timelineEntries(events: readonly TimelineEvent[]): TimelineEntry[]
+export function timelineEntries(events: readonly TimelineEvent[]): TimelineEntry[] {
   const claims = claimLooks(events)
   const claimed = new Set([...claims.values()].flat())
   const entries: TimelineEntry[] = []
@@ -43,8 +47,8 @@ export function timelineEntries(events: readonly TestEvent[]): TimelineEntry[] {
   return entries
 }
 
-function claimLooks(events: readonly TestEvent[]): Map<TestEvent, Look[]> {
-  const claims = new Map<TestEvent, Look[]>()
+function claimLooks(events: readonly TimelineEvent[]): Map<TimelineEvent, Look[]> {
+  const claims = new Map<TimelineEvent, Look[]>()
   let pending: Look[] = []
   for (const event of events) {
     if (event.type === 'observation') pending.push(event)
@@ -59,7 +63,7 @@ function claimLooks(events: readonly TestEvent[]): Map<TestEvent, Look[]> {
   return claims
 }
 
-function isLocatorAssertion(event: TestEvent): event is Assertion {
+function isLocatorAssertion(event: TimelineEvent): event is Assertion {
   return (event.type === 'assertion.passed' || event.type === 'assertion.failed') && event.locator !== undefined
 }
 

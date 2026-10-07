@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
+import { rebuildResult } from '../../src/store/rebuild-result.ts'
+import { recordedRun, recordingRecord } from './reporters-html-fixtures.ts'
 import {
   actionFailureRun,
   capture,
@@ -39,6 +41,39 @@ function render(events: RetestEvent[], options: { color?: boolean; result?: RunR
 }
 
 describe('human reporter', () => {
+  test('a JSONL reconstruction names every interrupted recording gap exactly', () => {
+    const complete = recordedRun(root)
+    const stopped = complete.slice(0, complete.findIndex(event => event.type === 'recording.finished'))
+    const result = rebuildResult(stopped)
+    const recording = result.files.flatMap(file => file.tests).flatMap(test => test.recordings ?? [])[0]
+    assert.ok(recording)
+    assert.equal(recording.gaps[0]?.code, 'run_stopped')
+    const { stdout } = render(stopped, { result })
+    for (const gap of recording.gaps) {
+      assert.ok(stdout.includes(gap.code), 'terminal identifies the exact gap code')
+      assert.ok(stdout.includes(gap.message), 'terminal preserves the exact gap reason')
+    }
+    assert.ok(stdout.includes('unavailable'))
+    assert.equal(result.complete, false)
+    assert.equal(stdout.includes('undefined'), false)
+  })
+
+  test('finished evidence and rebuilt results show each reason once, including run gaps', () => {
+    const gaps = [
+      { code: 'capture_gaps', message: 'Capture missed the first state.', app: 'web', sessionId: 'attempt:web' },
+      { code: 'frames_dropped', message: 'Two frames were dropped.', app: 'web', sessionId: 'attempt:web' },
+    ] as const
+    const events = recordedRun(root, recordingRecord({ status: 'partial', gaps: [...gaps] }))
+      .map((event): RetestEvent => event.type === 'test.finished' ? { ...event, evidenceStatus: { state: 'partial', gaps: [...gaps] } } : event)
+    const result = resultOf(events)
+    result.evidenceStatus = { state: 'partial', attempts: { complete: 0, partial: 1, unavailable: 0, notRequested: 0 }, gaps: [{ code: 'media_unavailable', message: 'The run could not finish its media worker.' }] }
+    const { stdout } = render(events, { result })
+    for (const gap of [...gaps, ...(result.evidenceStatus.gaps ?? [])]) {
+      assert.equal(stdout.split(gap.message).length - 1, 1)
+      assert.ok(stdout.includes(`${gap.code}: ${gap.message}`))
+    }
+  })
+
   test('a passing run lists each test and a summary, with no card', () => {
     const { stdout, stderr } = render(passingRun(root))
     assert.equal(stderr, '')
@@ -61,6 +96,20 @@ describe('human reporter', () => {
         '',
       ].join('\n'),
     )
+  })
+
+  test("the header counts a target's browsers whichever of them starts first", () => {
+    const spread = (numberedFirst: boolean): RetestEvent[] =>
+      passingRun(root).flatMap((event): RetestEvent[] => {
+        if (event.type !== 'browser.started') return [event]
+        const counted = { ...event, instances: 2 }
+        const numbered = { ...event, instance: 2, pid: event.pid + 1 }
+        return numberedFirst ? [numbered, counted] : [counted, numbered]
+      })
+    for (const numberedFirst of [false, true]) {
+      const lines = render(spread(numberedFirst)).stdout.split('\n').filter((line) => line.includes('Chrome'))
+      assert.deepEqual(lines, ['  retest 0.0.0  Chrome 140.0.7339.80 · 2 browsers'], numberedFirst ? 'the second browser started first' : 'the first browser started first')
+    }
   })
 
   test('prints each test as its event arrives', () => {

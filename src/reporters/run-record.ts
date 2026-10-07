@@ -5,7 +5,7 @@ import { variantKey, type Variant } from '../protocol/variant.ts'
 export type EventOfType<T extends RetestEvent['type']> = Extract<RetestEvent, { type: T }>
 
 /** An event that belongs to one test. */
-export type TestEvent = Extract<RetestEvent, { testId: string }>
+export type TestEvent = Extract<RetestEvent, { testId: string }> | (EventOfType<'artifact.removal_requested' | 'artifact.removed' | 'artifact.removal_failed'> & { testId: string; attemptId: string })
 
 /** A test as collection or its start described it, one per variant when it runs on several targets. */
 export type TestDescription = {
@@ -52,11 +52,18 @@ function resultKey(testId: string, variant?: string): string {
 /** What a run's events say so far. Reporters and `inspect` read it; it never decides an outcome. */
 export class RunRecord {
   started: EventOfType<'run.started'> | undefined
-  /** The first browser the run started. */
+  /**
+   * The first target the run started browsers for, as its first line names it: the browser that says how many the
+   * target has. A target's browsers start together, so a further one, which carries only its number, may come first.
+   */
   browser: EventOfType<'browser.started'> | undefined
   /** Every browser the run started, in order. */
   readonly browsers: EventOfType<'browser.started'>[] = []
   readonly natives: EventOfType<'native.started'>[] = []
+  /** The run's media process and what it did outside any test: its starts, failures, loss, close and leftovers found. */
+  readonly media: EventOfType<'media.started' | 'media.failed' | 'media.lost' | 'media.closed' | 'media.leftovers'>[] = []
+  /** Retention requests and their removal or failure completions. */
+  readonly removals: EventOfType<'artifact.removal_requested' | 'artifact.removed' | 'artifact.removal_failed'>[] = []
   finished: EventOfType<'run.finished'> | undefined
   outcome: EventOfType<'run.outcome'> | undefined
   /** How `test.only` narrowed the run, when it did. */
@@ -77,7 +84,7 @@ export class RunRecord {
         for (const file of event.files) this.#file(file)
         return
       case 'browser.started':
-        this.browser ??= event
+        if (event.instance === undefined) this.browser ??= event
         this.browsers.push(event)
         return
       case 'run.finished':
@@ -92,6 +99,24 @@ export class RunRecord {
       case 'app.started':
       case 'app.reused':
       case 'app.failed':
+        return
+      case 'media.started':
+      case 'media.failed':
+      case 'media.lost':
+      case 'media.closed':
+      case 'media.leftovers':
+        this.media.push(event)
+        return
+      case 'artifact.removal_requested':
+      case 'artifact.removed':
+      case 'artifact.removal_failed':
+        this.removals.push(event)
+        if (event.testId !== undefined && event.attemptId !== undefined) {
+          const scoped = { ...event, testId: event.testId, attemptId: event.attemptId }
+          const test = this.test(scoped.testId, scoped.variantKey) ?? [...this.tests.values()].find((record) => record.testId === scoped.testId && record.started?.attemptId === scoped.attemptId)
+          if (test === undefined) this.strays.push(scoped)
+          else test.events.push(scoped)
+        }
         return
       case 'collection.completed': {
         const file = this.#file(event.file)

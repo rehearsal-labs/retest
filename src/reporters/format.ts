@@ -33,6 +33,7 @@ const failureLabels: Record<FailureClass, string> = {
   evaluation_failed: 'AI check failed',
   evaluation_inconclusive: 'AI check undecided',
   evaluation_error: 'AI check error',
+  evidence_incomplete: 'Evidence incomplete',
 }
 
 export function failureLabel(failureClass: FailureClass): string {
@@ -172,8 +173,9 @@ export function describeSessions(event: { owner: string; sessions: number; waite
  *
  * @example describeSessionsReleased({ owner: 'agent-1', sessions: 2, after: 'browser_closed' }) // 'gave back 2 sessions of agent-1 once their browser closed, since their contexts could not be closed'
  */
-export function describeSessionsReleased(event: { owner: string; sessions: number; after: 'contexts_closed' | 'browser_closed' }): string {
+export function describeSessionsReleased(event: { owner: string; sessions: number; after: 'contexts_closed' | 'browser_closed' | 'run_ended' }): string {
   const given = `gave back ${plural(event.sessions, 'session')} of ${event.owner}`
+  if (event.after === 'run_ended') return `${given} as the run ended, since neither their contexts nor their app could be confirmed closed`
   return event.after === 'contexts_closed' ? `${given} once their contexts closed` : `${given} once their browser closed, since their contexts could not be closed`
 }
 

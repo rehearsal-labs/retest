@@ -3,6 +3,7 @@ import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { ObservedRecord } from '../../src/protocol/observation-record.ts'
 import type { TestResult } from '../../src/protocol/result.ts'
 import type { TestEvent } from '../../src/reporters/run-record.ts'
+import { recordEvents } from '../../src/reporters/run-record.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { describeObserved, timelineEntries } from '../../src/cli/inspect/looks.ts'
@@ -26,7 +27,7 @@ function passed(session: string, observationId?: string, locator: LocatorRecipe 
 }
 
 function events(bodies: EventBody[]): TestEvent[] {
-  return stamp(bodies).flatMap((event) => ('testId' in event ? [event] : []))
+  return stamp(bodies).filter((event): event is TestEvent => 'testId' in event && event.testId !== undefined && 'attemptId' in event && event.attemptId !== undefined)
 }
 
 function ids(entry: ReturnType<typeof timelineEntries>[number]): string[] {
@@ -123,4 +124,40 @@ describe('what a look saw', () => {
     assert.equal(describeObserved(observed('a\nb\u001b[2J\u0085')), '1 match, text "a\\nb\\u001b[2J\\u0085"')
     assert.match(describeObserved(observed('x'.repeat(5000))), /^1 match, text "x{300}"… \(300 of 5000 characters\)$/)
   })
+})
+
+
+test('the timeline names recording loss, media refusal, pixel withholding and failed retention', () => {
+  const bodies: EventBody[] = [
+    { type: 'recording.started', ...scope, sessionId: 'session-1', recordingId: 'rec-1', number: 1, source: 'chromium', mode: 'screencast', path: 'recordings/one.mp4', fps: 10, width: 10, height: 10, codec: 'h264', container: 'mp4', route: 'decoded', keepFrames: false, startedUs: 0 },
+    { type: 'recording.finished', ...scope, sessionId: 'session-1', recording: { ...scope, recordingId: 'rec-1', sequence: 1, app: 'web', sessionId: 'session-1', status: 'unavailable', gaps: [{ code: 'media_unavailable', message: 'damaged media cache' }], partialPath: 'recordings/one.partial' } },
+    { type: 'media.started', media: { pid: 4242, start: 1, version: '0.1.0', protocol: 2, build: { target: 'test', profile: 'release' }, ffmpeg: '/ffmpeg', encoder: { state: 'ready' }, owner: { pid: 4243 } } },
+    { type: 'media.lost', pid: 4242, start: 1, exit: { code: null, signal: 'SIGKILL' }, recordings: 1, restart: true },
+    { type: 'media.closed', pid: 4242, start: 1, forced: true, problems: ['encoder exit unconfirmed'] },
+    { type: 'media.leftovers', previousRunId: 'previous', folder: 'old-run', reference: 'recordings/old.mp4', status: 'invalid', removed: [], skipped: 1 },
+    { type: 'media.failed', start: 1, code: 'media_unavailable', message: 'damaged media cache' },
+    { type: 'capture.withheld', ...scope, sessionId: 'session-1', secret: 'password', cause: 'unknown', fromUs: 10 },
+    { type: 'capture.resumed', ...scope, sessionId: 'session-1', secret: 'password', endedBy: 'field_gone', fromUs: 10, untilUs: 20 },
+    { type: 'capture.masked_entry', ...scope, sessionId: 'session-1', secret: 'password', atUs: 30 },
+    { type: 'artifact.removal_requested', ...scope, kind: 'recording', path: 'recordings/one.mp4', reason: 'passed_attempt_recording', moment: 'attempt_finished', bytes: 2 },
+    { type: 'artifact.removed', ...scope, kind: 'recording', path: 'recordings/one.mp4', reason: 'passed_attempt_recording', moment: 'attempt_finished', bytes: 2 },
+    { type: 'artifact.removal_failed', ...scope, kind: 'recording', path: 'recordings/one.mp4', reason: 'passed_attempt_recording', moment: 'attempt_finished', message: 'unlink refused' },
+  ]
+  const entries = stamp(bodies).filter((event): event is import('../../src/cli/inspect/looks.ts').TimelineEvent => bodies.some(body => body.type === event.type))
+  const shown = renderTimeline({ ...scope, name: 'saves', file: 'a.retest.ts', location: { file: 'a.retest.ts', line: 1, column: 1 }, status: 'passed', durationMs: 1, assertionCount: 1, evidence: [] }, entries, { style: createStyle(false), runFolder: 'run', targets: { browsers: new Map(), apps: new Map() } })
+  for (const words of ['recording 1 started', 'media started', 'media lost', 'SIGKILL', 'media closed', 'encoder exit unconfirmed', 'media leftovers', 'invalid', 'recording 1 unavailable', 'partial file', 'media setup failed', 'damaged media cache', 'capture withheld', 'capture resumed', 'masked entry', 'retention removal requested', 'retention removal failed', 'unlink refused']) assert.ok(shown.includes(words), words)
+  assert.ok(shown.includes('retention removed: recording recordings/one.mp4'))
+  assert.ok(shown.indexOf('retention removal requested') < shown.indexOf('retention removed:'))
+  assert.ok(shown.indexOf('retention removed:') < shown.indexOf('retention removal failed'))
+})
+
+
+test('test-scoped retention reaches the timeline while run-scoped retention stays in the run record', () => {
+  const started: EventBody = { type: 'test.started', ...scope, name: 'saves', file: 'a.retest.ts', location: { file: 'a.retest.ts', line: 1, column: 1 } }
+  const removed: EventBody = { type: 'artifact.removed', path: 'artifacts/one.mp4', kind: 'recording', reason: 'passed_attempt_recording', moment: 'attempt_finished', bytes: 12 }
+  const bodies: EventBody[] = [started, { ...removed, ...scope }, removed, { ...removed, type: 'artifact.removal_failed', ...scope, message: 'unlink refused' }]
+  const record = recordEvents(stamp(bodies))
+  assert.equal(record.removals.length, 3)
+  assert.deepEqual(record.test(scope.testId)?.events.map(event => event.type), ['test.started', 'artifact.removed', 'artifact.removal_failed'])
+  assert.deepEqual(events(bodies).map(event => event.type), ['test.started', 'artifact.removed', 'artifact.removal_failed'])
 })

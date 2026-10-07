@@ -6,5 +6,5 @@ export interface Reporter {
   /** Recorded in `run.started`, and named in a failure when the reporter throws. */
   readonly name: string
   onEvent(event: RetestEvent): void | Promise<void>
-  onRunEnd(result: RunResult): void | Promise<void>
+  onRunEnd(result: RunResult, context?: { readonly redactText: (text: string) => string }): void | Promise<void>
 }
