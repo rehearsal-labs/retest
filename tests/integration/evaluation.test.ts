@@ -26,12 +26,12 @@ async function save(page) {
 
 test('screenshot pass', async ({ page }) => {
   await save(page)
-  await test.evaluate({ requirement: { pass: 'The page shows the saved task.' }, evidence: { capture: 'screenshot' } })
+  await test.evaluate({ requirement: { pass: { kind: 'state', requirement: 'The page shows the saved task.' } }, evidence: { capture: 'screenshot' } })
 })
 
 test('screenshot fail', async ({ page }) => {
   await save(page)
-  await test.evaluate({ requirement: { fail: 'The page shows the saved task.' }, evidence: { app: 'web', capture: 'screenshot' } })
+  await test.evaluate({ requirement: { fail: { kind: 'state', requirement: 'The page shows the saved task.' } }, evidence: { app: 'web', capture: 'screenshot' } })
 })
 
 test('caught', async ({ page }) => {
@@ -87,6 +87,7 @@ test('AI checks run in the parent against real screenshots, and decide the exit 
   // The screenshot the judge saw is the one the run folder keeps, from this attempt's session of web.
   const passed = testNamed(run, 'screenshot pass')
   const [evaluation] = passed.evaluations ?? []
+  assert.equal(evaluation?.criteria[0]?.kind, 'state')
   const [shot] = evaluation?.evidence ?? []
   assert.ok(shot !== undefined && shot.path !== undefined && shot.kind === 'screenshot')
   assert.equal(shot.sessionId, formatSessionId(passed.attemptId, 'web'))
@@ -100,6 +101,7 @@ test('AI checks run in the parent against real screenshots, and decide the exit 
   const setups = entries.flatMap((entry) => at(entry, ['setup']) ?? [])
   assert.equal(setups.length, 1, 'the judge is made once, in the process that runs Retest')
   assert.equal(at(setups[0], ['credentials', 'apiKey']), key)
+  assert.equal(at(calls[0], ['criteria', 0, 'kind']), 'state', 'the declared snapshot kind reaches the judge through the CLI protocol')
   const image = (field: string): unknown => at(calls[0], ['evidence', 0, field])
   assert.deepEqual(['kind', 'app', 'width', 'height', 'bytes'].map(image), ['image', 'web', shot.width, shot.height, bytes.byteLength])
   for (const call of calls) assert.deepEqual(at(call, ['functions']), [], 'the judge receives no function')
@@ -120,6 +122,7 @@ test('AI checks run in the parent against real screenshots, and decide the exit 
   const shown = await runCli(t, ['inspect', run.output, '--test', testNamed(run, 'screenshot fail').testId], { cwd: root })
   assert.equal(shown.exit.code, 0, shown.stderr)
   assert.match(shown.stdout, /✗ AI check evaluation-1 failed, required, judge fake \(fake scripted-1-2026\)/)
+  assert.match(shown.stdout, /kind state/, 'inspect names the declared criterion kind')
   assert.match(shown.stdout, /evidence e1 screenshot of web \d+x\d+ .*\.png/)
   const evidencePath = /evidence e1 screenshot of web \d+x\d+ (\S+\.png)/.exec(shown.stdout)?.[1]
   assert.ok(evidencePath !== undefined && existsSync(evidencePath), 'inspect names the screenshot the judge saw')
