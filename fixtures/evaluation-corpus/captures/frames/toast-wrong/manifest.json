@@ -1,0 +1,73 @@
+{
+  "scene": "toast-wrong",
+  "source": "chromium",
+  "fps": 10,
+  "viewport": {
+    "width": 640,
+    "height": 400
+  },
+  "clickUs": 321466,
+  "endUs": 2954563,
+  "frameIntervalUs": 100000,
+  "delivered": 6,
+  "superseded": 1,
+  "dropped": 0,
+  "frames": [
+    {
+      "file": "001.png",
+      "frameId": "toast-wrong-1",
+      "captureUs": 7034,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "002.png",
+      "frameId": "toast-wrong-2",
+      "captureUs": 38967,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "003.png",
+      "frameId": "toast-wrong-3",
+      "captureUs": 355824,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "004.png",
+      "frameId": "toast-wrong-4",
+      "captureUs": 372807,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "005.png",
+      "frameId": "toast-wrong-5",
+      "captureUs": 662473,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": [
+        "toast"
+      ]
+    },
+    {
+      "file": "006.png",
+      "frameId": "toast-wrong-6",
+      "captureUs": 1561412,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    }
+  ]
+}

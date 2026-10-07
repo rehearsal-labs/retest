@@ -1,0 +1,41 @@
+{
+  "about": "Native captures copied unchanged from the artifacts of Retest's own native proofs, on the founder's Mac. Each was opened before it was copied: it shows only the fixture app, its fixture account and the loopback address of the fixture service, and no credential.",
+  "captures": [
+    {
+      "file": "taskphone-created.png",
+      "sha256": "82f229b7b1e98747a05f5c76a95d4034b5d9debfa3d4ef1820b43c00a0a1fdaf",
+      "app": "TaskPhone on the iOS simulator",
+      "source": "simulator-display",
+      "shows": "TaskPhone signed in as ada, after creating a task: id task-8143c3f6119d, title Proof task 2026-10-05T17-57-56Z, state Open",
+      "madeBy": "proofs/native/interaction.ts, run 2026-10-05T17-57-56Z (docs/plans/public-beta/proofs/native-interaction.md)",
+      "original": "~/Library/Caches/retest-proofs/artifacts/interaction/2026-10-05T17-57-56Z/proof-phone-launch1-o34-created-simulator-display.png"
+    },
+    {
+      "file": "taskphone-sign-in-keyboard.png",
+      "sha256": "c168edd804656e708f06075c02b05fa8b64bde5d638efacfb4c95f25c4ef816a",
+      "app": "TaskPhone on the iOS simulator",
+      "source": "simulator-display",
+      "shows": "TaskPhone's sign-in form, empty account and password fields, the keyboard up",
+      "madeBy": "proofs/native/interaction.ts, run 2026-10-05T17-57-56Z (docs/plans/public-beta/proofs/native-interaction.md)",
+      "original": "~/Library/Caches/retest-proofs/artifacts/interaction/2026-10-05T17-57-56Z/proof-phone-launch1-o3-keyboard-simulator-display.png"
+    },
+    {
+      "file": "taskphone-new-task-keyboard.png",
+      "sha256": "a6b5ede4b25e2c902fe0996de55279946aadeecbc8b7e4ac7fa631d2264ab13f",
+      "app": "TaskPhone on the iOS simulator",
+      "source": "executor-screen",
+      "shows": "TaskPhone signed in as ada, the new-task form with an empty title, the keyboard up over the lower part of the screen",
+      "madeBy": "the failure screenshot of tests/integration/native-api-phone.test.ts, run folder run-rRI5JO (docs/plans/public-beta/proofs/wiring.md)",
+      "original": "~/Library/Caches/retest-proofs/artifacts/wiring-phone/run-rRI5JO/artifacts/phone-retest-ts-taskphone-1aj9o3hy8y9s3-3keodwczfv-phone-0rd604o397f5b-failure.png"
+    },
+    {
+      "file": "taskdesk-sign-in.png",
+      "sha256": "a10b6a4ae257e558c08c54c41c63eeff5691e3f756bb8d56c1038dc3c0a887ef",
+      "app": "TaskDesk on macOS",
+      "source": "window-crop",
+      "shows": "TaskDesk's window with its sign-in form: Account and Password fields, a Sign in button",
+      "madeBy": "the macOS lifecycle proof, run 2026-10-03T19-45-27Z (docs/plans/public-beta/proofs/native.md)",
+      "original": "~/Library/Caches/retest-proofs/artifacts/lifecycle/2026-10-03T19-45-27Z/proof-desk-launch1-o1-window-crop.png"
+    }
+  ]
+}

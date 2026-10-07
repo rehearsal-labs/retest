@@ -1,0 +1,23 @@
+{
+  "capturedAt": "2026-10-05T21:00:42.331Z",
+  "command": "lockf -t 0 /tmp/retest-heavy-gate.lock env RETEST_FIREFOX_ROUTE=launch-services node --conditions=retest-source fixtures/evaluation-corpus/capture/capture-browsers.ts",
+  "platform": "darwin-arm64",
+  "node": "v24.12.0",
+  "browsers": [
+    {
+      "engine": "chromium",
+      "product": "Chrome",
+      "version": "154.0.8037.93"
+    },
+    {
+      "engine": "firefox",
+      "product": "Firefox",
+      "version": "133.0.3"
+    },
+    {
+      "engine": "webkit",
+      "product": "WebKit",
+      "version": "626.1.6+, build 2359"
+    }
+  ]
+}

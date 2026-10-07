@@ -1,0 +1,73 @@
+{
+  "scene": "error-flash",
+  "source": "chromium",
+  "fps": 10,
+  "viewport": {
+    "width": 640,
+    "height": 400
+  },
+  "clickUs": 323532,
+  "endUs": 2955792,
+  "frameIntervalUs": 100000,
+  "delivered": 6,
+  "superseded": 1,
+  "dropped": 0,
+  "frames": [
+    {
+      "file": "001.png",
+      "frameId": "error-flash-1",
+      "captureUs": 6320,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "002.png",
+      "frameId": "error-flash-2",
+      "captureUs": 39288,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "003.png",
+      "frameId": "error-flash-3",
+      "captureUs": 357202,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "004.png",
+      "frameId": "error-flash-4",
+      "captureUs": 375525,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": [
+        "error-banner"
+      ]
+    },
+    {
+      "file": "005.png",
+      "frameId": "error-flash-5",
+      "captureUs": 959864,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "006.png",
+      "frameId": "error-flash-6",
+      "captureUs": 1561060,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import type { CriterionKind } from '../../src/protocol/evaluation.ts'
 import type { EvaluationRequest, EvaluatorIdentity, EvaluatorSetup, JudgeAnswer } from '../../src/evaluation/contract.ts'
 import { appendFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -46,10 +47,13 @@ export type FakeCall = {
   tag: string | undefined
   judge: string
   behaviour: FakeBehaviour
-  criteria: { id: string; requirement: string }[]
+  criteria: { id: string; kind?: CriterionKind; requirement: string; absence?: true }[]
   context: string | undefined
   instructions: string
+  promptVersion: string
   evidence: { id: string; kind: string; text?: string; bytes?: number; app?: string; width?: number; height?: number }[]
+  /** The frame sequences the request held, each frame by its id, size, bytes and time, and the stretches named. */
+  frames: { id: string; app: string; step?: string; complete: boolean; omitted: number; frames: { id: string; mediaType: string; bytes: number; sha256: string; width: number; height: number; atMs: number }[]; stretches: { fromMs: number; toMs: number; why: string }[] }[]
   /** Every key of the request, which carries data and a signal, never a function or a handle on the app. */
   keys: string[]
   functions: string[]
@@ -214,14 +218,24 @@ function describeCall(judge: string, behaviour: FakeBehaviour, request: Evaluati
   return {
     judge,
     behaviour,
-    criteria: request.criteria.map(({ id, requirement }) => ({ id, requirement })),
+    criteria: request.criteria.map(({ id, kind, requirement, absence }) => ({ id, ...(kind === undefined ? {} : { kind }), requirement, ...(absence === true ? { absence } : {}) })),
     context: request.context,
     instructions: request.instructions,
+    promptVersion: request.promptVersion,
     evidence: request.evidence.map((item) =>
       item.kind === 'text'
         ? { id: item.id, kind: item.kind, text: item.text }
         : { id: item.id, kind: item.kind, bytes: item.data.byteLength, app: item.app, width: item.width, height: item.height },
     ),
+    frames: (request.frames ?? []).map((sequence) => ({
+      id: sequence.id,
+      app: sequence.app,
+      ...(sequence.step === undefined ? {} : { step: sequence.step }),
+      complete: sequence.complete,
+      omitted: sequence.omitted,
+      frames: sequence.frames.map((frame) => ({ id: frame.id, mediaType: frame.mediaType, bytes: frame.data.byteLength, sha256: createHash('sha256').update(frame.data).digest('hex'), width: frame.width, height: frame.height, atMs: frame.atMs })),
+      stretches: sequence.stretches.map((stretch) => ({ ...stretch })),
+    })),
     keys: entries.map(([key]) => key),
     functions: entries.filter(([, value]) => typeof value === 'function').map(([key]) => key),
     maxOutputTokens: request.maxOutputTokens,

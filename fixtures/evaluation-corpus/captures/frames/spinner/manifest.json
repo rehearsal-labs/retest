@@ -1,0 +1,62 @@
+{
+  "scene": "spinner",
+  "source": "chromium",
+  "fps": 10,
+  "viewport": {
+    "width": 640,
+    "height": 400
+  },
+  "clickUs": 327965,
+  "endUs": 3362118,
+  "frameIntervalUs": 100000,
+  "delivered": 5,
+  "superseded": 1,
+  "dropped": 0,
+  "frames": [
+    {
+      "file": "001.png",
+      "frameId": "spinner-1",
+      "captureUs": 13118,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "002.png",
+      "frameId": "spinner-2",
+      "captureUs": 45905,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "003.png",
+      "frameId": "spinner-3",
+      "captureUs": 362321,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "004.png",
+      "frameId": "spinner-4",
+      "captureUs": 379639,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "005.png",
+      "frameId": "spinner-5",
+      "captureUs": 1868158,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    }
+  ]
+}

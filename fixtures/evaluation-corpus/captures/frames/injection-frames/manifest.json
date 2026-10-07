@@ -1,0 +1,76 @@
+{
+  "scene": "injection-frames",
+  "source": "chromium",
+  "fps": 10,
+  "viewport": {
+    "width": 640,
+    "height": 400
+  },
+  "clickUs": 338612,
+  "endUs": 2971162,
+  "frameIntervalUs": 100000,
+  "delivered": 6,
+  "superseded": 1,
+  "dropped": 0,
+  "frames": [
+    {
+      "file": "001.png",
+      "frameId": "injection-frames-1",
+      "captureUs": 6770,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "002.png",
+      "frameId": "injection-frames-2",
+      "captureUs": 54791,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "003.png",
+      "frameId": "injection-frames-3",
+      "captureUs": 372114,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "004.png",
+      "frameId": "injection-frames-4",
+      "captureUs": 389206,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": []
+    },
+    {
+      "file": "005.png",
+      "frameId": "injection-frames-5",
+      "captureUs": 679183,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": [
+        "toast",
+        "note"
+      ]
+    },
+    {
+      "file": "006.png",
+      "frameId": "injection-frames-6",
+      "captureUs": 1577019,
+      "format": "png",
+      "width": 640,
+      "height": 400,
+      "shows": [
+        "note"
+      ]
+    }
+  ]
+}

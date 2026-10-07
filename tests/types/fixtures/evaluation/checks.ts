@@ -46,3 +46,12 @@ export const factory: EvaluatorFactory = ({ credentials, options }) => ({
     justification: 'Checked.',
   }),
 })
+
+// Named evidence types are available to consumers from the package root.
+import type { TextRecordsEvidence, DiagnosticsFor, EvidenceItem, AbsenceRequirement } from '@rehearsal-labs/retest'
+export const selectedRecords: TextRecordsEvidence = { app: 'web', diagnostics: ['console', 'network'] }
+export const textDiagnostics: DiagnosticsFor<'text'> = selectedRecords
+export const visualEvidence: EvidenceItem<'visual'> = selectedRecords
+export const forbiddenBanner: AbsenceRequirement = { requirement: 'No error banner appears.', absence: true }
+export const imagesHaveNoDiagnostics: Same<DiagnosticsFor<'images'>, never> = true
+export const wordsEvidence: EvidenceItem<'words'> = { diagnostics: 'console' }
