@@ -26,7 +26,11 @@ import { executorBuild, nativeSkipReason, processesWith, taskDeskApp, taskPhoneA
 // own seeded one; it is filled as a secret and learned by the session's redaction, so no tree or failure holds it.
 
 const iosSkip = await nativeSkipReason('ios-simulator')
-const buildsSkip = process.platform !== 'darwin' ? 'needs macOS' : (await Promise.all([taskPhoneApp, taskDeskApp].map((path) => access(path).then(() => undefined, () => `${path} is missing`)))).find((reason) => reason !== undefined)
+// Only a build that is not there skips; one that cannot be read fails the file rather than pass as skipped.
+const buildsSkip = process.platform !== 'darwin' ? 'needs macOS' : (await Promise.all([taskPhoneApp, taskDeskApp].map((path) => access(path).then(() => undefined, (error: unknown) => {
+  if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return `${path} is missing`
+  throw new Error(`Retest could not read whether ${path} is there: ${error instanceof Error ? error.message : String(error)}`)
+})))).find((reason) => reason !== undefined)
 const macosSkip = (await nativeSkipReason('macos')) ?? ((await processesWith('/TaskDesk.app/Contents/MacOS/TaskDesk')).length > 0 ? 'TaskDesk is already running; this test never touches a copy it did not start' : undefined)
 const [ada] = SEEDED_ACCOUNTS
 if (ada === undefined) throw new Error('the fixture service seeds no account')
@@ -39,10 +43,6 @@ const checkMs = 10_000
 // TaskDesk's window, placed near the top left of the screen, away from the centre where another app's window floats.
 const windowFrame = '20,60,700,480'
 
-/**
- * The executor session a runtime opened for a native session. Runtimes keep it to themselves; every executor answer
- * names the one active session, so the test attaches to that one. The wiring hands the runtime's own over instead.
- */
 /** Requests the service logged, one plain line each, as its `printLine` gives them. */
 function serviceLines(): { readonly lines: string[]; readonly count: (method: string, path: string, client: string) => number } {
   const lines: string[] = []
@@ -89,7 +89,7 @@ function holdsPassword(text: string): boolean {
   return text.includes(ada?.password ?? '\u0000')
 }
 
-test('TaskPhone and TaskDesk declare no privacy usage, so no permission can be asked or denied in this suite', { skip: buildsSkip }, async () => {
+test('the Info.plist files of TaskPhone and TaskDesk declare no privacy usage description', { skip: buildsSkip }, async () => {
   for (const plist of [join(taskPhoneApp, 'Info.plist'), join(taskDeskApp, 'Contents', 'Info.plist')]) {
     const read = await runCommand(systemTools.plutil, ['-convert', 'json', '-o', '-', plist], { timeoutMs: 15_000 })
     assert.equal(read.code, 0, read.stderr)
@@ -104,8 +104,11 @@ describe('native finds, input and checks on the real iOS simulator with TaskPhon
   let logs: string
   const requests = serviceLines()
   const opened: NativeInteractionSession[] = []
+  // A disposal that fails fails the test: the session left the app or the executor session behind.
   afterEach(async () => {
-    for (const interaction of opened.splice(0)) await interaction.dispose(60_000).catch(() => undefined)
+    const problems: string[] = []
+    for (const interaction of opened.splice(0)) await interaction.dispose(60_000).catch((error: unknown) => problems.push(error instanceof Error ? error.message : String(error)))
+    assert.deepEqual(problems, [], 'every session disposed of what it held')
   })
   const open = async (attemptId: string): Promise<{ readonly interaction: NativeInteractionSession; readonly executor: ExecutorSession }> => {
     const session = await runtime.openSession({ owner: { runId: 'native-interaction', testId: 'phone', attemptId, app: 'phone' }, launch: { arguments: ['-reset', '-serviceURL', service.url], environment: {} }, redact }, 30_000)
@@ -251,8 +254,7 @@ describe('native finds, input and checks on the real iOS simulator with TaskPhon
       await sleep(1000)
     }
     process.stdout.write(`# the title field held ${lengths.join(', ')} characters after the cancel, of ${long.length} typed once\n`)
-    assert.ok((lengths[0] ?? 0) > 0, 'the typing had gone when the cancel came')
-    assert.equal(new Set(lengths).size, 1, 'nothing more was typed after the cancel')
+    assert.deepEqual(lengths, [long.length, long.length, long.length], 'the typing landed once, whole, and nothing more was typed after the cancel')
     assert.deepEqual(inputRoutes(interaction).slice(-1), ['keys unknown'], 'the typing was the last input sent')
   })
 
@@ -275,8 +277,11 @@ describe('native finds, input and checks on the real macOS runner with TaskDesk'
   let executable: string
   const requests = serviceLines()
   const opened: NativeInteractionSession[] = []
+  // A disposal that fails fails the test: the session left the app or the executor session behind.
   afterEach(async () => {
-    for (const interaction of opened.splice(0)) await interaction.dispose(60_000).catch(() => undefined)
+    const problems: string[] = []
+    for (const interaction of opened.splice(0)) await interaction.dispose(60_000).catch((error: unknown) => problems.push(error instanceof Error ? error.message : String(error)))
+    assert.deepEqual(problems, [], 'every session disposed of what it held')
   })
   const open = async (attemptId: string): Promise<{ readonly interaction: NativeInteractionSession; readonly executor: ExecutorSession }> => {
     const session = await app.openSession({ owner: { runId: 'native-interaction', testId: 'desk', attemptId, app: 'desk' }, launch: { arguments: ['-reset', '-serviceURL', service.url, '-windowFrame', windowFrame], environment: {} }, redact }, 30_000)
@@ -328,15 +333,15 @@ describe('native finds, input and checks on the real macOS runner with TaskDesk'
 
   test('TaskDesk: sign in, find a task by id and check its state, a wrong state fails naming the element, a chord goes through press, and the list scrolls', async () => {
     const { interaction } = await open('desk-flow')
-    // Before the first click the pointer is off the window; the coverage check counts the pointer's own window.
+    // The capture is the window's own image, so whatever lies over the window, the pointer included, stays out of it.
     assert.equal((await interaction.expect({ by: 'testId', value: 'sign-in-button' }, { matcher: 'toBeVisible' }, checkMs)).passed, true)
     const untouched = await interaction.capture(30_000)
-    process.stdout.write(`# the window capture before any click ${untouched.ok ? `passed the coverage check: ${untouched.capture.width}x${untouched.capture.height}` : `was refused: ${untouched.failure.message}`}\n`)
-    assert.ok(untouched.ok || /lie over the app's window|not in front|changed while/.test(untouched.failure.message), untouched.ok ? '' : untouched.failure.message)
+    process.stdout.write(`# the window capture before any click ${untouched.ok ? `was taken: ${untouched.capture.width}x${untouched.capture.height}` : `was refused: ${untouched.failure.message}`}\n`)
+    assert.ok(untouched.ok, untouched.ok ? '' : untouched.failure.message)
     await signIn(interaction)
     const masked = interaction.inputs.find((record) => record.kind === 'keys' && record.readBack !== undefined && record.readBack !== 'matched')
     process.stdout.write(`# TaskDesk's secure field read back as ${masked?.readBack ?? 'nothing recorded'}\n`)
-    assert.ok(masked?.readBack === 'length_matched' || masked?.readBack === 'not_exposed', 'the secure field was counted, or said unread, never shown')
+    assert.equal(masked?.readBack, 'length_matched', 'the secure field read back one masking character per character typed, counted and never shown')
     // Thirty more tasks overflow the list; a row below its view is hidden until the list scrolls.
     const ids = await createTasks(service.url, Array.from({ length: 30 }, (_, index) => `Desk scroll task ${index + 1}`))
     assert.equal((await interaction.expect({ by: 'testId', value: 'task-count' }, { matcher: 'toHaveText', text: '33 tasks' }, 15_000)).passed, true)
@@ -372,8 +377,8 @@ describe('native finds, input and checks on the real macOS runner with TaskDesk'
     const alert = await interaction.readAlert(checkMs)
     assert.deepEqual(alert, { ok: true, alert: { open: false } })
     const capture = await interaction.capture(30_000)
-    process.stdout.write(`# the window capture after the clicks ${capture.ok ? `passed the coverage check: ${capture.capture.width}x${capture.capture.height}` : `was refused: ${capture.failure.message}`}\n`)
-    assert.ok(capture.ok || /lie over the app's window|not in front|changed while/.test(capture.failure.message), capture.ok ? '' : capture.failure.message)
+    process.stdout.write(`# the window capture after the clicks ${capture.ok ? `was taken: ${capture.capture.width}x${capture.capture.height}` : `was refused: ${capture.failure.message}`}\n`)
+    assert.ok(capture.ok, capture.ok ? '' : capture.failure.message)
     assert.equal(interaction.inputs.every((record) => record.input === 'sent'), true, inputRoutes(interaction).join(', '))
   })
 
@@ -435,8 +440,7 @@ describe('native finds, input and checks on the real macOS runner with TaskDesk'
       await sleep(1000)
     }
     process.stdout.write(`# the account field held ${lengths.join(', ')} characters after the cancel, of ${long.length} typed once\n`)
-    assert.ok((lengths[0] ?? 0) > 0, 'the typing had gone when the cancel came')
-    assert.equal(new Set(lengths).size, 1, 'nothing more was typed after the cancel')
+    assert.deepEqual(lengths, [long.length, long.length, long.length], 'the typing landed once, whole, and nothing more was typed after the cancel')
   })
 
   test('TaskDesk: a lost runner during a lookup is session_lost', async () => {

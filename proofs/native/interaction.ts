@@ -31,8 +31,6 @@ import { IosSimulatorRuntime, simulatorAppProcesses } from '../../src/native/ios
 import { MacosDesktop, windowsOnScreen } from '../../src/native/macos-app.ts'
 import { decodePng, distinctColours } from '../../src/native/png.ts'
 import { listProcesses, systemTools } from '../../src/native/processes.ts'
-import { attachExecutorSession, ExecutorClient } from '../../src/native/webdriver-client.ts'
-import { isPlainObject } from '../../src/protocol/schema.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { CACHE_ROOT, ProofRecord, StepStopped } from './shared/evidence.ts'
 
@@ -58,17 +56,6 @@ record.facts['artifacts'] = artifacts
 const requests: string[] = []
 const service = await startTaskService({ port: 0, syncDelayMs: 1000, printLine: (line) => requests.push(line) })
 await fetch(new URL('/admin/reset', service.url), { method: 'POST', headers: { [CLIENT_HEADER]: 'test' } })
-
-// The runtimes keep the executor session they open; every executor answer names its one active session, so the proof
-// attaches to that one, as the integration test does, until the wiring hands the runtime's own over.
-async function attach(port: number, executor: ExecutorName): Promise<{ readonly client: ExecutorClient; readonly session: ReturnType<typeof attachExecutorSession> }> {
-  const answer = await fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(10_000) })
-  const body: unknown = await answer.json()
-  const id = isPlainObject(body) && typeof body['sessionId'] === 'string' ? body['sessionId'] : undefined
-  if (id === undefined) throw new Error('the executor names no active session')
-  const client = new ExecutorClient({ executor, host: '127.0.0.1', port })
-  return { client, session: attachExecutorSession(client, id) }
-}
 
 async function saveCapture(capture: NativeCapture, label: string, note: (fact: string) => void): Promise<void> {
   const { reference, source } = capture
@@ -96,15 +83,16 @@ async function check(interaction: NativeInteractionSession, locator: LocatorReci
 }
 
 // A wrong state, checked on purpose: the step passes only when the check fails as a check, naming the element.
-async function wrongState(interaction: NativeInteractionSession, locator: LocatorRecipe, expected: string, note: (fact: string) => void): Promise<string> {
+async function wrongState(interaction: NativeInteractionSession, locator: LocatorRecipe, expected: string, element: string, note: (fact: string) => void): Promise<string> {
   const result = await interaction.expect(locator, { matcher: 'toHaveText', text: expected }, 1500)
   if (result.passed || result.failure?.class !== 'check_failed') throw new Error(`the wrong state did not fail as a check: ${result.failure?.class ?? 'it passed'}`)
+  if (result.failure.details?.['element'] !== element) throw new Error(`the failure names ${String(result.failure.details?.['element'])}, not ${element}`)
   note(result.failure.message)
   return result.failure.message
 }
 
-// What lies over TaskDesk's window when its capture is refused: each window's layer, and whether it is Automation
-// Mode's own overlay. No other process is named, since another app's name is the user's own.
+// What lies over TaskDesk's window when it is captured: each window's layer, and whether it is Automation Mode's own
+// overlay. No other process is named, since another app's name is the user's own.
 const automationModeOverlay = '/System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/Contents/MacOS/AutomationModeUI'
 async function coveringFacts(session: NativeAppSession): Promise<JsonValue> {
   const tree = await session.readSource(10_000)
@@ -140,9 +128,9 @@ try {
         if (!opened.ok) throw new Error(opened.failure.message)
         require(await opened.session.install({ appPath: taskPhone }, 120_000), 'install', note)
         require(await opened.session.launch(120_000), 'launch', note)
-        const attached = await attach(runtime.port, 'webdriveragent')
+        // Input, the password among it, goes only to the executor session the runtime opened for this app.
         const processes = (bounds: RequestBounds): Promise<ProcessReading> => simulatorAppProcesses(systemTools, runtime.udid, runtime.bundle.bundleId, bounds)
-        return { session: opened.session, interaction: new NativeInteractionSession({ session: opened.session, client: attached.client, executor: attached.session, redact, processes }) }
+        return { session: opened.session, interaction: new NativeInteractionSession({ session: opened.session, client: opened.client, executor: opened.executor, redact, processes }) }
       })
       await record.step('tap the account field, see the software keyboard come up, and dismiss it by its return key', async (note) => {
         require(await interaction.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'account-field' } }, actionMs), 'tap the account field', note)
@@ -175,7 +163,7 @@ try {
         await keepCapture(session, 'simulator-display', 'created', note)
       })
       await record.step('check a wrong state on purpose and see it fail naming the element', async (note) => {
-        record.facts['iosWrongState'] = await wrongState(interaction, { by: 'testId', value: 'created-task-state' }, 'Done', note)
+        record.facts['iosWrongState'] = await wrongState(interaction, { by: 'testId', value: 'created-task-state' }, 'Done', 'the StaticText "created-task-state"', note)
       })
       record.facts['iosInputs'] = interaction.inputs.map((input) => `${input.kind} ${input.route} ${input.input}${input.readBack === undefined ? '' : ` read back ${input.readBack}`}`)
       await record.cleanup('dispose the session', async () => interaction.dispose(60_000))
@@ -205,7 +193,6 @@ try {
         const opened = await app.runtime.openSession({ owner: { runId: stamp, testId: 'interaction', attemptId: 'proof', app: 'desk' }, launch: { arguments: ['-reset', '-serviceURL', service.url, '-windowFrame', windowFrame], environment: {} }, redact }, 30_000)
         if (!opened.ok) throw new Error(opened.failure.message)
         require(await opened.session.launch(60_000), 'launch', note)
-        const attached = await attach(desktop.port, 'mac2')
         const processes = async (bounds: RequestBounds): Promise<ProcessReading> => {
           try {
             const pids = (await listProcesses(systemTools, bounds.timeoutMs)).filter((entry) => entry.command === executable || entry.command.startsWith(`${executable} `)).map((entry) => entry.pid)
@@ -214,18 +201,17 @@ try {
             return { ok: false, problem: error instanceof Error ? error.message : String(error) }
           }
         }
-        return { session: opened.session, interaction: new NativeInteractionSession({ session: opened.session, client: attached.client, executor: attached.session, redact, processes, tools: systemTools }) }
+        return { session: opened.session, interaction: new NativeInteractionSession({ session: opened.session, client: opened.client, executor: opened.executor, redact, processes, tools: systemTools }) }
       })
-      // Before the first click the pointer is wherever it was, off the window; every click leaves it over the window, and
-      // the coverage check counts the pointer's own window.
-      await record.step("capture TaskDesk's window before the first click, or be refused by name", async (note) => {
+      // The capture is the window's own image, so whatever lies over the window, the pointer included, stays out of it;
+      // what lay over it is written down.
+      await record.step("capture TaskDesk's window before the first click", async (note) => {
         await check(interaction, { by: 'testId', value: 'sign-in-button' }, { matcher: 'toBeVisible' }, checkMs)
-        const shot = await session.capture(30_000)
-        record.facts['macosCaptureBeforeClicks'] = shot.ok ? 'passed the coverage check' : shot.failure.message
-        if (shot.ok) return saveCapture(shot.capture, 'before-clicks', note)
         record.facts['macosCoveringBeforeClicks'] = await coveringFacts(session)
-        if (!/lie over the app's window/.test(shot.failure.message)) throw new Error(shot.failure.message)
-        note(`refused: ${shot.failure.message}`)
+        const shot = await session.capture(30_000)
+        record.facts['macosCaptureBeforeClicks'] = shot.ok ? 'taken' : shot.failure.message
+        if (!shot.ok) throw new Error(shot.failure.message)
+        return saveCapture(shot.capture, 'before-clicks', note)
       })
       await record.step('sign in with the text field and the secure field', async (note) => {
         require(await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'account-field' }, value: ada.id }, actionMs), 'fill the account', note)
@@ -243,15 +229,14 @@ try {
         note(`the desktop shows ${createdId} as ${state}`)
       })
       await record.step('check a wrong state on purpose and see it fail naming the element', async (note) => {
-        record.facts['macosWrongState'] = await wrongState(interaction, { by: 'testId', value: 'selected-task-state' }, 'Done', note)
+        record.facts['macosWrongState'] = await wrongState(interaction, { by: 'testId', value: 'selected-task-state' }, 'Done', 'the StaticText "selected-task-state"', note)
       })
-      await record.step("capture TaskDesk's window after the clicks, or be refused by name", async (note) => {
-        const shot = await session.capture(30_000)
-        record.facts['macosCaptureAfterClicks'] = shot.ok ? 'passed the coverage check' : shot.failure.message
-        if (shot.ok) return saveCapture(shot.capture, 'found', note)
+      await record.step("capture TaskDesk's window after the clicks", async (note) => {
         record.facts['macosCoveringAfterClicks'] = await coveringFacts(session)
-        if (!/lie over the app's window/.test(shot.failure.message)) throw new Error(shot.failure.message)
-        note(`refused: ${shot.failure.message}`)
+        const shot = await session.capture(30_000)
+        record.facts['macosCaptureAfterClicks'] = shot.ok ? 'taken' : shot.failure.message
+        if (!shot.ok) throw new Error(shot.failure.message)
+        return saveCapture(shot.capture, 'found', note)
       })
       record.facts['macosInputs'] = interaction.inputs.map((input) => `${input.kind} ${input.route} ${input.input}${input.readBack === undefined ? '' : ` read back ${input.readBack}`}`)
       await record.cleanup('dispose the session', async () => interaction.dispose(60_000))

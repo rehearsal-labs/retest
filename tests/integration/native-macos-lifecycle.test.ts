@@ -8,10 +8,10 @@ import { join } from 'node:path'
 import { after, afterEach, before, describe, test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { startTaskService } from '../../fixtures/cross-platform/service/task-service.ts'
-import { automationOverlayPids, coveringWindows, MacosDesktop, windowsOnScreen } from '../../src/native/macos-app.ts'
+import { automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, windowsOnScreen } from '../../src/native/macos-app.ts'
 import { decodePng, distinctColours } from '../../src/native/png.ts'
 import { macosResetPolicy } from '../../src/native/reset-policy.ts'
-import { runCommand, systemTools } from '../../src/native/processes.ts'
+import { endRecorded, runCommand, systemTools } from '../../src/native/processes.ts'
 import { ExecutorClient } from '../../src/native/webdriver-client.ts'
 import { executorBuild, listeningAddresses, mainScreen, nativeSkipReason, prepareFixtureService, processesWith, taskDeskApp, within } from './native-harness.ts'
 
@@ -23,7 +23,7 @@ const skip = (await nativeSkipReason('macos')) ?? ((await processesWith('/TaskDe
 const bundleId = 'dev.retest.fixtures.taskdesk'
 const marker = 'retestLifecycleMarker'
 const interrupted = { class: 'interrupted', message: 'The run was interrupted.' } as const
-// What lay over TaskDesk's window when the capture was refused, kept so the run's output says it.
+// What lay over TaskDesk's window when it was captured, kept so the run's output says it.
 let coveredOnThisMac: { layer: number; width: number; height: number }[] = []
 
 async function defaultsRead(): Promise<string | undefined> {
@@ -70,7 +70,7 @@ describe('the macOS app lifecycle on the real macOS runner', { skip }, () => {
       assert.deepEqual(await deskProcesses(), [], 'no TaskDesk is left')
       assert.deepEqual(await listeningAddresses(desktop.port), [], 'nothing listens on the runner port')
     } finally {
-      if (coveredOnThisMac.length > 0) process.stdout.write(`# the capture was refused: ${JSON.stringify(coveredOnThisMac)} lay over TaskDesk's window\n`)
+      if (coveredOnThisMac.length > 0) process.stdout.write(`# the capture was taken while ${JSON.stringify(coveredOnThisMac)} lay over TaskDesk's window\n`)
       await runCommand('/usr/bin/defaults', ['delete', bundleId, marker], { timeoutMs: 10_000 })
       await service.close()
       await rm(logs, { recursive: true, force: true })
@@ -106,7 +106,7 @@ describe('the macOS app lifecycle on the real macOS runner', { skip }, () => {
     const window = tree.tree.source.window
     if (window === undefined) throw new Error('the tree names no window')
     assert.deepEqual(window, { x: 20, y: 60, width: 700, height: 480 })
-    // What lies over TaskDesk's window decides the outcome: a capture of only its window, or a refusal that says so.
+    // Whatever lies over TaskDesk's window, the capture is its own window's image; what lay over it is written down.
     const windows = await windowsOnScreen(systemTools, { timeoutMs: 10_000 })
     if (typeof windows === 'string') throw new Error(windows)
     const listed = await processesWith('/')
@@ -117,22 +117,14 @@ describe('the macOS app lifecycle on the real macOS runner', { skip }, () => {
     const overlayUp = windows.some((entry) => overlay.includes(entry.pid) && entry.width === screen.width && entry.height === screen.height)
     process.stdout.write(`# the Automation Mode overlay was ${overlayUp ? '' : 'not '}over the whole screen at the capture\n`)
     const shot = await session.capture(30_000)
-    if (covering.ok && covering.windows.length > 0) {
-      assert.equal(shot.ok, false, 'a window of another process lies over TaskDesk, so the capture is refused')
-      assert.match(!shot.ok ? shot.failure.message : '', new RegExp(`${covering.windows.length} window\\(s\\) of other processes lie over the app's window`))
-      coveredOnThisMac = covering.windows.map((entry) => ({ layer: entry.layer, width: entry.width, height: entry.height }))
-      await session.terminate(60_000)
-      await session.dispose(30_000)
-      assert.deepEqual((await prepared.cleanUp(false)).failures, [])
-      return
-    }
     if (!shot.ok) throw new Error(shot.failure.message)
-    process.stdout.write(`# TaskDesk window capture passed with the Automation Mode overlay ${overlayUp ? 'present' : 'absent'}\n`)
+    if (covering.ok) coveredOnThisMac = covering.windows.map((entry) => ({ layer: entry.layer, width: entry.width, height: entry.height }))
+    process.stdout.write(`# TaskDesk window capture passed with the Automation Mode overlay ${overlayUp ? 'present' : 'absent'} and ${coveredOnThisMac.length} other window(s) over it\n`)
     assert.equal(shot.capture.source, 'window-crop')
     assert.equal(shot.capture.reference.sessionId, 'macos-lifecycle:desk')
     const image = decodePng(shot.capture.png)
     const scale = image.width / (window?.width ?? 1)
-    assert.ok(Number.isInteger(scale) && scale >= 1, `the crop is the window at a whole scale, ${scale}`)
+    assert.ok(Number.isInteger(scale) && scale >= 1, `the image is the window at a whole scale, ${scale}`)
     assert.equal(image.height, (window?.height ?? 0) * scale)
     assert.ok(distinctColours(image) > 16)
     assert.deepEqual(await session.terminate(60_000), { result: { ok: true }, input: 'sent' })
@@ -179,7 +171,11 @@ describe('the macOS app lifecycle on the real macOS runner', { skip }, () => {
     assert.deepEqual(await session.launch(60_000), { result: { ok: true }, input: 'sent' })
     const [pid] = session.processIds
     if (pid === undefined) throw new Error('the launch named no process')
-    process.kill(pid, 'SIGKILL')
+    // Ended from outside, as a crash ends it, and only as the process the launch recorded: by its pid, start and command.
+    const reading = await macosAppProcesses(systemTools, bundleId, { timeoutMs: 10_000 })
+    const launched = reading.ok ? reading.processes.find((entry) => entry.pid === pid) : undefined
+    if (launched === undefined) throw new Error('the launched TaskDesk could not be read')
+    assert.equal(await endRecorded(systemTools, launched, 0), 'ended')
     await sleep(500)
     assert.deepEqual(await session.appState(10_000), { ok: true, state: 'not_running' })
     assert.equal(session.appStatus.endedUnexpectedly, true)
@@ -209,7 +205,8 @@ describe('the macOS app lifecycle on the real macOS runner', { skip }, () => {
     await session.launch(60_000)
     const lost = new Promise<string>((resolve) => desktop.onDisconnect(resolve))
     const killedAt = performance.now()
-    for (const pid of desktop.processIds.slice(1)) process.kill(pid, 'SIGKILL')
+    // The runner app the desktop recorded as its own, ended by its pid, start and command.
+    for (const runnerApp of desktop.executorProcesses.slice(1)) assert.equal(await endRecorded(systemTools, runnerApp, 0), 'ended')
     const said = await within(lost, 30_000, 'the desktop did not report the lost runner within 30 s')
     const seenAfterMs = Math.round(performance.now() - killedAt)
     t.diagnostic(`the lost runner app was reported ${seenAfterMs} ms after it was killed`)

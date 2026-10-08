@@ -60,13 +60,26 @@ async function saveCapture(capture: NativeCapture, note: (fact: string) => void)
   note(`${source} ${capture.width}x${capture.height}, ${distinctColours(decodePng(capture.png))} colours, reference ${JSON.stringify(reference)}`)
 }
 
+// WebDriverAgent serves the tree of the app it takes for the active one, and a system banner over the app, such as the
+// one a new simulator posts a short while after it boots, makes that the home screen for a moment. The session refuses
+// such a tree whole; the step looks again within its time, as Retest's own waits do, and says how often it looked.
+const anotherApp = /The tree is (?:of another app|not of the owned app)/
+
 async function keepTree(session: NativeAppSession, name: string, note: (fact: string) => void): Promise<void> {
-  const tree = await session.readSource(30_000)
-  if (!tree.ok) throw new Error(tree.failure.message)
-  const path = join(artifacts, name)
-  await writeFile(path, tree.tree.source.xml)
-  record.artifact(path)
-  note(`${tree.tree.source.elements} elements kept, ${tree.tree.source.hashedMenuElements} under a menu hashed, root ${tree.tree.source.xml.slice(0, tree.tree.source.xml.indexOf(' '))}`)
+  const until = performance.now() + 30_000
+  for (let looks = 1; ; looks += 1) {
+    const tree = await session.readSource(Math.max(1, Math.floor(until - performance.now())))
+    if (!tree.ok) {
+      if (!anotherApp.test(tree.failure.message) || performance.now() >= until) throw new Error(`${tree.failure.message} (look ${looks})`)
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      continue
+    }
+    const path = join(artifacts, name)
+    await writeFile(path, tree.tree.source.xml)
+    record.artifact(path)
+    note(`${tree.tree.source.elements} elements kept, ${tree.tree.source.hashedMenuElements} under a menu hashed, root ${tree.tree.source.xml.slice(0, tree.tree.source.xml.indexOf(' '))}, look ${looks}`)
+    return
+  }
 }
 
 try {
@@ -178,13 +191,11 @@ try {
         const state = await opened.appState(10_000)
         throw new Error(`TaskDesk's window did not appear in its tree within 5 s; the last look said: ${last}; the state is ${JSON.stringify(state)}`)
       })
-      // A capture is taken only while nothing of another process lies over the window; a refusal says so by name.
-      await record.step("capture TaskDesk's window, or be refused by name", async (note) => {
+      // The capture is the window's own image, so a window of another process over it is no reason to refuse it.
+      await record.step("capture TaskDesk's window", async (note) => {
         const shot = await opened.capture(30_000)
-        if (shot.ok) return saveCapture(shot.capture, note)
-        if (!/window\(s\) of other processes lie over the app's window/.test(shot.failure.message)) throw new Error(shot.failure.message)
-        record.facts['macosCaptureRefused'] = shot.failure.message
-        note(`refused: ${shot.failure.message}`)
+        if (!shot.ok) throw new Error(shot.failure.message)
+        return saveCapture(shot.capture, note)
       })
       await record.step('read the scoped tree', (note) => keepTree(opened, 'taskdesk-window.xml', note))
       await record.step('terminate and dispose', async (note) => {
