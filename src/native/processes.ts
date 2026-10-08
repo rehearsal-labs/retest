@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
+import type { MetadataProcessOptions } from '../shared/metadata-process.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
-import type { ProcessOwnershipSystem } from '../shared/process-ownership.ts'
+import type { OwnedProcessIdentity, ProcessOwnershipSystem } from '../shared/process-ownership.ts'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { closeSync, openSync, rmSync, writeSync } from 'node:fs'
@@ -10,12 +11,14 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
-import { readMetadataProcess } from '../shared/metadata-process.ts'
-import { OwnedProcessGroup } from '../shared/process-ownership.ts'
+import { processTableOutputLimit, readMetadataProcess, readMetadataProcessAsync } from '../shared/metadata-process.ts'
+import { OwnedProcessGroup, sameProcessIdentity } from '../shared/process-ownership.ts'
 import { NativeOutputLines } from './output.ts'
 
 // Each launched native process has an ownership ledger. Descendants are recorded only through verified launch
-// ancestry; every signal rechecks their exact command and start reading. Unknown group members are never signaled.
+// ancestry; every signal rechecks their start reading and, where `ps` can read it, their command. Unknown group
+// members are never signaled. The readings behind the ledger are taken without blocking the main thread, except in
+// an exit hook, which cannot wait.
 
 /**
  * The macOS tools the native driver runs, by name or by path, and the environment variables none of them may see, such
@@ -32,6 +35,7 @@ export type NativeTools = {
   readonly swVers: string
   readonly automationModeTool: string
   readonly osascript: string
+  readonly screencapture: string
   readonly lsof: string
   readonly lockf: string
   readonly hiddenVariables?: readonly string[] | undefined
@@ -50,6 +54,7 @@ export const systemTools: NativeTools = {
   swVers: '/usr/bin/sw_vers',
   automationModeTool: '/usr/bin/automationmodetool',
   osascript: '/usr/bin/osascript',
+  screencapture: '/usr/sbin/screencapture',
   lsof: '/usr/sbin/lsof',
   lockf: '/usr/bin/lockf',
 }
@@ -81,6 +86,8 @@ export type CommandOptions = {
   /** Variables of this process the command must not see. */
   readonly hiddenVariables?: readonly string[] | undefined
   readonly redact?: ((text: string) => string) | undefined
+  /** How long the command gets to end after SIGTERM before SIGKILL; `terminationGraceMs` unless given. */
+  readonly graceMs?: number | undefined
 }
 
 /**
@@ -109,7 +116,7 @@ const pollMs = 25
 /**
  * Runs a command to its end in a process group of its own and keeps what it printed. It never throws for a non-zero
  * exit or a command that cannot start (exit 127); the caller reads the result. At the deadline, or once `signal`
- * aborts, freshly verified recorded pids receive SIGTERM and then SIGKILL. Unknown survivors fail cleanup.
+ * aborts, freshly verified recorded pids receive SIGTERM and, after the command's grace, SIGKILL. Unknown survivors fail cleanup.
  *
  * @example (await runCommand('/usr/bin/xcodebuild', ['-version'], { timeoutMs: 10_000 })).stdout // 'Xcode 26.5\nBuild version 17F42\n'
  */
@@ -129,6 +136,7 @@ export async function runCommand(command: string, args: readonly string[], optio
     if (output.stderr.length < outputLimit) output.stderr += chunk
   })
   const group = new GroupGuard(child, options.ownershipSystem)
+  const graceMs = options.graceMs ?? terminationGraceMs
   let started = false
   child.once('spawn', () => {
     started = true
@@ -147,7 +155,7 @@ export async function runCommand(command: string, args: readonly string[], optio
   let ending: 'timeout' | 'stop' | undefined
   const end = (reason: 'timeout' | 'stop'): void => {
     ending ??= reason
-    void group.end(terminationGraceMs).then(async () => {
+    void group.end(graceMs).then(async () => {
       const outputClosed = await Promise.race([closed.then(() => true), sleep(1000, false)])
       if (!outputClosed) {
         outputProblems.push('The native command output did not confirm closure after cleanup; capture was stopped.')
@@ -164,14 +172,14 @@ export async function runCommand(command: string, args: readonly string[], optio
   whenAborted(options.signal, onAbort)
   try {
     const exit = await Promise.race([closed, abandoned.promise])
-    await group.end(terminationGraceMs)
-    const cleanupProblems = [...new Set([...group.problems, ...outputProblems])]
+    await group.end(graceMs)
+    const cleanupProblems = [...new Set([...(await group.problems()), ...outputProblems])]
     const code = exit.code === 0 && (ending !== undefined || cleanupProblems.length > 0) ? 1 : exit.code
     return { ...exit, code, stdout: output.stdout.slice(0, outputLimit), stderr: output.stderr.slice(0, outputLimit), timedOut: ending === 'timeout', stopped: ending === 'stop', started, cleanupProblems }
   } finally {
     clearTimeout(timer)
     options.signal?.removeEventListener('abort', onAbort)
-    group.release()
+    await group.release()
   }
 }
 
@@ -209,14 +217,23 @@ export type OwnedProcessOptions = {
   readonly redact?: ((text: string) => string) | undefined
 }
 
+// How long the temporary folders wait, once the process exited and its output closed, for the rest of its group to go.
+// They are deleted then even while unowned or unconfirmed members remain, which are reported, since a result bundle
+// can hold what XCTest named its typing activities by.
+const temporaryDeletionWaitMs = terminationGraceMs + 1000
+
 /**
  * A long-running process this run started, such as the xcodebuild that hosts an executor, as the leader of a process
- * group of its own with its output in a log file. An exit hook ends only freshly verified recorded pids.
+ * group of its own with its output in a log file. An exit hook ends only freshly verified recorded pids, and deletes
+ * the temporary folders whatever is left.
  */
 export class OwnedProcess {
   readonly pid: number
   readonly logFile: string
-  /** Settles after the process output closes and its temporary folders are deleted. */
+  /**
+   * Settles after the process output closes and its temporary folders are deleted: once the rest of its group is gone,
+   * or a short wait later when something of it remains.
+   */
   readonly exited: Promise<ProcessExit>
   readonly #group: GroupGuard
   readonly #problems: string[] = []
@@ -272,8 +289,9 @@ export class OwnedProcess {
     const stderr = new NativeOutputLines(redact, write, outputProblem)
     child.stdout?.setEncoding('utf8').on('data', (chunk: string) => stdout.push(chunk))
     child.stderr?.setEncoding('utf8').on('data', (chunk: string) => stderr.push(chunk))
+    // Registered after the group's own hook, so the recorded pids are killed first. The folders go whatever remains:
+    // what XCTest left in them must not outlive this process.
     const removeNow = (): void => {
-      if (this.#group.remains) return
       for (const folder of options.temporaryFolders ?? []) {
         try { rmSync(folder, { recursive: true, force: true }) }
         catch (error) { this.#problems.push(`Could not delete the executor's temporary output: ${redact(errorMessage(error))}`) }
@@ -291,8 +309,7 @@ export class OwnedProcess {
         try { closeSync(log) }
         catch (error) { this.#problems.push(`Could not close the native process log: ${redact(errorMessage(error))}`) }
         this.#exit = { code, signal }
-        this.#group.release()
-        void this.#group.whenGone().then(() => Promise.all((options.temporaryFolders ?? []).map((folder) => rm(folder, { recursive: true, force: true })))).catch((error: unknown) => {
+        void this.#group.whenGone(temporaryDeletionWaitMs).then(() => Promise.all((options.temporaryFolders ?? []).map((folder) => rm(folder, { recursive: true, force: true, maxRetries: 2 })))).catch((error: unknown) => {
           this.#problems.push(`Could not delete the executor's temporary output: ${redact(errorMessage(error))}`)
         }).then(() => {
           process.off('exit', removeNow)
@@ -302,9 +319,9 @@ export class OwnedProcess {
     })
   }
 
-  /** Whether recorded or unowned processes may remain; a failed reading keeps this true. */
-  get processesRemain(): boolean {
-    return this.#group.remains
+  /** Whether recorded or unowned processes may remain, from a fresh reading; a failed reading keeps this true. */
+  processesRemain(): Promise<boolean> {
+    return this.#group.remains()
   }
 
   /** How the process ended, or undefined while it runs. */
@@ -328,51 +345,64 @@ export class OwnedProcess {
     const expired = sleep(Math.max(1, timeoutMs), false, { signal: timer.signal }).catch(() => false)
     const done = await Promise.race([this.exited.then(() => true), expired])
     timer.abort()
-    return done ? [...new Set([...this.#group.problems, ...this.#problems])] : [...new Set([...this.#group.problems, ...this.#problems, 'The native executor processes or output pipes remain; temporary output deletion is not confirmed.'])]
+    const groupProblems = await this.#group.problems()
+    return done ? [...new Set([...groupProblems, ...this.#problems])] : [...new Set([...groupProblems, ...this.#problems, 'The native executor processes or output pipes remain; temporary output deletion is not confirmed.'])]
   }
 
   /**
    * Waits up to `graceMs` for the process to exit, then sends SIGTERM and SIGKILL only to freshly verified recorded
-   * pids. Unknown survivors remain held. A second call waits for the first cleanup and its failures.
+   * pids. An optional cleanup deadline bounds those checks and output settlement, separately from the grace before
+   * forcing exit. Unknown survivors remain held. A second call waits for the first cleanup and its failures.
    */
-  stop(graceMs: number): Promise<string[]> {
-    this.#stopping ??= this.#stop(graceMs)
+  stop(graceMs: number, deadline?: Deadline): Promise<string[]> {
+    this.#stopping ??= this.#stop(graceMs, deadline)
     return this.#stopping
   }
 
-  async #stop(graceMs: number): Promise<string[]> {
-    await this.waitForExit(graceMs)
-    await this.#group.end(terminationGraceMs)
-    const outputProblems = await this.finishOutput(1000)
-    this.#group.release()
-    return [...new Set([...this.#group.problems, ...outputProblems, ...this.#problems])]
+  async #stop(graceMs: number, deadline?: Deadline): Promise<string[]> {
+    await this.waitForExit(deadline === undefined ? graceMs : Math.min(graceMs, deadline.remainingMs))
+    await this.#group.end(terminationGraceMs, deadline)
+    const outputProblems = await this.finishOutput(deadline?.commandTimeoutMs ?? 1000)
+    await this.#group.release()
+    return [...new Set([...(await this.#group.problems()), ...outputProblems, ...this.#problems])]
   }
 }
+
+// How often a long-running executor's descendants are looked for between its start and its stop. Each look is a `ps`
+// child this process does not wait on, so it costs the main thread only the parsing; a descendant still under its
+// launch ancestry at a stop is found by the stop's own reading.
+const descendantPollMs = 2000
 
 /** Owns only a launched process and descendants whose launch ancestry was observed while still verified. */
 class GroupGuard {
   readonly #child: ChildProcess
   readonly #owner: OwnedProcessGroup | undefined
-  readonly #initialProblems: readonly string[]
+  // The readings behind the ledger; absent when the caller supplied a stand-in host, which reads for itself.
+  readonly #table: ProcessTable | undefined
+  readonly #initial: Promise<readonly string[]>
   readonly #problems = new Set<string>()
   readonly #identityRefusals = new Set<string>()
   readonly #lastResort: () => void
   #tracking: ReturnType<typeof setInterval> | undefined
+  #looking = false
   #hooked = false
   #ending: Promise<void> | undefined
-  #gone: Promise<void> | undefined
+  // A reading proved no recorded or unowned process remains; the ledger never names these pids again.
+  #gone = false
   #exited = false
   #outputClosed = false
 
   constructor(child: ChildProcess, system?: ProcessOwnershipSystem) {
     this.#child = child
-    this.#owner = child.pid === undefined ? undefined : new OwnedProcessGroup(child.pid, process.pid, system)
-    this.#initialProblems = this.#owner?.capture() ?? []
+    this.#table = system === undefined ? new ProcessTable() : undefined
+    const owner = child.pid === undefined ? undefined : new OwnedProcessGroup(child.pid, process.pid, system ?? this.#table)
+    this.#owner = owner
+    this.#initial = owner === undefined ? Promise.resolve([]) : this.#reading(() => owner.capture())
     this.#exited = child.exitCode !== null || child.signalCode !== null
-    child.once('exit', () => { this.#exited = true; this.release() })
-    child.once('close', () => { this.#outputClosed = true; this.release() })
+    child.once('exit', () => { this.#exited = true; void this.release() })
+    child.once('close', () => { this.#outputClosed = true; void this.release() })
     this.#lastResort = () => {
-      // The helper reads host metadata synchronously and never signals an unrecorded pid or a numeric group.
+      // An exit hook cannot wait, so this reading blocks; it never signals an unrecorded pid or a numeric group.
       this.#owner?.signalNow('SIGKILL')
     }
     if (this.#owner !== undefined) {
@@ -381,80 +411,204 @@ class GroupGuard {
     }
   }
 
+  // Runs one synchronous ownership step on a reading taken for it without blocking. A stand-in host reads itself.
+  #reading<T>(work: () => T): Promise<T> {
+    return this.#table === undefined ? Promise.resolve(work()) : this.#table.during(work)
+  }
+
   /** Long-running executors retain observed descendants before they can leave their launch ancestry. */
   trackDescendants(): void {
     if (this.#owner === undefined || this.#tracking !== undefined) return
-    this.#tracking = setInterval(() => { this.#capture(); this.release() }, 100)
+    this.#tracking = setInterval(() => { void this.#look() }, descendantPollMs)
     this.#tracking.unref()
   }
 
-  #capture(): void {
-    for (const problem of this.#owner?.capture() ?? []) this.#problems.add(problem)
+  async #look(): Promise<void> {
+    if (this.#looking) return
+    this.#looking = true
+    try {
+      await this.#capture()
+      await this.release()
+    } finally {
+      this.#looking = false
+    }
   }
 
-  get remains(): boolean {
-    return this.#owner?.remains() ?? false
+  async #capture(): Promise<void> {
+    const owner = this.#owner
+    if (owner === undefined || this.#gone) return
+    await this.#initial
+    for (const problem of await owner.captureAsync()) this.#problems.add(problem)
   }
 
-  get problems(): string[] {
-    const free = this.#exited && this.#outputClosed && !this.remains
-    const initial = this.#owner?.initialProcessAbsent === true && free ? [] : this.#initialProblems
+  /** Whether recorded or unowned processes may remain, from a fresh reading; a failed reading keeps this true. */
+  async remains(deadline?: Deadline): Promise<boolean> {
+    const owner = this.#owner
+    if (owner === undefined || this.#gone) return false
+    await this.#initial
+    const remains = await owner.remainsAsync(deadline)
+    if (!remains) this.#gone = true
+    return remains
+  }
+
+  async problems(): Promise<string[]> {
+    const initialProblems = await this.#initial
+    const free = this.#exited && this.#outputClosed && !(await this.remains())
+    const initial = this.#owner?.initialProcessAbsent === true && free ? [] : initialProblems
     // A skipped signal is settled only by confirmed exit, closed output and a fresh proof that every process is
     // gone. Failed readings and failed signals remain failures even after that proof.
     return [...new Set([...initial, ...this.#problems, ...(this.#owner?.readProblems ?? []), ...(free ? [] : this.#identityRefusals)])]
   }
 
-  #signal(signal: NodeJS.Signals): void {
-    const report = this.#owner?.signalReport(signal)
-    for (const problem of report?.problems ?? []) this.#problems.add(problem)
-    for (const refusal of report?.identityRefusals ?? []) this.#identityRefusals.add(refusal)
+  async #signal(signal: NodeJS.Signals, deadline: Deadline): Promise<void> {
+    const owner = this.#owner
+    if (owner === undefined) return
+    const report = await owner.signalReportAsync(signal, deadline)
+    for (const problem of report.problems) this.#problems.add(problem)
+    for (const refusal of report.identityRefusals) this.#identityRefusals.add(refusal)
   }
 
   /** Ends freshly verified recorded pids only; an unrecorded survivor keeps cleanup failed and the exit hook. */
-  end(graceMs: number): Promise<void> {
-    this.#ending ??= this.#end(graceMs)
+  end(graceMs: number, deadline?: Deadline): Promise<void> {
+    this.#ending ??= this.#end(graceMs, deadline)
     return this.#ending
   }
 
-  async #end(graceMs: number): Promise<void> {
-    const owner = this.#owner
-    if (owner === undefined) return
-    if (!this.remains) { this.release(); return }
-    this.#signal('SIGTERM')
-    if (!(await groupEnds(owner, new Deadline(graceMs)))) {
-      this.#signal('SIGKILL')
-      if (!(await groupEnds(owner, new Deadline(1000)))) this.#problems.add(`Recorded or unowned processes of native launch ${this.#child.pid} could not be confirmed stopped.`)
+  async #end(graceMs: number, caller?: Deadline): Promise<void> {
+    if (this.#owner === undefined) return
+    const deadline = caller ?? new Deadline(Math.min(maxTimeout, graceMs + 2000))
+    if (!(await this.remains(deadline))) { await this.release(); return }
+    await this.#signal('SIGTERM', deadline)
+    if (!(await this.#endsWithin(new Deadline(graceMs), deadline))) {
+      await this.#signal('SIGKILL', deadline)
+      if (!(await this.#endsWithin(new Deadline(1000), deadline))) this.#problems.add(`Recorded or unowned processes of native launch ${this.#child.pid} could not be confirmed stopped.`)
     }
-    this.release()
+    await this.release()
   }
 
-  /** Output and temporary folders are not free until no recorded or unknown process remains. */
-  whenGone(): Promise<void> {
-    this.#gone ??= (async () => {
-      while (this.remains) {
-        this.#capture()
-        await sleep(pollMs, undefined, { ref: false })
-      }
-      this.release()
-    })()
-    return this.#gone
+  async #endsWithin(wait: Deadline, deadline: Deadline): Promise<boolean> {
+    while (!deadline.reached) {
+      if (!(await this.remains(deadline))) return true
+      if (wait.reached || deadline.reached) return false
+      await sleep(Math.min(pollMs, wait.remainingMs, deadline.remainingMs))
+    }
+    return false
+  }
+
+  /**
+   * Resolves true once no recorded or unowned process remains, or false once `timeoutMs` passed first; descendants seen
+   * meanwhile are recorded.
+   */
+  async whenGone(timeoutMs: number): Promise<boolean> {
+    const deadline = new Deadline(timeoutMs)
+    // This window bounds polling for temporary-output deletion, not a complete ownership query. Each reading has
+    // its own bounded metadata query; its real failure remains recorded. A short polling window must not cancel an
+    // otherwise valid reading and poison the runtime's longer cleanup budget.
+    while (!deadline.expired) {
+      if (!(await this.remains())) { await this.release(); return true }
+      if (deadline.expired) return false
+      await this.#capture()
+      if (deadline.expired) return false
+      await sleep(Math.min(pollMs, deadline.remainingMs), undefined, { ref: false })
+    }
+    return false
   }
 
   /** Takes the exit hook and watcher away only after a successful host reading proves the launch is free. */
-  release(): void {
-    if (!this.#hooked || !this.#exited || this.remains) return
+  async release(): Promise<void> {
+    if (!this.#hooked || !this.#exited) return
+    if (await this.remains()) return
+    if (!this.#hooked) return
     process.off('exit', this.#lastResort)
     clearInterval(this.#tracking)
     this.#hooked = false
   }
 }
 
-async function groupEnds(owner: OwnedProcessGroup, deadline: Deadline): Promise<boolean> {
-  while (owner.remains()) {
-    if (deadline.expired) return false
-    await sleep(Math.min(pollMs, deadline.remainingMs))
+const tableColumns = 'pid=,ppid=,pgid=,stat=,lstart=,args='
+const tableEnvironment: Readonly<Record<string, string>> = { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC0' }
+// The whole table is read under the bound a whole table may need; one pid under the usual one.
+const tableQuery: MetadataProcessOptions = { command: '/bin/ps', args: ['-ww', '-axo', tableColumns], environment: tableEnvironment, outputLimit: processTableOutputLimit }
+
+/**
+ * Initial capture shares an awaited snapshot with the synchronous first ownership step. Ordinary cleanup awaits
+ * both whole-table and individual identity readings under its caller's deadline. Exit hooks remain synchronous.
+ */
+class ProcessTable implements ProcessOwnershipSystem {
+  #held: { readonly processes: readonly OwnedProcessIdentity[] } | { readonly failure: Error } | undefined
+
+  async during<T>(work: () => T): Promise<T> {
+    let held: { readonly processes: readonly OwnedProcessIdentity[] } | { readonly failure: Error }
+    try {
+      held = { processes: await readProcessTable() }
+    } catch (error) {
+      held = { failure: error instanceof Error ? error : new Error(String(error)) }
+    }
+    this.#held = held
+    try {
+      return work()
+    } finally {
+      this.#held = undefined
+    }
   }
-  return true
+
+  read(deadline?: Deadline): readonly OwnedProcessIdentity[] {
+    const held = this.#held
+    if (held === undefined) return parseProcessTable(readMetadataProcess({ ...tableQuery, deadline }))
+    if ('failure' in held) throw held.failure
+    return held.processes
+  }
+
+  readAsync(deadline?: Deadline): Promise<readonly OwnedProcessIdentity[]> {
+    return readProcessTable(deadline)
+  }
+
+  // `ps -p` answers 1 with nothing printed when no listed pid exists, as it does when it fails; listing this process too
+  // keeps a reading of an absent pid a successful one.
+  readProcess(pid: number, deadline?: Deadline): OwnedProcessIdentity | undefined {
+    const text = readMetadataProcess({ command: '/bin/ps', args: ['-ww', '-o', tableColumns, '-p', `${pid},${process.pid}`], environment: tableEnvironment, deadline })
+    return parseProcessTable(text).find((entry) => entry.pid === pid)
+  }
+
+  async readProcessAsync(pid: number, deadline?: Deadline): Promise<OwnedProcessIdentity | undefined> {
+    const text = await readMetadataProcessAsync({ command: '/bin/ps', args: ['-ww', '-o', tableColumns, '-p', `${pid},${process.pid}`], environment: tableEnvironment, deadline })
+    return parseProcessTable(text).find((entry) => entry.pid === pid)
+  }
+
+  signal(pid: number, signal: NodeJS.Signals | 0): void {
+    process.kill(pid, signal)
+  }
+}
+
+/**
+ * Every process on the host as the shared ownership rule reads it: pid, parent, group, state, start and command line,
+ * through the shared metadata reader without holding the thread.
+ *
+ * @example (await readProcessTable()).some((entry) => entry.pid === process.pid) // true
+ */
+export async function readProcessTable(deadline?: Deadline): Promise<readonly OwnedProcessIdentity[]> {
+  // The shared worker does not hold the process open and neither does its asynchronous wait, so a process with nothing
+  // else pending would end in the middle of a reading, cleanup included; this timer holds it until the answer.
+  const holding = setInterval(() => undefined, 1000)
+  try {
+    return parseProcessTable(await readMetadataProcessAsync({ ...tableQuery, deadline }))
+  } finally {
+    clearInterval(holding)
+  }
+}
+
+// The same reading as the shared ownership rule's, with the start's spacing made one, as every native start reading is.
+function parseProcessTable(text: string): readonly OwnedProcessIdentity[] {
+  const records: OwnedProcessIdentity[] = []
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue
+    const fields = new RegExp(`^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\S+)\\s+(${startPattern})\\s+(.+)$`).exec(line)
+    const [, pid, parentPid, groupId, state, startedAt, command] = fields ?? []
+    if (pid === undefined || parentPid === undefined || groupId === undefined || state === undefined || startedAt === undefined || command === undefined) throw new Error('The host returned an unreadable process identity.')
+    records.push({ pid: Number(pid), parentPid: Number(parentPid), groupId: Number(groupId), startedAt: oneSpaced(startedAt), command, state })
+  }
+  if (records.length === 0) throw new Error('The host returned no process identities.')
+  return records
 }
 
 /**
@@ -474,54 +628,134 @@ export function processExists(pid: number): boolean {
   }
 }
 
-/** One process as `ps` lists it: its id and its command line. */
-export type ListedProcess = { readonly pid: number; readonly command: string }
+/**
+ * A process this run started and recorded: its pid, its command line and its start, as `ps` showed them. The pid and
+ * the start identify it; the command line tells apart a pid reused within the start reading's second. A record made
+ * without a start reading is matched by its exact command alone, as before start readings were kept.
+ */
+export type RecordedProcess = { readonly pid: number; readonly command: string; readonly startedAt?: string }
+
+/** A recorded process with its start reading, as every record the native driver makes carries. */
+export type StartedProcess = RecordedProcess & { readonly startedAt: string }
+
+/** One process as `ps` lists it: its id, its command line and its start. */
+export type ListedProcess = StartedProcess
+
+// `ps`'s start reading in the C locale, such as `Mon Oct  5 11:18:31 2026`.
+const startPattern = '[A-Za-z]{3}\\s+[A-Za-z]{3}\\s+\\d+\\s+\\d{2}:\\d{2}:\\d{2}\\s+\\d{4}'
+const startAndCommand = new RegExp(`^(${startPattern})\\s+(.+)$`)
+// Start and command readings are taken in the C locale, so the start is in one form whatever the user's language, and
+// without the caller's TZ, so `ps` prints it in the system's time zone, as every reading of the process table does: a
+// Every start is read in UTC, including commands whose environment otherwise comes from the caller.
+const readingEnvironment: Readonly<Record<string, string>> = { LC_ALL: 'C', TZ: 'UTC0' }
+
+function readingHidden(hidden: readonly string[] | undefined): string[] {
+  return [...(hidden ?? []), 'TZ']
+}
+
+function oneSpaced(start: string): string {
+  return start.replace(/\s+/g, ' ')
+}
 
 /**
- * Every process of this user's session as `ps` lists it, with its whole command line.
+ * Every process of this user's session as `ps` lists it, with its whole command line and its start.
  *
  * @example (await listProcesses(systemTools, 5000)).some(({ command }) => command.includes('/Devices/'))
  */
 export async function listProcesses(tools: NativeTools, timeoutMs: number): Promise<ListedProcess[]> {
-  const result = await runCommand(tools.ps, ['-axww', '-o', 'pid=,args='], { timeoutMs, hiddenVariables: tools.hiddenVariables })
+  const result = await runCommand(tools.ps, ['-axww', '-o', 'pid=,lstart=,args='], { timeoutMs, environment: readingEnvironment, hiddenVariables: readingHidden(tools.hiddenVariables) })
   if (result.code !== 0) throw new Error(describeCommand('ps', result))
+  // A table cut at the output limit can end inside a line, which would read as a process with a shorter command.
+  if (result.stdout.length >= outputLimit) throw new Error(`ps listed more than the ${outputLimit} characters Retest reads of one command, so the list may be cut.`)
   const listed: ListedProcess[] = []
-  for (const line of result.stdout.split('\n')) {
-    if (line.trim() === '') continue
-    const match = /^\s*(\d+)\s+(.*)$/.exec(line)
-    const [, pid, command] = match ?? []
+  const line = new RegExp(`^\\s*(\\d+)\\s+(${startPattern})\\s+(.*)$`)
+  for (const text of result.stdout.split('\n')) {
+    if (text.trim() === '') continue
+    const [, pid, startedAt, command] = line.exec(text) ?? []
     const id = Number(pid)
-    if (pid === undefined || command === undefined || command.trim() === '' || !Number.isSafeInteger(id) || id < 0) throw new Error('ps returned an unreadable process entry.')
-    if (id !== process.pid) listed.push({ pid: id, command })
+    if (pid === undefined || startedAt === undefined || command === undefined || command.trim() === '' || !Number.isSafeInteger(id) || id < 0) throw new Error('ps returned an unreadable process entry.')
+    if (id !== process.pid) listed.push({ pid: id, command, startedAt: oneSpaced(startedAt) })
   }
   return listed
 }
 
-/** A process this run started and recorded: its pid and its exact command line, as `ps` showed it. */
-export type RecordedProcess = { readonly pid: number; readonly command: string }
-
-/** What `ps` shows of one pid: a process with its command line, no process, or nothing it could read. */
-export type ProcessPresence = { readonly state: 'present'; readonly command: string } | { readonly state: 'absent' } | { readonly state: 'unreadable'; readonly problem: string }
+/** What `ps` shows of one pid: a process with its command line and start, no process, or nothing it could read. */
+export type ProcessPresence = { readonly state: 'present'; readonly command: string; readonly startedAt: string } | { readonly state: 'absent' } | { readonly state: 'unreadable'; readonly problem: string }
 
 /**
  * What runs under one pid now, as `ps` shows it. A reading that timed out, or failed for another reason than the pid
  * being free, is unreadable, never taken for a process that is gone.
  *
- * @example await commandOf(systemTools, 4242) // { state: 'present', command: '/…/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner' }
+ * @example await commandOf(systemTools, 4242) // { state: 'present', command: '/…/WebDriverAgentRunner-Runner.app/Contents/MacOS/WebDriverAgentRunner-Runner', startedAt: 'Mon Oct 5 11:18:31 2026' }
  */
 export async function commandOf(tools: NativeTools, pid: number, timeoutMs = 10_000): Promise<ProcessPresence> {
-  const result = await runCommand(tools.ps, ['-ww', '-o', 'args=', '-p', String(pid)], { timeoutMs, hiddenVariables: tools.hiddenVariables })
-  const command = result.stdout.trim()
-  if (result.code === 0 && !result.timedOut && !result.stopped && command.length > 0) return { state: 'present', command }
+  const result = await runCommand(tools.ps, ['-ww', '-o', 'lstart=,args=', '-p', String(pid)], { timeoutMs, environment: readingEnvironment, hiddenVariables: readingHidden(tools.hiddenVariables) })
+  const text = result.stdout.trim()
+  if (result.code === 0 && !result.timedOut && !result.stopped && text.length > 0) {
+    const [, startedAt, command] = startAndCommand.exec(text) ?? []
+    if (startedAt !== undefined && command !== undefined) return { state: 'present', command, startedAt: oneSpaced(startedAt) }
+    return { state: 'unreadable', problem: `ps showed pid ${pid} in a form Retest cannot read.` }
+  }
   // ps answers 1 and prints nothing, not even to stderr, when no process has the pid.
-  if (result.code === 1 && command.length === 0 && result.stderr.trim().length === 0 && result.cleanupProblems.length === 0 && !result.timedOut && !result.stopped) return { state: 'absent' }
+  if (result.code === 1 && text.length === 0 && result.stderr.trim().length === 0 && result.cleanupProblems.length === 0 && !result.timedOut && !result.stopped) return { state: 'absent' }
   return { state: 'unreadable', problem: describeCommand('ps', result) }
 }
 
+let ownStart: Promise<string> | undefined
+
 /**
- * Ends one recorded process, and only while its command line is still the recorded one: checked before the SIGTERM,
- * and again before the SIGKILL that follows after `graceMs`, so a pid freed and given to another process meanwhile is
- * left alone. `gone`: no process had the pid; `other`: another process has it now; `unreadable`: `ps` could not say.
+ * This process's own start, read once by the system's `ps` whatever `ps` a caller supplies: a stand-in host lists the
+ * processes it plays, never the one asking. A reading that fails is tried again next time.
+ *
+ * @example await readOwnStart(['RETEST_EVALUATION_OPENAI_KEY']) // 'Mon Oct 5 11:18:31 2026'
+ */
+export function readOwnStart(hiddenVariables?: readonly string[]): Promise<string> {
+  const reading = ownStart ?? commandOf({ ...systemTools, hiddenVariables }, process.pid).then((presence) => {
+    if (presence.state !== 'present') throw new Error(`Retest could not read its own start (${presence.state === 'unreadable' ? presence.problem : 'ps did not list it'}).`)
+    return presence.startedAt
+  })
+  ownStart = reading
+  reading.catch(() => { if (ownStart === reading) ownStart = undefined })
+  return reading
+}
+
+/**
+ * How a fresh reading of a pid stands to a record, by the shared rule: `same` when it is the recorded process, `other`
+ * when another process has the pid, `unreadable` when the reading cannot say. With start readings on both, the pid and
+ * the start decide and two readable command lines must agree; a command `ps` could not read, as while the process
+ * exits, is neither a match nor a difference. A record without a start is matched by its exact command alone, so an
+ * unreadable command leaves it undecided.
+ *
+ * @example recordedIdentity(runnerApp, { pid: runnerApp.pid, command: '(WebDriverAgentRu)', startedAt: runnerApp.startedAt }) // 'same'
+ */
+export function recordedIdentity(record: RecordedProcess, current: RecordedProcess): 'same' | 'other' | 'unreadable' {
+  if (record.pid !== current.pid) return 'other'
+  if (record.startedAt !== undefined) {
+    if (current.startedAt === undefined) return 'unreadable'
+    return sameProcessIdentity(asIdentity(record, record.startedAt), asIdentity(current, current.startedAt)) ? 'same' : 'other'
+  }
+  if (commandUnreadable(current.command)) return 'unreadable'
+  return current.command === record.command ? 'same' : 'other'
+}
+
+// The shared rule compares pid, start and command; a parent and a group are not part of who a process is.
+function asIdentity(process: RecordedProcess, startedAt: string): OwnedProcessIdentity {
+  return { pid: process.pid, parentPid: 0, groupId: 0, startedAt, command: process.command }
+}
+
+// Whether `ps` printed the kernel's short name in place of the arguments, as it does while a process exits. The shared
+// rule keeps that test to itself: to it, two readings of one birth whose commands are '' and `command` are one process
+// only when `command` is such a name, since no readable command line is empty.
+function commandUnreadable(command: string): boolean {
+  const birth = { pid: 0, parentPid: 0, groupId: 0, startedAt: '' }
+  return command !== '' && sameProcessIdentity({ ...birth, command: '' }, { ...birth, command })
+}
+
+/**
+ * Ends one recorded process, and only while it is still the recorded one by `recordedIdentity`: checked before the
+ * SIGTERM, and again before the SIGKILL that follows after `graceMs`, so a pid freed and given to another process
+ * meanwhile is left alone. `gone`: no process had the pid; `other`: another process has it now; `unreadable`: `ps`
+ * could not say, which includes a process shown without its command line when the record holds no start.
  *
  * @example await endRecorded(systemTools, runnerApp, 5000) // 'ended'
  */
@@ -531,7 +765,11 @@ export async function endRecorded(tools: NativeTools, record: RecordedProcess, g
     const first = await commandOf(tools, record.pid)
     if (first.state === 'absent') return 'gone'
     if (first.state === 'unreadable') return { unreadable: first.problem }
-    if (first.command !== record.command) return 'other'
+    const identity = recordedIdentity(record, { pid: record.pid, command: first.command, startedAt: first.startedAt })
+    if (identity === 'other') return 'other'
+    if (identity === 'unreadable') return { unreadable: `ps showed pid ${record.pid} without its command line, and the record holds no start to tell it by.` }
+    // From here the start reading identifies the process, also for a record made without one.
+    const held: StartedProcess = { ...record, startedAt: record.startedAt ?? first.startedAt }
     const terminated = signalProcess(record.pid, 'SIGTERM')
     if (terminated === 'gone') return 'ended'
     if (terminated !== 'sent') return { signalFailed: terminated.problem }
@@ -540,7 +778,7 @@ export async function endRecorded(tools: NativeTools, record: RecordedProcess, g
     const second = await commandOf(tools, record.pid)
     if (second.state === 'absent') return 'ended'
     if (second.state === 'unreadable') return { unreadable: second.problem }
-    if (second.command !== record.command) return 'ended'
+    if (recordedIdentity(held, { pid: record.pid, command: second.command, startedAt: second.startedAt }) !== 'same') return 'ended'
     const killedSignal = signalProcess(record.pid, 'SIGKILL')
     if (killedSignal === 'gone') return 'ended'
     if (killedSignal !== 'sent') return { signalFailed: killedSignal.problem }
@@ -591,9 +829,9 @@ export function groupPresence(pgid: number): 'present' | 'absent' | { readonly u
 }
 
 /**
- * Kills each recorded process at once, and only while its command line is still the recorded one, so a pid that ended
- * and was given to another process is left alone. `ps` runs without the hidden variables, as every tool does. Meant
- * for an exit hook, which needs synchronous ownership readings.
+ * Kills each recorded process at once, and only while it is still the recorded one by `recordedIdentity`, so a pid
+ * that ended and was given to another process is left alone. `ps` runs without the hidden variables, as every tool
+ * does. Meant for an exit hook, which needs synchronous readings.
  *
  * @example process.on('exit', () => killRecordedNow(runnerApps, tools))
  */
@@ -602,10 +840,12 @@ export function killRecordedNow(records: Iterable<RecordedProcess>, tools: Pick<
     try {
       if (!Number.isSafeInteger(record.pid) || record.pid < 2 || typeof record.command !== 'string' || record.command.trim().length === 0) continue
       const shown = readMetadataProcess({
-        command: tools.ps, args: ['-ww', '-o', 'args=', '-p', String(record.pid)],
-        environment: childEnvironment(undefined, tools.hiddenVariables),
+        command: tools.ps, args: ['-ww', '-o', 'lstart=,args=', '-p', String(record.pid)],
+        environment: { ...childEnvironment(undefined, readingHidden(tools.hiddenVariables)), ...readingEnvironment },
       })
-      if (shown.trim() === record.command) process.kill(record.pid, 'SIGKILL')
+      const [, startedAt, command] = startAndCommand.exec(shown.trim()) ?? []
+      if (startedAt === undefined || command === undefined) continue
+      if (recordedIdentity(record, { pid: record.pid, command, startedAt: oneSpaced(startedAt) }) === 'same') process.kill(record.pid, 'SIGKILL')
     } catch {
       // Gone already, or never ours to signal; throwing here would replace the exit code Retest chose.
     }

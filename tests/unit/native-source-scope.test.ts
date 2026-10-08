@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { crc32 } from 'node:zlib'
-import { cropPng, decodePng, distinctColours, encodePng, pngSize } from '../../src/native/png.ts'
+import { decodePng, distinctColours, encodePng, pngSize } from '../../src/native/png.ts'
 import { scopeSource } from '../../src/native/source-scope.ts'
+import { sha256Hex } from '../../src/shared/sha256.ts'
 import { solidPng } from './native-fake-executor.ts'
 
 const macTree = `<?xml version="1.0" encoding="UTF-8"?>
@@ -50,16 +51,14 @@ test('a tree that ends before its element closes is refused', () => {
   assert.equal(cut.ok, false)
 })
 
-test('a PNG is decoded, cut and encoded again with the same pixels', () => {
+test('a PNG is decoded and encoded again with the same pixels', () => {
   const original = decodePng(solidPng(10, 6))
   assert.deepEqual(pngSize(solidPng(10, 6)), { width: 10, height: 6 })
   assert.equal(distinctColours(original), 2)
-  const cut = cropPng(original, { x: 2, y: 0, width: 4, height: 3 })
-  const again = decodePng(encodePng(cut))
-  assert.deepEqual([again.width, again.height, again.channels], [4, 3, 4])
-  assert.deepEqual(again.pixels, cut.pixels)
+  const again = decodePng(encodePng(original))
+  assert.deepEqual([again.width, again.height, again.channels], [10, 6, 4])
+  assert.deepEqual(again.pixels, original.pixels)
   assert.deepEqual([...again.pixels.subarray(0, 4)], [255, 0, 0, 255], 'the first row kept its colour')
-  assert.throws(() => cropPng(original, { x: 8, y: 0, width: 4, height: 3 }), /does not lie inside/)
   assert.throws(() => decodePng(new Uint8Array([1, 2, 3])), /not a PNG/)
 })
 
@@ -82,4 +81,17 @@ test('PNG inflation is bounded by the declared image length before allocation', 
 test('PNG dimensions cannot request an unbounded decoded allocation', () => {
   assert.throws(() => decodePng(resizedHeader(solidPng(1, 1), 65536, 65536)), /exceeds the decoded limit/)
   assert.throws(() => decodePng(resizedHeader(solidPng(1, 1), 0, 1)), /exceeds the decoded limit/)
+})
+
+test('menu text is decoded and redacted before it is hashed: the hash holds no secret and stays the same when the secret changes', () => {
+  const tree = (escaped: string): string => `<XCUIElementTypeApplication title="TaskDesk"><XCUIElementTypeWindow title="TaskDesk" x="0" y="0" width="10" height="10"><XCUIElementTypeMenu><XCUIElementTypeMenuItem title="Signed in as ${escaped}"/></XCUIElementTypeMenu></XCUIElementTypeWindow></XCUIElementTypeApplication>`
+  const redact = (text: string): string => text.replaceAll('s3cr&t<1', '{{secret}}').replaceAll('n3w&t<2', '{{secret}}')
+  const scope = { platform: 'macos' as const, bundleId: 'dev.retest.fixtures.taskdesk', appNames: ['TaskDesk'], redact }
+  const first = scopeSource(tree('s3cr&amp;t&#60;1'), scope)
+  const rotated = scopeSource(tree('n3w&amp;t&lt;2'), scope)
+  if (!first.ok || !rotated.ok) throw new Error('the trees were refused')
+  const hashed = `sha256:${sha256Hex('Signed in as {{secret}}').slice(0, 12)}`
+  assert.match(first.source.xml, new RegExp(`<XCUIElementTypeMenuItem title="${hashed}"/>`))
+  assert.equal(rotated.source.xml, first.source.xml, 'a rotated secret leaves the saved tree unchanged')
+  for (const raw of ['Signed in as s3cr&t<1', 'Signed in as s3cr&amp;t&#60;1']) assert.doesNotMatch(first.source.xml, new RegExp(sha256Hex(raw).slice(0, 12)))
 })

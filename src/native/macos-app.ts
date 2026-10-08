@@ -1,26 +1,29 @@
 import type { NativeRuntime, NativeRuntimeIdentity, ResetPolicy } from '../browser/contract.ts'
-import type { Failure } from '../protocol/failures.ts'
+import type { Failure, FailureClass } from '../protocol/failures.ts'
 import type { DesktopLock } from './desktop-lock.ts'
 import type { ExecutorBuild, NativePinSet } from './executors.ts'
 import type { AppBundle, NativeExecutionIdentity, OperatingSystem } from './identity.ts'
-import type { NativeTools, RecordedProcess } from './processes.ts'
+import type { NativeTools, RecordedProcess, StartedProcess } from './processes.ts'
 import type { AppProcessReading, CaptureSource, DriverAnswer, LaunchSpec, NativeAppDriver, NativeSessionOptions } from './session.ts'
 import type { ScopedSource } from './source-scope.ts'
 import type { ExecutorAppState, ExecutorSession, Rect, RequestBounds } from './webdriver-client.ts'
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
+import { readFile, realpath, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
+import { maxTimeout } from '../protocol/timeouts.ts'
+import { windowImageGraceMs } from './capture.ts'
 import { defaultDesktopLock, takeDesktopLock } from './desktop-lock.ts'
 import { freePort, isListening, startExecutor, watchExecutor } from './executor-process.ts'
 import { checkXcode, nativePins } from './executors.ts'
 import { appNames, nativeExecutionIdentity, readAppBundle, readMacosVersion, runtimeIdentity } from './identity.ts'
-import { cropPng, decodePng, encodePng } from './png.ts'
+import { pngSize } from './png.ts'
 import type { ListedProcess } from './processes.ts'
 import { commandOf, describeCommand, endProblem, endRecorded, killRecordedNow, listProcesses, runCommand } from './processes.ts'
 import { macosResetPolicy } from './reset-policy.ts'
 import { NativeAppSession, NativeError, SerialLane } from './session.ts'
+import { makeOwnedFolder } from './temporary-folders.ts'
 import { ExecutorClient } from './webdriver-client.ts'
 
 // The macOS runner on the Mac Retest runs on. A macOS UI test takes the interactive desktop: focus, the pointer and the
@@ -84,7 +87,7 @@ export class MacosDesktop {
   readonly #open = new Set<NativeAppSession>()
   readonly #listeners = new Set<(reason: string) => void>()
   readonly #folder: string
-  readonly #runnerApps: readonly RecordedProcess[]
+  readonly #runnerApps: readonly StartedProcess[]
   readonly #lock: DesktopLock
   readonly #lastResort: () => void
   readonly #stopWatch: () => void
@@ -93,15 +96,16 @@ export class MacosDesktop {
 
   /**
    * Starts the runner: checks Xcode against the tested set and that Automation Mode will not ask anyone, refuses when a
-   * macOS runner already runs on this Mac, then starts it on a port of its own, bound to 127.0.0.1.
+   * macOS runner already runs on this Mac, then starts it on a port of its own, bound to 127.0.0.1. A refusal that
+   * comes before the runner was started, with the desktop lock let go again, says it is `idle`.
    */
-  static async start(options: MacosDesktopOptions): Promise<{ readonly ok: true; readonly desktop: MacosDesktop } | { readonly ok: false; readonly failure: Failure }> {
+  static async start(options: MacosDesktopOptions): Promise<{ readonly ok: true; readonly desktop: MacosDesktop } | DesktopRefusal> {
     options = { ...options, tools: { ...options.tools, hiddenVariables: options.hiddenVariables ?? options.tools.hiddenVariables, redact: options.redact ?? options.tools.redact } }
     const pins = options.pins ?? nativePins
     const deadline = new Deadline(options.timeoutMs)
-    if (process.platform !== 'darwin') return refused('macOS apps need a Mac.')
-    if (options.build.executor !== 'mac2') return refused(`The macOS desktop needs a build of the macOS runner, not ${options.build.executor}.`)
-    if (openDesktop !== undefined) return refused('This process already runs the macOS runner for this desktop; native work on one desktop goes through that runner, one session at a time.')
+    if (process.platform !== 'darwin') return idle('macOS apps need a Mac.')
+    if (options.build.executor !== 'mac2') return idle(`The macOS desktop needs a build of the macOS runner, not ${options.build.executor}.`)
+    if (openDesktop !== undefined) return idle('This process already runs the macOS runner for this desktop; native work on one desktop goes through that runner, one session at a time.')
     openDesktop = 'starting'
     let started: Awaited<ReturnType<typeof MacosDesktop.start>> = refused('The desktop did not start.')
     try {
@@ -114,11 +118,12 @@ export class MacosDesktop {
     return started
   }
 
-  static async #start(options: MacosDesktopOptions, pins: NativePinSet, deadline: Deadline): Promise<{ readonly ok: true; readonly desktop: MacosDesktop } | { readonly ok: false; readonly failure: Failure }> {
+  static async #start(options: MacosDesktopOptions, pins: NativePinSet, deadline: Deadline): Promise<{ readonly ok: true; readonly desktop: MacosDesktop } | DesktopRefusal> {
+    // Both checks run short tools that hold nothing of the desktop.
     const xcode = await checkXcode(options.tools, pins.toolchain, options.signal)
-    if (xcode !== undefined) return { ok: false, failure: xcode }
+    if (xcode !== undefined) return { ok: false, failure: xcode, idle: true }
     const automation = await automationModeProblem(options.tools, options.signal)
-    if (automation !== undefined) return { ok: false, failure: automation }
+    if (automation !== undefined) return { ok: false, failure: automation, idle: true }
     const runnerPath = join(options.build.products, runnerExecutable)
     const taken = await takeDesktopLock({ path: options.desktopLock ?? defaultDesktopLock(), tools: options.tools })
     if (!taken.ok) return taken
@@ -129,13 +134,19 @@ export class MacosDesktop {
       lock.releaseNow()
     }
     process.on('exit', exitHook)
+    // Whether xcodebuild may have been started; until then a refusal that lets the lock go has left nothing behind.
+    let launching = false
     // A start that could not end what it recorded keeps the lock, which names those processes for the next start.
-    const fail = async (failure: Failure, folder?: string, leftRunning: readonly RecordedProcess[] = []): Promise<{ readonly ok: false; readonly failure: Failure }> => {
+    const fail = async (failure: Failure, folder?: string, leftRunning: readonly RecordedProcess[] = [], startIdle = false): Promise<DesktopRefusal> => {
       if (folder !== undefined) await rm(folder, { recursive: true, force: true })
       if (leftRunning.length > 0) return { ok: false, failure }
       process.off('exit', exitHook)
-      await lock.release()
-      return { ok: false, failure }
+      try {
+        await lock.release()
+      } catch (error) {
+        return { ok: false, failure: { ...failure, details: { ...failure.details, also: `cleanup_failed: ${errorMessage(error)}` } } }
+      }
+      return startIdle || !launching ? { ok: false, failure, idle: true } : { ok: false, failure }
     }
     try {
       // After the lock, a runner still running is not one a Retest process recorded, so it is refused by name.
@@ -143,8 +154,9 @@ export class MacosDesktop {
       if (others.length > 0) return await fail({ class: 'setup_failed', message: `A macOS runner Retest cannot recognise as its own runs on this Mac (pid ${others.map((entry) => entry.pid).join(', ')}), so something else drives the desktop. Retest never stops a runner it did not start.` })
       const os = await readMacosVersion(options.tools, options.signal)
       if (os === undefined) return await fail({ class: 'setup_failed', message: 'Retest could not read the macOS version with sw_vers.' })
-      const folder = await mkdtemp(join(tmpdir(), 'retest-macos-'))
+      const folder = await makeOwnedFolder('retest-macos-', options.tools)
       const port = options.port ?? (await freePort())
+      launching = true
       // startExecutor refuses an executor's default port, which `freePort` never gives.
       const runner = await startExecutor({
       executor: 'mac2',
@@ -163,7 +175,7 @@ export class MacosDesktop {
         lock.note(processes)
       },
     })
-    if (!runner.ok) return await fail(runner.failure, folder, runner.leftRunning)
+    if (!runner.ok) return await fail(runner.failure, folder, runner.leftRunning, runner.idle === true)
     process.off('exit', exitHook)
     return { ok: true, desktop: new MacosDesktop({ options, runner, port, os, folder, runnerApps: runner.runnerApps, lock }) }
     } catch (error) {
@@ -171,7 +183,7 @@ export class MacosDesktop {
     }
   }
 
-  private constructor(parts: { readonly options: MacosDesktopOptions; readonly runner: Awaited<ReturnType<typeof startExecutor>> & { readonly ok: true }; readonly port: number; readonly os: OperatingSystem; readonly folder: string; readonly runnerApps: readonly RecordedProcess[]; readonly lock: DesktopLock }) {
+  private constructor(parts: { readonly options: MacosDesktopOptions; readonly runner: Awaited<ReturnType<typeof startExecutor>> & { readonly ok: true }; readonly port: number; readonly os: OperatingSystem; readonly folder: string; readonly runnerApps: readonly StartedProcess[]; readonly lock: DesktopLock }) {
     this.#options = parts.options
     this.build = parts.options.build
     this.#runner = parts.runner
@@ -181,11 +193,17 @@ export class MacosDesktop {
     this.#runnerApps = parts.runnerApps
     this.#lock = parts.lock
     // When the Retest process exits without closing the desktop, the runner app goes with it and the desktop is let go;
-    // xcodebuild's recorded processes have their own verified exit hook. A SIGKILL of the Retest process runs neither: the next start
-    // recognises what is left by the lock.
+    // xcodebuild's recorded processes have their own verified exit hook. The folder goes too, with any window image a
+    // capture wrote and had not yet removed. A SIGKILL of the Retest process runs neither: the next start recognises what
+    // is left by the lock, and the next native start deletes the folder by its maker's record.
     this.#lastResort = () => {
       killRecordedNow(parts.runnerApps, parts.options.tools)
       parts.lock.releaseNow()
+      try {
+        rmSync(parts.folder, { recursive: true, force: true })
+      } catch {
+        // Throwing here would replace the exit code Retest chose; the next native start's sweep deletes the folder.
+      }
     }
     process.on('exit', this.#lastResort)
     this.#client = new ExecutorClient({ executor: 'mac2', host: '127.0.0.1', port: parts.port })
@@ -203,8 +221,8 @@ export class MacosDesktop {
     return [this.#runner.process.pid, ...this.#runnerApps.map((entry) => entry.pid)]
   }
 
-  /** The executor processes this desktop recorded at startup, with their exact command lines. */
-  get executorProcesses(): readonly RecordedProcess[] {
+  /** The executor processes this desktop recorded at startup, with their command lines and starts. */
+  get executorProcesses(): readonly StartedProcess[] {
     return [this.#runner.xcodebuild, ...this.#runnerApps]
   }
 
@@ -252,6 +270,8 @@ export class MacosDesktop {
       runtime,
       tools: this.#options.tools,
       executor: created.value,
+      folder: this.#folder,
+      recordedPids: () => session?.processIds ?? [],
       release: () => {
         if (session !== undefined) this.#open.delete(session)
         turn.release()
@@ -292,6 +312,14 @@ export class MacosDesktop {
       problems.push(...(await runner.finishOutput(deadline.commandTimeoutMs)))
       if (await isListening('127.0.0.1', this.port)) problems.push(`Something still listens on 127.0.0.1:${this.port}.`)
       await rm(this.#folder, { recursive: true, force: true }).catch((error: unknown) => problems.push(`Could not remove ${this.#folder}: ${errorMessage(error)}`))
+      // A clean close leaves the record naming nothing, so no later start reads one of these pids again.
+      if (problems.length === 0) {
+        try {
+          this.#lock.clear()
+        } catch (error) {
+          problems.push(`Retest could not clear the desktop record ${this.#lock.recordPath}: ${errorMessage(error)}`)
+        }
+      }
       if (problems.length === 0) {
         process.off('exit', this.#lastResort)
         await this.#lock.release()
@@ -381,16 +409,21 @@ class MacosAppDriver implements NativeAppDriver {
   readonly runtimeProcessIds: readonly number[]
   readonly #tools: NativeTools
   readonly #executor: ExecutorSession
+  readonly #folder: string
+  readonly #recordedPids: () => readonly number[]
   readonly #release: () => void
   #released = false
+  #captures = 0
 
-  constructor(parts: { readonly runtime: MacosAppRuntime; readonly tools: NativeTools; readonly executor: ExecutorSession; readonly release: () => void }) {
+  constructor(parts: { readonly runtime: MacosAppRuntime; readonly tools: NativeTools; readonly executor: ExecutorSession; readonly folder: string; readonly recordedPids: () => readonly number[]; readonly release: () => void }) {
     this.bundle = parts.runtime.bundle
     this.identity = parts.runtime.execution
     this.resetPolicy = parts.runtime.resetPolicy
     this.runtimeProcessIds = parts.runtime.desktop.processIds
     this.#tools = parts.tools
     this.#executor = parts.executor
+    this.#folder = parts.folder
+    this.#recordedPids = parts.recordedPids
     this.#release = parts.release
   }
 
@@ -431,66 +464,68 @@ class MacosAppDriver implements NativeAppDriver {
     return { ok: true, running: reading.processes.length > 0, pids: reading.processes.map((entry) => entry.pid), processes: reading.processes }
   }
 
-  // The runner captures the whole main display, and a cut of it holds whatever lies over the window. So the capture is
-  // taken only while the app is in front and no window of another process lies over its window, as the window server
-  // lists them right before the screenshot and again right after it, unchanged; otherwise it fails, saying so. The
-  // Dock's own surface spans the screen and is not counted: its icons can still show in a window that reaches into the
-  // Dock. Nor is the full-screen Automation Mode window of the system owner during an open runner session: the measured
-  // TaskDesk region matched with and without the runner (see `png.ts`). The window's rounded corners and translucency show what lies
-  // behind it.
+  // The window server draws one window from its number, so the image holds the app's own window and none of another
+  // window over it, whether the app is in front or not. The window is the one of the session's recorded processes that
+  // the window server lists on screen where the app's tree places it, read right before the image and right after it,
+  // with the same number and owner both times. A minimised or hidden window is not on screen and is not captured. The
+  // image needs Screen Recording for the app Retest runs under, which `screenRecordingAllowed` reads; the runner's
+  // display capture never did, as XCTest takes it. The window's rounded corners come back transparent.
   async capture(_source: CaptureSource, bounds: RequestBounds): Promise<DriverAnswer<Uint8Array>> {
     const deadline = new Deadline(bounds.timeoutMs)
     const part = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: bounds.signal })
-    const state = await this.#executor.appState({ path: this.bundle.appPath }, part())
-    if (state.status !== 'answered') return state
-    if (state.value !== 4) return failedCapture('The app is not in front, so windows of other apps may lie over its window. Retest captures the window only while the app is in front.')
+    const pids = this.#recordedPids()
+    if (pids.length === 0) return failedCapture('The session has recorded no process of the app, so Retest cannot tell which window is the app\'s. Retest captured nothing.')
     const tree = await this.source(part())
     if (tree.status !== 'answered') return tree
-    const window = tree.value.window
-    if (window === undefined) return failedCapture('The app has no window to capture.')
-    const screen = await this.#executor.windowRect(part())
-    if (screen.status !== 'answered') return screen
-    const before = await windowsOnScreen(this.#tools, part())
-    const covered = await this.#coverage(before, window, screen.value, part())
-    if (covered !== undefined) return failedCapture(covered)
-    const display = await this.#executor.screenshot(part())
-    if (display.status !== 'answered') return display
-    const after = await windowsOnScreen(this.#tools, part())
-    if (typeof after === 'string') return failedCapture(`Retest could not read which windows were on screen after the display was captured (${after}), so it cannot tell whether another window is in the capture. Retest captured nothing.`)
-    if (JSON.stringify(after) !== JSON.stringify(before)) return failedCapture('The windows on screen changed while the display was captured, so another window may be in the capture. Retest captured nothing.')
+    const frame = tree.value.window
+    if (frame === undefined) return failedCapture('The app has no window to capture.')
+    const late = outOfTime(deadline, 'reading which windows are on screen')
+    if (late !== undefined) return late
+    const before = appWindow(await windowsOnScreen(this.#tools, part()), pids, frame)
+    if (!before.ok) return failedCapture(`${before.problem} Retest captured nothing.`, before.absent === true ? { transient: true } : {})
+    const file = join(this.#folder, `window-${++this.#captures}.png`)
+    let answer: DriverAnswer<Uint8Array>
     try {
-      const image = decodePng(display.value)
-      const scale = image.width / screen.value.width
-      if (!Number.isInteger(scale) || Math.round(screen.value.height * scale) !== image.height) return failedCapture(`The display capture is ${image.width}x${image.height}, not the ${screen.value.width}x${screen.value.height}-point main screen at a whole scale.`)
-      const area = { x: Math.round((window.x - screen.value.x) * scale), y: Math.round((window.y - screen.value.y) * scale), width: Math.round(window.width * scale), height: Math.round(window.height * scale) }
-      if (area.x < 0 || area.y < 0 || area.x + area.width > image.width || area.y + area.height > image.height) return failedCapture('The app\'s window is not wholly on the main display, so Retest cannot cut it from the capture.')
-      return { status: 'answered', value: encodePng(cropPng(image, area)), durationMs: display.durationMs }
+      answer = await this.#windowImage({ window: before.window, pids, frame, file, deadline, signal: bounds.signal })
     } catch (error) {
-      return failedCapture(`The display capture could not be cut to the window: ${errorMessage(error)}`)
+      answer = failedCapture(`The window's image could not be read: ${errorMessage(error)}`)
     }
+    try {
+      await rm(file, { force: true })
+    } catch (error) {
+      answer = failedCapture(`Retest could not remove the window's image ${file}: ${errorMessage(error)}`)
+    }
+    return answer
   }
 
-  source(bounds: RequestBounds): Promise<DriverAnswer<ScopedSource>> {
-    return this.#executor.ownedSource({ platform: 'macos', bundleId: this.bundle.bundleId, appNames: appNames(this.bundle) }, bounds)
+  // Asks screencapture for the window's image into `file`, without its shadow or a sound, then reads the window list
+  // again and hands over the PNG as it was written, HiDPI pixels and all. No command starts once the deadline is
+  // reached, since each one may run its kill grace past the time it is given.
+  async #windowImage(asked: { readonly window: ScreenWindow; readonly pids: readonly number[]; readonly frame: Rect; readonly file: string; readonly deadline: Deadline; readonly signal: AbortSignal | undefined }): Promise<DriverAnswer<Uint8Array>> {
+    const { window, pids, frame, file, deadline, signal } = asked
+    const late = outOfTime(deadline, 'asking for the window\'s image')
+    if (late !== undefined) return late
+    const started = performance.now()
+    const shot = await runCommand(this.#tools.screencapture, ['-l', String(window.number), '-o', '-x', '-t', 'png', file], { timeoutMs: deadline.commandTimeoutMs, signal, hiddenVariables: this.#tools.hiddenVariables, graceMs: windowImageGraceMs })
+    const durationMs = Math.round(performance.now() - started)
+    if (shot.timedOut) return failedCapture(`macOS gave no image of the app's window in time (${describeCommand('screencapture', shot)}). Retest captured nothing.`, { class: 'timeout' })
+    if (shot.stopped) return failedCapture('The capture was stopped while macOS drew the window\'s image. Retest captured nothing.')
+    if (shot.code !== 0 || shot.cleanupProblems.length > 0) return failedCapture(`macOS gave no image of the app's window (${describeCommand('screencapture', shot)}). The image needs Screen Recording for ${screenRecordingHolder}: ${screenRecordingGrant}. npx retest doctor checks it.`)
+    const lateAfter = outOfTime(deadline, 'reading which windows are on screen after the image')
+    if (lateAfter !== undefined) return lateAfter
+    const after = appWindow(await windowsOnScreen(this.#tools, { timeoutMs: deadline.commandTimeoutMs, signal }), pids, frame)
+    if (!after.ok) return failedCapture(`After the image was taken: ${after.problem} Retest captured nothing.`)
+    if (after.window.number !== window.number || after.window.pid !== window.pid) return failedCapture(`The app's window changed while its image was taken (window ${window.number} of pid ${window.pid}, then window ${after.window.number} of pid ${after.window.pid}). Retest captured nothing.`)
+    const bytes = new Uint8Array(await readFile(file))
+    const size = pngSize(bytes)
+    if (size === undefined) return failedCapture('screencapture wrote a file that is not a PNG. Retest captured nothing.')
+    const scale = size.width / window.width
+    if (!Number.isInteger(scale) || scale < 1 || Math.round(window.height * scale) !== size.height) return failedCapture(`The window's image is ${size.width}x${size.height}, not the ${window.width}x${window.height}-point window at a whole scale. Retest captured nothing.`)
+    return { status: 'answered', value: bytes, durationMs }
   }
 
-  // Why a capture of the window would hold another process's pixels, or undefined when nothing lies over it.
-  async #coverage(windows: ScreenWindow[] | string, window: Rect, screen: Rect, bounds: RequestBounds): Promise<string | undefined> {
-    if (typeof windows === 'string') return `Retest could not read which windows are on screen (${windows}), so it captured nothing.`
-    const listed = await listProcesses(this.#tools, bounds.timeoutMs).catch(() => undefined)
-    if (listed === undefined) return 'Retest could not read the processes behind the windows on screen, so it captured nothing.'
-    const app = await macosAppProcesses(this.#tools, this.bundle.bundleId, bounds)
-    if (!app.ok) return `Retest could not read the app's processes (${app.problem}), so it captured nothing.`
-    const own = app.processes.map((entry) => entry.pid)
-    const dock = listed.filter((entry) => entry.command.endsWith('/Dock.app/Contents/MacOS/Dock')).map((entry) => entry.pid)
-    // Only an open runner session may pass over the system's Automation Mode window. Its owner is checked by the
-    // exact system executable, never by the window's layer or a title supplied by an application.
-    const overlay = !this.#released && this.#executor.ended === undefined ? automationOverlayPids(listed) : []
-    const covering = coveringWindows(windows, { pids: own, frame: window }, { screen, dockPids: dock, automationOverlayPids: overlay })
-    if (!covering.ok) return covering.problem
-    if (covering.windows.length === 0) return undefined
-    const layers = [...new Set(covering.windows.map((entry) => entry.layer))].join(', ')
-    return `${covering.windows.length} window(s) of other processes lie over the app's window (layer ${layers}), so a capture would hold their pixels. Retest captures the window only when nothing lies over it.`
+  source(bounds: RequestBounds, redact?: (text: string) => string): Promise<DriverAnswer<ScopedSource>> {
+    return this.#executor.ownedSource({ platform: 'macos', bundleId: this.bundle.bundleId, appNames: appNames(this.bundle), ...(redact === undefined ? {} : { redact }) }, bounds)
   }
 
   // Each process the session recorded is ended only while its command line is still the recorded one.
@@ -517,34 +552,41 @@ class MacosAppDriver implements NativeAppDriver {
 
 /**
  * The processes of the apps Launch Services lists under a bundle id, wherever each copy was launched from, with their
- * command lines; `listed` counts the apps it lists, including one whose process was gone before it could be read.
+ * command lines and starts; `listed` counts the apps it lists, including one whose process was gone before it could be
+ * read.
  *
- * @example await macosAppProcesses(systemTools, 'com.apple.TextEdit', { timeoutMs: 10_000 }) // { ok: true, listed: 1, processes: [{ pid: 4242, command: '/System/Applications/TextEdit.app/Contents/MacOS/TextEdit' }] }
+ * @example await macosAppProcesses(systemTools, 'com.apple.TextEdit', { timeoutMs: 10_000 }) // { ok: true, listed: 1, processes: [{ pid: 4242, command: '/System/Applications/TextEdit.app/Contents/MacOS/TextEdit', startedAt: 'Mon Oct 5 11:18:31 2026' }] }
  */
-export async function macosAppProcesses(tools: NativeTools, bundleId: string, bounds: RequestBounds): Promise<{ readonly ok: true; readonly listed: number; readonly processes: readonly RecordedProcess[] } | { readonly ok: false; readonly problem: string }> {
-  const found = await runCommand(tools.lsappinfo, ['find', `bundleid=${bundleId}`], { ...bounds, hiddenVariables: tools.hiddenVariables })
+export async function macosAppProcesses(tools: NativeTools, bundleId: string, bounds: RequestBounds): Promise<{ readonly ok: true; readonly listed: number; readonly processes: readonly StartedProcess[] } | { readonly ok: false; readonly problem: string }> {
+  // The readings share the one budget, and none starts once it is spent, since each may run its kill grace past it.
+  const deadline = new Deadline(Math.max(0, Math.min(maxTimeout, Math.floor(bounds.timeoutMs))))
+  const part = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: bounds.signal })
+  const spent = { ok: false, problem: `Retest used its ${deadline.budgetMs} ms before it had read every process of ${bundleId}.` } as const
+  const found = await runCommand(tools.lsappinfo, ['find', `bundleid=${bundleId}`], { ...part(), hiddenVariables: tools.hiddenVariables })
   if (found.code !== 0) return { ok: false, problem: describeCommand('lsappinfo find', found) }
   const applications = [...found.stdout.matchAll(/ASN:(0x[0-9a-f]+-0x[0-9a-f]+)/gi)].map((match) => match[1] ?? '')
-  const processes: RecordedProcess[] = []
+  const processes: StartedProcess[] = []
   for (const application of applications) {
-    const info = await runCommand(tools.lsappinfo, ['info', '-only', 'pid,bundleid', `ASN:${application}:`], { ...bounds, hiddenVariables: tools.hiddenVariables })
+    if (deadline.reached) return spent
+    const info = await runCommand(tools.lsappinfo, ['info', '-only', 'pid,bundleid', `ASN:${application}:`], { ...part(), hiddenVariables: tools.hiddenVariables })
     if (info.code !== 0) return { ok: false, problem: describeCommand('lsappinfo info', info) }
     // An app that quit since the listing prints nothing; one whose number another app took names another bundle.
     if (/bundleID="([^"]*)"/.exec(info.stdout)?.[1] !== bundleId) continue
     const pid = Number(/\bpid = (\d+)/.exec(info.stdout)?.[1])
     if (!Number.isSafeInteger(pid) || pid <= 0) continue
-    const presence = await commandOf(tools, pid)
+    if (deadline.reached) return spent
+    const presence = await commandOf(tools, pid, deadline.commandTimeoutMs)
     if (presence.state === 'unreadable') return { ok: false, problem: presence.problem }
-    if (presence.state === 'present') processes.push({ pid, command: presence.command })
+    if (presence.state === 'present') processes.push({ pid, command: presence.command, startedAt: presence.startedAt })
   }
   return { ok: true, listed: applications.length, processes }
 }
 
-/** A window as the window server lists it: its owner's pid, its layer and its frame in points. */
-export type ScreenWindow = { readonly pid: number; readonly layer: number; readonly x: number; readonly y: number; readonly width: number; readonly height: number }
+/** A window as the window server lists it: its owner's pid, its layer, its frame in points and its window number. */
+export type ScreenWindow = { readonly pid: number; readonly layer: number; readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly number: number }
 
-// Asks the window server, through JavaScript for Automation, for the windows on screen front to back: owner, layer and
-// frame only, never a title. Reading this list needs no permission and raises no prompt.
+// Asks the window server, through JavaScript for Automation, for the windows on screen front to back: owner, layer,
+// frame and window number only, never a title. Reading this list needs no permission and raises no prompt.
 const windowListScript = [
   "ObjC.import('CoreGraphics')",
   'const list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, $.kCGNullWindowID))',
@@ -552,7 +594,7 @@ const windowListScript = [
   'for (let index = 0; index < list.count; index += 1) {',
   '  const window = list.objectAtIndex(index)',
   "  const frame = window.objectForKey('kCGWindowBounds')",
-  "  out.push([ObjC.unwrap(window.objectForKey('kCGWindowOwnerPID')), ObjC.unwrap(window.objectForKey('kCGWindowLayer')), ObjC.unwrap(frame.objectForKey('X')), ObjC.unwrap(frame.objectForKey('Y')), ObjC.unwrap(frame.objectForKey('Width')), ObjC.unwrap(frame.objectForKey('Height'))])",
+  "  out.push([ObjC.unwrap(window.objectForKey('kCGWindowOwnerPID')), ObjC.unwrap(window.objectForKey('kCGWindowLayer')), ObjC.unwrap(frame.objectForKey('X')), ObjC.unwrap(frame.objectForKey('Y')), ObjC.unwrap(frame.objectForKey('Width')), ObjC.unwrap(frame.objectForKey('Height')), ObjC.unwrap(window.objectForKey('kCGWindowNumber'))])",
   '}',
   'JSON.stringify(out)',
 ].join('\n')
@@ -560,7 +602,7 @@ const windowListScript = [
 /**
  * The windows on screen, front to back, as the window server lists them, or why they could not be read.
  *
- * @example await windowsOnScreen(systemTools, { timeoutMs: 5000 }) // [{ pid: 601, layer: 24, x: 0, y: 0, width: 1728, height: 33 }, …]
+ * @example await windowsOnScreen(systemTools, { timeoutMs: 5000 }) // [{ pid: 601, layer: 24, x: 0, y: 0, width: 1728, height: 33, number: 23599 }, …]
  */
 export async function windowsOnScreen(tools: NativeTools, bounds: RequestBounds): Promise<ScreenWindow[] | string> {
   const result = await runCommand(tools.osascript, ['-l', 'JavaScript', '-e', windowListScript], { ...bounds, hiddenVariables: tools.hiddenVariables })
@@ -574,11 +616,57 @@ export async function windowsOnScreen(tools: NativeTools, bounds: RequestBounds)
   if (!Array.isArray(parsed)) return 'the window list is not a list'
   const windows: ScreenWindow[] = []
   for (const entry of parsed) {
-    if (!Array.isArray(entry) || entry.length !== 6 || !entry.every((value) => typeof value === 'number')) return 'a window entry is not six numbers'
-    const [pid = 0, layer = 0, x = 0, y = 0, width = 0, height = 0] = entry
-    windows.push({ pid, layer, x, y, width, height })
+    if (!Array.isArray(entry) || entry.length !== 7 || !entry.every((value) => typeof value === 'number')) return 'a window entry is not seven numbers'
+    const [pid = 0, layer = 0, x = 0, y = 0, width = 0, height = 0, number = 0] = entry
+    windows.push({ pid, layer, x, y, width, height, number })
   }
   return windows
+}
+
+/**
+ * The app's window as the window server lists it on screen: the one window of `pids` whose frame matches the frame the
+ * app's tree gives, within a point; or why there is not exactly one, `absent` when there is none, or why the list could
+ * not be read.
+ *
+ * @example appWindow(await windowsOnScreen(systemTools, bounds), [4242], { x: 20, y: 60, width: 700, height: 480 }) // { ok: true, window: { pid: 4242, layer: 0, x: 20, y: 60, width: 700, height: 480, number: 9113 } }
+ */
+export function appWindow(windows: readonly ScreenWindow[] | string, pids: readonly number[], frame: Rect): { readonly ok: true; readonly window: ScreenWindow } | { readonly ok: false; readonly problem: string; readonly absent?: true } {
+  if (typeof windows === 'string') return { ok: false, problem: `Retest could not read which windows are on screen (${windows}).` }
+  const near = (first: number, second: number): boolean => Math.abs(first - second) <= 1
+  const matching = windows.filter((entry) => pids.includes(entry.pid) && near(entry.x, frame.x) && near(entry.y, frame.y) && near(entry.width, frame.width) && near(entry.height, frame.height))
+  const [window, ...others] = matching
+  if (window === undefined) return { ok: false, problem: `No window of the app is on screen where its tree places it (${frame.x},${frame.y} ${frame.width}x${frame.height}); a minimised or hidden window, or one on another Space, is not on screen.`, absent: true }
+  if (others.length > 0) return { ok: false, problem: `${matching.length} windows of the app are on screen where its tree places it, so Retest cannot tell which one to capture.` }
+  return { ok: true, window }
+}
+
+/** Who macOS asks for Screen Recording on Retest's behalf, as the capture refusal and `doctor` both name it. */
+export const screenRecordingHolder = 'the terminal or agent that runs Retest'
+
+/** Where macOS grants Screen Recording, as the capture refusal and `doctor` both say it. */
+export const screenRecordingGrant = 'macOS grants it in System Settings, Privacy & Security, Screen & System Audio Recording, and that app may need a relaunch'
+
+// Asks CoreGraphics through JavaScript for Automation whether this process may record the screen. The preflight raises
+// no prompt and takes no picture; macOS answers for the app the process runs under, as it does for screencapture. The
+// bridge does not declare the function, so it is bound by name.
+const screenRecordingScript = [
+  "ObjC.import('CoreGraphics')",
+  "ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []])",
+  'JSON.stringify($.CGPreflightScreenCaptureAccess())',
+].join('\n')
+
+/**
+ * Whether macOS lets the app that runs Retest record the screen, which the capture of a macOS app's window needs, read
+ * without a prompt or a capture; or why it could not be read.
+ *
+ * @example await screenRecordingAllowed(systemTools, { timeoutMs: 10_000 }) // { ok: true, allowed: false }
+ */
+export async function screenRecordingAllowed(tools: NativeTools, bounds: RequestBounds): Promise<{ readonly ok: true; readonly allowed: boolean } | { readonly ok: false; readonly problem: string }> {
+  const result = await runCommand(tools.osascript, ['-l', 'JavaScript', '-e', screenRecordingScript], { ...bounds, hiddenVariables: tools.hiddenVariables })
+  if (result.code !== 0 || result.cleanupProblems.length > 0) return { ok: false, problem: describeCommand('osascript', result) }
+  const answer = result.stdout.trim()
+  if (answer !== 'true' && answer !== 'false') return { ok: false, problem: 'the answer was neither true nor false' }
+  return { ok: true, allowed: answer === 'true' }
 }
 
 /**
@@ -586,7 +674,7 @@ export async function windowsOnScreen(tools: NativeTools, bounds: RequestBounds)
  *
  * @example automationOverlayPids(await listProcesses(systemTools, 10_000)) // [74449]
  */
-export function automationOverlayPids(listed: readonly ListedProcess[]): number[] {
+export function automationOverlayPids(listed: readonly Pick<ListedProcess, 'pid' | 'command'>[]): number[] {
   return listed.filter((entry) => entry.command === automationModeUi || entry.command.startsWith(`${automationModeUi} `)).map((entry) => entry.pid)
 }
 
@@ -612,10 +700,23 @@ export function coveringWindows(windows: readonly ScreenWindow[], app: { readonl
   return { ok: true, windows: covering }
 }
 
-function failedCapture(message: string): DriverAnswer<Uint8Array> {
-  return { status: 'failed', input: 'not_sent', failure: { class: 'not_actionable', message } }
+// `transient` marks a window that is not there yet, as just after launch, which a capture that is starting may ask again.
+function failedCapture(message: string, kind: { readonly class?: FailureClass; readonly transient?: true } = {}): DriverAnswer<Uint8Array> {
+  return { status: 'failed', input: 'not_sent', failure: { class: kind.class ?? 'not_actionable', message, ...(kind.transient === true ? { details: { transient: true } } : {}) } }
 }
+
+// A capture whose deadline is reached starts no further command, as each one may run its kill grace past its time.
+function outOfTime(deadline: Deadline, step: string): DriverAnswer<Uint8Array> | undefined {
+  return deadline.reached ? failedCapture(`The capture used its ${deadline.budgetMs} ms before ${step}. Retest captured nothing.`, { class: 'timeout' }) : undefined
+}
+
+/** A refusal to start the desktop's runner. `idle` says the start left nothing running and holds no lock. */
+export type DesktopRefusal = { readonly ok: false; readonly failure: Failure; readonly idle?: true }
 
 function refused(message: string): { readonly ok: false; readonly failure: Failure } {
   return { ok: false, failure: { class: 'setup_failed', message } }
+}
+
+function idle(message: string): DesktopRefusal {
+  return { ok: false, failure: { class: 'setup_failed', message }, idle: true }
 }

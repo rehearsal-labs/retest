@@ -19,9 +19,11 @@ export type RecordIdentity = {
 
 /**
  * What took a capture: `chromium`, a Chromium page's own capture over the DevTools protocol, an Electron window's
- * among them; or a native session's source, as it names its own: `executor-screen`, the executor's screenshot of the
- * device; `simulator-display`, the simulator's display; `window-crop`, the app's window cut from the Mac's display.
+ * among them; `firefox`, a Firefox page's own capture over WebDriver BiDi (`browsingContext.captureScreenshot`);
+ * `webkit`, a WebKit page's own capture over its inspector protocol (`Page.snapshotRect`); or a native session's
+ * source, as it names its own: `executor-screen`, the executor's screenshot of the device; `simulator-display`, the
+ * simulator's display; `window-crop`, the app's own window, as the Mac's window server draws it from its number.
  */
-export type CaptureSourceName = 'chromium' | 'executor-screen' | 'simulator-display' | 'window-crop'
+export type CaptureSourceName = 'chromium' | 'firefox' | 'webkit' | 'executor-screen' | 'simulator-display' | 'window-crop'
 
-export const captureSourceNameSchema: Schema<CaptureSourceName> = s.enum(['chromium', 'executor-screen', 'simulator-display', 'window-crop'])
+export const captureSourceNameSchema: Schema<CaptureSourceName> = s.enum(['chromium', 'firefox', 'webkit', 'executor-screen', 'simulator-display', 'window-crop'])

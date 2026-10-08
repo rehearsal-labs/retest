@@ -1,16 +1,22 @@
 import type { TestContext } from 'node:test'
+import type { CapturedFrame, StartCapture } from '../../src/media/capture.ts'
 import type { ExecutorBuild } from '../../src/native/executors.ts'
 import type { FakeTools } from './native-fake-tools.ts'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { automationOverlayPids, coveringWindows, MacosDesktop } from '../../src/native/macos-app.ts'
+import { nativeCaptureTimeoutMs, sessionRecordIdentity } from '../../src/native/capture.ts'
+import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
+import { appWindow, automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, windowsOnScreen } from '../../src/native/macos-app.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
 import { decodePng } from '../../src/native/png.ts'
+import { commandOf, systemTools, terminationGraceMs } from '../../src/native/processes.ts'
 import { alive, readApps, readJsonFile, readRequests } from './native-fake-executor.ts'
-import { fakeAppBundle, fakeTools, fakeWindowProcess, startedProcesses } from './native-fake-tools.ts'
+import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, startedProcesses } from './native-fake-tools.ts'
 
 // A macOS desktop needs a Mac: it refuses to start elsewhere, and its lock stands on the kernel lock /usr/bin/lockf takes.
 const darwinOnly = { skip: process.platform === 'darwin' ? false : 'the macOS desktop runs only on macOS' }
@@ -65,9 +71,10 @@ test('one runner serves the desktop: the app is launched at its path, captured a
   const capture = await opened.session.capture(10_000)
   assert.ok(capture.ok, capture.ok ? '' : capture.failure.message)
   if (!capture.ok) return
-  // The 20x10-point window at scale 2, cut from the 80x60 display capture.
+  // The 20x10-point window at scale 2, as screencapture drew it from the window's number.
   assert.deepEqual([capture.capture.width, capture.capture.height, capture.capture.source], [40, 20, 'window-crop'])
   assert.equal(decodePng(capture.capture.png).width, 40)
+  assert.equal(readRequests(setup.fake.root).some((request) => request.path.endsWith('/screenshot')), false, 'the display is not captured')
   const tree = await opened.session.readSource(5000)
   assert.ok(tree.ok)
   assert.doesNotMatch(tree.ok ? tree.tree.source.xml : '', /Recent Items|secret-file/)
@@ -234,7 +241,7 @@ test('a launch is refused by name when Retest cannot read whether a copy runs', 
   await opened.session.dispose(5000)
 })
 
-test('a window of another process over the app\'s window refuses the capture by name', darwinOnly, async (t) => {
+test('a window of another process over the app\'s window leaves the capture to the app\'s own window, by its number, in front or not', darwinOnly, async (t) => {
   const setup = await setUp(t, { coveringWindow: { layer: 1000, x: 10, y: 5, width: 6, height: 6 } })
   const desktop = await startDesktop(t, setup)
   const app = await desktop.openApp(setup.appPath)
@@ -242,20 +249,45 @@ test('a window of another process over the app\'s window refuses the capture by 
   const opened = await app.runtime.openSession(session, 5000)
   if (!opened.ok) throw new Error(opened.failure.message)
   await opened.session.launch(10_000)
+  const pid = opened.session.processIds[0]
+  const asked = readRequests(setup.fake.root).length
   const capture = await opened.session.capture(10_000)
-  assert.equal(capture.ok, false)
-  assert.match(!capture.ok ? capture.failure.message : '', /1 window\(s\) of other processes lie over the app's window \(layer 1000\)/)
+  assert.ok(capture.ok, capture.ok ? '' : capture.failure.message)
+  if (capture.ok) assert.deepEqual([capture.capture.width, capture.capture.height], [40, 20])
+  const shots = (await setup.fake.calls()).filter((call) => call.tool === 'screencapture')
+  assert.equal(shots.length, 1)
+  const file = shots[0]?.args.at(-1) ?? ''
+  // The fake numbers the app's window by its owner's pid.
+  assert.deepEqual(shots[0]?.args, ['-l', String(pid), '-o', '-x', '-t', 'png', file])
+  await assert.rejects(access(file), 'the image file is removed once read')
+  assert.deepEqual(readRequests(setup.fake.root).slice(asked).map((request) => request.path).filter((path) => path.endsWith('/screenshot') || path.endsWith('/wda/apps/state')), [], 'neither the display nor whether the app is in front is asked')
   await opened.session.dispose(5000)
+})
+
+test('the app\'s window is the one window of its processes where its tree places it, within a point', () => {
+  const frame = { x: 100, y: 100, width: 200, height: 100 }
+  const own = { pid: 50, layer: 0, ...frame, number: 501 }
+  const nearly = { ...own, x: 100.5, y: 99, width: 201, number: 502 }
+  const stranger = { pid: 70, layer: 0, ...frame, number: 701 }
+  const popover = { pid: 50, layer: 3, x: 150, y: 180, width: 80, height: 40, number: 503 }
+  const panel = { pid: 80, layer: 1000, x: 150, y: 120, width: 100, height: 100, number: 801 }
+  assert.deepEqual(appWindow([panel, popover, stranger, own], [50], frame), { ok: true, window: own }, 'another process\'s window at the same frame and the app\'s other windows are not it')
+  assert.deepEqual(appWindow([nearly], [50], frame), { ok: true, window: nearly })
+  assert.deepEqual(appWindow([own], [51, 50], frame), { ok: true, window: own }, 'any of the session\'s processes may own it')
+  assert.deepEqual(appWindow([stranger, popover], [50], frame), { ok: false, problem: 'No window of the app is on screen where its tree places it (100,100 200x100); a minimised or hidden window, or one on another Space, is not on screen.', absent: true }, 'no window there may yet come, as just after a launch')
+  assert.deepEqual(appWindow([own, nearly], [50], frame), { ok: false, problem: '2 windows of the app are on screen where its tree places it, so Retest cannot tell which one to capture.' })
+  assert.deepEqual(appWindow([{ ...own, x: 102 }], [50], frame).ok, false, 'two points off is another place')
+  assert.deepEqual(appWindow('osascript ended with exit code 1', [50], frame), { ok: false, problem: 'Retest could not read which windows are on screen (osascript ended with exit code 1).' })
 })
 
 test('the windows over an app window are the other processes\' windows in front of it that overlap it, the Dock\'s surface aside', () => {
   const frame = { x: 100, y: 100, width: 200, height: 100 }
   const screen = { x: 0, y: 0, width: 1728, height: 1117 }
-  const own = { pid: 50, layer: 0, ...frame }
-  const dock = { pid: 60, layer: 20, ...screen }
-  const panel = { pid: 70, layer: 1000, x: 250, y: 150, width: 100, height: 100 }
-  const elsewhere = { pid: 80, layer: 0, x: 400, y: 400, width: 50, height: 50 }
-  const behind = { pid: 90, layer: 0, x: 0, y: 0, width: 1728, height: 1000 }
+  const own = { pid: 50, layer: 0, ...frame, number: 1 }
+  const dock = { pid: 60, layer: 20, ...screen, number: 2 }
+  const panel = { pid: 70, layer: 1000, x: 250, y: 150, width: 100, height: 100, number: 3 }
+  const elsewhere = { pid: 80, layer: 0, x: 400, y: 400, width: 50, height: 50, number: 4 }
+  const behind = { pid: 90, layer: 0, x: 0, y: 0, width: 1728, height: 1000, number: 5 }
   assert.deepEqual(coveringWindows([dock, panel, elsewhere, own, behind], { pids: [50], frame }, { screen, dockPids: [60] }), { ok: true, windows: [panel] })
   assert.deepEqual(coveringWindows([dock, own], { pids: [50], frame }, { screen, dockPids: [] }), { ok: true, windows: [dock] }, 'a full-screen window not of the Dock counts')
   assert.equal(coveringWindows([dock, behind], { pids: [50], frame }, { screen, dockPids: [60] }).ok, false, 'no window of the app where its tree places it')
@@ -264,11 +296,11 @@ test('the windows over an app window are the other processes\' windows in front 
 test('the Automation Mode overlay over the whole screen is passed over by its owner, and nothing else is', () => {
   const frame = { x: 100, y: 100, width: 200, height: 100 }
   const screen = { x: 0, y: 0, width: 1728, height: 1117 }
-  const own = { pid: 50, layer: 0, ...frame }
-  const overlay = { pid: 70, layer: 1000, ...screen }
-  const pointer = { pid: 601, layer: 2147483630, x: 150, y: 120, width: 28, height: 28 }
-  const overlayPanel = { pid: 70, layer: 1000, x: 120, y: 110, width: 100, height: 40 }
-  const otherFullScreen = { pid: 80, layer: 1000, ...screen }
+  const own = { pid: 50, layer: 0, ...frame, number: 1 }
+  const overlay = { pid: 70, layer: 1000, ...screen, number: 2 }
+  const pointer = { pid: 601, layer: 2147483630, x: 150, y: 120, width: 28, height: 28, number: 3 }
+  const overlayPanel = { pid: 70, layer: 1000, x: 120, y: 110, width: 100, height: 40, number: 4 }
+  const otherFullScreen = { pid: 80, layer: 1000, ...screen, number: 5 }
   const desktop = { screen, dockPids: [], automationOverlayPids: [70] }
   assert.deepEqual(coveringWindows([overlay, own], { pids: [50], frame }, desktop), { ok: true, windows: [] })
   assert.deepEqual(coveringWindows([pointer, overlay, own], { pids: [50], frame }, desktop), { ok: true, windows: [pointer] }, 'the pointer still counts')
@@ -288,23 +320,23 @@ test('the overlay\'s owner is found by the exact path of macOS\'s AutomationMode
   assert.deepEqual(automationOverlayPids(listed), [74449, 74450])
 })
 
-test('the fake window list allows the system overlay during a session and refuses another owner at the same layer', darwinOnly, async (t) => {
+test('a full-screen window at layer 1000 leaves the capture to the app\'s window, whether the system overlay or another app owns it, and a disposed session captures nothing', darwinOnly, async (t) => {
   const { setup, opened } = await launchedSession(t)
   const overlay = await fakeWindowProcess(setup.fake, '/System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/Contents/MacOS/AutomationModeUI')
   const window = { layer: 1000, x: 0, y: 0, width: 40, height: 30 }
   await setup.fake.configure({ coveringWindow: { pid: overlay, ...window } })
   assert.deepEqual(await opened.session.launch(10_000), { result: { ok: true }, input: 'sent' })
-  const allowed = await opened.session.capture(10_000)
-  assert.ok(allowed.ok, allowed.ok ? '' : allowed.failure.message)
-  if (allowed.ok) assert.deepEqual([allowed.capture.width, allowed.capture.height], [40, 20])
+  const underOverlay = await opened.session.capture(10_000)
+  assert.ok(underOverlay.ok, underOverlay.ok ? '' : underOverlay.failure.message)
+  if (underOverlay.ok) assert.deepEqual([underOverlay.capture.width, underOverlay.capture.height], [40, 20])
   const other = await fakeWindowProcess(setup.fake, '/Applications/Another.app/Contents/MacOS/AutomationModeUI')
   await setup.fake.configure({ coveringWindow: { pid: other, ...window } })
-  const refused = await opened.session.capture(10_000)
-  assert.equal(refused.ok, false)
-  assert.match(!refused.ok ? refused.failure.message : '', /1 window\(s\) of other processes lie over the app's window \(layer 1000\)/)
+  const underAnother = await opened.session.capture(10_000)
+  assert.ok(underAnother.ok, underAnother.ok ? '' : underAnother.failure.message)
+  if (underAnother.ok) assert.deepEqual([underAnother.capture.width, underAnother.capture.height], [40, 20])
   await opened.session.dispose(5000)
   const ended = await opened.session.capture(5000)
-  assert.equal(ended.ok, false, 'a disposed session cannot capture through the overlay exception')
+  assert.equal(ended.ok, false, 'a disposed session captures nothing')
 })
 
 test('two runner apps launched by the fake executor refuse its identity and are cleaned through recorded ancestry', darwinOnly, async (t) => {
@@ -314,7 +346,7 @@ test('two runner apps launched by the fake executor refuse its identity and are 
   assert.deepEqual((await startedProcesses(setup.fake.root)).filter(alive), [], 'the fake xcodebuild itself launched both apps; verified ancestry owns them')
 })
 
-test('a capture is refused when the windows on screen change between the readings around it', darwinOnly, async (t) => {
+test('another window changing between the readings around the image leaves the capture taken', darwinOnly, async (t) => {
   const setup = await setUp(t, { windowsChange: true })
   const desktop = await startDesktop(t, setup)
   const app = await desktop.openApp(setup.appPath)
@@ -323,8 +355,290 @@ test('a capture is refused when the windows on screen change between the reading
   if (!opened.ok) throw new Error(opened.failure.message)
   await opened.session.launch(10_000)
   const capture = await opened.session.capture(10_000)
-  assert.match(!capture.ok ? capture.failure.message : '', /windows on screen changed while the display was captured/)
+  assert.ok(capture.ok, capture.ok ? '' : capture.failure.message)
   await opened.session.dispose(5000)
+})
+
+test('a capture is refused when the app\'s window changes its number or its owner between the readings around the image', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  const pid = opened.session.processIds[0] ?? 0
+  const stranger = await fakeWindowProcess(setup.fake, '/Applications/Floating.app/Contents/MacOS/Floating')
+  const cases = [
+    { readings: [{}, { number: 999 }], refusal: new RegExp(`^The app's window changed while its image was taken \\(window ${pid} of pid ${pid}, then window 999 of pid ${pid}\\)\\. Retest captured nothing\\.$`) },
+    { readings: [{}, { pid: stranger }], refusal: /^After the image was taken: No window of the app is on screen where its tree places it \(4,3 20x10\); a minimised or hidden window, or one on another Space, is not on screen\. Retest captured nothing\.$/ },
+  ]
+  for (const { readings, refusal } of cases) {
+    await rm(join(setup.fake.root, 'app-window-readings.txt'), { force: true })
+    await setup.fake.configure({ appWindowReadings: readings })
+    const capture = await opened.session.capture(10_000)
+    assert.match(!capture.ok ? capture.failure.message : '', refusal)
+  }
+  assert.equal((await setup.fake.calls()).filter((call) => call.tool === 'screencapture').length, 2, 'each image was taken, and neither handed over')
+})
+
+test('a capture is refused before any image when the app\'s window is not on screen, or two of its windows lie where its tree places it', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  await setup.fake.configure({ appWindowReadings: [{ absent: true }] })
+  const minimised = await opened.session.capture(10_000)
+  assert.equal(!minimised.ok && minimised.failure.message, 'No window of the app is on screen where its tree places it (4,3 20x10); a minimised or hidden window, or one on another Space, is not on screen. Retest captured nothing.')
+  await rm(join(setup.fake.root, 'app-window-readings.txt'), { force: true })
+  await setup.fake.configure({ appWindowReadings: [{ twice: true }] })
+  const several = await opened.session.capture(10_000)
+  assert.equal(!several.ok && several.failure.message, '2 windows of the app are on screen where its tree places it, so Retest cannot tell which one to capture. Retest captured nothing.')
+  assert.equal((await setup.fake.calls()).some((call) => call.tool === 'screencapture'), false)
+})
+
+test('a capture is refused, naming screencapture and the permission it needs, when macOS gives no image, and an image of another size is refused', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  await setup.fake.configure({ screencaptureFails: 'could not create image from window' })
+  const denied = await opened.session.capture(10_000)
+  assert.equal(!denied.ok && denied.failure.message, 'macOS gave no image of the app\'s window (screencapture ended with exit code 1: could not create image from window). The image needs Screen Recording for the terminal or agent that runs Retest: macOS grants it in System Settings, Privacy & Security, Screen & System Audio Recording, and that app may need a relaunch. npx retest doctor checks it.')
+  await setup.fake.configure({ screencaptureSize: { width: 41, height: 20 } })
+  const sized = await opened.session.capture(10_000)
+  assert.equal(!sized.ok && sized.failure.message, 'The window\'s image is 41x20, not the 20x10-point window at a whole scale. Retest captured nothing.')
+  for (const call of (await setup.fake.calls()).filter((entry) => entry.tool === 'screencapture')) await assert.rejects(access(call.args.at(-1) ?? ''), 'no image file is left')
+})
+
+test('a session that has recorded no process of its app captures nothing', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  const capture = await opened.session.capture(10_000)
+  assert.equal(!capture.ok && capture.failure.message, 'The session has recorded no process of the app, so Retest cannot tell which window is the app\'s. Retest captured nothing.')
+  assert.equal((await setup.fake.calls()).some((call) => call.tool === 'screencapture'), false)
+})
+
+// A recording start on the session's own clock, collecting what it hands over and why it ended.
+function recordingStart(frames: CapturedFrame[], ended: string[], timeoutMs: number): StartCapture {
+  const began = performance.now()
+  return { fps: 5, clock: () => Math.floor((performance.now() - began) * 1000), deliver: (frame) => frames.push(frame), ended: (reason) => ended.push(reason), timeoutMs }
+}
+
+// How many fake screencapture calls have begun to hang.
+function hangingShots(root: string): number {
+  try {
+    return readFileSync(join(root, 'screencapture-hangs.txt'), 'utf8').length
+  } catch {
+    return 0
+  }
+}
+
+// Waits on short sleeps until `condition` holds, failing with `what` after `timeoutMs`.
+async function until(condition: () => boolean | Promise<boolean>, what: string, timeoutMs: number): Promise<void> {
+  const deadline = performance.now() + timeoutMs
+  while (!(await condition())) {
+    if (performance.now() > deadline) assert.fail(`Timed out waiting for ${what}.`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+test('a window recording that starts before the app\'s window is on screen asks again within its start budget, and a running one drops that frame', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  // The window list lists no window of the app at its first two readings, as just after a launch.
+  await setup.fake.configure({ appWindowReadings: [{ absent: true }, { absent: true }] })
+  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const frames: CapturedFrame[] = []
+  const ended: string[] = []
+  assert.deepEqual(await source.start(recordingStart(frames, ended, 20_000)), { ok: true, mode: 'screenshot-loop' })
+  assert.ok(frames.length >= 1, 'the start handed over the first image once the window was there')
+  await rm(join(setup.fake.root, 'app-window-readings.txt'), { force: true })
+  const before = frames.length
+  await setup.fake.configure({ appWindowReadings: [{ absent: true }] })
+  await until(() => frames.length >= before + 1, 'a frame after the one the running loop dropped', 20_000)
+  const stats = await source.stop(10_000)
+  const absent = 'No window of the app is on screen where its tree places it (4,3 20x10); a minimised or hidden window, or one on another Space, is not on screen. Retest captured nothing.'
+  assert.deepEqual(ended, [])
+  assert.equal(stats.endedEarly, undefined)
+  assert.equal(stats.problems.filter((problem) => problem === absent).length, 3, 'two readings at the start and one while running, each a dropped frame')
+  assert.equal(stats.dropped, 3)
+})
+
+// Sets whether the fake executor's tree holds the app's window, keeping its other settings.
+async function treeWithoutWindow(root: string, windowless: boolean): Promise<void> {
+  const config = readJsonFile(join(root, 'config.json'))
+  await writeFile(join(root, 'config.json'), JSON.stringify({ ...(isPlainObject(config) ? config : {}), windowless }))
+}
+
+test('a window recording that starts before the app\'s tree holds its window asks again within its start budget, and a running one drops that frame', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  const trees = (): number => readRequests(setup.fake.root).filter((request) => request.path.endsWith('/source')).length
+  await treeWithoutWindow(setup.fake.root, true)
+  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const frames: CapturedFrame[] = []
+  const ended: string[] = []
+  const read = trees()
+  const starting = source.start(recordingStart(frames, ended, 20_000))
+  await until(() => trees() >= read + 2, 'two readings of a tree with no window at the start', 20_000)
+  await treeWithoutWindow(setup.fake.root, false)
+  assert.deepEqual(await starting, { ok: true, mode: 'screenshot-loop' })
+  assert.ok(frames.length >= 1, 'the start handed over the first image once the window was in the tree')
+  const running = trees()
+  await treeWithoutWindow(setup.fake.root, true)
+  await until(() => trees() >= running + 2, 'a reading of a tree with no window while running', 20_000)
+  const before = frames.length
+  await treeWithoutWindow(setup.fake.root, false)
+  await until(() => frames.length > before || ended.length > 0, 'a frame once the window is in the tree again', 20_000)
+  const stats = await source.stop(10_000)
+  assert.deepEqual(ended, [], 'neither the start nor the running loop ended')
+  assert.equal(stats.endedEarly, undefined)
+  assert.ok(stats.dropped >= 3, `two readings at the start and one while running were dropped frames, not ${stats.dropped}`)
+  assert.deepEqual(new Set(stats.problems), new Set(['Capturing the screen: The app has no window in its tree.']))
+  assert.equal(stats.problems.length, stats.dropped)
+})
+
+test('a window recording whose window never comes is refused with what its last whole capture found, never as a capture that did not answer', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  await setup.fake.configure({ appWindowReadings: Array.from({ length: 400 }, () => ({ absent: true })) })
+  const absent = 'No window of the app is on screen where its tree places it (4,3 20x10); a minimised or hidden window, or one on another Space, is not on screen. Retest captured nothing.'
+  // One budget holds less than a whole capture's time and the other several captures; both end inside the budget.
+  for (const budgetMs of [4500, nativeCaptureTimeoutMs + 3000]) {
+    const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+    const frames: CapturedFrame[] = []
+    const ended: string[] = []
+    const asked = performance.now()
+    assert.deepEqual(await source.start(recordingStart(frames, ended, budgetMs)), { ok: false, reason: `The first window-crop capture failed: ${absent}` }, `a start of ${budgetMs} ms`)
+    const tookMs = performance.now() - asked
+    const stats = await source.stop(10_000)
+    assert.deepEqual(ended, [])
+    assert.equal(frames.length, 0)
+    assert.ok(tookMs < budgetMs, `the start of ${budgetMs} ms answered after ${tookMs} ms`)
+    assert.ok(stats.problems.every((problem) => problem === absent), stats.problems.join(' | '))
+    assert.ok(stats.problems.length >= (budgetMs > nativeCaptureTimeoutMs ? 2 : 1), `the start of ${budgetMs} ms asked ${stats.problems.length} times`)
+  }
+})
+
+test('a window capture at the start that runs past its budget is a dropped frame, and the start asks again', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  const asked = hangingShots(setup.fake.root)
+  // The first screencapture never answers and ignores SIGTERM, so only the kill after its grace ends it.
+  await setup.fake.configure({ screencaptureHangs: true })
+  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const frames: CapturedFrame[] = []
+  const ended: string[] = []
+  const starting = source.start(recordingStart(frames, ended, 20_000))
+  await until(() => hangingShots(setup.fake.root) > asked, 'a screencapture that hangs at the start', 20_000)
+  await setup.fake.configure({})
+  assert.deepEqual(await starting, { ok: true, mode: 'screenshot-loop' })
+  const stats = await source.stop(10_000)
+  assert.deepEqual(ended, [])
+  assert.equal(stats.endedEarly, undefined)
+  assert.ok(frames.length >= 1, 'the start handed over the image it asked again for')
+  assert.deepEqual(stats.problems, ['macOS gave no image of the app\'s window in time (screencapture did not finish in time and was ended). Retest captured nothing.'])
+  assert.equal(stats.dropped, 1)
+  assert.ok((stats.captureMs?.maxMs ?? Infinity) < nativeCaptureTimeoutMs, `the longest capture took ${stats.captureMs?.maxMs} ms`)
+})
+
+test('a window capture given less than a whole capture\'s time keeps the grace back, so a screencapture that ignores its stop is a dropped frame inside that time', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  // screencapture never answers and ignores SIGTERM, so only the kill after its grace ends it.
+  await setup.fake.configure({ screencaptureHangs: true })
+  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const frames: CapturedFrame[] = []
+  const ended: string[] = []
+  const budgetMs = 4000
+  const asked = performance.now()
+  const start = await source.start(recordingStart(frames, ended, budgetMs))
+  const tookMs = performance.now() - asked
+  const stats = await source.stop(10_000)
+  const late = 'macOS gave no image of the app\'s window in time (screencapture did not finish in time and was ended). Retest captured nothing.'
+  assert.deepEqual(start, { ok: false, reason: `The first window-crop capture failed: ${late}` }, 'the start ends on its dropped frame, never on a capture that did not answer')
+  assert.deepEqual(ended, [])
+  assert.ok(tookMs < budgetMs, `the start of ${budgetMs} ms answered after ${tookMs} ms`)
+  assert.deepEqual(stats.problems, [late], 'no capture was asked for with too little time left to finish')
+})
+
+test('the window route\'s readings keep the default grace: one that ignores SIGTERM is killed only once that grace has passed', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-macos-stubborn-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const stubborn = join(folder, 'stubborn')
+  await writeFile(stubborn, "#!/bin/sh\ntrap '' TERM\nsleep 30\n")
+  await chmod(stubborn, 0o755)
+  const tools = { ...systemTools, lsappinfo: stubborn, ps: stubborn, osascript: stubborn }
+  // The timeout leaves the shell time to set its trap before SIGTERM comes, even on a loaded machine.
+  const timeoutMs = 500
+  const readings: readonly (readonly [string, () => Promise<unknown>])[] = [
+    ['lsappinfo', () => macosAppProcesses(tools, bundleId, { timeoutMs })],
+    ['ps', () => commandOf(tools, process.pid, timeoutMs)],
+    ['osascript', () => windowsOnScreen(tools, { timeoutMs })],
+  ]
+  for (const [name, read] of readings) {
+    const began = performance.now()
+    await read()
+    const tookMs = performance.now() - began
+    assert.ok(tookMs >= timeoutMs + terminationGraceMs, `${name} was ended after ${tookMs} ms`)
+  }
+})
+
+test('a window image a capture wrote is gone when Retest exits before the capture removed it', darwinOnly, async (t) => {
+  // screencapture writes the image, then never answers, so the image is on disk when the process exits.
+  const setup = await setUp(t, { screencaptureHangsAfterImage: true })
+  const script = join(setup.fake.root, 'exit-mid-capture.ts')
+  await writeFile(script, [
+    "import { existsSync, readFileSync } from 'node:fs'",
+    `import { MacosDesktop } from ${JSON.stringify(new URL('../../src/native/macos-app.ts', import.meta.url).pathname)}`,
+    `const started = await MacosDesktop.start({ build: ${JSON.stringify(setup.build)}, tools: ${JSON.stringify(setup.fake.tools)}, logFolder: ${JSON.stringify(join(setup.fake.root, 'logs'))}, timeoutMs: 20000, desktopLock: ${JSON.stringify(join(setup.fake.root, 'desktop.lock'))} })`,
+    'if (!started.ok) throw new Error(started.failure.message)',
+    `const app = await started.desktop.openApp(${JSON.stringify(setup.appPath)})`,
+    'if (!app.ok) throw new Error(app.failure.message)',
+    `const opened = await app.runtime.openSession({ owner: ${JSON.stringify(owner)}, launch: { arguments: ['-reset'], environment: {} }, redact: (text) => text }, 5000)`,
+    'if (!opened.ok) throw new Error(opened.failure.message)',
+    'await opened.session.launch(10000)',
+    'void opened.session.capture(20000)',
+    `const calls = ${JSON.stringify(join(setup.fake.root, 'calls.jsonl'))}`,
+    'for (;;) {',
+    "  const shot = readFileSync(calls, 'utf8').split('\\n').filter((line) => line.length > 0).map((line) => JSON.parse(line)).find((call) => call.tool === 'screencapture')",
+    '  const file = shot?.args.at(-1)',
+    "  if (file !== undefined && existsSync(file)) { process.stdout.write(`${file}\\n`); process.exit(42) }",
+    '  await new Promise((resolve) => setTimeout(resolve, 5))',
+    '}',
+  ].join('\n'))
+  const child = spawn(process.execPath, ['--conditions=retest-source', script], { stdio: ['ignore', 'pipe', 'inherit'] })
+  t.after(() => child.kill('SIGKILL'))
+  let said = ''
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => { said += chunk })
+  const code = await new Promise<number | null>((resolve) => child.once('exit', (exitCode) => resolve(exitCode)))
+  const file = said.trim()
+  t.after(() => rm(dirname(file), { recursive: true, force: true }))
+  assert.equal(code, 42, said)
+  assert.match(file, /\/retest-macos-[^/]+\/window-1\.png$/)
+  await assert.rejects(access(file), 'the window image went with the process')
+  await assert.rejects(access(dirname(file)), 'and so did the desktop\'s folder it was written to')
+})
+
+test('a capture whose tree is not yet the app\'s says so, as a refusal that may clear', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  await writeFile(join(setup.fake.root, 'config.json'), JSON.stringify({ appName: 'Elsewhere', screen: { width: 40, height: 30, scale: 2 }, window: { x: 4, y: 3, width: 20, height: 10 } }))
+  const capture = await opened.session.capture(10_000)
+  assert.deepEqual(!capture.ok && capture.failure, { class: 'not_actionable', message: 'Capturing the screen: The tree is not of the owned app: its root names another app, not "TaskDesk".', details: { transient: true } })
+})
+
+test('a window capture that runs past its budget is a dropped frame inside the loop\'s limit, and the loop asks again', darwinOnly, async (t) => {
+  const { setup, opened } = await launchedSession(t)
+  await opened.session.launch(10_000)
+  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const frames: CapturedFrame[] = []
+  const ended: string[] = []
+  assert.deepEqual(await source.start(recordingStart(frames, ended, 20_000)), { ok: true, mode: 'screenshot-loop' })
+  const asked = hangingShots(setup.fake.root)
+  // screencapture never answers and ignores SIGTERM, so only the kill after its grace ends it.
+  await setup.fake.configure({ screencaptureHangs: true })
+  await until(() => hangingShots(setup.fake.root) > asked, 'a screencapture that hangs', 20_000)
+  await setup.fake.configure({})
+  const before = frames.length
+  await until(() => frames.length > before || ended.length > 0, 'a frame after the capture that ran over', 30_000)
+  const stats = await source.stop(10_000)
+  assert.deepEqual(ended, [], 'the loop went on after the capture that ran over')
+  assert.equal(stats.endedEarly, undefined)
+  assert.ok(stats.problems.some((problem) => /^macOS gave no image of the app's window in time \(screencapture did not finish in time and was ended\)\. Retest captured nothing\.$/.test(problem)), stats.problems.join(' | '))
+  assert.ok(stats.dropped >= 1)
+  assert.ok((stats.captureMs?.maxMs ?? Infinity) < nativeCaptureTimeoutMs, `the longest capture took ${stats.captureMs?.maxMs} ms`)
 })
 
 // The pids that were sent SIGTERM, as the fake runner apps note them.
@@ -382,14 +696,14 @@ test('a start whose desktop record cannot be written stops what it started and l
   assert.deepEqual((await startedProcesses(setup.fake.root)).filter(alive), [], 'xcodebuild and the runner app are gone')
 })
 
-test('a window list that cannot be read after the display capture refuses the capture, naming that reading', darwinOnly, async (t) => {
+test('a window list that cannot be read after the image refuses the capture, naming that reading', darwinOnly, async (t) => {
   const { setup, opened } = await launchedSession(t)
   await opened.session.launch(10_000)
   await writeFile(join(setup.fake.root, 'window-list-readings.txt'), '')
   await setup.fake.configure({ windowListReadings: 1 })
   const capture = await opened.session.capture(10_000)
   assert.equal(capture.ok, false)
-  assert.match(!capture.ok ? capture.failure.message : '', /could not read which windows were on screen after the display was captured \(osascript.*\)/)
+  assert.match(!capture.ok ? capture.failure.message : '', /^After the image was taken: Retest could not read which windows are on screen \(osascript ended with exit code 1: execution error: the window server did not answer \(-1712\)\)\. Retest captured nothing\.$/)
 })
 
 test('the desktop never runs its runner on the executor\'s default port', darwinOnly, async (t) => {
@@ -430,20 +744,85 @@ test('a start killed before its runner app answered leaves that runner app named
   if (taken.ok) await taken.desktop.close(20_000)
 })
 
-test('a capture under the Automation Mode overlay is taken, and one under a full-screen window of another process is refused', darwinOnly, async (t) => {
+test('a capture is taken whatever covers the app\'s window: the whole screen, its centre or its corner, of any owner', darwinOnly, async (t) => {
   const { setup, opened } = await launchedSession(t)
   await opened.session.launch(10_000)
-  const overlayProcess = spawn('sleep', ['600'], { detached: true, stdio: 'ignore' })
-  t.after(() => overlayProcess.kill('SIGKILL'))
-  const listed = readJsonFile(join(setup.fake.root, 'processes.json'))
-  const others = Array.isArray(listed) ? listed : []
-  const overlayCommand = '/System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/Contents/MacOS/AutomationModeUI'
-  await writeFile(join(setup.fake.root, 'processes.json'), JSON.stringify([...others, { pid: overlayProcess.pid, command: overlayCommand }]))
-  await setup.fake.configure({ coveringWindow: { layer: 1000, x: 0, y: 0, width: 40, height: 30, pid: overlayProcess.pid } })
-  const taken = await opened.session.capture(10_000)
-  assert.ok(taken.ok, taken.ok ? '' : taken.failure.message)
-  // The same window owned by a process that is not AutomationModeUI lies over the app's window.
-  await writeFile(join(setup.fake.root, 'processes.json'), JSON.stringify([...others, { pid: overlayProcess.pid, command: '/Applications/Floating.app/Contents/MacOS/Floating' }]))
-  const refused = await opened.session.capture(10_000)
-  assert.match(!refused.ok ? refused.failure.message : '', /1 window\(s\) of other processes lie over the app's window \(layer 1000\)/)
+  const owner = await fakeWindowProcess(setup.fake, '/Applications/Floating.app/Contents/MacOS/Floating')
+  for (const window of [{ x: 0, y: 0, width: 40, height: 30 }, { x: 12, y: 6, width: 4, height: 4 }, { x: 22, y: 11, width: 6, height: 6 }]) {
+    await setup.fake.configure({ coveringWindow: { layer: 1000, pid: owner, ...window } })
+    const taken = await opened.session.capture(10_000)
+    assert.ok(taken.ok, taken.ok ? '' : taken.failure.message)
+    if (taken.ok) assert.deepEqual([taken.capture.width, taken.capture.height], [40, 20])
+  }
+})
+
+function desktopOptions(setup: { readonly fake: FakeTools; readonly build: ExecutorBuild }): Parameters<typeof MacosDesktop.start>[0] {
+  return { build: setup.build, tools: setup.fake.tools, logFolder: join(setup.fake.root, 'logs'), timeoutMs: 20_000, desktopLock: join(setup.fake.root, 'desktop.lock') }
+}
+
+test('a desktop start refused before its runner was started says it left nothing behind', darwinOnly, async (t) => {
+  const setup = await setUp(t)
+  const wrong = await MacosDesktop.start({ ...desktopOptions(setup), build: { ...setup.build, executor: 'webdriveragent' } })
+  assert.deepEqual(!wrong.ok && [wrong.failure.message, wrong.idle], ['The macOS desktop needs a build of the macOS runner, not webdriveragent.', true])
+  const desktop = await startDesktop(t, setup)
+  const second = await MacosDesktop.start(desktopOptions(setup))
+  assert.deepEqual(!second.ok && second.idle, true, 'this process already runs the runner')
+  await desktop.close(20_000)
+  const held = await takeDesktopLock({ path: join(setup.fake.root, 'desktop.lock'), tools: setup.fake.tools })
+  if (!held.ok) throw new Error(held.failure.message)
+  const locked = await MacosDesktop.start(desktopOptions(setup))
+  assert.match(!locked.ok ? locked.failure.message : '', /already holds the desktop lock/)
+  assert.equal(!locked.ok && locked.idle, true, 'the desktop lock is held')
+  await held.lock.release()
+  await setup.fake.configure({ xcodeBuild: '17A1' })
+  const xcode = await MacosDesktop.start(desktopOptions(setup))
+  assert.deepEqual(!xcode.ok && xcode.idle, true, 'another Xcode')
+  await setup.fake.configure({})
+  const free = await takeDesktopLock({ path: join(setup.fake.root, 'desktop.lock'), tools: setup.fake.tools })
+  assert.ok(free.ok, 'every refusal let the desktop lock go')
+  if (free.ok) await free.lock.release()
+})
+
+test('a desktop start whose runner was started never says it left nothing behind', darwinOnly, async (t) => {
+  const setup = await setUp(t, { executorStart: 'fail' })
+  const failed = await MacosDesktop.start(desktopOptions(setup))
+  assert.equal(failed.ok, false)
+  assert.equal(!failed.ok && failed.idle, undefined)
+})
+
+test('a desktop closed cleanly leaves its record naming nothing of its runner', darwinOnly, async (t) => {
+  const setup = await setUp(t)
+  const desktop = await startDesktop(t, setup)
+  const running = readJsonFile(join(setup.fake.root, 'desktop.json'))
+  assert.ok(isPlainObject(running) && isPlainObject(running['xcodebuild']), 'while it runs, the record names xcodebuild')
+  await desktop.close(20_000)
+  const record = readJsonFile(join(setup.fake.root, 'desktop.json'))
+  assert.ok(isPlainObject(record))
+  assert.deepEqual([record['pid'], record['xcodebuild'], record['runnerApps'], record['untied']], [process.pid, undefined, [], []])
+})
+
+test('a start deletes the run folders a gone Retest process left, and a close leaves none of its own', darwinOnly, async (t) => {
+  const setup = await setUp(t)
+  const temporary = await mkdtemp(join(tmpdir(), 'retest-native-tmp-'))
+  const earlier = process.env['TMPDIR']
+  process.env['TMPDIR'] = temporary
+  t.after(async () => {
+    if (earlier === undefined) delete process.env['TMPDIR']
+    else process.env['TMPDIR'] = earlier
+    await rm(temporary, { recursive: true, force: true })
+  })
+  const stale = join(temporary, 'retest-executor-stale')
+  await mkdir(join(stale, 'result.xcresult'), { recursive: true })
+  await writeFile(join(stale, 'retest-owner.json'), JSON.stringify({ startTimeVersion: 1, pid: await endedPid(), startedAt: 'Mon Oct 5 09:00:00 2026' }))
+  const unrecorded = join(temporary, 'retest-executor-unrecorded')
+  await mkdir(unrecorded)
+  const desktop = await startDesktop(t, setup)
+  const during = (await readdir(temporary)).sort()
+  assert.equal(during.includes('retest-executor-stale'), false, 'the stale folder was deleted at the start')
+  assert.ok(during.includes('retest-executor-unrecorded'), 'a folder without a record of its maker is kept')
+  const own = during.filter((name) => name.startsWith('retest-executor-') && name !== 'retest-executor-unrecorded')
+  assert.equal(own.length, 1, `the start made one executor folder (${during.join(', ')})`)
+  assert.deepEqual(JSON.parse(await readFile(join(temporary, own[0] ?? '', 'retest-owner.json'), 'utf8'))['pid'], process.pid)
+  await desktop.close(20_000)
+  assert.deepEqual((await readdir(temporary)).sort(), ['retest-executor-unrecorded'], 'the close deleted the executor and desktop folders')
 })

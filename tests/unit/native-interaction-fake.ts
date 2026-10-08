@@ -7,6 +7,7 @@ import type { NativeTools, RecordedProcess } from '../../src/native/processes.ts
 import type { AppProcessReading, CaptureSource, DriverAnswer, LaunchSpec, NativeAppDriver } from '../../src/native/session.ts'
 import type { ScopedSource } from '../../src/native/source-scope.ts'
 import type { ExecutorAppState, ExecutorSession, RequestBounds } from '../../src/native/webdriver-client.ts'
+import assert from 'node:assert/strict'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -23,7 +24,9 @@ import { isPlainObject } from '../../src/protocol/schema.ts'
 // the client ends them on a real executor. The app is a tree of elements that a test builds; a tap on a field focuses
 // it and on iOS brings up a software keyboard, keys type into the focused field, and a button runs its reaction.
 // Attributes come out as each executor writes them: WebDriverAgent's `type`, `name` (the identifier, or the label when
-// there is none) and JSON booleans, the macOS runner's `elementType` numbers, `identifier` and `"true"` strings.
+// there is none) and JSON booleans, the macOS runner's `elementType` numbers, `identifier` and `"true"` strings. The
+// tree has the real executors' shape: on iOS the app's window, and the keyboard in a window of its own while it is up;
+// on macOS one window, which the session's scope keeps.
 
 /** An element of the stand-in's app. A field's `text` is what was typed; a secure field shows it as bullets. */
 export type FakeElement = {
@@ -48,6 +51,8 @@ export type FakeElement = {
   moving?: boolean
   /** On iOS, whether the keyboard's return key dismisses the keyboard while this field holds the focus. */
   returnDismisses?: boolean
+  /** Attributes the executor leaves out of the tree and its attribute route for this element. */
+  omit?: readonly string[]
   children?: FakeElement[]
   onClick?: (app: FakeApp) => void
 }
@@ -55,8 +60,8 @@ export type FakeElement = {
 /** How one route misbehaves: it never answers, drops its connection, answers late, with an error or with this value. */
 export type FakeBehaviour = { hang?: boolean; drop?: boolean; delayMs?: number; error?: string; answer?: unknown }
 
-/** One request the stand-in received: the route, as the client names it, and the body as text. */
-export type FakeRequest = { route: string; path: string; body: string }
+/** One request the stand-in received: the route, as the client names it, the body as text, and when it arrived. */
+export type FakeRequest = { route: string; path: string; body: string; at: number }
 
 const pngPixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
 
@@ -84,6 +89,9 @@ export class FakeApp {
   windowHidden: boolean = false
   /** An alert of the system, which only WebDriverAgent's alert routes see. */
   systemAlert: { text: string; buttons: string[] } | undefined
+  /** How many of the next tree reads serve another app's tree, as WebDriverAgent sometimes does in passing. */
+  foreignReads: number = 0
+  readonly #reactions = new Map<string, ((app: FakeApp) => void)[]>()
   readonly #ids = new Map<FakeElement, string>()
   readonly #byId = new Map<string, FakeElement>()
   readonly #sockets = new Set<Socket>()
@@ -92,6 +100,8 @@ export class FakeApp {
   #sessions = 1
   #card: FakeElement | undefined
   #keyboardElement: FakeElement | undefined
+  #appWindow: FakeElement | undefined
+  #keyboardWindow: FakeElement | undefined
 
   constructor(options: { readonly platform: NativeKind; readonly screen: (app: FakeApp) => FakeElement[] }) {
     this.platform = options.platform
@@ -126,6 +136,20 @@ export class FakeApp {
     return this.requests.filter((request) => request.route === route)
   }
 
+  /** Runs `reaction` once, right before the stand-in answers the next request on `route`. */
+  once(route: string, reaction: (app: FakeApp) => void): void {
+    this.#reactions.set(route, [...(this.#reactions.get(route) ?? []), reaction])
+  }
+
+  /** The app's own window, which holds its screen and its alert. */
+  get window(): FakeElement {
+    this.#appWindow ??= this.platform === 'macos'
+      ? { type: 'Window', identifier: 'main', title: this.appName, enabled: false, frame: { ...this.windowFrame } }
+      : { type: 'Window', frame: { x: 0, y: 0, width: 402, height: 874 } }
+    this.#appWindow.children = [...this.elements, ...(this.alert === undefined ? [] : [this.alert])]
+    return this.#appWindow
+  }
+
   /** The first element with this identifier in the current screen. */
   find(identifier: string): FakeElement {
     const found = this.#walk().find((element) => element.identifier === identifier)
@@ -145,28 +169,33 @@ export class FakeApp {
   /** The app's whole tree as the executor's `/source` serves it, menu bar included on macOS. */
   xml(): string {
     if (this.platform === 'ios-simulator') {
-      const children = [...this.elements, ...this.#extras()]
-      return `<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication type="XCUIElementTypeApplication" name="${this.appName}" label="${this.appName}" enabled="true" visible="true" x="0" y="0" width="402" height="874" bundleId="${this.bundleId}" processId="${this.pid}">${children.map((child) => this.#node(child)).join('')}</XCUIElementTypeApplication>`
+      if (this.foreignReads > 0) {
+        this.foreignReads -= 1
+        return '<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication type="XCUIElementTypeApplication" name="Home screen" label="Home screen" enabled="true" visible="true" x="0" y="0" width="402" height="874" bundleId="com.apple.springboard"/>'
+      }
+      return `<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication type="XCUIElementTypeApplication" name="${this.appName}" label="${this.appName}" enabled="true" visible="true" x="0" y="0" width="402" height="874" bundleId="${this.bundleId}" processId="${this.pid}">${this.#windows().map((child) => this.#node(child)).join('')}</XCUIElementTypeApplication>`
     }
-    const window = this.windowFrame
-    const inside = [...this.elements, ...this.#extras()]
     if (this.windowHidden) return `<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication elementType="2" identifier="" label="" title="${this.appName}" enabled="true" selected="false" x="0" y="0" width="0" height="0"></XCUIElementTypeApplication>`
-    return `<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication elementType="2" identifier="" label="" title="${this.appName}" enabled="true" selected="false" x="0" y="0" width="0" height="0"><XCUIElementTypeMenuBar elementType="55" identifier="" label="" title="" enabled="true" selected="false" x="0" y="0" width="1728" height="33"><XCUIElementTypeMenuItem elementType="54" identifier="" label="" title="Recent Items: secret-file.txt" enabled="true" selected="false" x="0" y="0" width="10" height="10"/></XCUIElementTypeMenuBar><XCUIElementTypeWindow elementType="4" identifier="main" label="" title="${this.appName}" enabled="false" selected="false" x="${window.x}" y="${window.y}" width="${window.width}" height="${window.height}">${inside.map((child) => this.#node(child)).join('')}</XCUIElementTypeWindow></XCUIElementTypeApplication>`
+    return `<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication elementType="2" identifier="" label="" title="${this.appName}" enabled="true" selected="false" x="0" y="0" width="0" height="0"><XCUIElementTypeMenuBar elementType="55" identifier="" label="" title="" enabled="true" selected="false" x="0" y="0" width="1728" height="33"><XCUIElementTypeMenuItem elementType="54" identifier="" label="" title="Recent Items: secret-file.txt" enabled="true" selected="false" x="0" y="0" width="10" height="10"/></XCUIElementTypeMenuBar>${this.#windows().map((child) => this.#node(child)).join('')}</XCUIElementTypeApplication>`
   }
 
-  #extras(): FakeElement[] {
-    const extras: FakeElement[] = []
-    if (this.alert !== undefined) extras.push(this.alert)
-    if (this.keyboardShown) extras.push(this.#keyboard())
-    return extras
+  // The windows the tree shows: the app's own, and on iOS the keyboard's while it is up; on macOS none before the
+  // window comes.
+  #windows(): FakeElement[] {
+    if (this.windowHidden) return []
+    if (this.platform === 'macos') return [this.window]
+    return this.keyboardShown ? [this.window, this.#keyboardInWindow()] : [this.window]
   }
 
   // The keyboard keeps its elements while it is up, as the executor keeps their ids; the card is its last child.
-  #keyboard(): FakeElement {
+  #keyboardInWindow(): FakeElement {
     this.#keyboardElement ??= this.#makeKeyboard()
     const keyboard = this.#keyboardElement
-    const card = this.#card
-    return { ...keyboard, children: card === undefined ? keyboard.children ?? [] : [...(keyboard.children ?? []), card] }
+    const keys = (keyboard.children ?? []).filter((child) => child.type !== 'Other')
+    keyboard.children = this.#card === undefined ? keys : [...keys, this.#card]
+    this.#keyboardWindow ??= { type: 'Window', frame: { x: 0, y: 0, width: 402, height: 874 } }
+    this.#keyboardWindow.children = [keyboard]
+    return this.#keyboardWindow
   }
 
   #makeKeyboard(): FakeElement {
@@ -191,6 +220,12 @@ export class FakeApp {
   }
 
   #attributes(element: FakeElement): Record<string, string> {
+    const written = this.#written(element)
+    for (const name of element.omit ?? []) delete written[name]
+    return written
+  }
+
+  #written(element: FakeElement): Record<string, string> {
     const frame = element.frame ?? { x: 0, y: 0, width: 0, height: 0 }
     const value = this.#value(element)
     const placeholder = element.placeholder === undefined ? {} : { placeholderValue: element.placeholder }
@@ -248,7 +283,7 @@ export class FakeApp {
       found.push(element)
       for (const child of element.children ?? []) visit(child)
     }
-    for (const element of [...this.elements, ...this.#extras()]) visit(element)
+    for (const element of this.#windows()) visit(element)
     return found
   }
 
@@ -270,7 +305,10 @@ export class FakeApp {
       const body = isPlainObject(parsed) ? parsed : {}
       const path = request.url ?? '/'
       const route = `${request.method ?? 'GET'} ${routeOf(path)}`
-      this.requests.push({ route, path, body: text })
+      this.requests.push({ route, path, body: text, at: performance.now() })
+      const reactions = this.#reactions.get(route) ?? []
+      this.#reactions.delete(route)
+      for (const reaction of reactions) reaction(this)
       void this.#answer(route, path, body, request, response)
     })
   }
@@ -463,7 +501,11 @@ export class FakeApp {
     if (pairs.some((pair) => !known.includes(pair.key))) return undefined
     return (element) => {
       const attributes = this.#attributes(element)
-      return pairs.every((pair) => attributes[pair.key] === String(pair.value))
+      return pairs.every((pair) => {
+        // Executor lookup knows the element's type even when the source omits the type attribute.
+        const value = pair.key === 'type' ? `XCUIElementType${element.type}` : pair.key === 'elementType' ? String(elementTypeNumbers[element.type] ?? 1) : attributes[pair.key]
+        return value === String(pair.value)
+      })
     }
   }
 }
@@ -574,22 +616,30 @@ async function fakeWindowTools(t: TestContext, app: FakeApp): Promise<FakeWindow
     return path
   }
   const frame = app.windowFrame
-  const setWindows = (list: readonly (readonly [number, number, number, number, number, number])[]): Promise<void> => writeFile(windows, JSON.stringify(list))
+  // The window server also lists each window's number; the front check reads none, so they are numbered in order.
+  const setWindows = (list: readonly (readonly [number, number, number, number, number, number])[]): Promise<void> => writeFile(windows, JSON.stringify(list.map((entry, index) => [...entry, index + 1])))
   await setWindows([[app.pid, 0, frame.x, frame.y, frame.width, frame.height]])
-  await writeFile(processes, `  ${app.pid} /fake/${app.appName}.app/Contents/MacOS/${app.appName}\n  900 /System/Library/CoreServices/Dock.app/Contents/MacOS/Dock\n  950 /System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/Contents/MacOS/AutomationModeUI\n`)
+  // As `ps -o pid=,lstart=,args=` prints them: the pid, when the process started, and its command line.
+  const started = 'Mon Oct  5 09:00:00 2026'
+  await writeFile(processes, [
+    `${app.pid} ${started} /fake/${app.appName}.app/Contents/MacOS/${app.appName}`,
+    `601 ${started} /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon`,
+    `900 ${started} /System/Library/CoreServices/Dock.app/Contents/MacOS/Dock`,
+    `950 ${started} /System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/Contents/MacOS/AutomationModeUI`,
+  ].map((line) => `  ${line}\n`).join(''))
   // The interaction layer runs only these two tools; every other one stays the system's and is never run here.
   return { tools: { ...systemTools, ps: await script('ps', processes), osascript: await script('osascript', windows) }, setWindows }
 }
 
 /** A stand-in app with its interaction session open on it, launched, and everything closed after the test. */
-export type FakeInteraction = { readonly app: FakeApp; readonly interaction: NativeInteractionSession; readonly session: NativeAppSession; readonly executor: ExecutorSession; readonly windows?: FakeWindowTools }
+export type FakeInteraction = { readonly app: FakeApp; readonly interaction: NativeInteractionSession; readonly session: NativeAppSession; readonly client: ExecutorClient; readonly executor: ExecutorSession; readonly windows?: FakeWindowTools }
 
 /**
  * Starts the stand-in, opens a session and its interaction session on it and launches the app, as a runtime would.
  *
  * @example const { app, interaction } = await openFake(t, { platform: 'ios-simulator', screen: () => [button] })
  */
-export async function openFake(t: TestContext, options: { readonly platform: NativeKind; readonly screen: (app: FakeApp) => FakeElement[]; readonly redact?: (text: string) => string; readonly launch?: boolean }): Promise<FakeInteraction> {
+export async function openFake(t: TestContext, options: { readonly platform: NativeKind; readonly screen: (app: FakeApp) => FakeElement[]; readonly redact?: (text: string) => string; readonly launch?: boolean; readonly disposal?: RegExp }): Promise<FakeInteraction> {
   const app = new FakeApp(options)
   const port = await app.listen()
   const client = new ExecutorClient({ executor: options.platform === 'macos' ? 'mac2' : 'webdriveragent', host: '127.0.0.1', port })
@@ -607,16 +657,21 @@ export async function openFake(t: TestContext, options: { readonly platform: Nat
     processes: async () => ({ ok: true, running: app.running, pids: app.running ? [app.pid] : [] }),
     ...(windows === undefined ? {} : { tools: windows.tools }),
   })
+  // A disposal that fails is a failure of the test, unless the test names the failure it expects: it means the session
+  // left something behind.
   t.after(async () => {
-    await interaction.dispose(5000).catch(() => undefined)
+    const problems: string[] = []
+    await interaction.dispose(5000).catch((error: unknown) => problems.push(error instanceof Error ? error.message : String(error)))
     await app.close()
+    if (options.disposal === undefined) assert.deepEqual(problems, [], 'the session disposed of everything it held')
+    else assert.ok(problems.length === 1 && options.disposal.test(problems[0] ?? ''), `the disposal failed as expected: ${problems.join('; ') || 'it did not fail'}`)
   })
   if (options.launch !== false) {
     const launched = await interaction.launch(5000)
     if (!launched.result.ok) throw new Error(launched.result.failure.message)
     app.requests.length = 0
   }
-  return { app, interaction, session, executor, ...(windows === undefined ? {} : { windows }) }
+  return { app, interaction, session, client, executor, ...(windows === undefined ? {} : { windows }) }
 }
 
 /** TaskPhone's sign-in screen as the stand-in shows it. */

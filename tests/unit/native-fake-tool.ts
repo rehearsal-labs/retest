@@ -43,6 +43,24 @@ type ToolsConfig = {
   xcodebuildReplacesRecord?: boolean
   // The window list is read this many times, and every later reading fails.
   windowListReadings?: number
+  // How the app's own window shows in each reading of the window list, in order; a reading past the end lists it as
+  // usual. `number` and `pid` replace its window number and owner, `absent` leaves it out, as for a minimised window,
+  // and `twice` lists a second window of the app at the same frame.
+  appWindowReadings?: { number?: number; pid?: number; absent?: boolean; twice?: boolean }[]
+  // screencapture ends with exit code 1 and this on standard error, as it does without Screen Recording permission.
+  screencaptureFails?: string
+  // screencapture writes an image of this many pixels in place of the window's at the screen's scale.
+  screencaptureSize?: { width: number; height: number }
+  // screencapture never answers and ignores SIGTERM, so only the kill after its grace ends it.
+  screencaptureHangs?: boolean
+  // screencapture writes the window's image, then never answers and ignores SIGTERM.
+  screencaptureHangsAfterImage?: boolean
+  // What the Screen Recording preflight answers: on, off, or a failed osascript. On by default.
+  screenRecording?: 'on' | 'off' | 'unreadable'
+  // ps shows these pids by the kernel's short name in parentheses, as it does while a process exits.
+  psUnreadable?: number[]
+  // ps shows these starts for these pids in place of their real ones, as for a pid another process took.
+  psStarts?: Record<string, string>
 }
 const stepSchema = s.object({ delayMs: s.optional(s.number()), fail: s.optional(s.string()), hang: s.optional(s.boolean()) })
 const configSchema = s.object({
@@ -66,6 +84,14 @@ const configSchema = s.object({
   shutdownLeavesProcesses: s.optional(s.boolean()),
   xcodebuildReplacesRecord: s.optional(s.boolean()),
   windowListReadings: s.optional(s.number()),
+  appWindowReadings: s.optional(s.array(s.object({ number: s.optional(s.number()), pid: s.optional(s.number()), absent: s.optional(s.boolean()), twice: s.optional(s.boolean()) }))),
+  screencaptureFails: s.optional(s.string()),
+  screencaptureSize: s.optional(s.object({ width: s.number(), height: s.number() })),
+  screencaptureHangs: s.optional(s.boolean()),
+  screencaptureHangsAfterImage: s.optional(s.boolean()),
+  screenRecording: s.optional(s.enum(['on', 'off', 'unreadable'])),
+  psUnreadable: s.optional(s.array(s.number())),
+  psStarts: s.optional(s.record(s.string())),
 })
 type Device = { udid: string; name: string; state: string; runtime: string }
 const devicesSchema = s.array(s.object({ udid: s.string(), name: s.string(), state: s.string(), runtime: s.string() }))
@@ -103,6 +129,21 @@ function processes(): RunnerApp[] {
 function option(name: string): string | undefined {
   const index = args.indexOf(name)
   return index === -1 ? undefined : args[index + 1]
+}
+// The windows on screen, front to back, as the real list gives them: owner pid, layer, frame and window number. Each
+// running app has one window at the frame the fake executor's tree gives, numbered by its pid.
+function windowList(reading: { number?: number; pid?: number; absent?: boolean; twice?: boolean }): number[][] {
+  const executorConfig = readJsonFile(join(root, 'config.json'))
+  const window = isPlainObject(executorConfig) && isPlainObject(executorConfig['window']) ? executorConfig['window'] : { x: 4, y: 3, width: 20, height: 10 }
+  const frame = [window['x'], window['y'], window['width'], window['height']].map(Number)
+  const own = reading.absent === true ? [] : Object.values(readApps(root)).filter((app) => app.command !== undefined && alive(app.pid)).flatMap((app) => {
+    const listed = [reading.pid ?? app.pid ?? 0, 0, ...frame, reading.number ?? app.pid ?? 0]
+    return reading.twice === true ? [listed, [listed[0] ?? 0, 0, ...frame, (listed[6] ?? 0) + 1]] : [listed]
+  })
+  const covering = config().coveringWindow
+  const front = covering === undefined ? [] : [[covering.pid ?? 1, covering.layer, covering.x, covering.y, covering.width, covering.height, 11]]
+  const changes = config().windowsChange === true ? [[3, 0, 3000, 3000, 10, readFileSync(join(root, 'osascript-calls.txt'), 'utf8').length, 12]] : []
+  return [...front, ...own, ...changes, [2, 0, 0, 0, 4000, 4000, 13]]
 }
 function plistValue(file: string, key: string): unknown {
   const value = readJsonFile(file)
@@ -301,20 +342,53 @@ async function main(): Promise<never> {
       break
     }
     case 'osascript': {
+      if (args.some((arg) => arg.includes('CGPreflightScreenCaptureAccess'))) {
+        const answer = config().screenRecording ?? 'on'
+        if (answer === 'unreadable') finish(1, '', 'execution error: Error: the CoreGraphics bridge did not answer (-2700)\n')
+        finish(0, `${answer === 'on'}\n`)
+      }
       const readings = config().windowListReadings
       if (readings !== undefined) {
         appendFileSync(join(root, 'window-list-readings.txt'), 'x')
         if (readFileSync(join(root, 'window-list-readings.txt'), 'utf8').length > readings) finish(1, '', 'execution error: the window server did not answer (-1712)\n')
       }
-      const executorConfig = readJsonFile(join(root, 'config.json'))
-      const window = isPlainObject(executorConfig) && isPlainObject(executorConfig['window']) ? executorConfig['window'] : { x: 4, y: 3, width: 20, height: 10 }
-      const own = Object.values(readApps(root)).filter((app) => app.command !== undefined && alive(app.pid)).map((app) => [app.pid ?? 0, 0, window['x'], window['y'], window['width'], window['height']])
-      const covering = config().coveringWindow
-      const front = covering === undefined ? [] : [[covering.pid ?? 1, covering.layer, covering.x, covering.y, covering.width, covering.height]]
       // A window that differs at each reading, as a notification banner coming in would.
       if (config().windowsChange === true) appendFileSync(join(root, 'osascript-calls.txt'), 'x')
-      const changes = config().windowsChange === true ? [[3, 0, 3000, 3000, 10, readFileSync(join(root, 'osascript-calls.txt'), 'utf8').length]] : []
-      finish(0, JSON.stringify([...front, ...own, ...changes, [2, 0, 0, 0, 4000, 4000]]))
+      let reading: { number?: number; pid?: number; absent?: boolean; twice?: boolean } = {}
+      const scripted = config().appWindowReadings
+      if (scripted !== undefined) {
+        appendFileSync(join(root, 'app-window-readings.txt'), 'x')
+        reading = scripted[readFileSync(join(root, 'app-window-readings.txt'), 'utf8').length - 1] ?? {}
+      }
+      finish(0, JSON.stringify(windowList(reading)))
+      break
+    }
+    case 'screencapture': {
+      const number = Number(option('-l'))
+      const file = args.at(-1) ?? ''
+      const failure = config().screencaptureFails
+      if (failure !== undefined) finish(1, '', `${failure}\n`)
+      if (config().screencaptureHangs === true) {
+        process.on('SIGTERM', () => undefined)
+        // Noted once it hangs, so a test can tell a hanging call from one that read its settings after they changed.
+        appendFileSync(join(root, 'screencapture-hangs.txt'), 'x')
+        setInterval(() => undefined, 1000)
+        await new Promise(() => undefined)
+      }
+      // The window as the list shows it without a scripted reading: the image is that window's, whatever lies over it.
+      const window = windowList({}).find((entry) => entry[6] === number)
+      if (window === undefined) finish(1, '', 'could not create image from window\n')
+      const executorConfig = readJsonFile(join(root, 'config.json'))
+      const screen = isPlainObject(executorConfig) && isPlainObject(executorConfig['screen']) ? executorConfig['screen'] : {}
+      const scale = typeof screen['scale'] === 'number' ? screen['scale'] : 2
+      const size = config().screencaptureSize ?? { width: (window[4] ?? 0) * scale, height: (window[5] ?? 0) * scale }
+      writeFileSync(file, solidPng(size.width, size.height))
+      if (config().screencaptureHangsAfterImage === true) {
+        process.on('SIGTERM', () => undefined)
+        setInterval(() => undefined, 1000)
+        await new Promise(() => undefined)
+      }
+      finish(0)
       break
     }
     case 'ps': {
@@ -342,8 +416,24 @@ async function main(): Promise<never> {
         }
       }
       if (one !== undefined && chosen.length === 0) finish(1)
-      const commandOnly = option('-o') === 'args='
-      finish(0, `${chosen.map((entry) => (commandOnly ? entry.command : `${entry.pid} ${entry.command}`)).join('\n')}\n`)
+      // The columns asked for, in order, as `-o pid=,lstart=,args=` asks. Starts are the processes' real ones.
+      const columns = (option('-o') ?? 'pid=,args=').split(',').map((column) => column.replace(/=$/, ''))
+      const starts = new Map<number, string>()
+      if (columns.includes('lstart') && chosen.length > 0) {
+        const real = spawnSync('/bin/ps', ['-o', 'pid=,lstart=', '-p', chosen.map((entry) => entry.pid).join(',')], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC0' } }).stdout
+        for (const line of real.split('\n')) {
+          const match = /^\s*(\d+)\s+(.+?)\s*$/.exec(line)
+          if (match?.[1] !== undefined && match[2] !== undefined) starts.set(Number(match[1]), match[2])
+        }
+      }
+      const unreadable = config().psUnreadable ?? []
+      const shown = (entry: { pid: number; command: string }, column: string): string => {
+        if (column === 'pid') return String(entry.pid)
+        if (column === 'lstart') return config().psStarts?.[String(entry.pid)] ?? starts.get(entry.pid) ?? ''
+        if (column === 'args') return unreadable.includes(entry.pid) ? `(${basename(entry.command.split(' ')[0] ?? '').slice(0, 16)})` : entry.command
+        return ''
+      }
+      finish(0, `${chosen.map((entry) => columns.map((column) => shown(entry, column)).join(' ')).join('\n')}\n`)
       break
     }
     case 'lsappinfo': {

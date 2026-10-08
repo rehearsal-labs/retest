@@ -1,27 +1,30 @@
 import type { AppBuild, AppStateReading, DispatchedCommand, DispatchedRequest, Gesture, InputDispatch, NativeKind, NativeSession, ResetPolicy } from '../browser/contract.ts'
 import type { CommandResult } from '../protocol/commands.ts'
+import type { FrameSource } from '../media/capture.ts'
+import type { RecordIdentity } from '../protocol/identity.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
-import type { FieldRead } from './input.ts'
-import type { InputRecordDraft, NativeInputKind, NativePort, TreeLook } from './actionability.ts'
+import type { FieldRead, NativeSecretField } from './input.ts'
+import type { ActionTarget, InputRecordDraft, NativeInputKind, NativePort, TreeLook } from './actionability.ts'
 import type { AlertAnswer, AlertReading } from './alerts.ts'
 import type { NativeAssertionResult, NativeCheckRecord, NativeLook } from './assertions.ts'
 import type { KeyboardState } from './keyboard.ts'
 import type { NativeTools } from './processes.ts'
 import type { CaptureSource, NativeAppSession, NativeCapture, NativeReference, ProcessReading, UnknownOutcome } from './session.ts'
 import type { ExecutorAnswer, ExecutorClient, ExecutorSession, Rect, RequestBounds } from './webdriver-client.ts'
+import { waitUntilDeadline } from '../assertions/wait-before-read.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { failureSchema } from '../protocol/failures.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { parse } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
-import { waitUntilActionable } from './actionability.ts'
+import { locatorSubject, waitUntilActionable } from './actionability.ts'
 import { answerAlert, readAlert } from './alerts.ts'
 import { pollNative, observeTree } from './assertions.ts'
-import { clickOnce, performAction } from './input.ts'
-import { dismissFirstRunCard, dismissKeyboard, readKeyboard, waitForKeyboard } from './keyboard.ts'
-import { locate, parseNativeTree } from './locators.ts'
-import { coveringWindows, windowsOnScreen } from './macos-app.ts'
+import { clickOnce, nativeSecretField, performAction, secureFieldPixels } from './input.ts'
+import { dismissFirstRunCard, dismissKeyboard, keyboardOf, readKeyboard, waitForKeyboard } from './keyboard.ts'
+import { identifierOf, locate, parseNativeTree, valueReading } from './locators.ts'
+import { automationOverlayPids, coveringWindows, windowsOnScreen } from './macos-app.ts'
 import { listProcesses } from './processes.ts'
 import { redactNativeFailure } from './output.ts'
 import { NativeError, SerialLane } from './session.ts'
@@ -67,15 +70,14 @@ export type InputRecord = {
   readonly at: string
   readonly failure?: Failure
   /**
-   * For typing a fill sent: how the field read back. `matched` is the text itself, `length_matched` a secure field's
-   * bullets as many as the characters typed, and `not_exposed` a field that shows nothing of what it holds, as a macOS
-   * secure field does, so nothing could be read back.
+   * For typing a fill sent: how the field read back. `matched` is the text itself, and `length_matched` a secure field's
+   * masking characters, as many as the characters typed. A fill whose read-back showed neither failed.
    */
   readonly readBack?: ReadBack
 }
 
 /** How a fill's field read back, as `InputRecord.readBack` says. */
-export type ReadBack = 'matched' | 'length_matched' | 'not_exposed'
+export type ReadBack = 'matched' | 'length_matched'
 
 /** Input whose outcome is unknown, with the app's processes as reconciliation read them. */
 export type UnknownInput = InputRecord & { readonly reconciled?: ProcessReading }
@@ -83,17 +85,28 @@ export type UnknownInput = InputRecord & { readonly reconciled?: ProcessReading 
 /** Every request whose outcome is unknown: the session's lifecycle requests and this session's input. */
 export type NativeUnknownOutcome = { readonly source: 'lifecycle'; readonly outcome: UnknownOutcome } | { readonly source: 'input'; readonly outcome: UnknownInput }
 
-/** An element resolved on the executor: the look it came from and the executor's id for it, good only while that look is current. */
-export type ResolvedElement = { readonly reference: NativeReference; readonly executorElement: string; readonly description: string }
+/**
+ * An element resolved on the executor: the locator it was resolved by, the look it came from and the executor's id for
+ * it, good only while that look is current.
+ */
+export type ResolvedElement = { readonly locator: LocatorRecipe; readonly reference: NativeReference; readonly executorElement: string; readonly description: string }
 
 /** Something told of each input request right before it goes. */
 export type InputListener = (sending: { readonly kind: NativeInputKind; readonly route: string; readonly reference: NativeReference }) => void
 
-// The pointer's own window: the window server lists it over everything, and it never takes a click.
+type CaptureClearance = 'masked' | 'empty' | 'gone'
+type WithheldField = { readonly target: ActionTarget; readonly cleared: (change: CaptureClearance) => void; fillCompleted: boolean }
+/** Private capture facts only. A secret value never reaches these callbacks. */
+type SecretEntryObserver = {
+  readonly begin: (field: NativeSecretField) => void
+  readonly end: (input: InputDispatch, verified: boolean) => void
+  readonly cleared?: (change: CaptureClearance) => void
+}
+
+// The pointer's own window: the window server lists it over everything at this layer, owned by the window server
+// itself, and it never takes a click. A window of any other process at this layer counts as any other window.
 const pointerLayer = 2147483630
-// macOS lays this overlay over the whole screen, at layer 1000, while Automation Mode is on, which is whenever the
-// runner drives the desktop. Clicks pass through it: on this Mac every click the runner sent landed with it in place.
-const automationModeOverlay = '/System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/Contents/MacOS/AutomationModeUI'
+const windowServer = '/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer'
 
 /**
  * A native session's finds, actions and checks over a `NativeAppSession`. Each request is bounded by its `timeoutMs`
@@ -113,6 +126,9 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
   #inputCount = 0
   readonly #listeners = new Set<InputListener>()
   readonly #port: NativePort
+  #nextSecretClearance: ((change: CaptureClearance) => void) | undefined
+  #nextSecretEntry: SecretEntryObserver | undefined
+  readonly #withheldFields = new Set<WithheldField>()
 
   constructor(options: NativeInteractionOptions) {
     const platform = options.session.execution.platform
@@ -129,7 +145,10 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
     return this.#session.resetPolicy
   }
 
-  /** The lifecycle session this one wraps. */
+  /**
+   * The lifecycle session this one wraps. A cancel, loss or disposal made on it directly stops this session too: every
+   * request and every press asks it first.
+   */
   get session(): NativeAppSession {
     return this.#session
   }
@@ -148,6 +167,16 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
   onInput(listener: InputListener): () => void {
     this.#listeners.add(listener)
     return () => this.#listeners.delete(listener)
+  }
+
+  /** The runner asks for later pixel clearance of the next secret fill, without receiving its value. */
+  withholdSecretEntry(cleared: (change: CaptureClearance) => void): void {
+    this.#nextSecretClearance = cleared
+  }
+
+  /** Reads the next secret fill's exact owned target before its secret keys, and reports its existing read-back verdict. */
+  prepareSecretEntry(observer: SecretEntryObserver): void {
+    this.#nextSecretEntry = observer
   }
 
   install(build: AppBuild, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest> {
@@ -175,6 +204,9 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
       turn.release()
     }
   }
+
+  /** Uses the lifecycle session's frame source; no input turn is held by display capture. */
+  frameSource(identity: RecordIdentity): FrameSource { return this.#session.frameSource(identity) }
 
   /** A PNG of what the session shows, as the session captures it, in its turn. Sends no input. Rejects with a `NativeError`. */
   async screenshot(timeoutMs: number): Promise<Uint8Array> {
@@ -206,7 +238,36 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
       return { result, input: 'not_sent' }
     }
     const action = command.kind === 'fill' ? { kind: 'fill' as const, locator: command.locator, text: command.value, ...(command.secret === undefined ? {} : { secret: command.secret }) } : command
-    const done = await this.#act(timeoutMs, signal, (deadline, combined) => performAction(this.#port, action, deadline, combined))
+    const cleared = command.kind === 'fill' && command.secret !== undefined ? this.#nextSecretClearance : undefined
+    const observer = command.kind === 'fill' && command.secret !== undefined ? this.#nextSecretEntry : undefined
+    if (cleared !== undefined) this.#nextSecretClearance = undefined
+    if (observer !== undefined) this.#nextSecretEntry = undefined
+    const done = await this.#act(timeoutMs, signal, async (deadline, combined) => {
+      let held: WithheldField | undefined
+      let field: NativeSecretField | undefined
+      let sent: DispatchedRequest | undefined
+      try {
+        sent = await performAction(this.#port, action, deadline, combined, cleared === undefined && observer === undefined ? undefined : target => {
+          field = nativeSecretField(target.element, this.platform)
+          observer?.begin(field)
+          const clearance = cleared ?? observer?.cleared
+          if (clearance !== undefined) {
+            held = { target, cleared: clearance, fillCompleted: false }
+            if (cleared !== undefined || field !== 'secure') this.#withheldFields.add(held)
+          }
+        })
+        return sent
+      } finally {
+        if (field !== undefined) {
+          const verified = sent?.result.ok === true
+          observer?.end(sent?.input ?? 'unknown', verified)
+          if (held !== undefined) {
+            held.fillCompleted = verified
+            if (!verified && field === 'secure') this.#withheldFields.add(held)
+          }
+        }
+      }
+    })
     return { result: done.result.ok ? { ok: true, kind: command.kind } : { ok: false, failure: done.result.failure }, input: done.input }
   }
 
@@ -229,7 +290,17 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
     const turn = await this.#turn(timeoutMs, signal)
     if (!turn.ok) return turn
     try {
-      return await this.#look(locator, turn.deadline.commandTimeoutMs, turn.signal)
+      const looked = await this.#look(locator, turn.deadline.commandTimeoutMs, turn.signal, turn.deadline)
+      if (!looked.ok && looked.failure.class === 'timeout') {
+        // A nested command can exhaust its rounded allocation before this observation. Hold the original failure
+        // through the observation's exact deadline; no further read is dispatched while it settles.
+        try { await waitUntilDeadline(turn.deadline, turn.signal) }
+        catch (error) { if (!turn.signal.aborted) throw error }
+        const stopped = this.#refusal(turn.signal)
+        if (stopped !== undefined) return { ok: false, failure: { ...stopped, details: { ...stopped.details, earlierReadFailure: JSON.stringify(looked.failure) } } }
+      }
+      await this.#readCaptureClearance(turn.deadline, turn.signal)
+      return looked
     } finally {
       turn.release()
     }
@@ -249,22 +320,28 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
     const turn = await this.#turn(timeoutMs, signal)
     if (!turn.ok) return turn
     try {
-      const ready = await waitUntilActionable(this.#port, locator, { verb: 'resolve', enabled: false }, turn.deadline, turn.signal)
+      const ready = await waitUntilActionable(this.#port, locatorSubject(locator, 'resolve'), { verb: 'resolve', enabled: false }, turn.deadline, turn.signal)
       if (!ready.ok) return ready
-      return { ok: true, element: { reference: ready.target.reference, executorElement: ready.target.executorElement, description: describeLocator(locator) } }
+      return { ok: true, element: { locator, reference: ready.target.reference, executorElement: ready.target.executorElement, description: describeLocator(locator) } }
     } finally {
       turn.release()
     }
   }
 
   /**
-   * Clicks or taps an element resolved earlier, once, while the look it came from is current. A reference from another
-   * launch, session or session object is refused, as the session refuses it, and nothing is sent.
+   * Clicks or taps an element resolved earlier, once. A handle whose look is from another launch, session or session
+   * object is refused, as the session refuses it, and nothing is sent. Otherwise the element is checked again on a fresh
+   * tree by the locator it was resolved by, with every check an action makes, and the click goes to the element that
+   * check resolves: a handle never carries a click past a disabled, covered, moved or replaced element.
    */
   pressResolved(element: ResolvedElement, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest> {
     const kind = this.platform === 'macos' ? 'click' : 'tap'
     return this.#act(timeoutMs, signal, async (deadline, combined) => {
-      const sent = await clickOnce(this.#port, element, kind, `${kind === 'tap' ? 'Tapping' : 'Clicking'} ${element.description}`, deadline, combined)
+      const stale = await this.#port.checkReference(element.reference)
+      if (stale !== undefined) return { result: { ok: false, failure: { ...stale, details: { ...stale.details, inputSent: 'not_sent' } } }, input: 'not_sent' }
+      const ready = await waitUntilActionable(this.#port, locatorSubject(element.locator, kind), { verb: kind, enabled: true }, deadline, combined)
+      if (!ready.ok) return { result: { ok: false, failure: { ...ready.failure, details: { ...ready.failure.details, inputSent: 'not_sent' } } }, input: 'not_sent' }
+      const sent = await clickOnce(this.#port, ready.target, kind, `${kind === 'tap' ? 'Tapping' : 'Clicking'} ${element.description}`, deadline, combined)
       return sent.ok ? { result: { ok: true }, input: 'sent' } : { result: { ok: false, failure: sent.failure }, input: sent.input }
     })
   }
@@ -342,8 +419,70 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
     }
   }
 
-  async #look(locator: LocatorRecipe, timeoutMs: number, signal: AbortSignal): Promise<{ readonly ok: true; readonly look: NativeLook } | { readonly ok: false; readonly failure: Failure }> {
-    const read = await this.#port.readTree(timeoutMs, signal)
+  // These are fresh observations within the command's existing budget. Only a completed fill can use
+  // field absence as clearance. A refused read or cancellation keeps withholding and never changes an outcome.
+  async #readCaptureClearance(deadline: Deadline, signal: AbortSignal): Promise<void> {
+    const stopped = (): boolean => deadline.reached || signal.aborted || this.#session.cancelled || this.#session.ended
+    for (const held of this.#withheldFields) {
+      if (stopped()) return
+      if (this.#session.checkReference(held.target.reference) !== undefined) continue
+      const bounds = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal })
+      let gone = false
+      let read: TreeLook | undefined
+      if (this.platform === 'macos' && this.#options.tools !== undefined) {
+        const pids = this.#session.processIds
+        const windows = await windowsOnScreen(this.#options.tools, bounds())
+        if (typeof windows === 'string') continue
+        gone = pids.length > 0 && !windows.some(window => pids.includes(window.pid))
+      } else {
+        read = await this.#readTree(deadline.commandTimeoutMs, signal, deadline)
+        if (!read.ok) continue
+        gone = !read.tree.elements.some(element => element.type === 'Window')
+        // iOS reports false focus even while taking keys. Its software keyboard must also be absent.
+        if (!gone && keyboardOf(read.tree) !== undefined) continue
+      }
+      if (stopped()) return
+      if (gone) {
+        this.#withheldFields.delete(held)
+        held.cleared('gone')
+        continue
+      }
+      if (stopped()) return
+      read ??= await this.#readTree(deadline.commandTimeoutMs, signal, deadline)
+      if (!read.ok) continue
+      if (stopped()) return
+      const identifier = identifierOf(held.target.element, this.platform)
+      const key = this.platform === 'macos' ? 'identifier' : 'name'
+      // Match the verified identifier regardless of type or label: an unmasked or renamed field still counts as
+      // present. Without a unique identifier in the fill's tree, absence cannot establish this field's identity.
+      if (held.fillCompleted && identifier.kind === 'verified'
+        && held.target.tree.elements.filter(element => element.attributes[key] === identifier.identifier).length === 1
+        && !read.tree.elements.some(element => element.attributes[key] === identifier.identifier)) {
+        this.#withheldFields.delete(held)
+        held.cleared('gone')
+        continue
+      }
+      const element = held.target.executorElement
+      const focus = await this.#elements.elementAttribute(element, 'focused', bounds())
+      if (focus.status !== 'answered' || (focus.value !== false && focus.value !== 'false')) continue
+      if (stopped()) return
+      const type = await this.#elements.elementAttribute(element, this.platform === 'macos' ? 'elementType' : 'type', bounds())
+      if (type.status !== 'answered' || (type.value !== 'SecureTextField' && type.value !== 'XCUIElementTypeSecureTextField' && type.value !== 50 && type.value !== '50')) continue
+      if (stopped()) return
+      const value = await this.#elements.elementAttribute(element, 'value', bounds())
+      if (value.status !== 'answered' || typeof value.value !== 'string') continue
+      const pixels = secureFieldPixels(value.value)
+      if (pixels === 'unmasked') continue
+      if (stopped()) return
+      const stillUnfocused = await this.#elements.elementAttribute(element, 'focused', bounds())
+      if (stillUnfocused.status !== 'answered' || (stillUnfocused.value !== false && stillUnfocused.value !== 'false') || stopped()) continue
+      this.#withheldFields.delete(held)
+      held.cleared(pixels)
+    }
+  }
+
+  async #look(locator: LocatorRecipe, timeoutMs: number, signal: AbortSignal, deadline: Deadline): Promise<{ readonly ok: true; readonly look: NativeLook } | { readonly ok: false; readonly failure: Failure }> {
+    const read = await this.#readTree(timeoutMs, signal, deadline)
     if (!read.ok) return read
     const observed = observeTree(read.tree, locator)
     if (!observed.ok) return observed
@@ -365,6 +504,7 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
     if (!turn.ok) return { result: { ok: false, failure: { ...turn.failure, details: { ...turn.failure.details, inputSent: 'not_sent' } } }, input: 'not_sent' }
     try {
       const sent = await work(turn.deadline, turn.signal)
+      await this.#readCaptureClearance(turn.deadline, turn.signal)
       return sent.result.ok ? sent : { ...sent, result: { ok: false, failure: redactNativeFailure(sent.result.failure, this.#options.redact) } }
     } finally {
       turn.release()
@@ -375,7 +515,9 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
     const turn = await this.#turn(timeoutMs, signal)
     if (!turn.ok) return turn
     try {
-      return await work(turn.deadline, turn.signal)
+      const read = await work(turn.deadline, turn.signal)
+      await this.#readCaptureClearance(turn.deadline, turn.signal)
+      return read
     } finally {
       turn.release()
     }
@@ -383,18 +525,27 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
 
   async #turn(timeoutMs: number, signal: AbortSignal | undefined): Promise<{ readonly ok: true; readonly deadline: Deadline; readonly signal: AbortSignal; release(): void } | { readonly ok: false; readonly failure: Failure }> {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > maxTimeout) return { ok: false, failure: { class: 'usage', message: `A native request takes a whole number of milliseconds from 1 to ${maxTimeout}, not ${String(timeoutMs)}.` } }
-    const refusal = this.#refusal(signal)
+    const refusal = this.#refusal(signal) ?? (await this.#sessionStopped())
     if (refusal !== undefined) return { ok: false, failure: refusal }
     const deadline = new Deadline(timeoutMs)
     const combined = signal === undefined ? this.#cancel.signal : AbortSignal.any([signal, this.#cancel.signal])
     const turn = await this.#lane.acquire(combined, timeoutMs)
     if (!turn.ok) return { ok: false, failure: turn.reason === 'stopped' ? stopFailure(combined.reason, 'not_sent') : { class: 'timeout', message: `The request waited ${timeoutMs} ms for the one before it and did not go.` } }
-    const late = this.#refusal(signal)
+    const late = this.#refusal(signal) ?? (await this.#sessionStopped())
     if (late !== undefined) {
       turn.release()
       return { ok: false, failure: late }
     }
     return { ok: true, deadline, signal: combined, release: turn.release }
+  }
+
+  // Why the wrapped session takes no more requests, or undefined while it takes them: a cancel, a loss or a disposal
+  // made on it directly stops this session too. A stopped session refuses every request with its own reason before it
+  // sends anything, so the reason is read from that refusal.
+  async #sessionStopped(): Promise<Failure | undefined> {
+    if (!this.#session.cancelled && !this.#session.ended) return undefined
+    const refused = await this.#session.readSource(1)
+    return refused.ok ? { class: 'session_lost', message: 'The session reports itself stopped and still read its tree, so Retest sends nothing more on it.' } : refused.failure
   }
 
   #refusal(signal: AbortSignal | undefined): Failure | undefined {
@@ -414,7 +565,8 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
       readTree: (timeoutMs, signal) => this.#readTree(timeoutMs, signal),
       readField: (locator, timeoutMs, signal) => this.#readField(locator, timeoutMs, signal),
       frontProblem: (frame, window, bounds) => this.#frontProblem(frame, window, bounds),
-      checkReference: (reference) => session.checkReference(reference),
+      keysProblem: (bounds) => this.#keysProblem(bounds),
+      checkReference: async (reference) => session.checkReference(reference) ?? this.#refusal(undefined) ?? (await this.#sessionStopped()),
       recordInput: (record) => this.#record(record),
       aboutToSend: (kind, route, reference) => this.#tell(kind, route, reference),
       noteReadBack: (readBack) => this.#noteReadBack(readBack),
@@ -424,8 +576,8 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
 
   // A tree the session could not read, such as one with no window yet just after a launch, is said as such, so a wait
   // can look again; a lost session, a stop or a timeout is not.
-  async #readTree(timeoutMs: number, signal: AbortSignal): Promise<TreeLook> {
-    const read = await this.#session.readSource(timeoutMs, signal)
+  async #readTree(timeoutMs: number, signal: AbortSignal, deadline?: Deadline): Promise<TreeLook> {
+    const read = await this.#session.readSource(timeoutMs, signal, deadline)
     if (!read.ok) return read.failure.class === 'not_actionable' ? { ok: false, failure: { ...read.failure, details: { ...read.failure.details, check: 'tree' } } } : read
     const parsed = parseNativeTree(read.tree.source.xml, this.platform)
     if (!parsed.ok) return { ok: false, failure: { class: 'not_actionable', message: `Retest could not read the app's tree: ${parsed.problem}` } }
@@ -441,32 +593,49 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
     if (!found.ok) return found
     const [element, ...others] = found.matches
     if (element === undefined || others.length > 0) return { ok: false, failure: { class: 'not_actionable', message: 'The fill read-back needs exactly one field.' } }
-    return { ok: true, value: read.value, element, reference: read.tree.reference }
+    // The raw value is the session's private read; whether the tree reported a value at all, and whether it is the
+    // field's placeholder, both redacted alike, is read from the same element in the redacted tree.
+    const reading = valueReading(element, this.platform)
+    if (reading.kind === 'none') return { ok: false, failure: { class: 'not_actionable', message: 'The filled element exposes no field value.' } }
+    return { ok: true, value: read.value, reading: reading.kind, element, reference: read.tree.reference }
   }
 
   // On macOS a click lands on whatever window lies at its point, so the app must be in front and no window of another
   // process may lie over the element's centre. The runner's `hittable` does not show it: an element under another app's
-  // floating window read as hittable here. The pointer's window and Automation Mode's overlay take no click.
+  // floating window read as hittable here. Passed over: the Automation Mode overlay over the whole screen, owned by the
+  // exact system process, and only while the runner session is open, and the pointer's own window owned by the window
+  // server. Each read takes what is left of the time, never the whole of it.
   async #frontProblem(frame: Rect, window: Rect | undefined, bounds: RequestBounds): Promise<string | undefined> {
     const tools = this.#options.tools
     if (this.platform !== 'macos' || tools === undefined) return undefined
-    const state = await this.#session.appState(bounds.timeoutMs, bounds.signal)
+    const deadline = new Deadline(Math.max(1, Math.min(maxTimeout, Math.floor(bounds.timeoutMs))))
+    const part = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: bounds.signal })
+    const state = await this.#session.appState(part().timeoutMs, bounds.signal)
     if (!state.ok) return `Retest could not read whether the app is in front: ${state.failure.message}`
     if (state.state !== 'foreground') return 'the app is not in front'
     if (window === undefined) return 'the app has no window frame in its tree'
-    const windows = await windowsOnScreen(tools, bounds)
+    const windows = await windowsOnScreen(tools, part())
     if (typeof windows === 'string') return `Retest could not read which windows are on screen (${windows})`
-    const listed = await listProcesses(tools, bounds.timeoutMs).catch(() => undefined)
+    const listed = await listProcesses(tools, part().timeoutMs).catch(() => undefined)
     if (listed === undefined) return 'Retest could not read the processes behind the windows on screen'
     const dock = listed.filter((entry) => entry.command.endsWith('/Dock.app/Contents/MacOS/Dock')).map((entry) => entry.pid)
-    const overlay = listed.filter((entry) => entry.command === automationModeOverlay).map((entry) => entry.pid)
-    const screen = await this.#options.executor.windowRect(bounds)
+    const overlay = this.#elements.ended === undefined ? automationOverlayPids(listed) : []
+    const pointer = listed.filter((entry) => entry.command === windowServer || entry.command.startsWith(`${windowServer} `)).map((entry) => entry.pid)
+    const screen = await this.#options.executor.windowRect(part())
     if (screen.status !== 'answered') return `Retest could not read the main screen's frame (${screen.status === 'refused' ? screen.error : screen.message})`
-    const covering = coveringWindows(windows, { pids: this.#session.processIds, frame: window }, { screen: screen.value, dockPids: dock })
+    const covering = coveringWindows(windows, { pids: this.#session.processIds, frame: window }, { screen: screen.value, dockPids: dock, automationOverlayPids: overlay })
     if (!covering.ok) return covering.problem
-    const over = covering.windows.filter((entry) => entry.layer !== pointerLayer && !overlay.includes(entry.pid) && holdsCentre(entry, frame))
+    const over = covering.windows.filter((entry) => !(entry.layer === pointerLayer && pointer.includes(entry.pid)) && holdsCentre(entry, frame))
     if (over.length === 0) return undefined
     return `${over.length} window(s) of other processes lie over it (layer ${[...new Set(over.map((entry) => entry.layer))].join(', ')})`
+  }
+
+  // Keys go to the app in front, so on macOS they go only while the owned app is in front.
+  async #keysProblem(bounds: RequestBounds): Promise<string | undefined> {
+    if (this.platform !== 'macos') return undefined
+    const state = await this.#session.appState(Math.max(1, Math.min(maxTimeout, Math.floor(bounds.timeoutMs))), bounds.signal)
+    if (!state.ok) return `Retest could not read whether the app is in front (${state.failure.message})`
+    return state.state === 'foreground' ? undefined : 'the app is not in front'
   }
 
   #tell(kind: NativeInputKind, route: string, reference: NativeReference): void {

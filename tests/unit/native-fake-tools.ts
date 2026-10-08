@@ -1,6 +1,6 @@
 import type { TestContext } from 'node:test'
 import type { NativeTools } from '../../src/native/processes.ts'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -10,7 +10,7 @@ import { isPlainObject, parse, s } from '../../src/protocol/schema.ts'
 import { alive, readApps, readJsonFile } from './native-fake-executor.ts'
 
 const toolMain = fileURLToPath(new URL('./native-fake-tool.ts', import.meta.url))
-const names = { xcrun: 'xcrun', xcodebuild: 'xcodebuild', plutil: 'plutil', git: 'git', codesign: 'codesign', ps: 'ps', lsappinfo: 'lsappinfo', swVers: 'sw_vers', automationModeTool: 'automationmodetool', osascript: 'osascript', lsof: 'lsof' } as const
+const names = { xcrun: 'xcrun', xcodebuild: 'xcodebuild', plutil: 'plutil', git: 'git', codesign: 'codesign', ps: 'ps', lsappinfo: 'lsappinfo', swVers: 'sw_vers', automationModeTool: 'automationmodetool', osascript: 'osascript', screencapture: 'screencapture', lsof: 'lsof' } as const
 
 /** A folder of fake macOS tools and the state they share, removed after the test with everything they started. */
 export type FakeTools = { readonly root: string; readonly tools: NativeTools; configure(config: Record<string, unknown>): Promise<void>; calls(): Promise<{ tool: string; args: string[] }[]> }
@@ -39,6 +39,7 @@ export async function fakeTools(t: TestContext): Promise<FakeTools> {
     swVers: join(root, 'bin', names.swVers),
     automationModeTool: join(root, 'bin', names.automationModeTool),
     osascript: join(root, 'bin', names.osascript),
+    screencapture: join(root, 'bin', names.screencapture),
     lsof: join(root, 'bin', names.lsof),
     // The kernel lock is the system's own: its behaviour is what the desktop lock stands on.
     lockf: '/usr/bin/lockf',
@@ -60,6 +61,26 @@ export async function fakeTools(t: TestContext): Promise<FakeTools> {
       })
     },
   }
+}
+
+/**
+ * A live process's start as `ps` reads it in the C locale, one-spaced, as Retest records it.
+ *
+ * @example processStart(process.pid) // 'Mon Oct 5 11:18:31 2026'
+ */
+export function processStart(pid: number): string {
+  const read = spawnSync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC0' } })
+  const start = read.stdout.trim().replace(/\s+/g, ' ')
+  if (read.status !== 0 || start === '') throw new Error(`ps could not read the start of pid ${pid}.`)
+  return start
+}
+
+/** A pid no process has now: that of a process that started and ended. */
+export async function endedPid(): Promise<number> {
+  const child = spawn('/usr/bin/true', [], { stdio: 'ignore' })
+  await once(child, 'exit')
+  if (child.pid === undefined) throw new Error('The ended process had no pid.')
+  return child.pid
 }
 
 /** Every process the fakes started and recorded: app processes, runner apps and hung children. */

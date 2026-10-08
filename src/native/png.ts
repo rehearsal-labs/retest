@@ -1,15 +1,10 @@
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
-// The macOS runner captures the whole main display, which shows every window on the screen. A session keeps only the
-// area of its own window, cut from that capture here; the macOS driver takes the capture only while nothing of another
-// process lies over that area. The cut is a rectangle: the window's rounded corners, and any translucent part of it,
-// show what lies behind the window.
+// The PNGs native captures hand out: their size, and their 8-bit pixels decoded and encoded again. A macOS capture
+// is the app's own window as the window server draws it, never a cut of the display, so it holds no other window.
 
 /** A PNG's pixels, unfiltered: `channels` bytes per pixel, row by row. */
 export type DecodedPng = { readonly width: number; readonly height: number; readonly channels: number; readonly pixels: Uint8Array }
-
-/** A rectangle in image pixels. */
-export type PixelRect = { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
 
 const maxDecodedBytes = 256 * 1024 * 1024
 const signature = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
@@ -62,35 +57,9 @@ export function decodePng(bytes: Uint8Array): DecodedPng {
 }
 
 /**
- * The pixels inside `rect`, which must lie wholly inside the image.
- *
- * A macOS window is cut from the runner's capture of the whole display. AutomationModeUI is macOS's full-screen
- * Automation Mode window while XCTest drives the desktop. The driver excludes only that system executable's owner
- * during an open runner session. On this Mac, TaskDesk at 20,60,700,480 showed no pixel change in its static background
- * at window points 20,220,520,100: all 208,000 RGB pixels matched between the runner's PNG and the same window after
- * the runner closed, with opaque alpha in both. The independent baseline was a native tool's JPEG decoded to RGBA;
- * this measured that region, not every pixel of the window. See the native proof record for the captures and limits.
- *
- * @example cropPng(display, { x: 240, y: 160, width: 1640, height: 1120 }).width // 1640
- */
-export function cropPng(image: DecodedPng, rect: PixelRect): DecodedPng {
-  const { x, y, width, height } = rect
-  if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || width < 1 || height < 1 || x + width > image.width || y + height > image.height) {
-    throw new RangeError(`The area ${width}x${height} at ${x},${y} does not lie inside the ${image.width}x${image.height} image.`)
-  }
-  const stride = width * image.channels
-  const pixels = new Uint8Array(height * stride)
-  for (let row = 0; row < height; row += 1) {
-    const from = ((y + row) * image.width + x) * image.channels
-    pixels.set(image.pixels.subarray(from, from + stride), row * stride)
-  }
-  return { width, height, channels: image.channels, pixels }
-}
-
-/**
  * Encodes pixels as a PNG, each row unfiltered.
  *
- * @example encodePng(cropPng(display, windowArea))
+ * @example encodePng(decodePng(capture))
  */
 export function encodePng(image: DecodedPng): Uint8Array {
   const colourType = typeByChannels[image.channels]

@@ -1,5 +1,7 @@
 import type { AppBuild, AppLifecycleCapability, AppState, AppStateReading, DispatchedRequest, InputDispatch, ObservationScope, ResetPolicy, SessionIdentity, SessionOwner } from '../browser/contract.ts'
+import type { FrameSource } from '../media/capture.ts'
 import type { Failure, FailureClass } from '../protocol/failures.ts'
+import type { RecordIdentity } from '../protocol/identity.ts'
 import type { AppBundle, NativeExecutionIdentity } from './identity.ts'
 import type { RecordedProcess } from './processes.ts'
 import type { ScopedSource } from './source-scope.ts'
@@ -10,12 +12,16 @@ import { formatSessionId } from '../protocol/evidence.ts'
 import { failureSchema } from '../protocol/failures.ts'
 import { parse } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
+import { nativeCaptureTargetCheck, nativeFrameSource } from './capture.ts'
 import { runtimeIdentity } from './identity.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import { locate, parseNativeTree, redactNativeXml, valueOf } from './locators.ts'
 import { redactNativeFailure } from './output.ts'
 import { pngSize } from './png.ts'
+import { recordedIdentity } from './processes.ts'
 import { inputDispatch } from './webdriver-client.ts'
+import { transientSourceProblem } from './source-scope.ts'
+import { waitBeforeRead } from '../assertions/wait-before-read.ts'
 
 // A native session: one app on one simulator or on the Mac, in one attempt. It implements the contract's app lifecycle
 // on top of a platform driver, and keeps what the contract asks of every session: its id on everything it hands out,
@@ -23,7 +29,7 @@ import { inputDispatch } from './webdriver-client.ts'
 // work, and a ledger of requests whose outcome is unknown for the runner to reconcile. Locators, input and checks
 // build on it.
 
-/** A capture source, named so a capture is never taken for another: the executor's screen, the simulator's display, or the app's window cut from the Mac's display. */
+/** A capture source, named so a capture is never taken for another: the executor's screen, the simulator's display, or the app's own window as the Mac's window server draws it. */
 export type CaptureSource = 'executor-screen' | 'simulator-display' | 'window-crop'
 
 /** A driver's answer: the executor's, or a failure Retest found itself, with how far the request got. */
@@ -64,7 +70,8 @@ export interface NativeAppDriver {
   state(bounds: RequestBounds): Promise<DriverAnswer<ExecutorAppState>>
   processState(bounds: RequestBounds): Promise<AppProcessReading>
   capture(source: CaptureSource, bounds: RequestBounds): Promise<DriverAnswer<Uint8Array>>
-  source(bounds: RequestBounds): Promise<DriverAnswer<ScopedSource>>
+  /** The tree cut to what the session owns; `redact` runs on menu text before it is hashed. */
+  source(bounds: RequestBounds, redact?: (text: string) => string): Promise<DriverAnswer<ScopedSource>>
   /** Ends the app's processes by the operating system, for cleanup after the executor could not; resolves with what is left. */
   forceEnd(processes: readonly RecordedProcess[], bounds: RequestBounds): Promise<string[]>
   /** Ends the executor session; resolves with what could not be ended. */
@@ -196,6 +203,16 @@ export class NativeAppSession implements AppLifecycleCapability {
     return this.#driver.identity
   }
 
+  /** Whether the session was cancelled: nothing more is sent, and no reference it handed out is accepted. */
+  get cancelled(): boolean {
+    return this.#cancel.signal.aborted
+  }
+
+  /** Whether the session is over: disposed, or lost with its executor or device. Nothing more is sent. */
+  get ended(): boolean {
+    return this.#disposing !== undefined || this.#lost !== undefined
+  }
+
   /** Where the app stands. */
   get appStatus(): AppStatus {
     return { generation: this.#generation, expectedRunning: this.#expectRunning, endedUnexpectedly: this.#unexpectedEnds.length > 0, unexpectedEnds: [...this.#unexpectedEnds] }
@@ -310,6 +327,9 @@ export class NativeAppSession implements AppLifecycleCapability {
     return taken.capture.png
   }
 
+  /** The frame source for this session. Display captures use the driver's own tools and hidden environment rules. */
+  frameSource(identity: RecordIdentity): FrameSource { return nativeFrameSource(this, identity, (bounds) => this.#driver.capture('simulator-display', bounds), nativeCaptureTargetCheck(this.#driver, (entry) => this.#pids.includes(entry.pid) && this.#owns(entry))) }
+
   /** A capture from a named source, the session's first by default, with its reference and when it came back. Sends no input. */
   async capture(timeoutMs: number, options: { readonly source?: CaptureSource; readonly signal?: AbortSignal } = {}): Promise<{ readonly ok: true; readonly capture: NativeCapture } | { readonly ok: false; readonly failure: Failure }> {
     const source = options.source ?? this.#driver.captureSources[0] ?? 'executor-screen'
@@ -323,17 +343,17 @@ export class NativeAppSession implements AppLifecycleCapability {
 
   /**
    * The app's tree, cut to what the session owns and redacted, with its reference: the base the next layer's lookups
-   * read. Sends no input.
+   * read. Sends no input. A caller deadline preserves its exact end across whole-millisecond command allocations.
    */
-  async readSource(timeoutMs: number, signal?: AbortSignal): Promise<{ readonly ok: true; readonly tree: NativeSource } | { readonly ok: false; readonly failure: Failure }> {
-    const read = await this.#read('source', timeoutMs, signal, (bounds) => this.#driver.source(bounds))
+  async readSource(timeoutMs: number, signal?: AbortSignal, callerDeadline?: Deadline): Promise<{ readonly ok: true; readonly tree: NativeSource } | { readonly ok: false; readonly failure: Failure }> {
+    const read = await this.#read('source', timeoutMs, signal, (bounds, deadline) => this.#source(bounds, deadline), callerDeadline)
     if (!read.ok) return read
     return { ok: true, tree: { source: { ...read.value, xml: redactNativeXml(read.value.xml, this.#options.redact) }, reference: this.#reference() } }
   }
 
   /** Reads a field for fill verification in the parent. Its raw value is used only by the input implementation. */
   async readFieldSource(locator: LocatorRecipe, timeoutMs: number, signal: AbortSignal): Promise<{ readonly ok: true; readonly value: string; readonly tree: NativeSource } | { readonly ok: false; readonly failure: Failure }> {
-    const read = await this.#read('source', timeoutMs, signal, (bounds) => this.#driver.source(bounds))
+    const read = await this.#read('source', timeoutMs, signal, (bounds, deadline) => this.#source(bounds, deadline))
     if (!read.ok) return read
     const parsed = parseNativeTree(read.value.xml, this.execution.platform)
     if (!parsed.ok) return { ok: false, failure: { class: 'not_actionable', message: 'The filled field tree could not be read.' } }
@@ -348,7 +368,7 @@ export class NativeAppSession implements AppLifecycleCapability {
 
   /**
    * Why a reference cannot be used here, or undefined when it can: a reference of another session, of a launch that is
-   * over, or of a session that is lost or disposed.
+   * over, or of a session that is lost, disposed or cancelled.
    *
    * @example session.checkReference(capture.reference) // undefined while that launch is current
    */
@@ -356,6 +376,10 @@ export class NativeAppSession implements AppLifecycleCapability {
     if (reference.sessionId !== this.sessionId) return { class: 'usage', message: `The reference ${reference.observationId} belongs to session ${reference.sessionId}, not ${this.sessionId}.`, details: { stale: true } }
     if (reference.instance !== this.#instance) return { class: 'usage', message: `The reference ${reference.observationId} belongs to an earlier session of ${this.sessionId}, which served it before this one opened.`, details: { stale: true } }
     if (this.#disposing !== undefined || this.#lost !== undefined) return { class: 'session_lost', message: `The reference ${reference.observationId} belongs to a session that is ${this.#disposing === undefined ? 'lost' : 'disposed'}.`, details: { stale: true } }
+    if (this.#cancel.signal.aborted) {
+      const stopped = stopFailure(this.#cancel.signal.reason, 'not_sent')
+      return { class: stopped.class, message: `The reference ${reference.observationId} belongs to a session that was cancelled: ${stopped.message}`, details: { ...stopped.details, stale: true } }
+    }
     if (reference.generation !== this.#generation || !this.#generationOpen) {
       return { class: 'not_actionable', message: `The reference ${reference.observationId} is from launch ${reference.generation}; the app is on launch ${this.#generation}${this.#generationOpen ? '' : ', which is over'}.`, details: { stale: true, generation: reference.generation, current: this.#generation } }
     }
@@ -457,9 +481,11 @@ export class NativeAppSession implements AppLifecycleCapability {
     this.#generationOpen = false
   }
 
-  // Whether a process is one this session recorded as its own: the same pid under the same command line.
+  // Whether a process is one this session recorded as its own, by pid and start and, where `ps` read it, command line.
+  // An app shown without its command line while it exits is still its own; one that took a recorded pid is not.
   #owns(entry: RecordedProcess): boolean {
-    return this.#own.get(entry.pid)?.command === entry.command
+    const record = this.#own.get(entry.pid)
+    return record !== undefined && recordedIdentity(record, entry) === 'same'
   }
 
   // The launch's process is seen within its window: it is the session's own, with its command line, and the session
@@ -529,11 +555,25 @@ export class NativeAppSession implements AppLifecycleCapability {
     }
   }
 
-  async #read<T>(kind: 'state' | 'capture' | 'source', timeoutMs: number, signal: AbortSignal | undefined, work: (bounds: RequestBounds) => Promise<DriverAnswer<T>>): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly failure: Failure }> {
-    const turn = await this.#turn(timeoutMs, signal)
+  async #source(bounds: RequestBounds, deadline: Deadline): Promise<DriverAnswer<ScopedSource>> {
+    for (let attempt = 0; ; attempt += 1) {
+      const answer = await this.#driver.source({ timeoutMs: deadline.commandTimeoutMs, signal: bounds.signal }, this.#options.redact)
+      if (answer.status !== 'unknown' || answer.reason !== 'unreadable' || !transientSourceProblem(answer.message)) return answer
+      try {
+        await waitBeforeRead(deadline, Math.min(20 * 2 ** attempt, 200), bounds.signal)
+      } catch (error) {
+        if (bounds.signal?.aborted !== true) throw error
+      }
+      if (bounds.signal?.aborted === true) return { status: 'not_sent', reason: 'stopped', message: 'Stopped while waiting for the owned app tree.' }
+      if (deadline.reached) return answer
+    }
+  }
+
+  async #read<T>(kind: 'state' | 'capture' | 'source', timeoutMs: number, signal: AbortSignal | undefined, work: (bounds: RequestBounds, deadline: Deadline) => Promise<DriverAnswer<T>>, callerDeadline?: Deadline): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly failure: Failure }> {
+    const turn = await this.#turn(timeoutMs, signal, callerDeadline)
     if (!turn.ok) return { ok: false, failure: turn.failure }
     try {
-      const answer = await work({ timeoutMs: turn.deadline.commandTimeoutMs, signal: turn.signal })
+      const answer = await work({ timeoutMs: turn.deadline.commandTimeoutMs, signal: turn.signal }, turn.deadline)
       if (answer.status === 'answered') return { ok: true, value: answer.value }
       return { ok: false, failure: this.#failureOf(kind, answer, turn.signal).failure }
     } finally {
@@ -541,12 +581,12 @@ export class NativeAppSession implements AppLifecycleCapability {
     }
   }
 
-  async #turn(timeoutMs: number, signal: AbortSignal | undefined): Promise<{ readonly ok: true; readonly deadline: Deadline; readonly signal: AbortSignal; release(): void } | { readonly ok: false; readonly failure: Failure }> {
+  async #turn(timeoutMs: number, signal: AbortSignal | undefined, callerDeadline?: Deadline): Promise<{ readonly ok: true; readonly deadline: Deadline; readonly signal: AbortSignal; release(): void } | { readonly ok: false; readonly failure: Failure }> {
     const checked = checkedTimeout(timeoutMs)
     if (checked === undefined) return { ok: false, failure: { class: 'usage', message: `A native request takes a whole number of milliseconds from 1 to ${maxTimeout}, not ${String(timeoutMs)}.` } }
     const refusal = this.#refusal(signal)
     if (refusal !== undefined) return { ok: false, failure: refusal }
-    const deadline = new Deadline(checked)
+    const deadline = callerDeadline ?? new Deadline(checked)
     const combined = signal === undefined ? this.#cancel.signal : AbortSignal.any([signal, this.#cancel.signal])
     const turn = await this.#lane.acquire(combined, checked)
     if (!turn.ok) return { ok: false, failure: turn.reason === 'stopped' ? stopFailure(combined.reason, 'not_sent') : { class: 'timeout', message: `The request waited ${checked} ms for the one before it and did not go.` } }
@@ -592,7 +632,9 @@ export class NativeAppSession implements AppLifecycleCapability {
     if (answer.reason === 'stopped') return { failure: stopFailure(signal.reason, acting ? 'unknown' : 'not_sent'), input }
     if (answer.reason === 'timeout') return { failure: { class: 'timeout', message: `${name}: ${answer.message}${mayHave}` }, input }
     if (answer.reason === 'connection_lost') return { failure: { ...this.#loseSession(`${name}: ${answer.message}${mayHave}`), class: acting ? 'outcome_unknown' : 'session_lost' }, input }
-    return { failure: { class: acting ? 'outcome_unknown' : 'not_actionable', message: `${name}: ${answer.message}${mayHave}` }, input }
+    // A tree that does not hold the app's window yet can clear after launch, so a capture says so for its caller.
+    const transient = kind === 'capture' && answer.reason === 'unreadable' && transientSourceProblem(answer.message)
+    return { failure: { class: acting ? 'outcome_unknown' : 'not_actionable', message: `${name}: ${answer.message}${mayHave}`, ...(transient ? { details: { transient: true } } : {}) }, input }
   }
 
   #loseSession(message: string): Failure {
