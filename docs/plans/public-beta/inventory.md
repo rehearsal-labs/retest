@@ -271,19 +271,21 @@ Inside this repository: the host surface (`runFiles`, `hostChecks`, `testEnviron
 
 ## Playwright adapter
 
-`src/playwright/`, active only under `--playwright` (`src/runner/playwright-resolve.ts`).
+`src/playwright/`, active only under `--playwright` (`src/runner/playwright-resolve.ts`). Rows brought up to date after the Phase 3 subset widened and its comparison was made stricter; [the compatibility table](../../compatibility/playwright.md) holds the same-case results.
 
 | Capability | Status | Where | Proven by, or what is missing |
 | --- | --- | --- | --- |
-| `test`, `test.describe`, `beforeEach`, `afterEach`, `test.step`, the `page` fixture | Existing, verified | `src/playwright/test.ts` | `unit/playwright-compat.test.ts`, `integ/playwright-compat.test.ts` |
-| `page.goto`, `getByTestId`, `getByRole`, `getByLabel`, `getByText`, `keyboard.press`; `fill`, `click`, `press`, `check`, `uncheck` | Existing, verified | guarded Retest objects | `unit/playwright-compat.test.ts`, `integ/playwright-compat.test.ts` |
-| `expect` matchers Retest has, `expect.soft`, `expect.poll` | Existing, verified | `src/playwright/expect.ts` | `unit/playwright-compat.test.ts` |
-| Unsupported members fail by name | Existing, verified | `src/playwright/not-yet.ts` | `unit/playwright-compat.test.ts`; hints for `first`, `nth`, `last`, `selectOption`, `type`, `pressSequentially`, `page.locator`, `waitForTimeout` |
-| Unsupported options fail by name | Needs changes | `guard()` passes every argument on | `goto(url, options)`, `click(options)`, `fill(value, options)`, `press(key, options)` and `test.step`'s third argument are dropped without a word. No test covers it |
-| Playwright's locator defaults | Needs changes | | Playwright's `getByText` and `getByLabel` match a case-insensitive part by default; the adapter keeps Retest's exact default |
-| Default timeouts | Needs changes | | Retest's test budget is 60 s and its action budget 10 s; Playwright's test default is 30 s with no action timeout |
-| `playwright.config.ts` mapping | Missing | `src/playwright/config.ts` returns its argument | The file is never read |
-| Same-case compatibility table | Missing | | |
+| `test`, `test.describe`, `beforeEach`, `afterEach`, `test.step`, the `page` fixture | Existing, verified | `src/playwright/test.ts` | `unit/playwright-compat.test.ts`, `integ/playwright-compat.test.ts`, the comparison corpus |
+| `page.goto`, `reload`, `goBack`, `goForward`, `title`; `getByTestId`, `getByRole`, `getByLabel`, `getByText`, `getByPlaceholder`, `locator`, on a page and a locator; `first`, `last`, `nth`; `keyboard.press`; `fill`, `click`, `hover`, `press`, `check`, `uncheck` | Existing, verified | guarded Retest objects in `src/playwright/not-yet.ts`, typed by `src/playwright/page.ts` | `unit/playwright-compat.test.ts`, `integ/playwright-compat.test.ts`, the comparison corpus |
+| `selectOption({ label })` and `selectOption({ value })`, mapped onto Retest's `select` | Existing, verified | `src/playwright/not-yet.ts` | `unit/playwright-subset.test.ts`, the comparison corpus |
+| `expect` matchers Retest has, each after `.not`, `expect.soft`, `expect.poll` | Existing, verified | `src/playwright/expect.ts` | `unit/playwright-compat.test.ts` |
+| Unsupported members fail by name | Existing, verified | `src/playwright/not-yet.ts` | `unit/playwright-compat.test.ts`, `unit/playwright-subset.test.ts`: a bare-string, list, `{ index }` or `null` `selectOption`, `getByRole('row', { name })`, `test.use`, `page.context`, `page.url`, and reading what `goto`, `reload`, `goBack`, `goForward` and `selectOption` answer |
+| Unsupported options fail by name | Existing, verified | `guard()` in `src/playwright/not-yet.ts`, `src/playwright/expect.ts`, `src/playwright/test.ts` | `unit/playwright-compat.test.ts`: any option but `{ timeout }`, extra arguments, `test.step`'s options, test details and titled hooks |
+| A row by name refused in the types too | Existing, verified | `RoleOptionsFor` in `src/playwright/page.ts` | type markers in `tests/types/fixtures/playwright-finders.ts` |
+| Playwright's locator defaults | Existing, verified | `finderOptions` in `src/playwright/not-yet.ts` | `unit/playwright-compat.test.ts`: any part of a text in any case unless `exact: true`, on every locator from the page fixture |
+| Default timeouts | Needs changes | | Retest's test budget is 60 s and its action budget 10 s; Playwright's test default is 30 s with no action timeout. The guide lists the difference |
+| `playwright.config.ts` mapping | Missing | `src/playwright/config.ts` returns its argument | The file is never read, so saved sign-in state (family 3) and projects stay declared gaps |
+| Same-case compatibility table | Existing, verified | `scripts/compare-playwright.ts`, `fixtures/playwright-compat/`, `docs/compatibility/playwright.md` | `integ/playwright-compat-table.test.ts` and `unit/playwright-compare.test.ts`: the pinned Playwright 1.63.0 from checked tarballs, the same corpus under both runners, each case's outcome, step, line, class, failure values and operations, and the two runs' exit codes and run failures |
 
 ## CLI
 
