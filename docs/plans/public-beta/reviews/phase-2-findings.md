@@ -93,3 +93,43 @@ Confirmed sound by that review: no route that repeats input, no automatic repeat
 2. A macOS logged launch gives the app only its declared environment, and a SIGKILL of the Retest process leaves that app running until the next start's recovery.
 3. The iOS logged launch relies on WebDriverAgent's own choice of the active app, as the executor launch does; "tree of another app" was seen once in the broken-sync variant.
 4. Closing the phone runtime hit `ps ETIMEDOUT` in `src/shared/process-ownership.ts` (a 1 s timeout) in two of three runs; whether the logged launch contributes is not established.
+
+## Seen by the Phase 3 Playwright lane (for the combined review)
+
+1. In 2 of 5 comparison runs on Chrome, Retest's run ended `cleanup_failed` with exit 2 outside any test: the runner's process check refused to close a Chrome process whose identity had changed, though the process was gone afterwards and per-case results were unchanged. Runner and process-ownership code (`src/browser/chromium-process.ts`, `src/shared/process-ownership.ts`).
+2. The Playwright adapter rows of `docs/plans/public-beta/inventory.md` are out of date after the subset widened.
+3. Bare-string `selectOption('High')` stays refused; an exact mapping needs a value-or-label option in `src/protocol` and the page matcher.
+
+## Seen by the Phase 3 builds lane
+
+1. `doctor` failed to close Chrome for Testing with "Recorded process … has a different identity" in two of two `m2-doctor` runs, before the builds rows ran; the same class as the Playwright lane's `cleanup_failed`. Being fixed in the process-ownership layer.
+2. The Firefox driver's executable lookup tells users to run `retest install firefox`, which the installer refuses until a checksum is pinned.
+3. `doctor` still refuses native targets as having no driver, and a native run still builds an executor itself when none is recorded.
+
+## Seen by the harness fix lane
+
+1. `tests/integration/m2-guarantees.test.ts:138` calls `signalGroup` on a browser group the run reported, which the ownership layer refuses since `9b38691`; the same fix as the harness needs there. Its line 273 also expects `web=testing` variants `passed` where a killed run leaves them `not_run`.
+2. A browser lost between looks with no check pending gets no location, and a check whose process never reports leaves no `assertion.failed`, since only the process knows the matcher; a loss right after a plain read now waits up to a second before the abort.
+3. Firefox started through Launch Services is not a child of the run, so the harness cannot record it; a leftover fails the test by name rather than being ended.
+
+## Seen by the identity fix lane
+
+1. `src/browser/firefox/orphans.ts`, `src/browser/webkit/sweep.ts` and `media/src/process_ownership.rs` still compare the exact command line and most likely refuse an exiting process the same way; `sameProcessIdentity` is exported for the two drivers to adopt, and the Rust side needs the same rule.
+2. A process recorded before an exec and read later with its new readable command is still refused, on purpose, since it cannot be told from a pid reused within the same second.
+3. `tests/integration/browser-lifecycle.test.ts`: `launchInChild` hangs with no bound if the child never prints.
+
+## Seen by the agent session lane
+
+1. `package.json` needs a `./agent` export (source `src/agent/index.ts`, `dist/agent/index.js` and `.d.ts`); until then the API is not reachable from the package.
+2. `src/protocol/identity.ts` needs a `webkit` capture source name so WebKit's screencast can become the contract's `frameSource`; agent sessions write no events or run folder today (optional event types).
+3. Firefox driver: labelled password fields not found, `Accessibility.queryAXTree` answers the driver cannot read for `getByLabel` and `getByRole('textbox')`, fills reported `sent` while the field stayed empty with several contexts open (passed after a mid-lane driver edit, cause not proven).
+4. Chromium driver: `close()` after the main process was killed from outside throws "launch ownership could not be verified" though the group is already empty.
+5. A `runHostProgram` after-hook once failed with the same ownership error; cause not settled.
+
+## Seen by the WebKit driver lane
+
+1. `src/protocol/identity.ts`: add `webkit` to `CaptureSourceName` and its schema so `screenshotSource` in `src/runner/test-pages.ts` can name it and the WebKit frame source implements the contract; optionally `TargetInfo.webkit: { build, version, protocolSha256 }`.
+2. Chrome's page reports a timeout a fraction of a millisecond early in 3 of 200 probe looks (`src/browser/page.ts` or `src/assertions/look-until.ts`); WebKit's page fixed it locally.
+3. A shared isolated-world interface and a shared "context gone" error class would let the WebKit bridge drop its Chrome-message mapping.
+4. One conformance run exited 2 with `cleanup_failed` because the browser's output did not close within 1000 ms; cause not established.
+5. The role refusals also block two lookups WebKit could answer: a cell named by `aria-label`, and a custom option on a page that also holds a native select.
