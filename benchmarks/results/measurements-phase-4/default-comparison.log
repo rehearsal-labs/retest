@@ -1,0 +1,111 @@
+
+> @rehearsal-labs/retest@0.0.0 bench
+> node benchmarks/run.ts --sizes 1,20 --runs 5 --runners retest,retest-playwright,playwright-1-worker --playwright-version 1.63.0 --workspace /tmp/retest-measurements-workspace --output /Users/dragon/Documents/Projects/Gruvi/Products/retest/.retest/benchmarks/measurements-phase-4-verified/default-comparison
+
+building retest
+installing retest from the packed tarball
+Apple M4 Max, 14 cores. Google Chrome 154.0.8037.98. Retest 0.0.0 from b59eed5d6b4f with uncommitted changes, Playwright 1.63.0.
+task-app at http://127.0.0.1:64059
+  task-app, 1 tests, retest, run 1 of 5: 1538 ms wall, 887 startup, 390 tests, 261 teardown
+  task-app, 1 tests, retest-playwright, run 1 of 5: 1071 ms wall, 482 startup, 279 tests, 310 teardown
+  task-app, 1 tests, playwright-1-worker, run 1 of 5: 3679 ms wall, 430 startup, 280 tests, 2969 teardown
+  task-app, 1 tests, retest, run 2 of 5: 1070 ms wall, 489 startup, 278 tests, 303 teardown
+  task-app, 1 tests, retest-playwright, run 2 of 5: 1099 ms wall, 479 startup, 275 tests, 345 teardown
+  task-app, 1 tests, playwright-1-worker, run 2 of 5: 3660 ms wall, 397 startup, 263 tests, 3000 teardown
+  task-app, 1 tests, retest, run 3 of 5: 1078 ms wall, 503 startup, 274 tests, 301 teardown
+  task-app, 1 tests, retest-playwright, run 3 of 5: 1065 ms wall, 479 startup, 282 tests, 304 teardown
+  task-app, 1 tests, playwright-1-worker, run 3 of 5: 3433 ms wall, 400 startup, 288 tests, 2745 teardown
+  task-app, 1 tests, retest, run 4 of 5: 1059 ms wall, 534 startup, 266 tests, 259 teardown
+  task-app, 1 tests, retest-playwright, run 4 of 5: 1205 ms wall, 512 startup, 284 tests, 409 teardown
+  task-app, 1 tests, playwright-1-worker, run 4 of 5: 3616 ms wall, 395 startup, 274 tests, 2947 teardown
+  task-app, 1 tests, retest, run 5 of 5: 1115 ms wall, 498 startup, 274 tests, 343 teardown
+  task-app, 1 tests, retest-playwright, run 5 of 5: 1106 ms wall, 493 startup, 268 tests, 345 teardown
+  task-app, 1 tests, playwright-1-worker, run 5 of 5: 3629 ms wall, 394 startup, 265 tests, 2970 teardown
+  task-app, 20 tests, retest, run 1 of 5: 5508 ms wall, 505 startup, 4690 tests, 313 teardown
+  task-app, 20 tests, retest-playwright, run 1 of 5: 5604 ms wall, 518 startup, 4683 tests, 403 teardown
+  task-app, 20 tests, playwright-1-worker, run 1 of 5: 6627 ms wall, 434 startup, 4781 tests, 1412 teardown
+  task-app, 20 tests, retest, run 2 of 5: 5567 ms wall, 519 startup, 4724 tests, 324 teardown
+  task-app, 20 tests, retest-playwright, run 2 of 5: 5559 ms wall, 505 startup, 4736 tests, 318 teardown
+  task-app, 20 tests, playwright-1-worker, run 2 of 5: 6627 ms wall, 413 startup, 4819 tests, 1395 teardown
+  task-app, 20 tests, retest, run 3 of 5: 5617 ms wall, 591 startup, 4710 tests, 316 teardown
+  task-app, 20 tests, retest-playwright, run 3 of 5: 5537 ms wall, 520 startup, 4654 tests, 363 teardown
+  task-app, 20 tests, playwright-1-worker, run 3 of 5: 6480 ms wall, 414 startup, 4901 tests, 1165 teardown
+  task-app, 20 tests, retest, run 4 of 5: 5512 ms wall, 517 startup, 4728 tests, 267 teardown
+  task-app, 20 tests, retest-playwright, run 4 of 5: 5585 ms wall, 510 startup, 4705 tests, 370 teardown
+  task-app, 20 tests, playwright-1-worker, run 4 of 5: 6708 ms wall, 406 startup, 4815 tests, 1487 teardown
+  task-app, 20 tests, retest, run 5 of 5: 5538 ms wall, 514 startup, 4697 tests, 327 teardown
+  task-app, 20 tests, retest-playwright, run 5 of 5: 5524 ms wall, 514 startup, 4694 tests, 316 teardown
+  task-app, 20 tests, playwright-1-worker, run 5 of 5: 6692 ms wall, 414 startup, 4835 tests, 1443 teardown
+search-app at http://127.0.0.1:49281
+  search-app, 1 tests, retest, run 1 of 5: 1476 ms wall, 505 startup, 628 tests, 343 teardown
+  search-app, 1 tests, retest-playwright, run 1 of 5: 1413 ms wall, 502 startup, 614 tests, 297 teardown
+  search-app, 1 tests, playwright-1-worker, run 1 of 5: 4383 ms wall, 420 startup, 953 tests, 3010 teardown
+  search-app, 1 tests, retest, run 2 of 5: 1381 ms wall, 503 startup, 618 tests, 260 teardown
+  search-app, 1 tests, retest-playwright, run 2 of 5: 1353 ms wall, 499 startup, 603 tests, 251 teardown
+  search-app, 1 tests, playwright-1-worker, run 2 of 5: 4330 ms wall, 396 startup, 947 tests, 2987 teardown
+  search-app, 1 tests, retest, run 3 of 5: 1442 ms wall, 505 startup, 599 tests, 338 teardown
+  search-app, 1 tests, retest-playwright, run 3 of 5: 1409 ms wall, 483 startup, 631 tests, 295 teardown
+  search-app, 1 tests, playwright-1-worker, run 3 of 5: 4261 ms wall, 396 startup, 941 tests, 2924 teardown
+  search-app, 1 tests, retest, run 4 of 5: 1549 ms wall, 633 startup, 647 tests, 269 teardown
+  search-app, 1 tests, retest-playwright, run 4 of 5: 1423 ms wall, 531 startup, 622 tests, 270 teardown
+  search-app, 1 tests, playwright-1-worker, run 4 of 5: 4523 ms wall, 404 startup, 1028 tests, 3091 teardown
+  search-app, 1 tests, retest, run 5 of 5: 1488 ms wall, 539 startup, 669 tests, 280 teardown
+  search-app, 1 tests, retest-playwright, run 5 of 5: 1420 ms wall, 500 startup, 663 tests, 257 teardown
+  search-app, 1 tests, playwright-1-worker, run 5 of 5: 4484 ms wall, 405 startup, 1039 tests, 3040 teardown
+  search-app, 20 tests, retest, run 1 of 5: 12916 ms wall, 521 startup, 12082 tests, 313 teardown
+  search-app, 20 tests, retest-playwright, run 1 of 5: 13121 ms wall, 703 startup, 12089 tests, 329 teardown
+  search-app, 20 tests, playwright-1-worker, run 1 of 5: 21671 ms wall, 493 startup, 18472 tests, 2706 teardown
+  search-app, 20 tests, retest, run 2 of 5: 12836 ms wall, 645 startup, 11917 tests, 274 teardown
+  search-app, 20 tests, retest-playwright, run 2 of 5: 12956 ms wall, 559 startup, 12066 tests, 331 teardown
+  search-app, 20 tests, playwright-1-worker, run 2 of 5: 19983 ms wall, 459 startup, 18436 tests, 1088 teardown
+  search-app, 20 tests, retest, run 3 of 5: 12734 ms wall, 609 startup, 11854 tests, 271 teardown
+  search-app, 20 tests, retest-playwright, run 3 of 5: 12893 ms wall, 597 startup, 11889 tests, 407 teardown
+  search-app, 20 tests, playwright-1-worker, run 3 of 5: 19272 ms wall, 411 startup, 18592 tests, 269 teardown
+  search-app, 20 tests, retest, run 4 of 5: 12859 ms wall, 584 startup, 11946 tests, 329 teardown
+  search-app, 20 tests, retest-playwright, run 4 of 5: 12762 ms wall, 596 startup, 11816 tests, 350 teardown
+  search-app, 20 tests, playwright-1-worker, run 4 of 5: 21473 ms wall, 427 startup, 18380 tests, 2666 teardown
+  search-app, 20 tests, retest, run 5 of 5: 12835 ms wall, 643 startup, 11840 tests, 352 teardown
+  search-app, 20 tests, retest-playwright, run 5 of 5: 12674 ms wall, 522 startup, 11834 tests, 318 teardown
+  search-app, 20 tests, playwright-1-worker, run 5 of 5: 21095 ms wall, 426 startup, 18396 tests, 2273 teardown
+# Retest benchmark
+
+2026-10-06T14:31:11.828Z. Apple M4 Max, 14 cores, 36 GB, darwin 27.0.0 arm64. Node v24.12.0. Google Chrome 154.0.8037.98. Retest 0.0.0, Playwright 1.63.0.
+
+Retest packed from commit b59eed5d6b4f, with uncommitted changes in the working tree, dist rebuilt first.
+
+Runs per cell: 5. Each number is the median over the runs that passed every test. Milliseconds.
+
+| Install | Time |
+| --- | --- |
+| Retest, packed tarball, offline, 0 dependencies | 587 ms |
+| Playwright, from the registry, without its browsers | kept from an earlier run |
+
+## task-app
+
+runner-dominated: the page answers at once, so the runner sets the pace
+
+| Tests | Files | Runner | Wall | Startup | Tests | Teardown | Per test | Valid runs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | Retest | 1078 | 503 | 274 | 301 | 275 | 5 of 5 |
+| 1 | 1 | Retest, on Playwright's own spec files | 1099 | 482 | 279 | 345 | 280 | 5 of 5 |
+| 1 | 1 | Playwright, 1 worker | 3629 | 397 | 274 | 2969 | 274 | 5 of 5 |
+| 20 | 1 | Retest | 5538 | 517 | 4710 | 316 | 232 | 5 of 5 |
+| 20 | 1 | Retest, on Playwright's own spec files | 5559 | 514 | 4694 | 363 | 233 | 5 of 5 |
+| 20 | 1 | Playwright, 1 worker | 6627 | 414 | 4819 | 1412 | 225 | 5 of 5 |
+
+## search-app
+
+app-dominated: a 150 ms API and a 300 ms debounce, so the app sets the pace
+
+| Tests | Files | Runner | Wall | Startup | Tests | Teardown | Per test | Valid runs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1 | Retest | 1476 | 505 | 628 | 280 | 629 | 5 of 5 |
+| 1 | 1 | Retest, on Playwright's own spec files | 1413 | 500 | 622 | 270 | 623 | 5 of 5 |
+| 1 | 1 | Playwright, 1 worker | 4383 | 404 | 953 | 3010 | 953 | 5 of 5 |
+| 20 | 1 | Retest | 12836 | 609 | 11917 | 313 | 594 | 5 of 5 |
+| 20 | 1 | Retest, on Playwright's own spec files | 12893 | 596 | 11889 | 331 | 593 | 5 of 5 |
+| 20 | 1 | Playwright, 1 worker | 21095 | 427 | 18436 | 2273 | 905 | 5 of 5 |
+
+Startup is the spawn to the first test starting. Tests is the first test starting to the last ending. Teardown is the last test ending to the process exiting. Per test is the median of what each tool reports for one test.
+
+Written to /Users/dragon/Documents/Projects/Gruvi/Products/retest/.retest/benchmarks/measurements-phase-4-verified/default-comparison

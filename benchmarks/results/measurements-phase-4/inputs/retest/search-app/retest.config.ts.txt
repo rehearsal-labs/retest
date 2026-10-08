@@ -1,0 +1,8 @@
+import { defineConfig } from '@rehearsal-labs/retest'
+export default defineConfig({
+  apps: { web: { browser: "chromium", executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", baseUrl: "http://127.0.0.1:54221", headless: true, viewport: { width: 1280, height: 720 } } },
+  diagnostics: { capture: false },
+  pixels: { web: { screenshots: 'never', recordings: 'never' } },
+  recording: { record: false, required: false, keep: 'all', fps: 10, size: { width: 1280, height: 720 } },
+  timeouts: { test: 30000, action: 5000, assertion: 5000, navigation: 30000 },
+})

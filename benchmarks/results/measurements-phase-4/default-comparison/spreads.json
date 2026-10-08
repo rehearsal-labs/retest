@@ -1,0 +1,578 @@
+[
+  {
+    "fixture": "task-app",
+    "tests": 1,
+    "files": 1,
+    "runner": "retest",
+    "statistics": {
+      "wall": {
+        "median": 1078,
+        "min": 1059,
+        "max": 1538,
+        "q1": 1070,
+        "q3": 1115,
+        "p95": 1538
+      },
+      "startup": {
+        "median": 503,
+        "min": 489,
+        "max": 887,
+        "q1": 498,
+        "q3": 534,
+        "p95": 887
+      },
+      "tests": {
+        "median": 274,
+        "min": 266,
+        "max": 390,
+        "q1": 274,
+        "q3": 278,
+        "p95": 390
+      },
+      "teardown": {
+        "median": 301,
+        "min": 259,
+        "max": 343,
+        "q1": 261,
+        "q3": 303,
+        "p95": 343
+      },
+      "perTest": {
+        "median": 275,
+        "min": 268,
+        "max": 390,
+        "q1": 275,
+        "q3": 278,
+        "p95": 390
+      }
+    }
+  },
+  {
+    "fixture": "task-app",
+    "tests": 1,
+    "files": 1,
+    "runner": "retest-playwright",
+    "statistics": {
+      "wall": {
+        "median": 1099,
+        "min": 1065,
+        "max": 1205,
+        "q1": 1071,
+        "q3": 1106,
+        "p95": 1205
+      },
+      "startup": {
+        "median": 482,
+        "min": 479,
+        "max": 512,
+        "q1": 479,
+        "q3": 493,
+        "p95": 512
+      },
+      "tests": {
+        "median": 279,
+        "min": 268,
+        "max": 284,
+        "q1": 275,
+        "q3": 282,
+        "p95": 284
+      },
+      "teardown": {
+        "median": 345,
+        "min": 304,
+        "max": 409,
+        "q1": 310,
+        "q3": 345,
+        "p95": 409
+      },
+      "perTest": {
+        "median": 280,
+        "min": 269,
+        "max": 284,
+        "q1": 277,
+        "q3": 284,
+        "p95": 284
+      }
+    }
+  },
+  {
+    "fixture": "task-app",
+    "tests": 1,
+    "files": 1,
+    "runner": "playwright-1-worker",
+    "statistics": {
+      "wall": {
+        "median": 3629,
+        "min": 3433,
+        "max": 3679,
+        "q1": 3616,
+        "q3": 3660,
+        "p95": 3679
+      },
+      "startup": {
+        "median": 397,
+        "min": 394,
+        "max": 430,
+        "q1": 395,
+        "q3": 400,
+        "p95": 430
+      },
+      "tests": {
+        "median": 274,
+        "min": 263,
+        "max": 288,
+        "q1": 265,
+        "q3": 280,
+        "p95": 288
+      },
+      "teardown": {
+        "median": 2969,
+        "min": 2745,
+        "max": 3000,
+        "q1": 2947,
+        "q3": 2970,
+        "p95": 3000
+      },
+      "perTest": {
+        "median": 274,
+        "min": 263,
+        "max": 288,
+        "q1": 265,
+        "q3": 280,
+        "p95": 288
+      }
+    }
+  },
+  {
+    "fixture": "task-app",
+    "tests": 20,
+    "files": 1,
+    "runner": "retest",
+    "statistics": {
+      "wall": {
+        "median": 5538,
+        "min": 5508,
+        "max": 5617,
+        "q1": 5512,
+        "q3": 5567,
+        "p95": 5617
+      },
+      "startup": {
+        "median": 517,
+        "min": 505,
+        "max": 591,
+        "q1": 514,
+        "q3": 519,
+        "p95": 591
+      },
+      "tests": {
+        "median": 4710,
+        "min": 4690,
+        "max": 4728,
+        "q1": 4697,
+        "q3": 4724,
+        "p95": 4728
+      },
+      "teardown": {
+        "median": 316,
+        "min": 267,
+        "max": 327,
+        "q1": 313,
+        "q3": 324,
+        "p95": 327
+      },
+      "perTest": {
+        "median": 232,
+        "min": 230,
+        "max": 239,
+        "q1": 232,
+        "q3": 238.5,
+        "p95": 239
+      }
+    }
+  },
+  {
+    "fixture": "task-app",
+    "tests": 20,
+    "files": 1,
+    "runner": "retest-playwright",
+    "statistics": {
+      "wall": {
+        "median": 5559,
+        "min": 5524,
+        "max": 5604,
+        "q1": 5537,
+        "q3": 5585,
+        "p95": 5604
+      },
+      "startup": {
+        "median": 514,
+        "min": 505,
+        "max": 520,
+        "q1": 510,
+        "q3": 518,
+        "p95": 520
+      },
+      "tests": {
+        "median": 4694,
+        "min": 4654,
+        "max": 4736,
+        "q1": 4683,
+        "q3": 4705,
+        "p95": 4736
+      },
+      "teardown": {
+        "median": 363,
+        "min": 316,
+        "max": 403,
+        "q1": 318,
+        "q3": 370,
+        "p95": 403
+      },
+      "perTest": {
+        "median": 233,
+        "min": 231,
+        "max": 235,
+        "q1": 231.5,
+        "q3": 233,
+        "p95": 235
+      }
+    }
+  },
+  {
+    "fixture": "task-app",
+    "tests": 20,
+    "files": 1,
+    "runner": "playwright-1-worker",
+    "statistics": {
+      "wall": {
+        "median": 6627,
+        "min": 6480,
+        "max": 6708,
+        "q1": 6627,
+        "q3": 6692,
+        "p95": 6708
+      },
+      "startup": {
+        "median": 414,
+        "min": 406,
+        "max": 434,
+        "q1": 413,
+        "q3": 414,
+        "p95": 434
+      },
+      "tests": {
+        "median": 4819,
+        "min": 4781,
+        "max": 4901,
+        "q1": 4815,
+        "q3": 4835,
+        "p95": 4901
+      },
+      "teardown": {
+        "median": 1412,
+        "min": 1165,
+        "max": 1487,
+        "q1": 1395,
+        "q3": 1443,
+        "p95": 1487
+      },
+      "perTest": {
+        "median": 224.5,
+        "min": 223,
+        "max": 229.5,
+        "q1": 224,
+        "q3": 225,
+        "p95": 229.5
+      }
+    }
+  },
+  {
+    "fixture": "search-app",
+    "tests": 1,
+    "files": 1,
+    "runner": "retest",
+    "statistics": {
+      "wall": {
+        "median": 1476,
+        "min": 1381,
+        "max": 1549,
+        "q1": 1442,
+        "q3": 1488,
+        "p95": 1549
+      },
+      "startup": {
+        "median": 505,
+        "min": 503,
+        "max": 633,
+        "q1": 505,
+        "q3": 539,
+        "p95": 633
+      },
+      "tests": {
+        "median": 628,
+        "min": 599,
+        "max": 669,
+        "q1": 618,
+        "q3": 647,
+        "p95": 669
+      },
+      "teardown": {
+        "median": 280,
+        "min": 260,
+        "max": 343,
+        "q1": 269,
+        "q3": 338,
+        "p95": 343
+      },
+      "perTest": {
+        "median": 629,
+        "min": 599,
+        "max": 670,
+        "q1": 619,
+        "q3": 648,
+        "p95": 670
+      }
+    }
+  },
+  {
+    "fixture": "search-app",
+    "tests": 1,
+    "files": 1,
+    "runner": "retest-playwright",
+    "statistics": {
+      "wall": {
+        "median": 1413,
+        "min": 1353,
+        "max": 1423,
+        "q1": 1409,
+        "q3": 1420,
+        "p95": 1423
+      },
+      "startup": {
+        "median": 500,
+        "min": 483,
+        "max": 531,
+        "q1": 499,
+        "q3": 502,
+        "p95": 531
+      },
+      "tests": {
+        "median": 622,
+        "min": 603,
+        "max": 663,
+        "q1": 614,
+        "q3": 631,
+        "p95": 663
+      },
+      "teardown": {
+        "median": 270,
+        "min": 251,
+        "max": 297,
+        "q1": 257,
+        "q3": 295,
+        "p95": 297
+      },
+      "perTest": {
+        "median": 623,
+        "min": 604,
+        "max": 664,
+        "q1": 615,
+        "q3": 633,
+        "p95": 664
+      }
+    }
+  },
+  {
+    "fixture": "search-app",
+    "tests": 1,
+    "files": 1,
+    "runner": "playwright-1-worker",
+    "statistics": {
+      "wall": {
+        "median": 4383,
+        "min": 4261,
+        "max": 4523,
+        "q1": 4330,
+        "q3": 4484,
+        "p95": 4523
+      },
+      "startup": {
+        "median": 404,
+        "min": 396,
+        "max": 420,
+        "q1": 396,
+        "q3": 405,
+        "p95": 420
+      },
+      "tests": {
+        "median": 953,
+        "min": 941,
+        "max": 1039,
+        "q1": 947,
+        "q3": 1028,
+        "p95": 1039
+      },
+      "teardown": {
+        "median": 3010,
+        "min": 2924,
+        "max": 3091,
+        "q1": 2987,
+        "q3": 3040,
+        "p95": 3091
+      },
+      "perTest": {
+        "median": 953,
+        "min": 941,
+        "max": 1039,
+        "q1": 947,
+        "q3": 1028,
+        "p95": 1039
+      }
+    }
+  },
+  {
+    "fixture": "search-app",
+    "tests": 20,
+    "files": 1,
+    "runner": "retest",
+    "statistics": {
+      "wall": {
+        "median": 12836,
+        "min": 12734,
+        "max": 12916,
+        "q1": 12835,
+        "q3": 12859,
+        "p95": 12916
+      },
+      "startup": {
+        "median": 609,
+        "min": 521,
+        "max": 645,
+        "q1": 584,
+        "q3": 643,
+        "p95": 645
+      },
+      "tests": {
+        "median": 11917,
+        "min": 11840,
+        "max": 12082,
+        "q1": 11854,
+        "q3": 11946,
+        "p95": 12082
+      },
+      "teardown": {
+        "median": 313,
+        "min": 271,
+        "max": 352,
+        "q1": 274,
+        "q3": 329,
+        "p95": 352
+      },
+      "perTest": {
+        "median": 593.5,
+        "min": 590,
+        "max": 601.5,
+        "q1": 591,
+        "q3": 596,
+        "p95": 601.5
+      }
+    }
+  },
+  {
+    "fixture": "search-app",
+    "tests": 20,
+    "files": 1,
+    "runner": "retest-playwright",
+    "statistics": {
+      "wall": {
+        "median": 12893,
+        "min": 12674,
+        "max": 13121,
+        "q1": 12762,
+        "q3": 12956,
+        "p95": 13121
+      },
+      "startup": {
+        "median": 596,
+        "min": 522,
+        "max": 703,
+        "q1": 559,
+        "q3": 597,
+        "p95": 703
+      },
+      "tests": {
+        "median": 11889,
+        "min": 11816,
+        "max": 12089,
+        "q1": 11834,
+        "q3": 12066,
+        "p95": 12089
+      },
+      "teardown": {
+        "median": 331,
+        "min": 318,
+        "max": 407,
+        "q1": 329,
+        "q3": 350,
+        "p95": 407
+      },
+      "perTest": {
+        "median": 592.5,
+        "min": 591.5,
+        "max": 602,
+        "q1": 592,
+        "q3": 601,
+        "p95": 602
+      }
+    }
+  },
+  {
+    "fixture": "search-app",
+    "tests": 20,
+    "files": 1,
+    "runner": "playwright-1-worker",
+    "statistics": {
+      "wall": {
+        "median": 21095,
+        "min": 19272,
+        "max": 21671,
+        "q1": 19983,
+        "q3": 21473,
+        "p95": 21671
+      },
+      "startup": {
+        "median": 427,
+        "min": 411,
+        "max": 493,
+        "q1": 426,
+        "q3": 459,
+        "p95": 493
+      },
+      "tests": {
+        "median": 18436,
+        "min": 18380,
+        "max": 18592,
+        "q1": 18396,
+        "q3": 18472,
+        "p95": 18592
+      },
+      "teardown": {
+        "median": 2273,
+        "min": 269,
+        "max": 2706,
+        "q1": 1088,
+        "q3": 2666,
+        "p95": 2706
+      },
+      "perTest": {
+        "median": 905,
+        "min": 903.5,
+        "max": 906.5,
+        "q1": 904.5,
+        "q3": 906,
+        "p95": 906.5
+      }
+    }
+  }
+]

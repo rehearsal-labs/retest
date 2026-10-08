@@ -1,0 +1,7 @@
+import { defineConfig } from '@playwright/test'
+export default defineConfig({
+  testDir: './tests', workers: 1, retries: 0, timeout: 30000, expect: { timeout: 5000 },
+  use: { baseURL: "http://127.0.0.1:53647", browserName: 'chromium', headless: true,
+    viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1, actionTimeout: 5000, navigationTimeout: 30000,
+    video: 'off', trace: 'off', screenshot: 'off', launchOptions: { executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" } },
+})
