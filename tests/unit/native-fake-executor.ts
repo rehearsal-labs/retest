@@ -29,6 +29,8 @@ export type FakeExecutorConfig = {
   crashAfterMs?: number
   /** The command line `ps` shows for a launched app, as for a Mac app macOS moved elsewhere before it ran. */
   appCommand?: string
+  /** The tree holds the app but no window of it, as just after a macOS app's launch. */
+  windowless?: boolean
 }
 
 /** One app's record: its process while it runs, the command line `ps` shows for it, and whether it is installed. */
@@ -43,6 +45,7 @@ const configSchema: Schema<FakeExecutorConfig> = s.object({
   window: s.optional(rectSchema),
   crashAfterMs: s.optional(s.number()),
   appCommand: s.optional(s.string()),
+  windowless: s.optional(s.boolean()),
 })
 const appsSchema: Schema<Record<string, FakeApp>> = s.record(s.object({ pid: s.optional(s.number()), command: s.optional(s.string()), installed: s.optional(s.boolean()) }))
 
@@ -227,7 +230,8 @@ export async function startFakeExecutor(options: { readonly folder: string; read
       case 'GET /session/:session/source': {
         const name = config().appName ?? 'FakeApp'
         const window = config().window ?? { x: 4, y: 3, width: 20, height: 10 }
-        return send(200, `<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication title="${name}" label="${name}"><XCUIElementTypeMenuBar><XCUIElementTypeMenuItem title="Recent Items: secret-file.txt"/></XCUIElementTypeMenuBar><XCUIElementTypeWindow title="${name}" x="${window.x}" y="${window.y}" width="${window.width}" height="${window.height}"><XCUIElementTypeButton label="Save" identifier="save"/></XCUIElementTypeWindow></XCUIElementTypeApplication>`)
+        const shown = config().windowless === true ? '' : `<XCUIElementTypeWindow title="${name}" x="${window.x}" y="${window.y}" width="${window.width}" height="${window.height}"><XCUIElementTypeButton label="Save" identifier="save"/></XCUIElementTypeWindow>`
+        return send(200, `<?xml version="1.0" encoding="UTF-8"?><XCUIElementTypeApplication title="${name}" label="${name}"><XCUIElementTypeMenuBar><XCUIElementTypeMenuItem title="Recent Items: secret-file.txt"/></XCUIElementTypeMenuBar>${shown}</XCUIElementTypeApplication>`)
       }
       default:
         return send(404, { error: 'unknown command', message: `Unhandled endpoint: ${route}` })
