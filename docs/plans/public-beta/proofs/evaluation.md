@@ -280,14 +280,123 @@ From the Retest root, with Node 24.12.0, Google Chrome and OpenSSL 3.6.5:
 
 Four changes to the adapter were each run against the unit file, and each failed it: no endpoint given to the provider, Azure's options under `openai`, both endpoint settings accepted, no default endpoint for OpenAI and Anthropic. The two changes described above failed the Azure integration test. Taking `store: false` out of the OpenAI path, and out of the Azure path, each failed the unit file.
 
+### The live run
+
+One run of the live gate called a real deployment. The orchestrator ran it, not this record's lane: Rehearsal's Azure AI Foundry deployment `gpt-6-astra`, addressed by a base URL on `<name>.services.ai.azure.com/openai/v1` with no API version, the key exported into a subshell for that run only. As the Azure provider row of [progress.md](../progress.md) reports it, and as its log `/tmp/retest-azure-live-gate-2.log` (4 October 2026, 01:21) shows, `tests/integration/evaluation-ai-sdk.test.ts` ended 4 passed and 1 skipped: "live provider gate: one text and one screenshot check against an Azure deployment" passed, and the Anthropic and OpenAI live gate was skipped as unverified, with neither of its keys set. The log was never kept in the repository; it lives in a temporary folder and may be gone. The run predates commit `9b38691` and the fix below that keeps unsent settings on an error record. It has not been run again: no key was available to the fix round, and no key may be read from any file.
+
+### After the Phase 2 review
+
+When the provider answered but its answer could not be read, the adapter threw a plain error and the record's `sampling` claimed every setting as sent, though the provider's warnings had said one was dropped. The adapter now reads the warnings before it checks the answer and throws `AiSdkAnswerError` with `samplingNotSent`; the parent's error record leaves those settings out of `sampling` and names them beside it, as it does for an answer. An evaluator of another kind can give its error the same list; one that breaks the answer's rules for it names nothing.
+
+| Command | Result |
+| --- | --- |
+| `node --conditions=retest-source --test tests/unit/evaluation-ai-sdk.test.ts` | 31 passed, 0 failed (`/tmp/retest-lane-c-t12-on.log`) |
+| the same with the fix taken out of the adapter and the parent | 29 passed, 2 failed: the adapter's error named nothing, and the parent's error record kept `temperature` under `sampling` (`/tmp/retest-lane-c-t12-off.log`) |
+
 ### What remains unverified
 
-1. The live Azure run. No Azure deployment has judged anything through Retest: no key was supplied, and none of the gate's variables was set here. Whether the deployment accepts a strict JSON schema on the Responses API, a PNG input, the API version given and an output bound of 1000 tokens is unknown until the gate runs.
-2. A Foundry project endpoint, `https://<name>.services.ai.azure.com/api/projects/...`, which the SDK addresses differently, and endpoints under `.cognitiveservices.azure.com` or `.services.ai.azure.com`. The stand-in used `.openai.azure.com` addresses only.
-3. A `baseURL` that already ends in `/openai/v1`, which the SDK uses as given and without `api-version`, and a gateway that is not an Azure host.
+1. A live Azure run on the current tree. The one live run, [above](#the-live-run), predates commit `9b38691` and the error-record fix; it showed one deployment giving a valid answer to the request Retest sends, a strict JSON schema on the Responses API with a PNG input, with no API version. Whether that deployment kept the output bound of 1000 tokens was not asserted. An API version given explicitly, and any other deployment, are unverified.
+2. A Foundry project endpoint, `https://<name>.services.ai.azure.com/api/projects/...`, which the SDK addresses differently, and endpoints under `.cognitiveservices.azure.com`. The stand-in used `.openai.azure.com` addresses only; the live run used a `.services.ai.azure.com/openai/v1` base URL.
+3. A gateway that is not an Azure host. A `baseURL` that already ends in `/openai/v1`, which the SDK uses as given and without `api-version`, was used once, by the live run.
 4. A screenshot through the Azure path against the stand-in. Its checks were text; the live gate sends a screenshot.
 5. What OpenAI or Azure keep after `store: false`. The stand-ins show the setting reaches the request body; nothing here can see what a provider retains.
-6. On a check that ends in an error, the SDK returns no warnings, so that record's `sampling` is what the evaluator was given, not what the call sent.
+6. On a check that ends in an error before the provider answers, such as a refused request or a timeout, no warnings exist, so that record's `sampling` is what the evaluator was given. An answer that came but could not be read now keeps its warnings, [above](#after-the-phase-2-review).
 7. Which settings a real provider drops for a given model. The warnings were stood in for; the rules come from reading the pinned packages.
 8. Deployment-based addresses, Microsoft Entra tokens and the chat completions route. The adapter offers none of them.
 9. The Anthropic and OpenAI default endpoints against the providers themselves. The proxy test shows the requests are addressed to `api.anthropic.com` and `api.openai.com`; the stand-in answered them.
+
+
+## Recorded frames, diagnostics context and the corpus review
+
+This section records the frames-evaluation work for release 0.1.0 against media protocol 2. Earlier sections remain intact. The frame settlement rule here supersedes the earlier rule that all judge failures stand over missing frames.
+
+### Evidence and parent decisions
+
+`test.evaluate` and host checks accept recording evidence by the latest named step or by `lastMs`, and explicitly selected console/network diagnostics. `src/evaluation/frames.ts` asks the attempt's media recording for bounded frames on the run clock. It verifies the interval, frame order, unique ids, sizes, format signatures, byte lengths and complete accounting of returned and omitted frames. Each image sent is saved and hashed. The record keeps capture times, identity, fates, losses, omissions, stretches and evidence status with its reason.
+
+Only frames marked `shown` or `superseded` reach a judge. Pending and unprocessed frames are named in `framesNotSent` and represented as intervals without a picture. Undecodable and out-of-range frames are counted as missing by the media process. A sequence with no usable frame remains inconclusive without calling a judge. No recording or withheld pixels is a refusal; a failed recording, unavailable frame store or late frame reply cannot produce a pass.
+
+A sequence with known losses, omissions, capture gaps, unlisted stretches, unplaced frames, unstored tail or a media warning is partial. Queries request `minGapUs: 1`, because the media default can omit a short capture gap. Quiet stretches with no reported loss remain listed and do not alone make evidence partial. Complete here describes what the media store supplied, not continuous observation of every paint.
+
+Every criterion is sent marked as written. Over missing frames, the parent applies this table in `settle`, shared with the corpus runner:
+
+| Criterion | Judge answer | Parent criterion verdict |
+| --- | --- | --- |
+| Something must appear | pass | inconclusive |
+| Something must appear | fail | inconclusive, missing frames may have shown it |
+| Something must never appear | pass | inconclusive |
+| Something must never appear | fail | fail only with a specific frame citation actually sent; otherwise inconclusive |
+
+Complete samples still cannot prove absence. A sequence citation alone cannot support an absence failure. Records preserve `judgeVerdict`, citations and the parent's rule. The frame prompt version is `retest-judge-1+frames-2`, with `+diagnostics-1` when selected. Parent failures continue to lead over inconclusive results, then errors; a test process's claimed outcome cannot replace the parent's records.
+
+`src/evaluation/diagnostics-evidence.ts` selects only the requested parts, bounds their newest records, keeps capture states and omissions, redacts their text again, and saves the exact JSON sent. A foreign test, attempt, app or session is refused before persistence. Callback credentials are resolved before freezing evidence, so their values are known to the redactor before text or diagnostics are sent or saved.
+
+`src/evaluation/evidence.ts` asks the run's pixel policy before an evaluation screenshot and again for its capture span before saving or sending. A refusal sends no judge call, spends no call budget and saves no image. This applies to browser and native screenshot branches; the new failing-first tests use a valid Chromium fixture PNG and exercise refusals before capture and during capture. Native branch checks have not been exercised against a real native target in this review. The current runner constructs this policy only for recording runs or explicit pixel rules. Default non-recording runs can therefore supply no policy; secret screenshot protection for that path is not established by this fix and needs runner wiring, as the lane report records.
+
+### Protocol and reports
+
+Run folders retain `schemaVersion: 1`. The evaluation schemas include recording and diagnostics selectors, absence criteria, frames and diagnostics records, optional frame fate and `framesNotSent`, optional `judgeVerdict`, and `frames_incomplete`. Current records are parsed in the tests. These additions do not match the earlier closed schemas; an old installed reader was not exercised here. Human and agent descriptions name the evidence status and the rule that set a judge answer aside.
+
+### Corpus and provenance
+
+The corpus has 45 cases: 14 text, 20 screenshot and 11 frame sequences. Labels are 14 pass, 20 fail and 11 inconclusive; 31 are critical and 33 are unambiguous conclusive cases. All 45 labels remain `awaiting-founder`. `frames-flash-absence` was provisionally corrected to fail because the saved frame shows the forbidden red banner. Other doubts are listed in the lane report, especially the temporal wording of wrong-toast and failed-save frame cases and the treatment of saving-state snapshots.
+
+Browser captures were made by the predecessor with:
+
+```sh
+lockf -t 0 /tmp/retest-heavy-gate.lock env RETEST_FIREFOX_ROUTE=launch-services node --conditions=retest-source fixtures/evaluation-corpus/capture/capture-browsers.ts
+```
+
+`fixtures/evaluation-corpus/captures/capture-browsers.json` records Chrome 154.0.8037.93, Firefox 133.0.3 and WebKit 626.1.6+, build 2359, on darwin-arm64 with Node v24.12.0. Those captures were retained, not rebuilt during this review. `captures/native/sources.json` records the original TaskPhone and TaskDesk proof paths and hashes; the unit gate checks their hashes. The native cases use healthy captures with differing requirements, not app-side controlled defects. Every frame case uses one of five Chromium scenes. No native frame sequence is present.
+
+The corpus uses frozen captures through a frame-store stand-in and the production gathering, instructions, answer validation and settlement code. Its runner deliberately applies no run call budget; it executes cases sequentially. The scorer requires one result for every declared case/repeat pair, rejecting unknown, missing, duplicate or invalid results before computing the denominator. The known-critical gate allows no pass; the unambiguous conclusive gate requires at least 90% correct judgments and counts inconclusive/error judgments as incorrect.
+
+The four offline judges test this arithmetic. The perfect fake uses a fixed script by case id, separate from the labels being scored. Altering a label no longer alters its answer. It does not interpret images or text and establishes no judge quality. Always-pass, flip and error exercise gate failure, repeat disagreement and provider failure.
+
+### Chrome reproduction
+
+The original newest-pending-frame premise failed after a pixel suspension. `/tmp/retest-frames-chrome-trace.log` shows Chrome delivered later paints, but each frame's earliest possible capture time remained screencast start. The capture sender correctly treated those windows as overlapping the withheld stretch. There were 13 delivered frames, eight sent and five withheld, including three delivered after resume. The last-1500-ms query returned zero frames with a stored timestamp before its interval. This finding concerns `ChromiumFrameSource.#frame` in `src/browser/capture.ts` and `FrameSender.#withholds` in `src/media/capture.ts`; neither was edited.
+
+The pending-frame assertion now runs before suspension. The teardown first stops capture, finishes and releases the recording, then closes media, before removing files or closing Chrome. The traced reproduction has no teardown error. The completed real-Chrome gate remains pending behind the shared lock. The harness supplies recordings and step spans directly to `AttemptEvaluations`; it exercises the real screencast and media process, but is not a full CLI recorded-step evaluation.
+
+### Verification still pending
+
+The targeted failing-first and passing regression logs are listed in the [lane report](../codex/phase-4/frames-evaluation-report.md). The final batch has not started: the shared heavy-gate lock is held by another lane. The queued command is `node /tmp/retest-frames-locked-gate.mjs /tmp/retest-frames-final-gates.log node /tmp/retest-frames-final-gates.mjs`. It checks for benchmarks before acquiring the lock and before each gate. The completed gate records will be in `/tmp/retest-frames-final-gates-result.json`; final results are not inferred from earlier checks.
+
+The named Anthropic, OpenAI and Azure live gates skipped without keys, exit 0 with three skips, in `/tmp/retest-frames-live-skips.log`. No live judge call was made. Default secret screenshot protection, founder approval of the labels, native defect/frame evidence, full CLI recorded-step checks, diagnostics runner wiring, current SDK frame transport against installed provider packages, and an older installed reader remain unverified.
+
+
+## Explicit criterion kinds
+
+The founder settled the disputed corpus requirements by adding `state`, `seen` and `never`. This section describes the current behavior for explicit kinds and supersedes the older frame settlement and provisional label counts above. The older `absence: true` marker retains its conservative sampled-frame behavior.
+
+```ts
+await test.evaluate({
+  requirement: {
+    saved: { kind: 'state', requirement: 'The message shows the saved title exactly.' },
+    toast: { kind: 'seen', requirement: 'A saved notification appears.' },
+    calm: { kind: 'never', requirement: 'No error banner appears during the save.' },
+  },
+  evidence: { recording: { step: 'save' } },
+})
+```
+
+A state judges the interval's end, the last frame the capture holds. A seen claim needs a witnessed appearance and never fails. A never claim fails on a seen violation and can pass only when the interval's capture is complete. The kind is carried in the API, protocol schema, judge request, criterion record and criteria hash. The frame instructions are `retest-judge-1+frames-3`, with `+diagnostics-1` when diagnostics are selected. They name each kind in plain words; the parent settles from the declared kind, capture status and citations, never the judge's explanation.
+
+| Kind | Complete capture | Partial capture | No usable frames |
+| --- | --- | --- | --- |
+| `state` | Last frame held; pass, fail or inconclusive | Pass and fail become inconclusive | Inconclusive, no judge call |
+| `seen` | Pass with a seen-frame citation; otherwise inconclusive, never fail | Inconclusive, including a witnessed pass | Inconclusive, no judge call |
+| `never` | Fail with a seen-frame citation; pass only on complete capture; otherwise inconclusive | Fail with a seen-frame citation; otherwise inconclusive | Inconclusive, no judge call |
+
+Complete means no known capture gap or missing frame in the interval. It does not establish that every screen instant was observed. No stretch without a frame proves a fleeting event absent. The existing missing-frame restrictions remain: every partial-capture pass is inconclusive, and a witnessed forbidden appearance can still fail. Both the parent record and the original judge verdict and citations are retained when a rule sets the answer aside. New rule names are `seen_over_frames` and `never_over_frames`; `frames_incomplete` and the older `absence_over_frames` remain.
+
+Run folders retain schema version 1. The fields and rule values are additive, and the updated reader accepts earlier criterion records. By the strict-key schema contract, an earlier reader is expected to refuse a criterion's new `kind` field or new rule value. An older installed reader was not exercised here. Conflicting kind and absence markers are refused in the public API and protocol schemas.
+
+Every corpus requirement now declares its kind. `frames-toast-wrong` and `frames-injection` change from fail to inconclusive, and `frames-spinner-early` remains inconclusive, all under the seen rule. The founder chose those strict labels. `shot-chrome-saving` is an explicit state snapshot and an unambiguous failure. The captured files and requirement wording are unchanged. The four settled labels are reviewed; 41 await review. The corpus has 45 cases, 14 pass, 18 fail and 13 inconclusive, with 31 critical and 32 unambiguous conclusive cases. The scorer reports each kind separately without changing the full-matrix requirement or the 90% threshold.
+
+The complete evaluation units, including protocol and mixed-kind regressions, passed 295/295 with zero skips, `/tmp/retest-criterion-kinds-unit-stable.log`. The offline corpus integration passed 7/7, `/tmp/retest-criterion-kinds-corpus-final.log`. Each CLI matrix retains 135 judgments under `/tmp/retest-criterion-kinds-corpus/<judge>/`. Perfect exits 0 with 135 correct, no false passes or failures, and the conclusive gate 96/96. Always-pass, flip and error each exit 1. The perfect fake uses a fixed script independent of labels, with specific frame citations; none of the fakes reads pixels. This proves lifecycle and scoring, not model quality or injection resistance.
+
+Exact commands, gate results and process records are written as work finishes in [criterion-kinds-report.md](../codex/phase-4/criterion-kinds-report.md). Chrome integration and the corrected two-compiler public type gate could not start because another builder's failed native run retained the shared lock. The first completed type attempt failed on schema/type mismatches; the exclusive-type correction is covered by runtime units but has no compiler result. The waiting queue was stopped without a test running. Whole-tree source typecheck was not run in this lane. Native frame checks, new Firefox or WebKit behavior, real model accuracy and live provider transport have not been verified by this change. No benchmark or download is part of this proof.
+
+Final process audit `/tmp/retest-criterion-kinds-process-audit.json` checked 33 recorded identity entries and found none still owned and running. No command remains queued from this lane. The foreign native lock holder was never signalled. The final source unit run is 295/295 with zero skips; corrected type and Chrome verification remain unverified for the reason above.

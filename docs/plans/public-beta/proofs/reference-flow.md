@@ -1,6 +1,6 @@
 # Reference flow: create on iOS, change on the web, verify on macOS
 
-One Retest test on three apps, run through Retest's CLI on real targets: TaskPhone on an iOS 26.5 simulator, the cross-platform fixture's web front end in Chrome, and TaskDesk on this Mac, all on one fixture service. The task is created on the phone, marked done on the web and seen done on the desk, followed throughout by the id the service gave it. The same test file fails at the desk's state check when the service never passes the web's changes to macOS clients. Both runs passed as written on 4 October 2026.
+One Retest test on three apps, run through Retest's CLI on real targets: TaskPhone on an iOS 26.5 simulator, the cross-platform fixture's web front end in Chrome, and TaskDesk on this Mac, all on one fixture service. The task is created on the phone, marked done on the web and seen done on the desk, followed throughout by the id the service gave it. The same test file fails at the desk's state check when the service never passes the web's changes to macOS clients. Both runs passed as written on 4 October 2026, on the tree of that day; see the end of the verification paragraph for the rerun in the review fix round, which this Mac could not complete.
 
 | File | What it holds |
 | --- | --- |
@@ -28,7 +28,7 @@ Why the web reads the id: the public API gives a test no way to read text from a
 
 ## What the runs showed
 
-Final runs, both from `lockf -t 0 /tmp/retest-heavy-gate.lock node --conditions=retest-source --test --test-concurrency=1 tests/integration/reference-flow.test.ts`: 2 of 2 passed (`/tmp/retest-reference-flow-2.log`). The service ran with `--sync-delay-ms 3000 --network-log <file>`; the budgets were setup 300 s, action 30 s, assertion 20 s, test 300 s, cleanup 60 s, one worker.
+Final runs, both from `lockf -t 0 /tmp/retest-heavy-gate.lock node --conditions=retest-source --test --test-concurrency=1 tests/integration/reference-flow.test.ts`: 2 of 2 passed (`/tmp/retest-reference-flow-2.log`). Those runs were on the tree before the founder's process-ownership change; the runs recorded in the native diagnostics record afterwards failed in the CLI harness's cleanup, and no rerun after the harness fix passed. In the review fix round the file ran again under the lock (`/tmp/fix-runner-int-native-1.log`): both tests ended `not_run` with `setup_failed`, "xcodebuild ended the executor before it served requests", because sandboxed macOS apps cannot start on this Mac until it is restarted. The phone and web parts could not run alone, since the test holds all three apps before it acts. So the flow, and its broken-sync variant, wait for that restart; nothing here says they pass on the current tree. The teardown no longer signals a process group nobody recorded: it ends a service that stays through the record of what it launched, each process checked first, and fails by name if one is left. The service ran with `--sync-delay-ms 3000 --network-log <file>`; the budgets were setup 300 s, action 30 s, assertion 20 s, test 300 s, cleanup 60 s, one worker.
 
 Working sync, `/Users/dragon/Library/Caches/retest-proofs/artifacts/reference-flow/run-iy7RzK`:
 

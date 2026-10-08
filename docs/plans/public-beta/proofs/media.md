@@ -433,6 +433,22 @@ No decision is taken here. Measured facts are marked; everything else is a cost 
 
 A cheaper pipe is possible but unmeasured: sending PNG frames on to ffmpeg's `image2pipe` would carry about 0.4 MB/s instead of 43.2 MB/s. It would move decoding into ffmpeg, need one image format per recording, and move resizing to an ffmpeg filter.
 
+## After the Phase 2 review
+
+Recorded on 5 October 2026 on the tree with Phase 3 uncommitted on top of `b59eed5`, on macOS 27.0.1, arm64. No `cargo test` had been recorded since commit `9b38691` changed `recording.rs`, `encoder.rs` and `process_ownership.rs`, and in its default parallel mode it was red.
+
+- **An unreadable command is no difference.** `process_ownership.rs` compared the exact command, so an encoder read as `(ffmpeg)` while it exits was "changed identity and left alone", which turned a recording with no frames into `encoder_failed`. It now takes the same rule as `src/shared/process-ownership.ts`: pid and start identify a process; a command in the kernel's short form, at most 16 characters in parentheses or 15 in brackets, is unreadable and never a mismatch; two readable commands that differ are still refused; a record taken while the command was unreadable keeps the first readable one. `stop` reads and signals through functions a test can give, so its decision is tested on given readings.
+- **Why the forking-wrapper tests lost their child.** Right after a start, a shell script's arguments cannot be read for a moment: a tight `KERN_PROCARGS2` loop on 200 launches of a `#!/bin/sh` wrapper met `EIO` 7800 times and `EINVAL` 48 times, and `ps` then prints the name in parentheses. When the encoder probe's first reading landed there, the wrapper's record never matched again, its child was never recorded, and the child counted as a group member of unknown launch, so the probe refused the encoder. The tests never checked that the start succeeded, so a refused start read as "the wrapper started no child" after ten seconds. The rule above is the fix; both tests now also assert the start was answered `started`. In the default parallel mode the pair failed 11 of 20 runs on the old rule, every failure "launch ownership is unknown", and 0 of 20 with the fix.
+- **One answer for an output path in use.** `server.rs` asked for files before running recordings, so a second start at the path of a running recording was refused either as "a file is already at ….mp4.partial" or as "recording c is writing ….mp4", by whether the encoder had opened its file yet. It now asks for the running recording first. The test waits until the encoder has created its `.partial` file, when both reasons hold: the old order failed it 3 of 3 times, the new one passed 5 of 5.
+- One existing assertion changed, because it held the old rule: `zombies_have_exited_even_when_ps_changes_their_command` asserted that a live reading and a zombie reading of `(ffmpeg)` do not match. Under the rule they match; the zombie state, which the test still asserts, is what keeps a zombie from a signal.
+
+| Command | Result |
+| --- | --- |
+| `cargo test --bin retest-media process_ownership` | 7 passed (`/tmp/retest-lane-c-t3-on.log`); with the rule taken out, 3 failed (`/tmp/retest-lane-c-t3-off.log`) |
+| `cargo test --test process forking`, 20 runs each | old rule: 11 of 20 failed (`/tmp/retest-lane-c-forking-old-*.log`); with the fix: 0 of 20 (`/tmp/retest-lane-c-forking-fixed-*.log`) |
+| `cargo test --test process an_output_path_in_use` | old order 3 of 3 failed (`/tmp/retest-lane-c-inuse-off-*.log`), new order 5 of 5 passed (`/tmp/retest-lane-c-inuse-on-*.log`) |
+| `cargo test`, three runs in a row, default parallel mode | each run 46 unit and 25 process tests passed (`/tmp/retest-lane-c-cargo-1.log` to `-3.log`) |
+
 ## Not shown, and what Phase 4 still needs
 
 - Linux x64: the crate was neither built nor run on Linux.
@@ -451,3 +467,320 @@ A cheaper pipe is possible but unmeasured: sending PNG frames on to ffmpeg's `im
 - The 10 s default stall limit and the 30 minute default duration were exercised only through shorter values set in tests.
 - The client's one-second grace for an encoder whose media process died is a fixed choice, not measured against slow disks.
 - ffmpeg uses its default thread count; its 156 MB peak footprint was measured, not tuned.
+
+
+## Protocol 2 and the media client
+
+The earlier sections describe the older processor. The processor and client now speak protocol 2. No runtime npm package or new crate was added. The processor still runs the host's ffmpeg as a separate program. The tested host is macOS arm64; Linux x64 remains unverified.
+
+The source contract is in `src/media/protocol.ts` and `src/media/client.ts`. The client methods and required identity fields described in `../codex/phase-4/media-client-v2.md` are unchanged by the resumed work.
+
+- Every start and ending carries run, attempt, test, app and session identity. Every input frame has a frame id, with optional action and observation ids. `ended.frameMap` names each retained frame's capture time, fate and video placement. Duplicate ids are counted. Map omissions are counted rather than hidden.
+- The greeting names the binary version, source revision when known, dirty state, target triple, build profile and encoder probe state. A greeting may say `probing`; `ready()` returns the finished probe. Starts waiting for the probe leave the input loop free to answer other commands. The client rejects another protocol version with the binary's name and the matching build command.
+- A thumbnail command resizes a PNG or JPEG, never enlarges it, and names failures. Frame sequences return bounded timestamped images from running or ended recordings, until release. Their count and byte caps, undecodable images and stretches without frames are explicit. A running sequence can contain a `pending` frame, whose placement has not finished. Sampling never proves that a fleeting event was absent.
+- One watcher per recording receives resized newest JPEG frames, with skipped, dropped and failed totals. The live reply slot can replace an unsent live frame. A slow reader loses live frames without changing the recording's frame queue.
+- Endings carry queue peaks and saturation, capture gaps, encoder diagnostics and a separate evidence status. `complete`, `partial` and `unavailable` describe evidence; the media process supplies no application verdict.
+- Completed outputs use a no-clobber hard link, or a no-clobber synced copy when links are unavailable. The copy path is exercised with the debug hook `RETEST_MEDIA_TEST_NO_HARD_LINKS`, not on a mounted filesystem without links. `leftovers(output, { remove })` lists or removes a lost recording's partial video and frame store, and refuses an output still in use.
+- Shutdown names stopped recordings and outstanding jobs, ends live views and removes retained frame stores. The client reclaims recorded encoder processes after a worker crash and removes kept frames. A lost partial video is named and left for its owner to inspect or remove.
+
+The limits include recording and frame identity bounds of 512 and 128 characters, 64 KiB headers, 64 MiB input payloads, at most 16 active recordings, 64 retained ended recordings, 64 frames per sequence and 48 MiB per sequence response. Requested image sides are at most 4096. Kept frames default to a 512 MiB disk store per recording and stop storing when its bound is reached. The existing queue, recording clock, duration and encoder deadlines remain enforced.
+
+### Files and the resumed fixes
+
+The Rust implementation is in `media/src/{protocol,server,recording,encoder,frame,queue,replies}.rs`, with `jobs.rs` for thumbnails and sequences, `store.rs` for retained encoded images, `ledger.rs` for frame identity and missing stretches, `live.rs` for watchers, and `place.rs` for finalization. `media/build.rs` records build identity. `allocations.rs` is enabled only by the measuring feature. The production release build leaves that feature out.
+
+The resumed work updates `proofs/media/run.ts` for recording identity and frame ids, checks the ending's frame map, saves the complete captured input, and independently decodes and checks frame order for the close-while-finishing video and the crash partial. `proofs/media/compare-routes.ts` replays that input through both routes.
+
+Client and process tests now request readiness before requiring a finished probe. Their required ready or failed states, codec lists and build checks are retained. The running-sequence test waits for the earlier frames' shown placements before checking the same exact fates. The lingering-encoder fixture keeps its recorded shell alive around its waiting child; it no longer deliberately changes the shell's readable command. Process and group absence assertions remain in place. No existing deadline or density assertion was relaxed.
+
+`media/src/process_ownership.rs` reads pid, parent and group links for discovery, then full identities only for relevant processes. Before each signal it reads that recorded pid's full identity again. An unsuccessful selected query proves absence only when a successful fresh discovery also finds it absent. The ownership decisions are unchanged: pid and start identify the recorded launch, unreadable commands are not mismatches, changed readable commands are refused, and a group number never grants signal authority. Tests retain every original ownership assertion and additionally check descendant selection, unknown group members and failed discovery.
+
+### The two routes on the same saved input
+
+The completed comparison is `/tmp/retest-media-resume/routes-complete/results.json`, with each replay's result, allocation counts, ffmpeg timing output and decoded images in its route folder. The command was:
+
+```sh
+cargo build --release --locked --offline --features allocation-counts \
+  --manifest-path media/Cargo.toml \
+  --target-dir /tmp/retest-media-resume/measuring-target
+RETEST_MEDIA_BINARY=/tmp/retest-media-resume/measuring-target/release/retest-media \
+  node --conditions=retest-source proofs/media/compare-routes.ts \
+  /tmp/retest-media-resume/proof-final /tmp/retest-media-resume/routes-complete
+```
+
+Log `/tmp/retest-media-resume/routes-complete.log`, exit 0. The input is 89 actual Chrome PNG screenshots, 800 by 600, totaling 1,313,351 bytes. Their concatenated SHA-256 is `d2705bf2375b3731e7f08b578dc5d31c147840252c24dde483b1da9291b4ff34`. They were saved by the main recording in the proof attempt whose log is `proof-final.log`. That attempt passed the main H.264 and VP8 whole-decode and order checks, then failed its encoder-kill timing assertion on the earlier metadata implementation. The comparison uses the rebuilt processor's metadata reads. It does not treat the incomplete proof attempt as a passing proof.
+
+The script runs three replays per route, alternating route order. Each replay uses the same bytes, timestamps, paced delivery, output size, cadence, queue bounds, retained-frame setting and host ffmpeg. Both routes create H.264 MP4. ffprobe decodes and counts every frame; a separate full ffmpeg decode compares every output frame with its expected screenshot and every differing alternative. All six replays passed 90 frame comparisons and reported complete evidence. No media process or encoder group remained after the comparison.
+
+These are single-machine measurements on a shared host, not a speed claim. The Rust measuring build counts heap allocation requests, including reallocations, across the process's whole lifetime. Media CPU is its own `ps` CPU change across the recording. Media RSS is sampled; ffmpeg CPU and maximum RSS come from `/usr/bin/time -l`. The media process's timing wrapper includes reaped children and is not used as its own CPU or peak memory. Sampling can miss short peaks, so the ffmpeg maximum below uses its independent timing result.
+
+| Measure, median of three | Decoded RGB route | Encoded PNG route |
+| --- | ---: | ---: |
+| Node to media image bytes | 1,313,351 | 1,313,351 |
+| Node to media request headers and prefixes | 10,173 | 10,195 |
+| Media to ffmpeg bytes | 129,600,000 | 1,325,840 |
+| Rust heap allocation requests | 3,550 | 3,222 |
+| Rust bytes allocated, cumulative | 173,639,386 | 22,147,696 |
+| Rust live allocation bytes at peak | 3,498,074 | 683,057 |
+| Media own CPU, seconds | 0.05 | 0.01 |
+| ffmpeg user plus system CPU, seconds | 0.27 | 0.31 |
+| Combined CPU, seconds | 0.32 | 0.33 |
+| Media sampled peak RSS, bytes | 10,289,152 | 4,554,752 |
+| ffmpeg maximum RSS, bytes | 166,952,960 | 189,988,864 |
+
+Combined CPU ranged from 0.30 to 0.33 for decoded and 0.32 to 0.34 for encoded. The CPU precision and shared host do not support a general performance conclusion. Decoded remains the default because this input used less ffmpeg peak memory and comparable total CPU. Encoded remains available through `encodedFormat`, for callers choosing the smaller image pipe. One encoder input format is fixed for that recording. Matching frames at the output size pass through unchanged; another size or format is decoded, fitted and converted to the selected format. This comparison measured PNG without resizing. It does not establish a default for JPEG workloads or another machine.
+
+The code path moves each received encoded payload into the recording queue and held frame without cloning it, on both routes. The decoded route additionally materializes a raw RGB buffer per processed screenshot; the matching encoded route uses the received image buffer. These copy observations are from the code and the measured allocation and pipe counts. Codec-internal, kernel and ffmpeg allocation or copy counts were not traced. The measurement is not a claim about all copies in the complete application run.
+
+### Linux x64 attempt
+
+`docker/linux/run.sh` and its Dockerfile were read. That script builds a browser image and would use downloads; this attempt uses only the image already installed. Docker is running on arm64, and `retest-linux:dev` is Linux arm64. Its tool check printed `aarch64` and found none of Cargo, rustc or ffmpeg. No image or toolchain was downloaded, and nothing was installed system-wide.
+
+The exact x64 attempt was:
+
+```sh
+docker run --rm --pull never --platform linux/amd64 --init --cap-drop ALL \
+  --security-opt seccomp=docker/linux/chromium-seccomp.json \
+  --mount type=bind,src=/Users/dragon/Documents/Projects/Gruvi/Products/retest/media,dst=/media,readonly \
+  retest-linux:dev sh -c 'uname -m; cargo build --locked --offline --manifest-path /media/Cargo.toml --target-dir /tmp/retest-media-target && cargo test --locked --offline --manifest-path /media/Cargo.toml --target-dir /tmp/retest-media-target'
+```
+
+Exit 125, `/tmp/retest-media-resume/linux.log`. Docker refused the installed arm64 image for the requested amd64 platform. The build and tests therefore did not execute. The installed image's tool check is `/tmp/retest-media-resume/linux-tools.log`, exit 127. Linux x64 is unverified; this is not a cross-compilation or emulation pass.
+
+### Completion and cleanup corrections
+
+The continuation checked the saved logs before accepting any gate result. `/tmp/retest-media-resume/proof-complete.log` failed because a recording whose finishing work exceeded its deadline still returned `ok` after its encoder had exited. `/tmp/retest-media-resume/client-complete.log` failed because forced cleanup stopped encoder descendants while stopping the worker, but the later lost-recording message claimed they had exited on their own. Neither run is a passing proof or client gate.
+
+`Ending::complete` now checks the deadline independently of the watchdog and preserves an earlier stop reason. The watchdog records an overdue deadline even if the encoder already exited. The proof deliberately stops its own encoder before the existing deadline case, keeping that case a certain missed deadline when encoding gets cheaper. The fake hanging encoder keeps its shell alive after its child is stopped, so the existing leader-signal assertion still tests a kill. Deadline, density, frame-order and process-absence assertions are retained.
+
+The client records when forced cleanup began. A recording whose encoder is gone afterwards says its recorded processes were stopped or exited during forced cleanup. It no longer attributes that ending to an independent exit. The forced-close test still requires rejection before close returns, the named partial file, and no encoder or group remaining.
+
+The first Rust check in `/tmp/retest-media-finish/cargo-first-failure.log` failed two existing cleanup time bounds. Cleanup repeated metadata queries after a complete snapshot had proved every relevant pid absent. An owner now retires immediately on that proof of absence, and a retired owner cannot read or signal those pids again. Failed or unreadable discovery never proves absence. Launch ancestry, pid and start checks, readable-command refusals and unknown-process refusals are unchanged. The encoder status check also avoids ancestry discovery after the child has confirmed its exit; final cleanup still checks recorded descendants and unknown members.
+
+The final three default-parallel `cargo test --locked --offline --manifest-path media/Cargo.toml` runs each passed 80 unit and 40 process tests. Logs `/tmp/retest-media-finish/cargo-1.log`, `cargo-2.log` and `cargo-3.log`. The added unit tests cover late completion, preservation of an earlier stop reason, and refusal to read or signal a retired pid. `cargo clippy --locked --offline --manifest-path media/Cargo.toml --all-targets -- -D warnings` and the same command with `--features allocation-counts` passed, logs `clippy.log` and `clippy-measuring.log` in that folder. Formatting and the production release build passed there too, logs `fmt.log` and `build.log`.
+
+`media/Cargo.toml` declares Rust 1.88, matching the locked image dependency's minimum. The minimum toolchain itself was not exercised; these builds used the installed toolchain.
+
+The source's running-sequence result already included one type addition that the interface note omitted. `SequenceFrame.fate` is `'shown' | 'superseded' | 'pending'`. A pending image was captured and kept but has no completed video placement yet. This corrects the earlier statement that every documented client type was unchanged. Method signatures and parameters are unchanged. The client test requires the newest running frame to be pending and the ended sequence's frames to have shown placements. The lane report asks for that correction to the interface note.
+
+### Measurement with the final processor
+
+The Rust cleanup change affected process allocations, so both routes were measured again with the final processor. This adds a measurement to the earlier one rather than replacing it. The input is the same saved 89 Chrome PNGs and the same input hash recorded above. No browser is started by this replay. Both routes still use the same image bytes, timestamps, paced delivery, image size, cadence, queue settings, retained-frame setting and host ffmpeg, in alternating order.
+
+```sh
+cargo build --release --locked --offline --features allocation-counts \
+  --manifest-path media/Cargo.toml \
+  --target-dir /tmp/retest-media-finish/measuring-target
+RETEST_MEDIA_BINARY=/tmp/retest-media-finish/measuring-target/release/retest-media \
+  node --conditions=retest-source proofs/media/compare-routes.ts \
+  /tmp/retest-media-resume/proof-final /tmp/retest-media-finish/routes
+```
+
+Both commands exited 0. Logs `/tmp/retest-media-finish/build-measuring.log` and `/tmp/retest-media-finish/routes.log`. Full results, independent ffmpeg timing output, allocation counts and decoded images are under `/tmp/retest-media-finish/routes/`, with `results.json` as the index. The measuring binary's SHA-256 is `9494770bda42954b9a29e4e178c4df9106efd3a64a932b04afc0a4a1cd70dd8b`, checked against the file. The production build has no allocation-counting feature.
+
+All six recordings reported complete evidence, passed independent ffprobe counts and a whole decode, and passed every-frame order comparisons for all 90 output frames. The comparison asserted no media process or encoder group remained. The earlier input came from a proof attempt that completed the main H.264 and VP8 order checks but later failed a separate failure-case check; that attempt is still not a passing whole proof.
+
+| Measure, median of three on this machine | Decoded RGB | Encoded PNG |
+| --- | ---: | ---: |
+| Node to media image bytes | 1,313,351 | 1,313,351 |
+| Request headers and prefixes | 10,164 | 10,186 |
+| Media to ffmpeg bytes | 129,600,000 | 1,325,840 |
+| Rust heap allocation requests | 2,781 | 2,456 |
+| Rust cumulative allocation bytes | 170,284,753 | 18,792,975 |
+| Rust live allocation bytes at peak | 3,497,907 | 633,827 |
+| Media own CPU, seconds | 0.06 | 0.01 |
+| ffmpeg user plus system CPU, seconds | 0.26 | 0.31 |
+| Combined CPU, seconds | 0.32 | 0.32 |
+| Media sampled peak RSS, bytes | 10,420,224 | 4,276,224 |
+| ffmpeg maximum RSS, bytes | 166,739,968 | 189,333,504 |
+
+Combined CPU ranged from 0.31 to 0.33 on decoded and 0.32 to 0.34 on encoded. Decoded remains the default, with comparable combined CPU and less ffmpeg peak memory for this input. Encoded remains available through `encodedFormat` when a caller chooses its smaller image pipe. These are single-machine measurements on a shared host, not a speed claim or a JPEG result. The copy observations and measurement limitations described above still apply; codec-internal, kernel and ffmpeg copy counts were not traced.
+
+### Targeted client metadata and the unit gate
+
+The whole unit command encountered the shared metadata reader's output limit. The client now discovers pid, parent and group links first, then reads full identities only for its media launch, relevant descendants and groups. `OwnedProcessGroup` still performs every ownership decision and fresh identity check before a signal. Failed discovery still fails the operation. The caller included to make an absent-pid query succeed is removed from the snapshot and grants no ownership. Stale selection entries are pruned after successful discovery. Unrelated application arguments no longer fill the media client's metadata response. No shared ownership, browser or native file was edited.
+
+`npm run test:unit`, launched through `/tmp/retest-media-finish/unit-gate.ts`, reached the external gate limit and exited 124. Its log reports 3542 tests, 3360 passed, 177 failed, 5 cancelled, 0 skipped. Every named failed or cancelled test is outside the lane's files, including browser and native ownership, diagnostics, evaluation, CLI and runner work in progress. This is not a passing unit gate. Log `/tmp/retest-media-finish/unit.log`.
+
+The initial unit guard could not read ownership because the shared reader's whole-host argument query exceeded its limit. Cleanup then used targeted reads under the verified stable wrapper that launched this unit command. Only its recorded descendants were signaled, with fresh identity checks. `/tmp/retest-media-finish/unit-cleanup.log` confirms the recorded unit processes stopped, with no ownership or read problem. The unit wrapper's last message reflected its failed whole-host query and could not itself confirm absence; the later targeted confirmation is the cleanup result. No other worker was signaled.
+
+`npm run test:types` exited 1 with the unexpected undefined-recording error at `src/evaluation/frames.ts:97` on TypeScript 6.0.3 and 7.0.2. Log `/tmp/retest-media-finish/types.log`. That file belongs to another lane and was left untouched.
+
+### Proof coverage and scoped TypeScript checks
+
+The proof now compares the VP8 and close-while-finishing durations with their reported endings. It requires the crash partial to contain playable frames with a matching duration, and requires every whole-decode order check to cover all frames counted by ffprobe. These add assertions to the existing frame-order, density, deadline and process-absence checks. They do not turn an earlier failed proof into a pass.
+
+The final media client and protocol passed these scoped compiler commands, each with exit 0:
+
+```sh
+node_modules/typescript/bin/tsc -p /tmp/retest-media-finish/tsconfig-media.json
+node_modules/typescript-7/bin/tsc -p /tmp/retest-media-finish/tsconfig-media.json
+node_modules/typescript/bin/tsc -p proofs/media/tsconfig.json
+node_modules/typescript-7/bin/tsc -p proofs/media/tsconfig.json
+```
+
+Logs `/tmp/retest-media-finish/media-types-6.log`, `media-types-7.log`, `media-proof-types-6.log` and `media-proof-types-7.log`. The temporary config includes only `src/media/client.ts` and `src/media/protocol.ts`, with the repository's strict compiler options. The media proof config includes this lane's proof files and the media source types. These scoped checks are distinct from the required whole-tree scripts and do not claim those scripts passed.
+
+### Required gates and remaining verification
+
+The final client tests, Chrome proof and combined typechecks could not launch under the shared lock. Each of five blocking attempts used:
+
+```sh
+lockf -t 540 /tmp/retest-heavy-gate.lock sh /tmp/retest-media-finish/gates.sh
+```
+
+Each exited 75 before executing the script. Logs `/tmp/retest-media-finish/lock-wait.log`, `lock-wait-second.log`, `lock-wait-third.log`, `lock-wait-fourth.log` and `lock-wait-fifth.log`. The last error is also preserved as `gates.log`. Another worker's agent integration command last held the lock, with Chrome descendants still present. That command and its descendants were left untouched. No command launched by this continuation remains running.
+
+| Required command | Result available from disk | Log |
+| --- | --- | --- |
+| `cargo test --locked --offline --manifest-path media/Cargo.toml`, three consecutive default-parallel runs | Each exit 0, 80 unit and 40 process tests | `/tmp/retest-media-finish/cargo-{1,2,3}.log` |
+| `cargo clippy --locked --offline --manifest-path media/Cargo.toml --all-targets -- -D warnings` | Exit 0; measuring feature also passed | `/tmp/retest-media-finish/clippy.log`, `clippy-measuring.log` |
+| `node --conditions=retest-source --test 'proofs/media/**/*.test.ts'` | Final rerun blocked before execution; the earlier run passed 31 and failed 1 | `/tmp/retest-media-resume/client-complete.log`, exit 1 |
+| `node --conditions=retest-source proofs/media/run.ts` | Final rerun blocked before execution; the earlier run failed its deadline case | `/tmp/retest-media-resume/proof-complete.log`, exit 1 |
+| `npm run test:unit` | External gate exit 124, 3360 passed, 177 failed, 5 cancelled, 0 skipped; named failures outside this lane | `/tmp/retest-media-finish/unit.log` |
+| `npm run test:types` | Exit 1, undefined recordings in the evaluation lane on both compilers | `/tmp/retest-media-finish/types.log` |
+| `npm run typecheck` | Earlier tree exit 2 in evaluation files; final rerun blocked before execution | `/tmp/retest-media-resume/typecheck.log` |
+| `npm run typecheck:proofs` | Earlier tree exit 0; final combined rerun blocked before execution. Final scoped media-proof checks passed on both compilers | `/tmp/retest-media-resume/typecheck-proofs.log`, `/tmp/retest-media-finish/media-proof-types-{6,7}.log` |
+
+The earlier whole-tree typecheck errors were in `fixtures/evaluation-corpus/runner/score.ts:93` and `:117`, `src/evaluation/frames.ts:90` and `:97`, and `tests/unit/evaluation-frames.test.ts:334`. Those files belong to other lanes and were left untouched. The earlier whole proof's deadline failure and the earlier client's forced-close failure were corrected as described above, but their final required execution gates have not run. No passing whole Chrome proof is claimed.
+
+The retained gate script runs the client command above, then launches the exact proof through `/tmp/retest-media-finish/bounded-proof.ts` with `RETEST_MEDIA_PROOF_OUT=/tmp/retest-media-finish/proof`, then the three npm type commands. The external proof guard records only its launch descendants and fails on an external limit or uncertain cleanup; it changes no assertion. The orchestrator needs a clean lock handoff to execute those final gates. A direct proof retry can use:
+
+```sh
+lockf -t 540 /tmp/retest-heavy-gate.lock \
+  env RETEST_MEDIA_PROOF_OUT=/tmp/retest-media-final-proof \
+  node --conditions=retest-source proofs/media/run.ts
+```
+
+Most important unverified items are the final client and whole Chrome execution gates, a passing whole-unit and type-fixture gate across the other lanes, and Linux x64. Also unverified are the declared minimum Rust toolchain, copy finalization on a real filesystem without hard links, JPEG route measurements, other machines, codec-internal and kernel copy counts, ffmpeg allocation counts, native capture and recording, and the runner's full evidence pipeline. The six successful PNG route replays and final Rust checks remain the results described above.
+
+## After the restart
+
+Recorded on 5 October 2026 after the Mac's restart, on macOS arm64 with Node 24.12.0, Homebrew's Rust 1.98.1, ffmpeg 9.0.2 and Google Chrome 154.0.8037.93. The protocol 2 client tests and the Chrome proof ran for the first time, a read of the lane's diff and an outside reading of the crate found faults, and each fault was fixed with a test. The lane report, `../codex/phase-4/media-process-report.md`, has the same section with every command, log and open item.
+
+### What changed
+
+- The client refuses an output path longer than `MAX_PATH_BYTES` (4096 UTF-8 bytes) before writing, for starts, thumbnails and leftovers. A path long enough to carry a header past 64 KiB was a protocol violation that ended every recording.
+- The client's reply reader joins a reply's chunks once. It joined them on every chunk, which copied 19.4 GB and held Node for 1.5 s for one 48 MiB reply arriving in 64 KiB chunks.
+- The process keeps every reply within the limits the client enforces. An ending's frame map stops at the 64 MiB payload limit and counts the rest in `frameMapOmitted`, which makes the evidence `partial` with `frame_map_truncated`. A frame sequence's frame list stays within 48 KiB of header, and frames it leaves out are counted in `omitted.byBytes`. Ids of 128 multi-byte characters could pass either limit before, and the client then ended the process.
+- The reply writer's queue is bounded by bytes, 256 MiB, as well as by count.
+- A finish is judged late by when the encoder exited, not by when its cleanup ended, so cleanup cannot turn a video finished in time into `deadline_exceeded` and remove it.
+- The watchdog retries a stop that did not reach the encoder once a second instead of giving up after one try. A shutdown waits for a stopped recording's thread no longer than its deadline, its stall limit and ten seconds more. A recording still blocked then gets no made-up ending: the process says `bye`, and the client reclaims it as lost.
+- A kept frame of an ended recording that never reached a video is `unprocessed` in a frame sequence, as in the frame map. It was called `pending`.
+- `leftovers` compares outputs by their resolved folder, so the same output named through a symbolic link is in use too. It removed a running recording's `.mp4.partial` and kept frames through such a link before.
+- Frame sequences search only the 64 stretches they list for lost frames and count the rest, so a tiny `minGapUs` over a long recording no longer costs kept frames times arrived frames.
+- A frame sequence whose interval reaches past the 200 000 frames a recording lists says from when, in its `message`.
+- The proof now checks the protocol 2 features on the real Chrome recording; see below.
+
+### What was shown
+
+| Command | Result | Log |
+| --- | --- | --- |
+| `cargo test --locked --offline --manifest-path media/Cargo.toml`, three runs in a row, default parallel mode | each 85 unit and 42 process tests passed | `/tmp/retest-media-restart/cargo-{1,2,3}.log` |
+| `cargo clippy ... --all-targets -- -D warnings`, without and with `--features allocation-counts` | exit 0 both | `clippy-final.log`, `clippy-measuring-final.log` |
+| `node --conditions=retest-source --test "proofs/media/**/*.test.ts"`, under the lock | 32 of 32 passed | `client-final.log` |
+| `RETEST_MEDIA_PROOF_OUT=/tmp/retest-media-restart/proof-final node --conditions=retest-source proofs/media/run.ts`, under the lock | every check passed | `proof-final.log`, summary `/tmp/retest-media-restart/proof-final/summary.json` |
+| `node --conditions=retest-source --test tests/unit/media-protocol.test.ts` | 5 of 5 passed | `unit-media-protocol-final.log` |
+
+The logs are in `/tmp/retest-media-restart/`. The proof's main recording, with a live view watching it the whole time:
+
+- 90 screenshots in 3 s, none skipped, the largest pause 35.8 ms. `ended` was `ok` with evidence `complete`: 90 received, 90 shown, nothing dropped, refused or unprocessed. ffprobe read H.264, 800 by 600, `yuv420p`, 3.000 s, 90 frames.
+- All 90 decoded frames matched the screenshot their timestamp maps to: at most 5 differing pixels for it, at least 29 for any other. For every one of the 90, the frame map named that same screenshot, and no video frame was claimed twice.
+- The live view sent 30 JPEG frames of 200 by 150, at most its 10 a second, skipped 58 and dropped none. Each was one of the screenshots sent, in order. The recording's counts above are with the view running.
+- The kept frames of the ended recording came back as 64 of the 90, with 26 counted as left out by the cap. At full size each was byte for byte the PNG that was sent, and its fate agreed with the frame map. The 20 stretches of 34 ms or more between screenshots were exactly the ones worked out from the timestamps, each with nothing lost. Four frames fitted to 200 by 200 decoded at 200 by 150.
+- A thumbnail of the first screenshot was a 200 by 150 PNG with the screenshot's mean brightness, 253.2.
+- The shutdown removed the kept frames.
+
+The other steps passed as before:
+
+- VP8: 90 of 90 frames matched, and the frame map agreed with all 90.
+- Close while finishing: `ok`, 90 frames, the frame map agreed with all 90.
+- The crash partial: 7 frames, 0.23 s, every frame matched.
+- `/bin/cat`: `encoder_failed`.
+- ffmpeg killed at 767 ms: `encoder_failed`, ended 38 ms later.
+- The forking wrapper: `deadline_exceeded` 480 ms after the finish.
+- The missed deadline: `deadline_exceeded`.
+- Shutdown with a recording running: `stopped`.
+- None of 20 media processes or 19 encoders was left, and the browser's group was empty.
+
+These new tests fail against the code without their fixes, each run in a scratch copy outside the repository:
+
+- The reply reader's copy test copied 19,402,784,934 bytes for a reply of 50,331,814 (`unit-media-protocol-old-reader.log`).
+- The reply queue's byte test (`cargo-replies-without-byte-bound.log`).
+- The sequence with the longest ids: the test's reader refused the header. The ended recording's fates were `["shown", "shown", "shown", "shown", "pending"]`. Without the bounded shutdown, no `bye` came within 25 s (`cargo-new-process-tests-without-fixes.log`). That run left its fake encoder group, which was then killed by its pid group.
+- The symlinked leftovers: the running recording's files were listed and removed (`cargo-alias-without-fix.log`).
+
+### Bounds after these changes
+
+The v1 list above still holds, with these additions:
+
+- Replies waiting to be written: 1024 and 256 MiB, plus one live frame per watched recording.
+- An ending's frame map: 200 000 entries and 64 MiB.
+- A frame sequence: 64 frames, 48 MiB of images, 48 KiB of frame headers and 64 listed stretches.
+- Kept frames: 512 MiB a recording unless asked, at most 8 GiB.
+- Ledgers stay in memory for running recordings and for up to 64 ended recordings until released. Each holds up to 200 000 entries with ids of up to 128 characters, so retained ledgers can reach gigabytes at their limits.
+
+### Measured on this machine
+
+These are single-machine measurements from the final proof, not speed claims:
+
+- Spawn to greeting: median 67.6 ms over 10 starts. Protocol 1 took 2.2 ms; the greeting now waits up to 2 s for the encoder probe.
+- Spawn to the first `started`: median 473 ms. Protocol 1 took 53.2 ms. Where the extra time goes was not profiled. Each start now reads the process table for ownership, in the media process and in the client.
+- Media process CPU for the main recording: 0.13 s, including the live view's 30 JPEG encodings. Sampled peak RSS: 16.2 MB.
+
+### Linux x64
+
+Not built and not tested. The machine has no x86_64 Linux standard library for either Rust: Homebrew's 1.98.1 and rustup's toolchain carry only `aarch64-apple-darwin`. `cargo check --target x86_64-unknown-linux-gnu --offline` stops at "can't find crate for `core`" (`linux-cross-check.log`). There is no cross linker either. Docker was running during this session. The repository's image `retest-linux:dev` is linux/arm64 and has no cargo, rustc or ffmpeg (`linux-tools.log`), and no amd64 image with Rust is on the machine. Building either way needs downloads this lane was not given. With them, either of these would do it:
+
+```sh
+# In the brief's container route: an amd64 Rust image, emulated on this Mac.
+docker run --rm --platform linux/amd64 --init --cap-drop ALL \
+  --mount type=bind,src="$PWD/media",dst=/media,readonly \
+  rust:1-trixie sh -c 'uname -m && cargo test --locked --manifest-path /media/Cargo.toml --target-dir /tmp/target'
+# A cross build only, which cannot run the tests here:
+rustup target add x86_64-unknown-linux-gnu   # plus a linker, for example cargo-zigbuild with zig
+cargo zigbuild --release --target x86_64-unknown-linux-gnu --manifest-path media/Cargo.toml
+```
+
+By reading, the crate uses only POSIX calls and `ps` columns that Linux's procps also prints. That is not a build.
+
+### Not shown
+
+- Linux x64, as above.
+- A filesystem without hard links, which is still shown only through the debug hook. A process killed during the copy into place leaves a partial copy at the video's path. This is written into `Started`'s documentation and is not fixed (`media/src/place.rs:75`).
+- A stop the ownership rule refuses, shown only through a debug hook. On a real host this is an exec wrapper whose readable command changed after its first reading.
+- On the encoded route, a frame ffmpeg cannot decode is still counted `shown` (`media/src/frame.rs:139`). The evidence becomes `partial` only through ffmpeg's error lines.
+- The deadline fix was shown by unit tests only, not with an encoder exiting just inside its deadline.
+
+## Second pass
+
+Recorded on 6 October 2026 on the same machine. Five open faults are closed, a stop the ownership rule refused is now reached, and the copy fallback no longer writes into the video's path. Start-up was profiled and changed. Each fault has a test that failed against the code before its fix. The commands, logs and numbers are in the "Second pass" section of `../codex/phase-4/media-process-report.md`; the logs are in `/tmp/retest-media-restart/second/`.
+
+- **Encoded route.** A frame handed to ffmpeg undecoded is still decoded once, and a frame that cannot be decoded is counted `undecodable` and never sent. It was counted `shown`.
+- **Failed jobs.** A thumbnail or frame sequence that panics inside the process is answered with an `error` of code `job_failed`, the worker goes on, and its thumbnail output is no longer held. No reply came before.
+- **Live view during the probe.** A live view asked for while its recording waits for the encoder probe begins with the recording. It was told the recording was over.
+- **Kept frames.** A frame-sequence reader takes the kept-frames file the store itself opened, never its path again, so a new recording's file at the same output cannot be read as the old one's.
+- **Duration cap.** A frame past the last video frame the recording's duration allows is `out_of_range`, with the end clipped. It was `shown` with no video frame.
+- **The launch is stopped through its child handle.** `Ownership::stop` and `cleanup` stop the launch through the child handle it was spawned as, whatever its command now reads as. Every process found by pid keeps the identity check. An exec wrapper that became a program reading no input was left wedged before.
+- **Copy fallback.** A filesystem without hard links gets its copy at `<path>.copying`, synced, then renamed to the path with a rename that refuses to replace a file: `renamex_np` with `RENAME_EXCL` on macOS, `renameat2` with `RENAME_NOREPLACE` on Linux. Where the filesystem cannot rename that way, the path is checked and then renamed. A process killed mid-copy leaves the `.copying` file and nothing at the path. `leftovers` lists and removes it, and a start refuses while it is there.
+- **Start-up.**
+  - The greeting no longer waits for the encoder probe; a start waits for it, as before.
+  - The client reads the process table twice less at each `started`, since `groupFor` already reads it for the worker and the encoder's group.
+  - Medians of 15 runs on a quiet lock:
+    - raw spawn to greeting went from 52.1 to 1.7 ms;
+    - a start sent at once now takes 81.1 ms instead of 25.3, since it waits for the probe;
+    - through the client, record to `started` went from 394 to 281 ms, and spawn to greeting stayed at about 69 ms.
+  - The proof's spawn to first `started` went from 473 to 360 ms, median of 10.
+
+On the final binary these all passed:
+
+- `cargo test`, three runs in a row: 88 unit and 48 process tests each time.
+- clippy with and without the measuring feature, and fmt.
+- The client tests: 32 of 32.
+- The Chrome proof: complete evidence, all 90 frames checked against the frame map, 22 stretches checked, nothing left behind.
+
+What is still not shown:
+
+- Linux x64.
+- The copy fallback on a real filesystem without hard links. It is shown through the debug hook, and the exclusive rename was shown on APFS by a unit test.
+- The encoded route's cost after its new decode. The media CPU figures for that route in the measurements above came before the decode was added and no longer hold.

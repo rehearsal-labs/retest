@@ -143,6 +143,15 @@ Event and result objects reject keys they do not know. So a reader built at `30d
 
 Every heavy gate went through `lockf -t 0 /tmp/retest-heavy-gate.lock`, except one. Early in the lane, a bare `node_modules/typescript/bin/tsc -p tsconfig.json` ran without the lock, while another session's integration suite was running. It was clean, and every typecheck after it went through the lock.
 
+## After the Phase 2 review
+
+Recorded on 5 October 2026 on the tree with Phase 3 uncommitted on top of `b59eed5`. The two-app runs above predate commit `9b38691`. Since that commit, `electron-web-flow.test.ts` failed in its after hook, because it asked `signalGroup` to end a service this process never launched through the browser code, and the service stayed running. The test now ends its service through the service's own `ChildProcess` handle and fails by name if anything of the service's group is left (`tests/integration/service-teardown.ts`). The Chromium process code the Electron target runs on also changed in this round: a page's renderer is recorded right after the page opens, a group shown empty settles a helper whose launch could not be traced, `gone` reports a group still there five close graces after the main process exited instead of waiting forever, and the output's close is judged by whether anything still holds its pipes.
+
+| Command | Result |
+| --- | --- |
+| `lockf -t 0 /tmp/retest-heavy-gate.lock node --conditions=retest-source --test --test-concurrency=1 tests/integration/electron.test.ts` | 5 of 5 passed (`/tmp/retest-lane-c-int-electron-4.log`) |
+| `lockf -t 0 /tmp/retest-heavy-gate.lock node --conditions=retest-source --test --test-concurrency=1 tests/integration/electron-web-flow.test.ts` | 3 of 3 passed: the task created in Electron, opened by id and marked done on the web, seen done in Electron; the broken-sync run failing at the web's check; the password typed only with `secretOrigins` naming the service. No Electron process and no service process left afterwards (`/tmp/retest-lane-c-int-electron-web-flow-4.log`) |
+
 ## What was not verified
 
 1. The flow ran twice on its final version through the lock, alone and beside `electron.test.ts`, with a one-second sync delay. It was not run with other delays or with `--read-delay-ms`.
