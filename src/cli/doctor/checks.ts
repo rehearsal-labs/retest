@@ -1,13 +1,20 @@
 import type { OwnedBrowser } from '../../browser/contract.ts'
-import type { LoadedApp, LoadedConfig, LoadedElectronTarget, LoadedTarget } from '../../config/loaded.ts'
+import type { LoadedApp, LoadedConfig, LoadedElectronTarget, LoadedFirefoxTarget, LoadedTarget, LoadedWebKitTarget } from '../../config/loaded.ts'
+import type { NativeTools } from '../../native/processes.ts'
 import type { Timeouts } from '../../protocol/timeouts.ts'
 import type { AppServerHandle } from '../../runner/app-server.ts'
 import type { ResolvedSecrets } from '../../runner/secrets.ts'
 import type { CliDependencies } from '../command.ts'
+import { constants } from 'node:fs'
+import { access, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { checkElectronFiles, readElectronVersion } from '../../browser/electron.ts'
+import { findFirefoxExecutable, readFirefoxRelease } from '../../browser/firefox/executable.ts'
+import { firefoxRoute } from '../../browser/firefox/route.ts'
+import { describeBuildVersion, findWebKitBuild, webKitBuildPath } from '../../browser/webkit/build.ts'
 import { judgeVariables, learnJudgeCredentials } from '../../evaluation/judges.ts'
 import { meetsMinimum, minimumNodeVersion, probeTransformer } from '../../loader/node.ts'
+import { systemTools } from '../../native/processes.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { appLogFile, targetBrowserLogFile } from '../../protocol/run-folder.ts'
 import { withoutCredentials } from '../../protocol/url.ts'
@@ -18,17 +25,23 @@ import { describeBrowser, describeProxy } from '../../reporters/targets.ts'
 import { Redactor } from '../../runner/redactor.ts'
 import { resolveSecrets } from '../../runner/secrets.ts'
 import { targetDriver } from '../../runner/target-drivers.ts'
+import { errorCode } from '../../shared/error-code.ts'
+import { checkMedia } from '../install/media-doctor.ts'
+import { checkBuilds, checkNativeTarget, checkScreenRecording } from '../install/doctor-rows.ts'
 
 /** One thing `doctor` checked: what, how it went, and for a problem, how to fix it. */
-export type Check = { group: string; subject: string; ok: boolean; text: string; detail?: string; fix?: string }
+export type Check = { group: string; subject: string; ok: boolean; text: string; detail?: string; fix?: string; noticeText?: string }
 
 export type CheckDependencies = Pick<
   CliDependencies,
   'resolveExecutable' | 'launchBrowser' | 'probeReady' | 'startAppServer' | 'env' | 'signal'
 >
 
-/** `hiddenVariables` are left out of the environment of every browser and server `doctor` starts. */
-export type CheckContext = { dependencies: CheckDependencies; timeouts: Timeouts; logFolder: string; node?: NodeFacts; hiddenVariables?: readonly string[] }
+/**
+ * `hiddenVariables` are left out of the environment of every browser and server `doctor` starts. `tools` are the macOS
+ * tools the Screen Recording row runs, the system's unless a test passes fakes.
+ */
+export type CheckContext = { dependencies: CheckDependencies; timeouts: Timeouts; logFolder: string; node?: NodeFacts; hiddenVariables?: readonly string[]; tools?: NativeTools }
 
 /**
  * The Node that runs `doctor`, which a run's test file processes run on too: its version, and what Node says when it is
@@ -42,13 +55,13 @@ type Launched = { ok: true; browser: Pick<OwnedBrowser, 'product' | 'version' | 
 type EnvironmentSecret = { name: string; variable: string; resolved: ResolvedSecrets }
 
 /**
- * Checks Node, then every target of every app, then each app's address, then the secrets read from the environment.
- * Node is listed only when it falls short: older than Retest's minimum, or unable to load TypeScript as test files load
- * it. Each browser is launched once and closed; a server `doctor` starts is stopped again, and one
- * that was already running is left alone. The secrets and the judges' credentials are read first, so the log of a
- * server that prints its settings never holds one, and the variables the judges' credentials are read from are left out
- * of the environment each browser and server is given, as a run leaves them out. Every printed field and each
- * browser's output are redacted with those values too.
+ * Checks Node, then every target of every app, then each app's address, then the pinned builds, whether a macOS app's
+ * window may be captured, the media tools, and the secrets read from the environment. Node is listed only when it falls
+ * short: older than Retest's minimum, or unable to load TypeScript as test files load it. Each browser is launched once
+ * and closed; a server `doctor` starts is stopped again, and one that was already running is left alone. The secrets
+ * and the judges' credentials are read first, so the log of a server that prints its settings never holds one, and the
+ * variables the judges' credentials are read from are left out of the environment each browser and server is given, as
+ * a run leaves them out. Every printed field and each browser's output are redacted with those values too.
  *
  * @example const checks = await runChecks(config, { dependencies, timeouts, logFolder })
  */
@@ -69,6 +82,9 @@ export async function runChecks(config: LoadedConfig, context: CheckContext): Pr
     const server = await checkServer(app, { ...context, ...hidden, redactor })
     if (server !== undefined) checks.push(server)
   }
+  checks.push(...(await checkBuilds(config, context.dependencies.env)))
+  checks.push(...(await checkScreenRecording(config, { tools: { ...(context.tools ?? systemTools), ...hidden }, signal: context.dependencies.signal })))
+  checks.push(...await checkMedia(config, context.dependencies.env, context.dependencies.signal))
   checks.push(...checkSecrets(secrets))
   return redactChecks(checks, redactor)
 }
@@ -82,17 +98,23 @@ function redactChecks(checks: readonly Check[], redactor: Redactor): Check[] {
     text: redactor.redact(check.text),
     ...(check.detail === undefined ? {} : { detail: redactor.redact(check.detail) }),
     ...(check.fix === undefined ? {} : { fix: redactor.redact(check.fix) }),
+    ...(check.noticeText === undefined ? {} : { noticeText: redactor.redact(check.noticeText) }),
   }))
 }
 
 type TargetContext = CheckContext & { launches: Map<string, Promise<Launched>>; redactor: Redactor }
 
-// A target whose driver does not exist is refused as a run refuses it, and nothing is launched for it.
+// A target whose driver does not exist is refused as a run refuses it, and nothing is launched for it. A native target
+// has the drivers a run gives it; its row is read from the executor builds in the cache, and nothing is started.
 async function checkTarget(app: LoadedApp, loaded: LoadedTarget, context: TargetContext): Promise<Check> {
   const subject = targetCall(loaded)
+  const native = targetDriver(app.name, loaded, { native: true })
+  if (native.ok && (native.driver === 'ios-simulator' || native.driver === 'macos')) return checkNativeTarget({ app: app.name, subject, target: native.target, env: context.dependencies.env })
   const driver = targetDriver(app.name, loaded)
   if (!driver.ok) return { group: app.name, subject, ok: false, text: driver.failure.message }
   if (driver.driver === 'electron') return checkElectron(app, driver.target, subject)
+  if (driver.driver === 'firefox') return checkFirefox(app, driver.target, subject, context.dependencies.env)
+  if (driver.driver === 'webkit') return checkWebKit(app, driver.target, subject, context.dependencies.env)
   const { target } = driver
   const found = context.dependencies.resolveExecutable(target)
   if (!found.ok) return { group: app.name, subject, ok: false, text: found.failure.message }
@@ -123,6 +145,47 @@ async function checkElectron(app: LoadedApp, target: LoadedElectronTarget, subje
     ? 'an executable and the app found, but the binary\'s files name no Electron release; a run checks what the app reports, and starts it'
     : `Electron ${release} and the app found; a run starts the app`
   return { ...check, ok: true, text }
+}
+
+// Firefox is checked from its files, and nothing is started or downloaded: the binary a run would launch, and the
+// version and build its app states. On macOS a host app that may not read Firefox's data folder never gets a Firefox
+// it starts as its child to run, so that is named, with the route that avoids it.
+async function checkFirefox(app: LoadedApp, target: LoadedFirefoxTarget, subject: string, env: CheckDependencies['env']): Promise<Check> {
+  const route = firefoxRoute(env)
+  if (!route.ok) return { group: app.name, subject, ok: false, text: route.message }
+  const found = await findFirefoxExecutable(target, app.name, env)
+  if (!found.ok) return { group: app.name, subject, ok: false, text: found.failure.message }
+  const check = { group: app.name, subject, detail: found.path }
+  try {
+    await access(found.path, constants.X_OK)
+  } catch (error) {
+    return { ...check, ok: false, text: `No Firefox that may run at ${found.path}: ${errorMessage(error)}` }
+  }
+  const release = await readFirefoxRelease(found.path)
+  const named = release === undefined ? "a Firefox binary found, whose files name no release; a run reads it from Firefox" : `Firefox ${release.version}${release.buildId === undefined ? '' : ` build ${release.buildId}`} found; a run starts it`
+  const home = env['HOME']
+  if (route.route === 'spawn' && process.platform === 'darwin' && home !== undefined) {
+    const folder = join(home, 'Library', 'Application Support', 'Firefox')
+    const refused = await readdir(folder).then(() => false, (error: unknown) => errorCode(error) === 'EPERM')
+    if (refused) {
+      const fix = 'Run Retest from an app that may read it, such as a terminal allowed to access data from other apps, or set RETEST_FIREFOX_ROUTE=launch-services.'
+      return { ...check, ok: false, text: `${named}, but macOS does not let this process read ${folder}, so a Firefox it starts never runs.`, fix }
+    }
+  }
+  return { ...check, ok: true, text: route.route === 'spawn' ? named : `${named} through Launch Services` }
+}
+
+// A WebKit build is checked from its files, and nothing is started or downloaded: the build a run would launch, that its
+// protocol is the one Retest's driver speaks, and the WebKit version and build revision it states.
+async function checkWebKit(app: LoadedApp, target: LoadedWebKitTarget, subject: string, env: CheckDependencies['env']): Promise<Check> {
+  const path = webKitBuildPath(target, env)
+  if (!path.ok) return { group: app.name, subject, ok: false, text: path.failure.message }
+  try {
+    const build = await findWebKitBuild(path.path, path.source)
+    return { group: app.name, subject, ok: true, text: `WebKit ${describeBuildVersion(build)} found; a run starts it`, detail: build.executable }
+  } catch (error) {
+    return { group: app.name, subject, ok: false, text: errorMessage(error), detail: path.path }
+  }
 }
 
 type Launch = { executablePath: string; headless: boolean; appTarget: string }
