@@ -1,16 +1,17 @@
 import type { Failure } from '../protocol/failures.ts'
 import type { ExecutorBuild, ExecutorName } from './executors.ts'
-import type { NativeTools, RecordedProcess } from './processes.ts'
+import type { NativeTools, RecordedProcess, StartedProcess } from './processes.ts'
 import type { RequestBounds } from './webdriver-client.ts'
-import { mkdtemp, open, readFile, rm } from 'node:fs/promises'
+import { open, readFile, rm } from 'node:fs/promises'
 import { connect, createServer } from 'node:net'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import { setTimeout as sleep } from 'node:timers/promises'
+import { waitBeforeRead } from '../assertions/wait-before-read.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
+import { errorCode } from '../shared/error-code.ts'
 import { nativePins } from './executors.ts'
-import { commandOf, endProblem, endRecorded, killRecordedNow, listProcesses, OwnedProcess, processExists, runCommand } from './processes.ts'
+import { commandOf, describeCommand, endProblem, endRecorded, killRecordedNow, listProcesses, OwnedProcess, processExists, runCommand } from './processes.ts'
+import { makeOwnedFolder, sweepOwnedFolders } from './temporary-folders.ts'
 import { ExecutorClient } from './webdriver-client.ts'
 
 // Starting an executor: xcodebuild runs the pinned build's test run file against a destination, and the executor's
@@ -50,14 +51,17 @@ export type StartExecutorOptions = {
   readonly onProcesses?: ((processes: StartedProcesses) => void) | undefined
 }
 
-/** The processes a start has recorded so far. */
-export type StartedProcesses = { readonly xcodebuild: RecordedProcess; readonly runnerApps: readonly RecordedProcess[]; readonly untied: readonly RecordedProcess[] }
+/** The processes a start has recorded so far, each with its command line and start. */
+export type StartedProcesses = { readonly xcodebuild: StartedProcess; readonly runnerApps: readonly StartedProcess[]; readonly untied: readonly StartedProcess[] }
 
 // The ports the executors serve on when told nothing, which another tool driving the same executor would use too.
 const executorDefaultPorts: readonly number[] = Object.values(nativePins.executors).map((pin) => pin.defaultPort)
 
-/** A failed start: why, and the processes it recorded as its own and could not end. */
-export type FailedStart = { readonly ok: false; readonly failure: Failure; readonly leftRunning: readonly RecordedProcess[] }
+/**
+ * A failed start: why, and the processes it recorded as its own and could not end. `idle` says the start was refused
+ * before xcodebuild was started, so it left nothing running.
+ */
+export type FailedStart = { readonly ok: false; readonly failure: Failure; readonly leftRunning: readonly RecordedProcess[]; readonly idle?: true }
 
 /** A line of xcodebuild's output that explains why an executor did not start. */
 type KnownFailure = { readonly pattern: RegExp; readonly message: string }
@@ -73,7 +77,8 @@ const knownFailures: readonly KnownFailure[] = [
 ]
 
 /**
- * Starts an executor and waits until it answers `/status` as ready. Only a runner app that appears during the start
+ * Starts an executor and waits until it answers `/status` as ready. First it deletes the run folders that Retest
+ * processes now gone left in the temporary folder; one it cannot delete refuses the start. Only a runner app that appears during the start
  * can be this start's, and more than one refuses the start by name; the one tied to it, as `tie` says, is recorded
  * with its command line. When xcodebuild exits first, prints a line that explains a failed start, runs out of time, is
  * stopped or a process reading fails, only recorded and freshly verified executor processes are ended and the failure names
@@ -81,29 +86,42 @@ const knownFailures: readonly KnownFailure[] = [
  *
  * @example await startExecutor({ executor: 'mac2', build, destination: 'platform=macOS,arch=arm64', port, environment: {}, logFile, resultFolder, tools, bounds, isRunnerApp, tie: 'listening-port' })
  */
-export async function startExecutor(options: StartExecutorOptions): Promise<{ readonly ok: true; readonly process: OwnedProcess; readonly os: string | undefined; readonly xcodebuild: RecordedProcess; readonly runnerApps: readonly RecordedProcess[] } | FailedStart> {
+export async function startExecutor(options: StartExecutorOptions): Promise<{ readonly ok: true; readonly process: OwnedProcess; readonly os: string | undefined; readonly xcodebuild: StartedProcess; readonly runnerApps: readonly StartedProcess[] } | FailedStart> {
   const deadline = new Deadline(options.bounds.timeoutMs)
   if (executorDefaultPorts.includes(options.port)) return refusedStart(`Port ${options.port} is an executor's default port, which another tool driving the same executor would use; Retest runs an executor only on a port of its own.`)
   if (await isListening('127.0.0.1', options.port)) return refusedStart(`Something already listens on 127.0.0.1:${options.port}, the port the executor was to use.`)
+  const swept = await sweepOwnedFolders(options.tools).catch((error: unknown) => ({ removed: [], kept: 0, problems: [`Retest could not look through the temporary folder for what earlier runs left: ${errorMessage(error)}`] }))
+  if (swept.problems.length > 0) return refusedStart(`${swept.problems.join(' ')} Remove it, since it may hold what an earlier run typed.`)
   const before = await runnerAppsNow(options)
   if (typeof before === 'string') return refusedStart(before)
-  const folder = await mkdtemp(join(tmpdir(), 'retest-executor-'))
+  let folder: string
+  try {
+    folder = await makeOwnedFolder('retest-executor-', options.tools)
+  } catch (error) {
+    return refusedStart(`Retest could not make the executor's temporary folder: ${errorMessage(error)}`)
+  }
   const args = ['test-without-building', '-xctestrun', options.build.xctestrun, '-destination', options.destination, '-resultBundlePath', join(folder, 'result.xcresult'), '-derivedDataPath', join(folder, 'derived'), '-disableAutomaticPackageResolution']
+  const xcodebuildPath = await selectedXcodebuild(options.tools)
+  if (typeof xcodebuildPath !== 'string') {
+    await rm(folder, { recursive: true, force: true })
+    return refusedStart(xcodebuildPath.problem)
+  }
   let runner: OwnedProcess
   try {
-    runner = await OwnedProcess.start({ command: options.tools.xcodebuild, args, logFile: options.logFile, environment: { ...options.environment, TEST_RUNNER_USE_PORT: String(options.port) }, hiddenVariables: options.tools.hiddenVariables, redact: options.redact ?? options.tools.redact, temporaryFolders: [folder] })
+    runner = await OwnedProcess.start({ command: xcodebuildPath, args, logFile: options.logFile, environment: { ...options.environment, TEST_RUNNER_USE_PORT: String(options.port) }, hiddenVariables: options.tools.hiddenVariables, redact: options.redact ?? options.tools.redact, temporaryFolders: [folder] })
   } catch (error) {
+    // The log could not be opened or the spawn failed, so no xcodebuild process exists.
     await rm(folder, { recursive: true, force: true })
     return refusedStart(`xcodebuild could not start the executor: ${errorMessage(error)}`)
   }
   const client = new ExecutorClient({ executor: options.executor, host: '127.0.0.1', port: options.port })
-  const claimed = new Map<number, RecordedProcess>()
+  const claimed = new Map<number, StartedProcess>()
   const lastResort = (): void => killRecordedNow(claimed.values(), options.tools)
   process.on('exit', lastResort)
   // Telling the caller can fail, as writing a lock record can; the start then stops what it started.
   let toldFailure: string | undefined
-  let untiedTold: readonly RecordedProcess[] = []
-  const tell = (processes: Omit<StartedProcesses, 'untied'>, untied: readonly RecordedProcess[] = untiedTold): void => {
+  let untiedTold: readonly StartedProcess[] = []
+  const tell = (processes: Omit<StartedProcesses, 'untied'>, untied: readonly StartedProcess[] = untiedTold): void => {
     untiedTold = untied
     try {
       options.onProcesses?.({ ...processes, untied })
@@ -111,10 +129,10 @@ export async function startExecutor(options: StartExecutorOptions): Promise<{ re
       toldFailure ??= errorMessage(error)
     }
   }
-  const giveUp = async (failure: Failure, appeared: readonly RecordedProcess[] = [], xcodebuildRecord?: RecordedProcess): Promise<FailedStart> => {
+  const giveUp = async (failure: Failure, appeared: readonly StartedProcess[] = [], xcodebuildRecord?: StartedProcess): Promise<FailedStart> => {
     const problems = await runner.stop(0)
     const leftRunning: RecordedProcess[] = []
-    if (runner.processesRemain && xcodebuildRecord !== undefined) leftRunning.push(xcodebuildRecord)
+    if ((await runner.processesRemain()) && xcodebuildRecord !== undefined) leftRunning.push(xcodebuildRecord)
     for (const entry of claimed.values()) {
       const problem = endProblem(entry, await endRecorded(options.tools, entry, 5000))
       if (problem === undefined) continue
@@ -136,10 +154,10 @@ export async function startExecutor(options: StartExecutorOptions): Promise<{ re
   }
   const xcodebuildCommand = await commandOf(options.tools, runner.pid)
   if (xcodebuildCommand.state !== 'present') return giveUp({ class: 'setup_failed', message: `Retest could not record xcodebuild's command line (${xcodebuildCommand.state === 'unreadable' ? xcodebuildCommand.problem : 'it was already gone'}).` })
-  const xcodebuild: RecordedProcess = { pid: runner.pid, command: xcodebuildCommand.command }
+  const xcodebuild: StartedProcess = { pid: runner.pid, command: xcodebuildCommand.command, startedAt: xcodebuildCommand.startedAt }
   tell({ xcodebuild, runnerApps: [] })
   if (toldFailure !== undefined) return giveUp({ class: 'setup_failed', message: `Retest could not record the executor's processes: ${toldFailure}` }, [], xcodebuild)
-  const claim = (entry: RecordedProcess): void => {
+  const claim = (entry: StartedProcess): void => {
     if (claimed.has(entry.pid)) return
     claimed.set(entry.pid, entry)
     tell({ xcodebuild, runnerApps: [...claimed.values()] })
@@ -147,7 +165,8 @@ export async function startExecutor(options: StartExecutorOptions): Promise<{ re
   for (;;) {
     const now = await runnerAppsNow(options)
     if (typeof now === 'string') return giveUp({ class: 'setup_failed', message: now }, [], xcodebuild)
-    const appeared = now.filter((entry) => !before.some((earlier) => earlier.pid === entry.pid))
+    // A runner app listed before the start, by pid and start, is not this start's.
+    const appeared = now.filter((entry) => !before.some((earlier) => earlier.pid === entry.pid && earlier.startedAt === entry.startedAt))
     const untied = options.tie === 'listening-port' ? appeared.filter((entry) => !claimed.has(entry.pid)) : []
     if (untied.length !== untiedTold.length || untied.some((entry, index) => untiedTold[index]?.pid !== entry.pid)) tell({ xcodebuild, runnerApps: [...claimed.values()] }, untied)
     if (appeared.length > 1) return giveUp({ class: 'setup_failed', message: `${appeared.length} runner apps (pid ${appeared.map((entry) => entry.pid).join(', ')}) appeared during this start, so Retest cannot tell which one is its own.` }, appeared, xcodebuild)
@@ -158,7 +177,7 @@ export async function startExecutor(options: StartExecutorOptions): Promise<{ re
     const exit = runner.exit
     if (exit !== undefined) return giveUp({ class: 'setup_failed', message: `xcodebuild ended with ${exit.signal === null ? `exit code ${exit.code ?? 'unknown'}` : `signal ${exit.signal}`} before the executor answered.` }, appeared, xcodebuild)
     if (options.bounds.signal?.aborted === true) return giveUp({ class: 'interrupted', message: 'Starting the executor was stopped.' }, appeared, xcodebuild)
-    if (deadline.expired) return giveUp({ class: 'setup_failed', message: `The executor did not answer /status within ${options.bounds.timeoutMs} ms.` }, appeared, xcodebuild)
+    const finalRead = deadline.reached
     const status = await client.status({ timeoutMs: Math.min(2000, deadline.commandTimeoutMs), signal: options.bounds.signal })
     if (status.status === 'answered' && status.value.ready) {
       if (options.tie === 'listening-port') {
@@ -174,11 +193,30 @@ export async function startExecutor(options: StartExecutorOptions): Promise<{ re
       process.off('exit', lastResort)
       return { ok: true, process: runner, os: status.value.os, xcodebuild, runnerApps: [...claimed.values()] }
     }
-    await sleep(Math.min(250, deadline.remainingMs))
+    if (finalRead) return giveUp({ class: 'setup_failed', message: `The executor did not answer /status within ${options.bounds.timeoutMs} ms.` }, appeared, xcodebuild)
+    await waitBeforeRead(deadline, 250)
   }
 }
 
-async function runnerAppsNow(options: StartExecutorOptions): Promise<RecordedProcess[] | string> {
+/** Where xcode-select puts its shim, which execs the selected Xcode's own tool under the same pid. */
+export const xcodebuildShim = '/usr/bin/xcodebuild'
+
+/**
+ * The xcodebuild a start runs. The shim at /usr/bin/xcodebuild execs the selected Xcode's own xcodebuild under the
+ * same pid, so `ps` shows another command line a moment after the start, and a record taken before it would not match
+ * the process any more; the selected tool is run directly, as `xcrun --find` names it. Any other path is run as given.
+ *
+ * @example await selectedXcodebuild(systemTools) // '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild'
+ */
+export async function selectedXcodebuild(tools: NativeTools): Promise<string | { readonly problem: string }> {
+  if (tools.xcodebuild !== xcodebuildShim) return tools.xcodebuild
+  const found = await runCommand(tools.xcrun, ['--find', 'xcodebuild'], { timeoutMs: 30_000, hiddenVariables: tools.hiddenVariables })
+  const path = found.stdout.trim()
+  if (found.code !== 0 || !path.startsWith('/') || path.includes('\n')) return { problem: `Retest could not find the selected Xcode's xcodebuild: ${describeCommand('xcrun --find xcodebuild', found)}` }
+  return path
+}
+
+async function runnerAppsNow(options: StartExecutorOptions): Promise<StartedProcess[] | string> {
   try {
     return (await listProcesses(options.tools, 10_000)).filter((entry) => options.isRunnerApp(entry.command))
   } catch (error) {
@@ -193,33 +231,54 @@ async function listenerOf(tools: NativeTools, port: number): Promise<number | un
   return pids.length === 1 ? pids[0] : undefined
 }
 
+// Every refusal through here comes before xcodebuild is started.
 function refusedStart(message: string): FailedStart {
-  return { ok: false, failure: { class: 'setup_failed', message }, leftRunning: [] }
+  return { ok: false, failure: { class: 'setup_failed', message }, leftRunning: [], idle: true }
 }
 
 /**
- * A port on 127.0.0.1 nothing listens on now. Another process may take it before it is used, which the executor's start
- * then reports.
+ * A port nothing holds now on either loopback address, 127.0.0.1 or ::1, below the system's ephemeral range. The
+ * executor serves on localhost and binds without reusing a port, so a socket on either address that holds the port,
+ * even a connected one, fails its start. A Node listener reuses addresses and cannot see a connected socket's port,
+ * so the port is drawn from below the range connected sockets take theirs from, and both addresses are probed for a
+ * listener. Another process may take it before it is used, which the executor's start then reports.
  *
- * @example await freePort() // 53127
+ * @example await freePort() // 31127
  */
 export async function freePort(): Promise<number> {
-  for (;;) {
-    const port = await systemPort()
-    if (!executorDefaultPorts.includes(port)) return port
+  for (let tries = 0; tries < 200; tries += 1) {
+    const port = lowestPort + Math.floor(Math.random() * (firstEphemeralPort - lowestPort))
+    if (!executorDefaultPorts.includes(port) && (await freeOnLoopback(port))) return port
   }
+  throw new Error(`Retest found no free port from ${lowestPort} to ${firstEphemeralPort - 1} on 127.0.0.1 and ::1 in 200 tries.`)
 }
 
-async function systemPort(): Promise<number> {
-  const server = createServer()
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolve)
-  })
-  const address = server.address()
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  if (address === null || typeof address === 'string') throw new Error('The system gave no port.')
-  return address.port
+// macOS gives connected sockets their ports from 49152 up (net.inet.ip.portrange.first); the draw stays below that.
+const firstEphemeralPort = 49152
+const lowestPort = 20000
+
+/**
+ * Whether nothing listens on `port` at 127.0.0.1 or ::1, as a listener of Retest's own finds by taking it on each in
+ * turn and letting it go again. A host without IPv6 has no ::1 for anything to hold.
+ *
+ * @example await freeOnLoopback(31127) // true
+ */
+export async function freeOnLoopback(port: number): Promise<boolean> {
+  for (const host of ['127.0.0.1', '::1']) {
+    const server = createServer()
+    const taken = await new Promise<boolean>((resolve, reject) => {
+      server.once('error', (error) => {
+        const code = errorCode(error)
+        if (code === 'EADDRINUSE') resolve(true)
+        else if (host === '::1' && (code === 'EADDRNOTAVAIL' || code === 'EAFNOSUPPORT')) resolve(false)
+        else reject(error)
+      })
+      server.listen({ port, host }, () => resolve(false))
+    })
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()))
+    if (taken) return false
+  }
+  return true
 }
 
 /**

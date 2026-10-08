@@ -3,18 +3,27 @@ import type { MetadataProcessRequest } from '../../src/shared/metadata-process.t
 import type { NativeTools } from '../../src/native/processes.ts'
 import type { OwnedProcessIdentity } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
-import { ChildProcess, spawn } from 'node:child_process'
+import { ChildProcess, execFileSync, spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { openSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Worker } from 'node:worker_threads'
-import { watchExecutor } from '../../src/native/executor-process.ts'
-import { commandOf, endProblem, endRecorded, killRecordedNow, listProcesses, OwnedProcess, processExists, runCommand, systemTools } from '../../src/native/processes.ts'
-import { metadataComplete, metadataOutputLimit, metadataSuccess, readMetadataProcess } from '../../src/shared/metadata-process.ts'
+import { freeOnLoopback, freePort, selectedXcodebuild, watchExecutor, xcodebuildShim } from '../../src/native/executor-process.ts'
+import { commandOf, endProblem, endRecorded, killRecordedNow, listProcesses, OwnedProcess, processExists, readProcessTable, runCommand, systemTools, terminationGraceMs } from '../../src/native/processes.ts'
+import { makeOwnedFolder, sweepOwnedFolders } from '../../src/native/temporary-folders.ts'
+import { metadataComplete, metadataOutputLimit, metadataSuccess, processTableOutputLimit, readMetadataProcess } from '../../src/shared/metadata-process.ts'
+import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { endedPid, processStart } from './native-fake-tools.ts'
+
+// A start reading as `ps` prints it, for stand-in `ps` scripts, and as Retest records it, one-spaced.
+const shownStart = 'Mon Oct  5 09:00:00 2026'
+const recordedStart = 'Mon Oct 5 09:00:00 2026'
 
 // A metadata fixture changes its command after launch and records any SIGTERM. Only the test ends this child.
 async function unansweredMetadata(t: TestContext, overflow: boolean): Promise<{ readonly path: string; readonly folder: string }> {
@@ -77,6 +86,23 @@ function stubbornChild(t: TestContext): { readonly pid: number; readonly signal:
 // A shell that starts a grandchild in its own process group, writes the grandchild's pid, and waits on it forever.
 const withGrandchild = (pidFile: string): string[] => ['-c', `sleep 600 & echo $! > '${pidFile}'; wait`]
 
+// This cancellation test exercises actual process exit, without sharing the metadata worker's startup and queue
+// with the parallel unit tree. Tables remain whole, and every signal still gets its immediate individual reading.
+function cancellationIdentities(pid?: number): OwnedProcessIdentity[] {
+  const columns = 'pid=,ppid=,pgid=,stat=,lstart=,args='
+  const args = pid === undefined ? ['-ww', '-axo', columns] : ['-ww', '-o', columns, '-p', `${pid},${process.pid}`]
+  const text = execFileSync('/bin/ps', args, { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC0' } })
+  const lines = text.split('\n').filter(line => line.trim() !== '')
+  assert.ok(lines.length > 0, 'an empty reading cannot establish absence')
+  return lines.map(line => {
+    const fields = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/.exec(line)
+    assert.ok(fields !== null, 'every process identity must be readable')
+    const [, pid, parentPid, groupId, state, startedAt, command] = fields
+    assert.ok(pid !== undefined && parentPid !== undefined && groupId !== undefined && state !== undefined && startedAt !== undefined && command !== undefined)
+    return { pid: Number(pid), parentPid: Number(parentPid), groupId: Number(groupId), state, startedAt, command }
+  })
+}
+
 async function grandchildPid(pidFile: string): Promise<number> {
   for (let tries = 0; tries < 100; tries += 1) {
     const text = await readFile(pidFile, 'utf8').catch(() => '')
@@ -87,8 +113,8 @@ async function grandchildPid(pidFile: string): Promise<number> {
 }
 
 test('successful malformed process listings are unreadable rather than empty', async (t) => {
-  for (const line of ['not a process', '42', '42   ', '9007199254740992 /unsafe/pid']) {
-    const { tools } = await scriptedPs(t, `printf '%s\\n' '7 /valid/process' '${line}'`)
+  for (const line of ['not a process', '42', '42   ', `42 ${shownStart}`, '42 /no/start', `9007199254740992 ${shownStart} /unsafe/pid`]) {
+    const { tools } = await scriptedPs(t, `printf '%s\\n' '7 ${shownStart} /valid/process' '${line}'`)
     await assert.rejects(listProcesses(tools, 5000), /ps returned an unreadable process entry/)
   }
 })
@@ -110,11 +136,27 @@ test('a short command stopped by its signal is ended, and one stopped before it 
   t.after(() => rm(folder, { recursive: true, force: true }))
   const pidFile = join(folder, 'grandchild')
   const stop = new AbortController()
-  const running = runCommand('/bin/sh', withGrandchild(pidFile), { timeoutMs: 30_000, signal: stop.signal })
+  const running = runCommand('/bin/sh', withGrandchild(pidFile), {
+    timeoutMs: 30_000, signal: stop.signal,
+    ownershipSystem: {
+      read: () => cancellationIdentities(),
+      readProcess: pid => cancellationIdentities(pid).find(entry => entry.pid === pid),
+      signal: (pid, signal) => { process.kill(pid, signal) },
+    },
+  })
   const grandchild = await grandchildPid(pidFile)
+  const recorded = cancellationIdentities(grandchild).find(entry => entry.pid === grandchild)
+  assert.ok(recorded !== undefined)
+  t.after(async () => {
+    if (processExists(grandchild)) {
+      const outcome = await endRecorded(systemTools, recorded, 0)
+      assert.ok(outcome === 'ended' || outcome === 'gone', `the recorded grandchild could not be confirmed ended: ${JSON.stringify(outcome)}`)
+    }
+  })
   stop.abort()
   const result = await running
   assert.deepEqual([result.stopped, result.timedOut], [true, false])
+  assert.deepEqual(result.cleanupProblems, [], 'cancellation must confirm clean shutdown')
   assert.equal(processExists(grandchild), false)
   const never = await runCommand('/bin/sh', ['-c', `echo ran > '${join(folder, 'ran')}'`], { timeoutMs: 1000, signal: stop.signal })
   assert.deepEqual([never.started, never.stopped], [false, true])
@@ -211,7 +253,7 @@ test('reading a pid tells a running process, a free pid and a reading that faile
   const child = spawn('/bin/sleep', ['602'], { stdio: 'ignore' })
   t.after(() => child.kill('SIGKILL'))
   await sleep(100)
-  assert.deepEqual(await commandOf(systemTools, child.pid ?? 0), { state: 'present', command: '/bin/sleep 602' })
+  assert.deepEqual(await commandOf(systemTools, child.pid ?? 0), { state: 'present', command: '/bin/sleep 602', startedAt: processStart(child.pid ?? 0) })
   child.kill('SIGKILL')
   await new Promise((resolve) => child.once('exit', resolve))
   assert.deepEqual(await commandOf(systemTools, child.pid ?? 0), { state: 'absent' })
@@ -226,10 +268,10 @@ test('a recorded process is not sent SIGKILL when its pid runs another command l
   const recorded = await commandOf(systemTools, child.pid)
   assert.equal(recorded.state, 'present')
   if (recorded.state !== 'present') return
-  // The first reading shows the recorded process; every later one shows another process under the same pid.
-  const { tools, folder } = await scriptedPs(t, 'if [ -e "$FOLDER/read" ]; then echo "/usr/libexec/another-process"; else touch "$FOLDER/read"; cat "$FOLDER/command.txt"; fi')
-  await writeFile(join(folder, 'command.txt'), `${recorded.command}\n`)
-  const outcome = await endRecorded(tools, { pid: child.pid, command: recorded.command }, 300)
+  // The first reading shows the recorded process; every later one shows another command line under the same pid.
+  const { tools, folder } = await scriptedPs(t, `if [ -e "$FOLDER/read" ]; then echo "${recorded.startedAt} /usr/libexec/another-process"; else touch "$FOLDER/read"; cat "$FOLDER/command.txt"; fi`)
+  await writeFile(join(folder, 'command.txt'), `${recorded.startedAt} ${recorded.command}\n`)
+  const outcome = await endRecorded(tools, { pid: child.pid, command: recorded.command, startedAt: recorded.startedAt }, 300)
   assert.equal(outcome, 'ended', 'the recorded process is no longer under its pid')
   await sleep(200)
   assert.equal(processExists(child.pid), true, 'the process now under the pid was sent no SIGKILL')
@@ -240,7 +282,7 @@ test('a recorded process that ignores SIGTERM is sent SIGKILL while its command 
   await sleep(150)
   const recorded = await commandOf(systemTools, child.pid)
   if (recorded.state !== 'present') throw new Error('the child was not read')
-  assert.equal(await endRecorded(systemTools, { pid: child.pid, command: recorded.command }, 300), 'ended')
+  assert.equal(await endRecorded(systemTools, { pid: child.pid, command: recorded.command, startedAt: recorded.startedAt }, 300), 'ended')
   assert.equal(await Promise.race([child.signal, sleep(5000, 'still running')]), 'SIGKILL')
 })
 
@@ -284,9 +326,9 @@ test('malformed recorded pids and blank commands permit no reading or destructiv
 })
 
 test('exit-hook matching output from a failed ps never authorizes a signal', async (t) => {
-  const { tools } = await scriptedPs(t, 'echo "/recorded/process"\nexit 1')
+  const { tools } = await scriptedPs(t, `echo "${shownStart} /recorded/process"\nexit 1`)
   const kill = t.mock.method(process, 'kill', () => true)
-  killRecordedNow([{ pid: 424242, command: '/recorded/process' }], tools)
+  killRecordedNow([{ pid: 424242, command: '/recorded/process', startedAt: recordedStart }], tools)
   assert.equal(kill.mock.callCount(), 0)
 })
 
@@ -296,7 +338,9 @@ test('an unanswered metadata child whose command changed is left running without
   const pid = Number(await readFile(join(fixture.folder, 'pid'), 'utf8'))
   assert.equal(processExists(pid), true, 'the unanswered metadata child is left alone')
   await assert.rejects(readFile(join(fixture.folder, 'term'), 'utf8'), { code: 'ENOENT' })
-  assert.throws(() => readMetadataProcess({ command: '/bin/ps', args: [], environment: {}, timeoutMs: 1000 }), /earlier metadata process/, 'an unresolved child prevents an accumulating metadata-process backlog')
+  // One unanswered child fails only its own query, so a long-lived host keeps its readings. The bound that stops a
+  // backlog of such children growing is shown in metadata-process.test.ts.
+  assert.equal(readMetadataProcess({ command: '/bin/echo', args: ['read'], environment: { PATH: '/usr/bin:/bin' }, timeoutMs: 1000 }), 'read\n', 'a later reading is still taken while the unanswered child runs')
 })
 
 test('exit-hook matching output from an unanswered ps never authorizes a signal or ends the metadata child', async (t) => {
@@ -331,8 +375,8 @@ test('exit-hook matching stdout with overflowing stderr never authorizes a signa
 
 for (const refused of ['SIGTERM', 'SIGKILL'] as const) {
   test(`a refused ${refused} is a cleanup failure while the recorded process still exists`, async (t) => {
-    const record = { pid: 424242, command: '/recorded/process' }
-    const { tools } = await scriptedPs(t, 'echo "/recorded/process"')
+    const record = { pid: 424242, command: '/recorded/process', startedAt: recordedStart }
+    const { tools } = await scriptedPs(t, `echo "${shownStart} /recorded/process"`)
     const realKill = process.kill.bind(process)
     const signals: (NodeJS.Signals | number | undefined)[] = []
     t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => {
@@ -379,8 +423,9 @@ async function fakeOwnedProcess(t: TestContext, options: { initialAbsent?: boole
       signal: (pid, signal) => { signals.push({ pid, signal }) },
     },
   })
-  const hook = process.listeners('exit').find((listener) => !before.has(listener))
+  const [hook, removeHook] = process.listeners('exit').filter((listener) => !before.has(listener))
   assert.ok(hook)
+  assert.ok(removeHook)
   let closed = false
   const close = (): void => {
     if (closed) return
@@ -402,7 +447,7 @@ async function fakeOwnedProcess(t: TestContext, options: { initialAbsent?: boole
     await waitClosed()
     await rm(folder, { recursive: true, force: true })
   })
-  return { owned, state, signals, root, descendant, temporary, hook, close, waitClosed }
+  return { owned, state, signals, root, descendant, temporary, hook, removeHook, close, waitClosed }
 }
 
 test('native exit cleanup reads ownership again and never signals a changed descendant or a numeric group', async (t) => {
@@ -431,14 +476,14 @@ test('a missing first snapshot is harmless only after confirmed exit and absence
 test('a failed liveness reading remains a cleanup failure after confirmed absence and closed output', async (t) => {
   const fake = await fakeOwnedProcess(t)
   fake.state.failRead = true
-  assert.equal(fake.owned.processesRemain, true, 'the unanswered liveness reading holds ownership')
+  assert.equal(await fake.owned.processesRemain(), true, 'the unanswered liveness reading holds ownership')
   fake.state.failRead = false
   fake.state.processes = []
   fake.close()
   const problems = await fake.owned.stop(0)
   assert.match(problems.join(' '), /Could not read ownership of process.*host reading failed/)
   assert.equal(problems.filter((problem) => problem.includes('host reading failed')).length, 1, 'the retained reading failure is deduplicated')
-  assert.equal(fake.owned.processesRemain, false, 'later absence proves the processes ended but does not erase the failed read')
+  assert.equal(await fake.owned.processesRemain(), false, 'later absence proves the processes ended but does not erase the failed read')
   assert.deepEqual(fake.signals, [], 'a failed reading never grants signal authority')
   assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8').catch(() => 'absent'), 'absent')
 })
@@ -480,8 +525,13 @@ test('a recorded descendant whose live command changed is never signaled and kee
   const problems = await stopping
   assert.match(problems.join(' '), /different identity.*command reading changed/)
   assert.equal(fake.signals.some((entry) => entry.pid === changed.pid), false, 'changed commands never gain signal authority')
-  assert.equal(fake.owned.processesRemain, true)
-  assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8'), 'retained fixture')
+  assert.equal(await fake.owned.processesRemain(), true)
+  // The temporary output goes after a short wait whatever remains, since it can hold what XCTest named its typing by;
+  // the remaining process still keeps cleanup failed and the exit hook installed.
+  await fake.owned.exited
+  assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8').catch(() => 'absent'), 'absent')
+  assert.equal(await fake.owned.processesRemain(), true)
+  assert.match((await fake.owned.finishOutput(1)).join(' '), /different identity/)
 })
 
 test('an unsignaled changed descendant may end naturally, but cleanup waits for absence and output proof', async (t) => {
@@ -500,7 +550,7 @@ test('an unsignaled changed descendant may end naturally, but cleanup waits for 
   fake.close()
   assert.deepEqual(await stopping, [])
   assert.equal(fake.signals.some((entry) => entry.pid === changed.pid), false, 'Retest sent no signal to the changed process')
-  assert.equal(fake.owned.processesRemain, false)
+  assert.equal(await fake.owned.processesRemain(), false)
   assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8').catch(() => 'absent'), 'absent')
 })
 
@@ -508,7 +558,7 @@ test('an unrecorded orphan retains native process and temporary-output ownership
   const fake = await fakeOwnedProcess(t)
   fake.state.processes = [{ ...fake.descendant, pid: fake.descendant.pid + 1, parentPid: 1, startedAt: 'unrecorded-birth' }]
   fake.close()
-  assert.equal(fake.owned.processesRemain, true)
+  assert.equal(await fake.owned.processesRemain(), true)
   const problems = await fake.owned.finishOutput(1)
   assert.match(problems.join(' '), /remain|ownership could not be verified/)
   assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8'), 'retained fixture')
@@ -520,8 +570,8 @@ test('an unrecorded orphan retains native process and temporary-output ownership
 })
 
 test('an unexpected liveness error remains unreadable after a recorded SIGTERM', async (t) => {
-  const record = { pid: 424242, command: '/recorded/process' }
-  const { tools } = await scriptedPs(t, 'echo "/recorded/process"')
+  const record = { pid: 424242, command: '/recorded/process', startedAt: recordedStart }
+  const { tools } = await scriptedPs(t, `echo "${shownStart} /recorded/process"`)
   const realKill = process.kill.bind(process)
   const signals: (NodeJS.Signals | number | undefined)[] = []
   t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => {
@@ -548,4 +598,354 @@ test('executor watching reports a failed liveness reading without inventing an e
   stop()
   assert.equal(reported.length, 1)
   assert.match(reported[0]?.problem ?? '', /could not read whether runner pid 424242 remains: liveness read failed/)
+})
+
+// A process is identified by its pid and start; a command line `ps` can read must agree, and one it cannot read, as
+// while the process exits, is neither a match nor a difference.
+
+test('an app ps shows by its short name while it exits is still the recorded process: it is ended, never taken for another', async (t) => {
+  const child = stubbornChild(t)
+  await sleep(150)
+  const start = processStart(child.pid)
+  const { tools } = await scriptedPs(t, `echo "${start} (node)"`)
+  const outcome = await endRecorded(tools, { pid: child.pid, command: `${process.execPath} -e stubborn`, startedAt: start }, 300)
+  assert.equal(outcome, 'ended')
+  assert.equal(await Promise.race([child.signal, sleep(5000, 'still running')]), 'SIGKILL', 'the exiting process was the recorded one and was ended')
+})
+
+test('a record without a start leaves a process ps shows by its short name undecided, and sends it nothing', async (t) => {
+  const record = { pid: 424242, command: '/Applications/TaskDesk.app/Contents/MacOS/TaskDesk' }
+  const { tools } = await scriptedPs(t, `echo "${shownStart} (TaskDesk)"`)
+  const realKill = process.kill.bind(process)
+  const signals: (NodeJS.Signals | number | undefined)[] = []
+  t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => {
+    if (pid !== record.pid) return realKill(pid, signal)
+    signals.push(signal)
+    return true
+  })
+  const outcome = await endRecorded(tools, record, 0)
+  assert.deepEqual(outcome, { unreadable: 'ps showed pid 424242 without its command line, and the record holds no start to tell it by.' })
+  assert.match(endProblem(record, outcome) ?? '', /could not read whether pid 424242 is still running/, 'an undecided reading is a problem, never nothing left')
+  assert.deepEqual(signals, [])
+})
+
+test('a pid another process took under the identical command line is left alone, by its start', async (t) => {
+  const child = stubbornChild(t)
+  await sleep(150)
+  const recorded = await commandOf(systemTools, child.pid)
+  if (recorded.state !== 'present') throw new Error('the child was not read')
+  assert.equal(await endRecorded(systemTools, { pid: child.pid, command: recorded.command, startedAt: 'Thu Jan 1 00:00:00 1970' }, 0), 'other')
+  await sleep(200)
+  assert.equal(processExists(child.pid), true, 'a process of another start under the recorded pid is sent nothing')
+})
+
+test('an exit-hook kill leaves a pid another process took under the identical command line, and kills the recorded one', async (t) => {
+  const child = spawn('/bin/sleep', ['603'], { stdio: 'ignore' })
+  t.after(() => child.kill('SIGKILL'))
+  const pid = child.pid ?? 0
+  const ended = new Promise<NodeJS.Signals | null>((resolve) => child.once('exit', (_code, signal) => resolve(signal)))
+  await sleep(100)
+  killRecordedNow([{ pid, command: '/bin/sleep 603', startedAt: 'Thu Jan 1 00:00:00 1970' }], systemTools)
+  await sleep(100)
+  assert.equal(processExists(pid), true, 'the same command line under another start is not the recorded process')
+  killRecordedNow([{ pid, command: '/bin/sleep 603', startedAt: processStart(pid) }], systemTools)
+  assert.equal(await Promise.race([ended, sleep(5000, 'still running')]), 'SIGKILL')
+})
+
+test('every process listed carries its start', async (t) => {
+  const child = spawn('/bin/sleep', ['604'], { stdio: 'ignore' })
+  t.after(() => child.kill('SIGKILL'))
+  await sleep(100)
+  const listed = (await listProcesses(systemTools, 10_000)).find((entry) => entry.pid === child.pid)
+  assert.deepEqual(listed, { pid: child.pid, command: '/bin/sleep 604', startedAt: processStart(child.pid ?? 0) })
+})
+
+// A process name of about 200 KB, which `ps -ww` prints whole as the first word of the command line. Linux refuses any
+// one argument past 128 KiB (MAX_ARG_STRLEN) with E2BIG, so there the name is 100 KB and more sleeps make up the table.
+const wideName = `retest-wide-table-${'w'.repeat((process.platform === 'linux' ? 100 : 200) * 1024)}`
+
+// Sleeps of the test's own under `wideName`, enough that the whole table `ps -ww` prints passes a short reading's 4 MiB
+// by at least 1 MiB, as a busy Mac's table did. Each is ended after the test through the handle that started it.
+async function widenTable(t: TestContext): Promise<readonly ChildProcess[]> {
+  const tableBytes = (): number => execFileSync('/bin/ps', ['-ww', '-axo', 'pid=,ppid=,pgid=,stat=,lstart=,args='], { maxBuffer: processTableOutputLimit, env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC0' } }).length
+  const count = Math.max(1, Math.ceil((metadataOutputLimit + 1024 * 1024 - tableBytes()) / wideName.length))
+  const children = Array.from({ length: count }, () => spawn('/bin/sleep', ['60'], { stdio: 'ignore', argv0: wideName }))
+  t.after(() => { for (const child of children) child.kill('SIGKILL') })
+  await Promise.all(children.map((child) => once(child, 'spawn')))
+  assert.ok(tableBytes() > metadataOutputLimit + 512 * 1024, 'the whole table is larger than a short reading may print')
+  return children
+}
+
+test('ownership readings take a whole process table larger than 4 MiB, and still read a pid again before signalling it', async (t) => {
+  const children = await widenTable(t)
+  const table = await readProcessTable()
+  const listed = await listProcesses(systemTools, 10_000)
+  for (const child of children) {
+    assert.equal(table.find((entry) => entry.pid === child.pid)?.command, `${wideName} 60`, 'the ownership table holds each wide process whole')
+    assert.equal(listed.find((entry) => entry.pid === child.pid)?.command, `${wideName} 60`, 'the process list holds each wide process whole')
+  }
+  const [first] = children
+  if (first?.pid === undefined) throw new Error('no wide process started')
+  // The shared rule on its own host: the launch is recorded from a whole table, and its one pid is read again right
+  // before the signal.
+  const group = new OwnedProcessGroup(first.pid)
+  assert.deepEqual(group.capture(), [], 'the launch is recorded from the whole table')
+  const ended = once(first, 'exit')
+  assert.deepEqual(group.signalReport('SIGKILL'), { problems: [], identityRefusals: [] })
+  assert.equal((await ended)[1], 'SIGKILL')
+  assert.equal(group.remains(), false, 'a whole table later shows it gone')
+  assert.deepEqual(group.readProblems, [])
+})
+
+test('a process list longer than a command\'s output limit is refused, never read as a shorter command', async (t) => {
+  const { tools } = await scriptedPs(t, `printf '7 ${shownStart} /valid/process\\n9 ${shownStart} /cut/'; head -c 17000000 /dev/zero | tr '\\0' x; printf '\\n'`)
+  await assert.rejects(listProcesses(tools, 30_000), /ps listed more than the 16777216 characters Retest reads of one command, so the list may be cut/)
+})
+
+// The shared reader's blocking readings, counted: each waits for its worker's answer with `Atomics.wait`, which holds
+// the thread; the asynchronous reading waits with `Atomics.waitAsync` and is not counted.
+function blockingReadings(t: TestContext): { count(): number; callers(): readonly string[] } {
+  const original = Atomics.wait
+  const callers: string[] = []
+  t.mock.method(Atomics, 'wait', (...args: Parameters<typeof Atomics.wait>): ReturnType<typeof Atomics.wait> => {
+    callers.push(new Error('blocking reading').stack ?? '')
+    return original(...args)
+  })
+  return { count: () => callers.length, callers: () => [...callers] }
+}
+
+test('a short command takes its ownership readings without blocking the main thread', async (t) => {
+  const readings = blockingReadings(t)
+  const result = await runCommand('/bin/echo', ['ready'], { timeoutMs: 5000 })
+  assert.equal(result.stdout, 'ready\n')
+  assert.deepEqual(result.cleanupProblems, [])
+  assert.equal(readings.count(), 0, 'no reading waited on the main thread')
+})
+
+test('a long-running process takes no blocking ownership reading while it runs', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const readings = blockingReadings(t)
+  const activity: { kind: 'reading' | 'signal'; pid?: number; individual?: boolean; signal?: NodeJS.Signals | number }[] = []
+  const postMessage = Worker.prototype.postMessage
+  t.mock.method(Worker.prototype, 'postMessage', function (this: Worker, request: MetadataProcessRequest) {
+    const selected = request.args.indexOf('-p')
+    activity.push({ kind: 'reading', individual: selected !== -1, ...(selected === -1 ? {} : { pid: Number(request.args[selected + 1]?.split(',')[0]) }) })
+    return postMessage.call(this, request)
+  })
+  const kill = process.kill.bind(process)
+  t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => {
+    if (signal !== undefined && signal !== 0) activity.push({ kind: 'signal', pid, signal })
+    return kill(pid, signal)
+  })
+  const owned = await OwnedProcess.start({ command: '/bin/sleep', args: ['30'], logFile: join(folder, 'sleep.log') })
+  t.after(() => owned.stop(0))
+  await sleep(1000)
+  assert.equal(readings.count(), 0, 'the descendant watch reads without blocking')
+  assert.deepEqual(await owned.stop(0), [])
+  const signalled = activity.filter(entry => entry.kind === 'signal')
+  assert.equal(signalled.length, 1, 'the stop sends exactly one signal')
+  const signal = signalled[0]
+  assert.ok(signal)
+  const signalIndex = activity.indexOf(signal)
+  assert.deepEqual(activity.filter(entry => entry.individual === true), [{ kind: 'reading', individual: true, pid: signal.pid }], 'the stop makes exactly one individual reading of the pid it signals')
+  assert.deepEqual(activity[signalIndex - 1], { kind: 'reading', individual: true, pid: signal.pid }, 'the individual reading is immediately before the signal, with no intervening host operation')
+  assert.equal(readings.count(), 0, 'no ownership reading during start, watch or stop blocks the main thread')
+})
+
+test('a child the executor starts after its own start is still found and ended at the stop', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const pidFile = join(folder, 'grandchild')
+  const owned = await OwnedProcess.start({ command: '/bin/sh', args: ['-c', `sleep 0.3; sleep 600 & echo $! > '${pidFile}'; wait`], logFile: join(folder, 'process.log') })
+  const grandchild = await grandchildPid(pidFile)
+  assert.equal(processExists(grandchild), true)
+  assert.deepEqual(await owned.stop(0), [])
+  assert.equal(processExists(grandchild), false, 'the child started later was recorded through its ancestry and ended')
+})
+
+test('the temporary output is deleted once the process closed, even while an unowned member of its group remains', async (t) => {
+  const fake = await fakeOwnedProcess(t)
+  fake.state.processes = [{ ...fake.descendant, pid: fake.descendant.pid + 1, parentPid: 1, startedAt: 'unrecorded-birth' }]
+  fake.close()
+  const settled = await Promise.race([fake.owned.exited.then(() => 'settled'), sleep(8000, 'still waiting')])
+  assert.equal(settled, 'settled', 'deletion does not wait for a process Retest may not end')
+  assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8').catch(() => 'absent'), 'absent')
+  assert.equal(await fake.owned.processesRemain(), true, 'the unowned member still holds cleanup')
+  assert.match((await fake.owned.finishOutput(1)).join(' '), /ownership could not be verified/)
+  assert.deepEqual(fake.signals, [], 'it is never signaled')
+})
+
+test('the exit hook deletes the temporary output even while members of the group remain', async (t) => {
+  const fake = await fakeOwnedProcess(t)
+  fake.state.processes = [fake.root, fake.descendant, { ...fake.descendant, pid: fake.descendant.pid + 1, parentPid: 1, startedAt: 'unrecorded-birth' }]
+  fake.removeHook(0)
+  assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8').catch(() => 'absent'), 'absent')
+})
+
+test('a new run folder names this process as its maker, by pid and start, readable by its owner alone', async (t) => {
+  const folder = await makeOwnedFolder('retest-executor-', systemTools)
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  assert.deepEqual(JSON.parse(await readFile(join(folder, 'retest-owner.json'), 'utf8')), { startTimeVersion: 1, pid: process.pid, startedAt: processStart(process.pid) })
+  assert.equal((await stat(join(folder, 'retest-owner.json'))).mode & 0o777, 0o600)
+})
+
+test('a sweep deletes only absent makers\' folders and retains live makers with matching or mismatched starts', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'retest-native-sweep-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const live = spawn('/bin/sleep', ['605'], { stdio: 'ignore' })
+  t.after(() => live.kill('SIGKILL'))
+  await sleep(100)
+  const ended = await endedPid()
+  const folder = async (name: string, owner?: string): Promise<string> => {
+    const path = join(root, name)
+    await mkdir(path)
+    await writeFile(join(path, 'result.txt'), 'staged')
+    if (owner !== undefined) await writeFile(join(path, 'retest-owner.json'), owner)
+    return path
+  }
+  const gone = await folder('retest-executor-gone', JSON.stringify({ startTimeVersion: 1, pid: ended, startedAt: recordedStart }))
+  const taken = await folder('retest-macos-taken', JSON.stringify({ startTimeVersion: 1, pid: live.pid, startedAt: 'Thu Jan 1 00:00:00 1970' }))
+  const running = await folder('retest-ios-running', JSON.stringify({ startTimeVersion: 1, pid: live.pid, startedAt: processStart(live.pid ?? 0) }))
+  const unrecorded = await folder('retest-executor-unrecorded')
+  const unreadable = await folder('retest-executor-unreadable', 'not a record')
+  const other = await folder('another-tool-gone', JSON.stringify({ startTimeVersion: 1, pid: ended, startedAt: recordedStart }))
+  const target = await folder('linked-target', JSON.stringify({ startTimeVersion: 1, pid: ended, startedAt: recordedStart }))
+  await symlink(target, join(root, 'retest-executor-link'))
+  const swept = await sweepOwnedFolders(systemTools, root)
+  assert.deepEqual([...swept.removed].sort(), [gone])
+  assert.equal(swept.kept, 4)
+  assert.deepEqual(swept.problems, [])
+  for (const kept of [taken, running, unrecorded, unreadable, other, target]) assert.equal((await stat(kept)).isDirectory(), true, `${kept} is kept`)
+  assert.equal((await stat(join(root, 'retest-executor-link'))).isDirectory(), true, 'a link is never followed or deleted')
+})
+
+test('a sweep keeps a folder whose maker cannot be read', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'retest-native-sweep-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, 'retest-executor-held'))
+  await writeFile(join(root, 'retest-executor-held', 'retest-owner.json'), JSON.stringify({ startTimeVersion: 1, pid: process.pid, startedAt: recordedStart }))
+  const failing = await scriptedPs(t, 'echo "ps: sysctl failed" >&2\nexit 1')
+  const swept = await sweepOwnedFolders(failing.tools, root)
+  assert.deepEqual([swept.removed, swept.kept], [[], 1])
+  assert.equal((await stat(join(root, 'retest-executor-held'))).isDirectory(), true)
+})
+
+test('a start runs the selected Xcode\'s own xcodebuild, never the shim that execs it under the same pid', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-native-xcrun-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const xcrun = join(folder, 'xcrun')
+  await writeFile(xcrun, '#!/bin/sh\nif [ "$1 $2" = "--find xcodebuild" ]; then echo /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild; exit 0; fi\nexit 64\n')
+  await chmod(xcrun, 0o755)
+  assert.equal(await selectedXcodebuild({ ...systemTools, xcrun, xcodebuild: xcodebuildShim }), '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild')
+  assert.equal(await selectedXcodebuild({ ...systemTools, xcrun, xcodebuild: '/Fakes/bin/xcodebuild' }), '/Fakes/bin/xcodebuild', 'any other path is run as given')
+  const failing = join(folder, 'failing-xcrun')
+  await writeFile(failing, '#!/bin/sh\necho "xcrun: error: unable to find utility" >&2\nexit 72\n')
+  await chmod(failing, 0o755)
+  const refused = await selectedXcodebuild({ ...systemTools, xcrun: failing, xcodebuild: xcodebuildShim })
+  assert.match(typeof refused === 'string' ? refused : refused.problem, /could not find the selected Xcode's xcodebuild: xcrun --find xcodebuild ended with exit code 72/)
+})
+
+test('native cleanup clears 100 dead helpers from one signal snapshot and individually reads only the live root asynchronously', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-native-history-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const child = new ChildProcess()
+  const pid = 700101
+  Object.defineProperty(child, 'pid', { value: pid })
+  Object.defineProperty(child, 'stdout', { value: new PassThrough() })
+  Object.defineProperty(child, 'stderr', { value: new PassThrough() })
+  const root = { pid, parentPid: process.pid, groupId: pid, startedAt: 'birth', command: '/owned/executor' }
+  let entries = [root, ...Array.from({ length: 100 }, (_, index) => ({ ...root, pid: pid + 1 + index, parentPid: pid, command: `/owned/helper-${index}` }))]
+  const calls: string[] = []
+  let cleaning = false
+  const logFile = join(folder, 'output.log')
+  const before = new Set(process.listeners('exit'))
+  const owned = new OwnedProcess(child, logFile, openSync(logFile, 'a', 0o600), {
+    command: '/owned/executor', args: [], logFile,
+    ownershipSystem: {
+      read: () => { if (cleaning) throw new Error('cleanup used a synchronous table'); return entries },
+      readAsync: async () => { calls.push('table'); return entries },
+      readProcess: () => { throw new Error('cleanup used a synchronous identity') },
+      readProcessAsync: async (pid) => { calls.push(`identity ${pid}`); return entries.find((entry) => entry.pid === pid) },
+      signal: (pid) => {
+        calls.push(`signal ${pid}`); entries = []
+        Object.defineProperty(child, 'exitCode', { value: 0, configurable: true })
+        child.emit('exit', 0, null); child.emit('close', 0, null)
+      },
+    },
+  })
+  entries = [root]
+  cleaning = true
+  try {
+    assert.deepEqual(await owned.stop(0), [])
+    assert.deepEqual(calls.filter((call) => call.startsWith('identity')), [`identity ${pid}`])
+    assert.deepEqual(calls.filter((call) => call.startsWith('signal')), [`signal ${pid}`])
+    const signalAt = calls.indexOf(`signal ${pid}`)
+    assert.deepEqual(calls.slice(signalAt - 2, signalAt + 1), ['table', `identity ${pid}`, `signal ${pid}`])
+  } finally {
+    cleaning = false; entries = []
+    if (child.exitCode === null) { Object.defineProperty(child, 'exitCode', { value: 0, configurable: true }); child.emit('exit', 0, null); child.emit('close', 0, null) }
+    for (const hook of process.listeners('exit')) if (!before.has(hook)) process.off('exit', hook)
+    await owned.finishOutput(1000)
+  }
+})
+
+// Takes `port` on `host` and keeps it, or answers undefined when something there holds it or the host lacks the address.
+async function hold(t: TestContext, host: string, port: number): Promise<number | undefined> {
+  const server = createServer()
+  const held = await new Promise<boolean>((resolve) => {
+    server.once('error', () => resolve(false))
+    server.listen({ port, host }, () => resolve(true))
+  })
+  if (!held) return undefined
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())))
+  const address = server.address()
+  return typeof address === 'object' && address !== null ? address.port : undefined
+}
+
+test('a port held on ::1 alone is not free, and the executor\'s port is drawn past it from below the ephemeral range', async (t) => {
+  // A port from below the ephemeral range that a listener holds on ::1 only, as a server bound to localhost may.
+  let held: number | undefined
+  for (let port = 31_000; held === undefined && port < 31_200; port += 1) held = await hold(t, '::1', port)
+  if (held === undefined) {
+    t.skip('this host has no ::1, or no port from 31000 to 31199 was free on it')
+    return
+  }
+  assert.equal(await freeOnLoopback(held), false, 'the listener on ::1 holds the port though 127.0.0.1 is free')
+  const free = held + 200
+  assert.equal(await freeOnLoopback(free), true, `port ${free} is free on both addresses`)
+  // The draw lands on the held port first and on the free one next.
+  const draws = [held, free].map((port) => (port - 20_000 + 0.5) / (49_152 - 20_000))
+  t.mock.method(Math, 'random', () => draws.shift() ?? 0.5)
+  assert.equal(await freePort(), free)
+  assert.deepEqual(draws, [], 'the held port was drawn and passed over')
+  const probe = await hold(t, '127.0.0.1', held)
+  assert.equal(probe, held, '127.0.0.1 alone shows the port free')
+})
+
+// A tool that ignores SIGTERM, as do the processes it starts, so only SIGKILL ends it.
+async function stubbornTool(t: TestContext): Promise<string> {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-native-stubborn-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const script = join(folder, 'stubborn')
+  await writeFile(script, "#!/bin/sh\ntrap '' TERM\nsleep 30\n")
+  await chmod(script, 0o755)
+  return script
+}
+
+test('a command that ignores SIGTERM is killed once the grace it is given has passed, the default one unless it is given another', async (t) => {
+  const script = await stubbornTool(t)
+  // The timeout leaves the shell time to set its trap before SIGTERM comes, even on a loaded machine.
+  const timeoutMs = 500
+  const timed = async (graceMs: number | undefined): Promise<number> => {
+    const began = performance.now()
+    const result = await runCommand(script, [], { timeoutMs, ...(graceMs === undefined ? {} : { graceMs }) })
+    assert.equal(result.timedOut, true)
+    assert.deepEqual(result.cleanupProblems, [])
+    return performance.now() - began
+  }
+  const short = await timed(300)
+  assert.ok(short >= timeoutMs + 300 && short < timeoutMs + terminationGraceMs, `a 300 ms grace ended the command after ${short} ms`)
+  const standard = await timed(undefined)
+  assert.ok(standard >= timeoutMs + terminationGraceMs, `the default grace ended the command after ${standard} ms`)
 })
