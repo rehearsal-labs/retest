@@ -43,14 +43,16 @@ for (const [name, fields, message] of [
 
 test('the live runner accepts the pinned host release greeting with one start', { skip: unpinnedMedia }, async () => {
   const fake = fakeMediaStarter()
+  // An accepted start also reads this process's own start from the host through the metadata worker, whose first
+  // reading starts its thread: about 35 ms on a Mac, while on a hosted x64 runner the case ran out of a 100 ms budget.
+  // The fake answers at once, so this budget bounds that one host reading.
   const media = new RunMedia({ location: { executable: '/fake/retest-media' }, start: async (location, budget) => {
     const process = await fake.start(location, budget)
     Object.defineProperty(process, 'hello', { value: { ...process.hello, version: mediaVersion, build: { target: mediaTarget(), profile: 'release' } } })
     return process
-  }, emit: () => undefined, timeouts: { start: 100, close: 100, leftovers: 100 }, runFolder: newRunFolder() })
+  }, emit: () => undefined, timeouts: { start: 5000, close: 100, leftovers: 100 }, runFolder: newRunFolder() })
   try {
-    assert.ok((await media.acquire()).ok)
-    assert.ok((await media.acquire()).ok)
+    for (const acquired of [await media.acquire(), await media.acquire()]) assert.ok(acquired.ok, acquired.ok ? '' : `${acquired.code}: ${acquired.message}`)
     assert.equal(fake.started.length, 1)
   } finally { assert.equal(await media.close(), undefined) }
 })

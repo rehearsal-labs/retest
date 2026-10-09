@@ -1,4 +1,5 @@
 import type { Failure } from '../../src/protocol/failures.ts'
+import type { ParentMessage } from '../../src/protocol/messages.ts'
 import type { ProcessEvent } from '../../src/runner/test-file-process.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
@@ -71,19 +72,34 @@ describe('a run stopped with a Failure as its reason', async () => {
   })
 })
 
-// The host's stop kills the file's process at once, but the process can answer the stop first with its own verdict: the
-// click's answer, which is the reason at the click's place. The kill is held back here so that answer always comes first.
+// The host's stop answers the click with the stop's reason, asks the file's process to abort and kills it at once. The
+// process can answer first with its own verdict: the click's answer, which is the reason at the click's place. It gives
+// that verdict only when the answer reaches its test before the abort does; when both arrive close together, as on a
+// slow machine, the abort can win inside the process and its verdict carries no failure. The abort, and the kill of the
+// process asked to abort, are held back here until the process has answered, at most 5 s, so that answer always comes first.
 test('a stopped test whose process answers the stop before it is killed carries the reason as the host gave it', async (t) => {
+  const answered = Promise.withResolvers<void>()
+  const held = (): Promise<unknown> => Promise.race([answered.promise, delay(5000, undefined, { ref: false })])
+  const aborted = new WeakSet<TestFileProcess>()
   const kill = TestFileProcess.prototype.kill
   t.mock.method(TestFileProcess.prototype, 'kill', function (this: TestFileProcess) {
-    return delay(200).then(() => kill.call(this))
+    return aborted.has(this) ? held().then(() => kill.call(this)) : kill.call(this)
+  })
+  const send = TestFileProcess.prototype.send
+  t.mock.method(TestFileProcess.prototype, 'send', function (this: TestFileProcess, message: ParentMessage) {
+    if (message.type !== 'abort') return send.call(this, message)
+    aborted.add(this)
+    void held().then(() => send.call(this, message))
   })
   const answers: (Failure | undefined)[] = []
   const listen = TestFileProcess.prototype.listen
   t.mock.method(TestFileProcess.prototype, 'listen', function (this: TestFileProcess, listener: ((event: ProcessEvent) => void) | undefined) {
     if (listener === undefined) return listen.call(this, undefined)
     listen.call(this, (event) => {
-      if (event.kind === 'message' && event.message.type === 'test-finished') answers.push(event.message.failure)
+      if (event.kind === 'message' && event.message.type === 'test-finished') {
+        answers.push(event.message.failure)
+        answered.resolve()
+      }
       listener(event)
     })
   })
