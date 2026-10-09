@@ -13,7 +13,7 @@ import { isPlainObject } from '../../src/protocol/schema.ts'
 import { OwnedProcess } from '../../src/native/processes.ts'
 import { readProcessTable, readProcessTableAsync } from '../../src/shared/process-ownership.ts'
 import { alive, readApps, readJsonFile } from './native-fake-executor.ts'
-import { fakeAppBundle, fakeTools, fakeWindowProcess, startedProcesses } from './native-fake-tools.ts'
+import { fakeAppBundle, fakeTools, fakeWindowProcess, hungProcesses, startedProcesses } from './native-fake-tools.ts'
 
 // An iOS simulator runtime needs macOS with Xcode, and refuses to start anywhere else.
 const darwinOnly = { skip: process.platform === 'darwin' ? false : 'iOS simulators run only on macOS' }
@@ -125,8 +125,11 @@ for (const step of ['create', 'boot', 'bootstatus'] as const) {
   test(`a start stopped during ${step} removes what it made and leaves no process`, darwinOnly, async (t) => {
     const setup = await setUp(t, { simctl: { [step]: { hang: true } } })
     const stop = new AbortController()
+    // The stop comes once the step hangs, with the child it started running. A stop that lands while the fake is still
+    // starting that child can leave it with a parent already ended before Retest read it; Retest then leaves the child
+    // alone and reports it, as a process it cannot trace to its launch, which is not this case.
     const watching = setInterval(async () => {
-      if ((await simctlCalls(setup.fake)).includes(step)) stop.abort({ class: 'interrupted', message: 'The run was interrupted.' })
+      if ((await simctlCalls(setup.fake)).includes(step) && (await hungProcesses(setup.fake.root)).length > 0) stop.abort({ class: 'interrupted', message: 'The run was interrupted.' })
     }, 50)
     t.after(() => clearInterval(watching))
     const started = await start(setup, { signal: stop.signal })
@@ -141,9 +144,10 @@ for (const step of ['create', 'boot', 'bootstatus'] as const) {
 test('a start stopped while WebDriverAgent comes up ends xcodebuild and deletes the simulator', darwinOnly, async (t) => {
   const setup = await setUp(t, { executorStart: 'hang' })
   const stop = new AbortController()
+  // As for a stopped simctl step: the stop comes once xcodebuild hangs, with the child it started running.
   const watching = setInterval(async () => {
     const calls = await setup.fake.calls()
-    if (calls.some((call) => call.tool === 'xcodebuild' && call.args[0] === 'test-without-building')) {
+    if (calls.some((call) => call.tool === 'xcodebuild' && call.args[0] === 'test-without-building') && (await hungProcesses(setup.fake.root)).length > 0) {
       clearInterval(watching)
       stop.abort({ class: 'interrupted', message: 'The run was interrupted.' })
     }

@@ -88,8 +88,12 @@ export async function startedProcesses(root: string): Promise<number[]> {
   const apps = Object.values(readApps(root)).flatMap((app) => (app.pid === undefined ? [] : [app.pid]))
   const runners = readJsonFile(join(root, 'processes.json'))
   const runnerPids = Array.isArray(runners) ? runners.flatMap((entry) => (isPlainObject(entry) && typeof entry['pid'] === 'number' ? [entry['pid']] : [])) : []
-  const hung = (await readFile(join(root, 'hung.txt'), 'utf8').catch(() => '')).split('\n').filter((line) => /^\d+$/.test(line)).map(Number)
-  return [...apps, ...runnerPids, ...hung]
+  return [...apps, ...runnerPids, ...(await hungProcesses(root))]
+}
+
+/** The children a hanging fake step started, each noted once it runs: a step hangs only from then on. */
+export async function hungProcesses(root: string): Promise<number[]> {
+  return (await readFile(join(root, 'hung.txt'), 'utf8').catch(() => '')).split('\n').filter((line) => /^\d+$/.test(line)).map(Number)
 }
 
 /** An owned fake process for a window's owner, listed by fake ps and usable in the fake window list. */
