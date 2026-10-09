@@ -11,6 +11,7 @@ import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { failure, truncateText } from '../../src/protocol/failures.ts'
 import { resultFile, testId } from '../../src/protocol/run-folder.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
+import { SecretFiller } from '../../src/runner/secrets.ts'
 import { runProject, tempProject } from '../support/project.ts'
 import { eventsOfType, runSupportFiles, supportFile } from '../support/run-harness.ts'
 import { scriptedApp, scriptedTest } from '../support/scripted-process.ts'
@@ -294,6 +295,24 @@ describe('a secret fill', () => {
     await filled
     assert.equal(context.signal.aborted, true)
     await run.report
+  })
+
+  // An Electron app's window can be reached before its first document commits: a fill that comes first waits for it.
+  test('on a window that has opened no address yet waits for its first, within the fill\'s time, and types there', async () => {
+    const served = 'http://127.0.0.1:64294'
+    const secrets = new SecretFiller(new Map([['password', { value: 'hunter2' }]]), new Map([['password', { source: { env: 'RETEST_ELECTRON_PASSWORD' }, origins: [served] }]]), new Redactor())
+    const run = await scriptedTest({
+      fake: { titles },
+      fillSecret: (command, context) => secrets.resolve(command, { ...context, appOrigins: [], target: 'electron' }),
+    })
+    assert.equal(run.page.url, undefined, 'the window has opened nothing')
+    const filled = run.command(1, { kind: 'fill', locator: field, value: { secret: 'password' } })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    run.page.navigate(`${served}/index.html`)
+    const answer = await filled
+    assert.ok(answer.ok, JSON.stringify(answer))
+    assert.deepEqual(run.page.typed, [{ value: 'hunter2', secret: 'password', url: `${served}/index.html` }])
+    await run.finish()
   })
 })
 

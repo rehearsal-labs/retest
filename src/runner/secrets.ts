@@ -4,6 +4,8 @@ import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { ResolvedSecret } from './contract.ts'
 import type { Redactor } from './redactor.ts'
+import { waitBeforeRead } from '../assertions/wait-before-read.ts'
+import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage, failure, failureSchema } from '../protocol/failures.ts'
 import { parse } from '../protocol/schema.ts'
 import { originOf } from '../protocol/url.ts'
@@ -17,6 +19,12 @@ export type SecretFill = { kind: 'fill'; locator: LocatorRecipe; value: { secret
 export type FillContext = {
   /** The page's origin and path, as it stands now. */
   pageUrl: string | undefined
+  /**
+   * Reads the page's origin and path again. Given, a fill that finds the page on no address yet, as an Electron app's
+   * window can be before its first document commits, waits for one within its time; without it, such a page is refused
+   * at once.
+   */
+  currentUrl?: () => string | undefined
   /** The origins of the base URLs of the test's apps. */
   appOrigins: readonly string[]
   /**
@@ -38,6 +46,9 @@ export type FillResolution = { ok: true; command: ResolvedFill } | { ok: false; 
 
 /** The shortest value a secret may have. A shorter one would turn up inside ordinary text, which then could not be read. */
 const minSecretLength = 4
+
+// How often a fill waiting for the page's first address reads it again. The read asks the browser nothing.
+const addressPauseMs = 20
 
 /**
  * Reads each of the config's `env` sources once, now, from `env`, and keeps each function source to call on
@@ -87,10 +98,12 @@ export function secretVariables(secrets: ReadonlyMap<string, LoadedSecret>): str
  * Turns a secret fill into the text the page types. The page's origin is checked first, so a secret is never
  * read, let alone typed, for a page it does not belong to: the origins of the test's apps' base URLs, and the
  * ones `secretOrigins` lists for it. An Electron app's window takes only the ones `secretOrigins` lists, since
- * the app decides what origin its page shows. The page checks its origin again as it types, since a page can
- * move after its last navigation was seen, so the fill carries the same origins. A native app's destination is
- * its bundle id, which `secretOrigins` must name exactly; no base URL stands for it. Every value read is taught
- * to the redactor before it goes anywhere.
+ * the app decides what origin its page shows. A page on no address yet is waited for within the fill's time, when
+ * the fill can read the address again, and refused once that time is spent; a page on an address it may not take
+ * is refused at once. The page checks its origin again as it types, since a page can move after its last
+ * navigation was seen, so the fill carries the same origins. A native app's destination is its bundle id, which
+ * `secretOrigins` must name exactly; no base URL stands for it. Every value read is taught to the redactor before
+ * it goes anywhere.
  */
 export class SecretFiller {
   readonly #secrets: ReadonlyMap<string, ResolvedSecret>
@@ -112,12 +125,15 @@ export class SecretFiller {
     const declared = this.#declared.get(name)?.origins ?? []
     const electron = context.target === 'electron'
     const allowedOrigins = electron ? [...new Set(declared.filter(isWebOrigin))] : [...new Set([...context.appOrigins, ...declared])]
-    const origin = originOf(context.pageUrl)
+    const located = await locate(context)
+    if (located.kind === 'stopped') return { ok: false, failure: stoppedFill(name, context.signal.reason, 'waiting for the page to open an address for') }
+    const { pageUrl } = located
+    const origin = originOf(pageUrl)
     if (origin === undefined || !allowedOrigins.includes(origin)) {
-      const refusal = { name, origin, allowed: allowedOrigins, schemeless: schemelessHost(declared, context.pageUrl) }
+      const refusal = { name, origin, allowed: allowedOrigins, schemeless: schemelessHost(declared, pageUrl) }
       return refused('not_actionable', electron ? wrongElectronOrigin(refusal) : wrongOrigin(refusal), { origin: origin ?? null })
     }
-    const value = await this.#read(name, secret, context)
+    const value = await this.#read(name, secret, located.context)
     if (typeof value !== 'string') return { ok: false, failure: value }
     return { ok: true, command: { kind: 'fill', locator: command.locator, value, secret: name, allowedOrigins } }
   }
@@ -149,7 +165,7 @@ export class SecretFiller {
     signal.removeEventListener('abort', stop)
     if (read.status === 'stopped') {
       waiting.abort(new DOMException(`Retest stopped reading the secret ${JSON.stringify(name)}: its fill was stopped.`, 'AbortError'))
-      return stoppedFill(name, signal.reason)
+      return stoppedFill(name, signal.reason, 'reading')
     }
     if (read.status === 'timed_out') {
       waiting.abort(new DOMException(`Retest stopped reading the secret ${JSON.stringify(name)}: it took longer than ${timeoutMs} ms.`, 'TimeoutError'))
@@ -169,12 +185,39 @@ export class SecretFiller {
   }
 }
 
-// A fill stopped while its secret was read ends as the reason it was stopped says, and types nothing.
-function stoppedFill(name: string, reason: unknown): Failure {
+// A fill stopped while it waited, for the page's address or for its secret, ends as the reason it was stopped says, and
+// types nothing.
+function stoppedFill(name: string, reason: unknown, doing: string): Failure {
   const parsed = parse(failureSchema, reason)
   const cause = parsed.ok ? parsed.value : failure('interrupted', 'The fill was stopped.')
-  const message = `${cause.message} Retest stopped reading the secret ${JSON.stringify(name)}, and typed nothing.`
+  const message = `${cause.message} Retest stopped ${doing} the secret ${JSON.stringify(name)}, and typed nothing.`
   return { class: cause.class, message, details: { ...cause.details, inputSent: false } }
+}
+
+type Located = { readonly kind: 'located'; readonly pageUrl: string | undefined; readonly context: FillContext } | { readonly kind: 'stopped' }
+
+// The address the fill is checked against: the page's as it stands, or, for a page on no address yet that can be read
+// again, the first it opens within the fill's time, which leaves the rest of that time to reading the value.
+async function locate(context: FillContext): Promise<Located> {
+  const { currentUrl, signal } = context
+  if (currentUrl === undefined || !openedNothing(context.pageUrl)) return { kind: 'located', pageUrl: context.pageUrl, context }
+  const deadline = new Deadline(context.timeoutMs, { signal })
+  let pageUrl = currentUrl()
+  while (openedNothing(pageUrl) && !deadline.reached) {
+    try {
+      await waitBeforeRead(deadline, addressPauseMs)
+    } catch (error) {
+      if (signal.aborted) return { kind: 'stopped' }
+      throw error
+    }
+    pageUrl = currentUrl()
+  }
+  return { kind: 'located', pageUrl, context: { ...context, timeoutMs: deadline.remainingMs } }
+}
+
+// A page that has opened no address: none read yet, or the empty document a new page or window starts on.
+function openedNothing(address: string | undefined): boolean {
+  return address === undefined || address === '' || URL.parse(address)?.protocol === 'about:'
 }
 
 function tooShort(name: string, variable?: string): string {

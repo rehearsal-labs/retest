@@ -3,6 +3,7 @@ import type { ResolvedSecret } from '../../src/runner/contract.ts'
 import type { FillContext, SecretFill } from '../../src/runner/secrets.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
+import { failure } from '../../src/protocol/failures.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { resolveSecrets, SecretFiller, secretValuesProblem, secretVariables } from '../../src/runner/secrets.ts'
 
@@ -142,6 +143,69 @@ describe('SecretFiller', () => {
     assert.deepEqual(listed.ok ? listed.command.allowedOrigins : listed.failure, ['https://login.example'], 'the fill is bound to the listed origin alone')
     const web = await secrets.resolve(fill('password'), { ...on('http://127.0.0.1:4173/login'), target: 'web' })
     assert.deepEqual(web.ok ? web.command.allowedOrigins : web.failure, ['http://127.0.0.1:4173', 'https://login.example'], 'a web page keeps its base URLs')
+  })
+
+  // An Electron app's window can be reached before its first document commits, as one under load was.
+  describe('on a window that has opened no address yet', () => {
+    const blankWindow = 'Retest did not type the secret "password": the window has not opened a web address yet, and in an Electron app it may be typed only on https://login.example, the origins secretOrigins lists for it. An Electron app shows whatever origin it chooses, so no base URL counts there. Add the origin to secretOrigins if it belongs there.'
+    // A window whose address is `first` until `after` ms have passed, then `then`; it counts how often it was read.
+    function windowAt(first: string | undefined, then: string, after: number, timeoutMs: number, signal = new AbortController().signal): { context: FillContext; reads: () => number } {
+      const opened = performance.now()
+      let reads = 0
+      const currentUrl = (): string | undefined => { reads += 1; return performance.now() - opened >= after ? then : first }
+      return { context: { ...on(first, signal), currentUrl, timeoutMs, target: 'electron' }, reads: () => reads }
+    }
+
+    test('waits within the fill\'s time for the first address, and checks that address as any', async () => {
+      const { filler: secrets } = filler(new Map([['password', { value: 'hunter2' }]]))
+      const started = performance.now()
+      const resolved = await secrets.resolve(fill('password'), windowAt(undefined, 'https://login.example/sso', 60, 2000).context)
+      assert.ok(performance.now() - started >= 50, 'it waited for the address')
+      assert.deepEqual(resolved.ok ? resolved.command.allowedOrigins : resolved.failure, ['https://login.example'])
+      const blank = await secrets.resolve(fill('password'), windowAt('about:blank', 'http://127.0.0.1:4173/index.html', 40, 2000).context)
+      assert.deepEqual(blank.ok ? blank.command : blank.failure.details, { origin: 'http://127.0.0.1:4173' }, 'the first address is refused when secretOrigins does not list it')
+    })
+
+    test('refuses in the same words once its time is spent with no address, without reading the value', async () => {
+      let reads = 0
+      const secrets = new SecretFiller(new Map([['password', { read: async () => `pass-${++reads}` }]]), declared, new Redactor())
+      const started = performance.now()
+      const refused = await secrets.resolve(fill('password'), windowAt('about:blank', 'about:blank', 0, 120).context)
+      assert.ok(performance.now() - started >= 110, 'it waited out the fill\'s time')
+      assert.deepEqual(refused, { ok: false, failure: { class: 'not_actionable', message: blankWindow, details: { origin: null } } })
+      assert.equal(reads, 0)
+    })
+
+    test('refuses a window on an address secretOrigins does not list at once, without reading its address again', async () => {
+      const { filler: secrets } = filler(new Map([['password', { value: 'hunter2' }]]))
+      const known = windowAt('http://127.0.0.1:4173/login', 'https://login.example/sso', 0, 2000)
+      const started = performance.now()
+      const refused = await secrets.resolve(fill('password'), known.context)
+      assert.ok(performance.now() - started < 50)
+      assert.equal(known.reads(), 0)
+      assert.equal(refused.ok ? undefined : refused.failure.message, 'Retest did not type the secret "password": the window is on http://127.0.0.1:4173, and in an Electron app it may be typed only on https://login.example, the origins secretOrigins lists for it. An Electron app shows whatever origin it chooses, so no base URL counts there. Add the origin to secretOrigins if it belongs there.')
+    })
+
+    test('a fill stopped while it waits ends as the stop says, and reads nothing', async () => {
+      let reads = 0
+      const secrets = new SecretFiller(new Map([['password', { read: async () => `pass-${++reads}` }]]), declared, new Redactor())
+      const controller = new AbortController()
+      const stop = failure('interrupted', 'The run was interrupted.')
+      setTimeout(() => controller.abort(stop), 30)
+      const stopped = await secrets.resolve(fill('password'), windowAt(undefined, 'https://login.example/sso', 5000, 2000, controller.signal).context)
+      assert.deepEqual(stopped, {
+        ok: false,
+        failure: { class: 'interrupted', message: 'The run was interrupted. Retest stopped waiting for the page to open an address for the secret "password", and typed nothing.', details: { inputSent: false } },
+      })
+      assert.equal(reads, 0)
+    })
+
+    test('reads the value in the time the wait left', async () => {
+      const secrets = new SecretFiller(new Map([['password', { read: () => new Promise<string>(() => {}) }]]), declared, new Redactor())
+      const resolved = await secrets.resolve(fill('password'), windowAt(undefined, 'https://login.example/sso', 80, 200).context)
+      const took = resolved.ok ? undefined : /it took longer than (\d+) ms$/.exec(resolved.failure.message)?.[1]
+      assert.ok(took !== undefined && Number(took) <= 130, `the read had what was left of 200 ms after about 80: ${took} ms`)
+    })
   })
 
   test('a refused page whose host secretOrigins lists without a scheme is told that name reads as a bundle id', async () => {

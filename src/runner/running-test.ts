@@ -73,11 +73,11 @@ export type RunningTestOptions = {
 export type SecretEntryEnd = (input: 'not_sent' | 'sent' | 'unknown') => void
 
 /**
- * Where a secret fill is going: the app whose page takes it, the page's address as it stands now, or for a native app
- * the bundle id its installed app names, the fill's own time, and a signal aborted when the fill is stopped, as when
- * its test is.
+ * Where a secret fill is going: the app whose page takes it, the page's address as it stands now and a way to read it
+ * again, or for a native app the bundle id its installed app names, the fill's own time, and a signal aborted when the
+ * fill is stopped, as when its test is.
  */
-export type SecretFillContext = { app: string; pageUrl: string | undefined; bundleId?: string; timeoutMs: number; signal: AbortSignal }
+export type SecretFillContext = { app: string; pageUrl: string | undefined; currentUrl?: () => string | undefined; bundleId?: string; timeoutMs: number; signal: AbortSignal }
 
 /** What the parent knows once the test body is over. */
 export type BodyReport = {
@@ -470,8 +470,9 @@ export class RunningTest {
     if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal, commandToken)
     const deadline = new Deadline(timeoutMs)
     const { fillSecret } = this.#options
-    // A native app has no address: the bundle id read from its installed app is where the secret would go.
-    const destination = page instanceof NativePageAdapter ? { pageUrl: undefined, bundleId: page.bundleId } : { pageUrl: page.url }
+    // A native app has no address: the bundle id read from its installed app is where the secret would go. A page can be
+    // read again, so a fill that finds it on no address yet can wait for its first.
+    const destination = page instanceof NativePageAdapter ? { pageUrl: undefined, bundleId: page.bundleId } : { pageUrl: page.url, currentUrl: () => page.url }
     const context: SecretFillContext = { app: message.app, ...destination, timeoutMs, signal: stop.signal }
     const resolved = fillSecret === undefined ? noSecrets(value.secret) : await fillSecret({ kind: 'fill', locator, value }, context)
     if (!resolved.ok) return { ok: false, failure: resolved.failure }
