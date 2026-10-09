@@ -75,3 +75,22 @@ Recorded from `.retest/finalization/logs/final-*.log` on 9 October, on the tree 
 | `npm run typecheck:proofs` | exit 0 |
 | `npm run test:types` | 246 expected errors matched 246 markers in 11 projects, TypeScript 6.0.3 and 7.0.2 |
 | `npm run test:unit` (default concurrency) | 4278 tests, 4278 passed, 0 failed, 0 skipped, exit 0 |
+
+## After the push
+
+The 62 commits (5 to 9 October, b59eed5..0d8f47d) were pushed and the lanes ran again on that head.
+
+| Lane on 0d8f47d | Result |
+| --- | --- |
+| typecheck, type tests, unit suite, cargo test, clippy | all exit 0; unit 4278/4278 |
+| Complete native list, Wispr Flow running | 101 tests, 101 passed, 0 skipped |
+| Complete browser list | 1667 tests, 1663 passed, 1 failed, 3 skipped (live gates): a Firefox install left an empty disk-image mount folder |
+| Linux lane (arm64 Docker, per-test timeouts) | units 4257 tests, 4092 passed, 0 failed, 165 skipped; integration 857 tests, 700 passed, 2 failed, 155 skipped |
+
+Fixes, each its own commit, pushed after its proof:
+
+- c0b463b `fix(install)`: the mount point is removed with a bounded retry after `hdiutil detach` and named when it cannot be, instead of a swallowed `rmdir`; `install.test.ts` alone 16/16 with no folder left.
+- b0d94fe `test(evaluation)`: on Linux, Chrome sends plain requests through the run's proxy; the stand-in now refuses them unjudged, and each caller awaits its own install promise, so an error is filed against the test it happens in rather than the first test's "activity after it ended".
+- bfd14ca `fix(ownership)`: a Chrome helper on Linux rewrites its own command line as it starts (a fork copy of the root's line, `/proc/self/exe` becoming the executable, a zygote gaining headless switches); a recorded descendant with the same birth, the same recorded parent and exactly that change is the process recorded and is ended; a changed birth, parent, executable or any other change stays refused; macOS paths with spaces never match. Failing-first units; in Docker `cdp.test.ts` 3/3 and a 15-run early-recording probe with 0 refusals.
+
+On bfd14ca: the Mac browser files that exercise ownership 32/32; the full Linux lane green (units 4266 tests, 4101 passed, 0 failed; integration 856 tests, 701 passed, 0 failed); the Mac unit suite 4287 tests, 4285 passed, 2 failed in `runner-stop-reason.test.ts` under the parallel suite only: a host-stopped test's failure carried the child's location when the child answered the stop first. Fixed in `src/runner/running-test.ts`: a child's first failure that only repeats the revocation is recorded as the parent's reason, whichever arrives first; failing-first test with the kill held back; unit suite 4288/4288 afterwards.
