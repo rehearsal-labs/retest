@@ -9,14 +9,14 @@ import { endedCleanly } from './test-file-process.ts'
 
 /**
  * Why the tests after this one cannot run in the file's process: it timed out, and code from it may still
- * be running there, or the process ended during it.
+ * be running there, or the process ended during it, or Retest killed it then.
  */
 export function laterTestsReason(name: string, report: BodyReport): Failure | undefined {
   const test = JSON.stringify(name)
   if (report.timedOut) {
     return failure('timeout', `Not run: ${test} timed out, and Retest ended the process for this file because code from that test may still be running.`)
   }
-  if (report.processEnded === undefined) return undefined
+  if (report.processEnded === undefined && report.processKilled !== true) return undefined
   const message = `Not run: the process for this file ended during ${test}, and Retest does not rerun tests in a new one.`
   return failure(report.failure?.class ?? 'test_error', message)
 }

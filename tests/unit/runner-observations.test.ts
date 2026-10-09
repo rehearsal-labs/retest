@@ -5,11 +5,13 @@ import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { ScriptedTest } from '../support/scripted-process.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { failure, truncateText } from '../../src/protocol/failures.ts'
 import { textComparison } from '../../src/protocol/text.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
+import { TestFileProcess } from '../../src/runner/test-file-process.ts'
 import { eventsOfType, isGoneWithin, printedPids, runSupportFiles, testNamed } from '../support/run-harness.ts'
 import { scriptedApp, scriptedTest } from '../support/scripted-process.ts'
 
@@ -394,6 +396,22 @@ describe('a real test process that forges a pass', async () => {
     assert.ok(pid !== undefined && (await isGoneWithin(pid, 1000)), 'the process is gone')
     assert.equal(testNamed(record.result, 'never gets a turn').status, 'not_run')
   })
+})
+
+// The parent stops the forger and kills its process at once, but the process can answer the stop with its own verdict
+// before the parent hears it end. The kill is held back here so that answer always comes first.
+test('a forged pass whose process answers the stop before it is killed still leaves the next test of its file not run', async (t) => {
+  const kill = TestFileProcess.prototype.kill
+  t.mock.method(TestFileProcess.prototype, 'kill', function (this: TestFileProcess) {
+    return delay(200).then(() => kill.call(this))
+  })
+  const record = await runSupportFiles(['forged-assertion.retest.ts'])
+  const result = testNamed(record.result, 'claims a missing element is visible')
+  assert.deepEqual([result.status, result.failure?.class], ['failed', 'test_error'])
+  assert.match(result.failure?.message ?? '', /^The process for this file sent assertion\.passed for expect\(getByTestId\('missing'\)\)\.toBeVisible\(\), which fails on o1/)
+  const next = testNamed(record.result, 'never gets a turn')
+  assert.deepEqual([next.status, next.failure?.class], ['not_run', 'test_error'], JSON.stringify(next.failure))
+  assert.deepEqual(eventsOfType(record.events, 'test.started').map((event) => event.testId), [result.testId], 'the next test never started')
 })
 
 describe('a real test process that claims a pass after the parent failed its assertion on a look it served', async () => {
