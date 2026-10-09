@@ -2,7 +2,7 @@ import type { TestContext } from 'node:test'
 import type { LoadedStart } from '../../src/config/loaded.ts'
 import type { AppServerHandle } from '../../src/runner/app-server.ts'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createServer as createTcpServer } from 'node:net'
@@ -76,6 +76,22 @@ function printedPid(log: string): number {
   return Number(pid)
 }
 
+// Whether a server process has ended. macOS's sh runs the command in its own place, so the server is this process's
+// child, reaped once it is killed. Debian's dash forks it instead: killed after its shell, it is an orphan that stays a
+// zombie until the container's init reaps it, ended though its pid still answers.
+function hasEnded(pid: number): boolean {
+  if (!isRunning(pid)) return true
+  if (process.platform === 'darwin') return false
+  return spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim().startsWith('Z')
+}
+
+// Ends a server a failing test left running, so the file still ends: only while that pid still runs the test server.
+function endLeftOver(pid: number): void {
+  if (!isRunning(pid)) return
+  const command = spawnSync('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8' }).stdout
+  if (command.includes(serverScript)) process.kill(pid, 'SIGKILL')
+}
+
 // Resolves once the server has printed its process id, or after `timeoutMs`, when `printedPid` then says it did not.
 async function pidPrinted(log: string, timeoutMs = 5000): Promise<void> {
   const end = performance.now() + timeoutMs
@@ -123,6 +139,37 @@ describe('startAppServer', () => {
     assert.match(readFileSync(logFile, 'utf8'), new RegExp(`listening on ${port}\\n`))
   })
 
+  // A shell replaces itself with a single command at once, too fast to catch at launch; here it first waits, so the
+  // launch is recorded while it is still the shell and the server later holds the shell's pid under its own command.
+  test('a shell that replaces itself with the server after the launch is recorded still has its server stopped', async (t) => {
+    const port = await freePort()
+    const logFile = logIn('replaced')
+    const server = await startAppServer({ name: 'web', start: startOf(`sleep 0.3 && exec ${serverCommand(port)}`, port), logFile }, 5000)
+    const pid = printedPid(logFile)
+    t.after(() => endLeftOver(pid))
+    assert.ok(server.status === 'started')
+    assert.equal(pid, server.pid, 'the shell became the server, keeping its pid')
+    await server.stop(1000)
+    assert.equal(await isGoneWithin(pid, 1000), true, 'the server is gone')
+    assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 500), false)
+  })
+
+  test('a shell that became the server is still stopped when the server never answers', async (t) => {
+    const port = await heldPort(t)
+    const logFile = logIn('replaced-slow')
+    const start = startOf(`sleep 0.3 && exec ${serverCommand(port, 60_000)}`, port)
+    // The server starts listening only after a minute, so it is surely the shell's replacement when the wait ends.
+    const error = await startAppServer({ name: 'web', start, logFile }, 1500).then(unexpectedlyReady, (thrown: unknown) => thrown)
+    const pid = printedPid(logFile)
+    t.after(() => endLeftOver(pid))
+    assert.ok(error instanceof AppServerError)
+    assert.deepEqual(error.failure, {
+      class: 'setup_failed',
+      message: `The server for web did not answer at http://127.0.0.1:${port}/health within 1500 ms. Its output is in ${logFile}.`,
+    })
+    assert.equal(await isGoneWithin(pid, 1000), true, 'the server is gone')
+  })
+
   test('reuses a server that already answers, and never stops it', async (t) => {
     const running = createServer((_request, response) => response.end('up'))
     t.after(() => running.close())
@@ -167,7 +214,7 @@ describe('startAppServer', () => {
     const pid = printedPid(logFile)
     const before = performance.now()
     await server.stop(200)
-    assert.equal(isRunning(pid), false)
+    assert.equal(hasEnded(pid), true)
     assert.ok(performance.now() - before < 2000, 'SIGKILL followed the grace')
   })
 
