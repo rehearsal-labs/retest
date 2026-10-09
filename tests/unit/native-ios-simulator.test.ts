@@ -369,7 +369,11 @@ test('a simulator leftover discovered from its command path is reported and neve
   const started = await start(setup)
   if (!started.ok) throw new Error(started.failure.message)
   const pid = await fakeWindowProcess(setup.fake, `/usr/bin/tail -f /Devices/${started.runtime.udid}/user-owned.log`)
-  await assert.rejects(started.runtime.close(1000), /not recorded as this runtime's launch; Retest did not end it/)
+  // The close first stops the runner and runs simctl shutdown, delete and list, each a fresh Node process of the fake
+  // tools, and only then looks for leftovers, which it waits for until under 2 s of its time is left. A 1 s close spent
+  // all of it on a hosted macOS runner before the leftover check could read anything. This much pays for those steps on
+  // a slow machine and leaves the check the time to read the processes and report what it found.
+  await assert.rejects(started.runtime.close(5000), /not recorded as this runtime's launch; Retest did not end it/)
   assert.equal(alive(pid), true, 'the toy process is owned by this unit test, never by the runtime under test')
 })
 

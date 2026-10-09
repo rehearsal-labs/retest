@@ -329,7 +329,10 @@ describe('installing a native executor', () => {
     const lines: string[] = []
     const refused = await installExecutor({ pin, folders, home, signal: new AbortController().signal, report: (line) => lines.push(line), tools: absent, now: () => new Date('2026-10-05T01:02:03.456Z') })
     assert.equal(refused.ok, false)
-    assert.match(refused.ok ? '' : refused.message, /^Xcode is needed for native apps and xcodebuild -version ended with exit code 127/)
+    // The executors are pinned for arm64 alone. On arm64 the build goes as far as the Xcode check, whose tool is absent;
+    // on any other machine it is refused by the architecture first, before a tool could run.
+    const why = process.arch === 'arm64' ? /^Xcode is needed for native apps and xcodebuild -version ended with exit code 127/ : new RegExp(`^The native executors are pinned and tested on arm64, not on ${process.arch}\\.$`)
+    assert.match(refused.ok ? '' : refused.message, why)
     assert.deepEqual(lines, [`Building WebDriverAgentMac (appium-mac2-driver) 4.3.6 from ${join(home, 'Library/Caches/retest-proofs/appium-mac2-driver')} at ${pin.commit}; the log is ${join(folders.executors, 'logs', 'mac2-install-2026-10-05T01-02-03Z.log')}`])
   })
 })

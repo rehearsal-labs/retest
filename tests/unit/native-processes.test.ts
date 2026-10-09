@@ -1,6 +1,6 @@
 import type { TestContext } from 'node:test'
 import type { MetadataProcessRequest } from '../../src/shared/metadata-process.ts'
-import type { NativeTools } from '../../src/native/processes.ts'
+import type { ListedProcess, NativeTools } from '../../src/native/processes.ts'
 import type { OwnedProcessIdentity } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
 import { ChildProcess, execFileSync, spawn } from 'node:child_process'
@@ -676,10 +676,24 @@ async function widenTable(t: TestContext): Promise<readonly ChildProcess[]> {
   return children
 }
 
+// `ps` prints a process by its kernel name in parentheses when it could not read that process's arguments at that
+// moment, which Retest's identity rule takes as unreadable, never as another command. On a hosted macOS runner one
+// listing showed a running wide sleep as `(sleep)` while the table read just before held it whole. Such a reading says
+// nothing of whether Retest cuts a large table, so both are read again, three times at most, while each process shown
+// that way is still running; the readings returned are the last.
+async function wideReadings(children: readonly ChildProcess[]): Promise<{ readonly table: readonly OwnedProcessIdentity[]; readonly listed: readonly ListedProcess[] }> {
+  for (let reading = 1; ; reading += 1) {
+    const table = await readProcessTable()
+    const listed = await listProcesses(systemTools, 10_000)
+    const unread = children.filter((child) => [table, listed].some((entries) => entries.find((entry) => entry.pid === child.pid)?.command === '(sleep)'))
+    if (unread.length === 0 || reading === 3) return { table, listed }
+    for (const child of unread) assert.ok(child.exitCode === null && child.signalCode === null && child.pid !== undefined && processExists(child.pid), `wide process ${child.pid} shown without its arguments has ended`)
+  }
+}
+
 test('ownership readings take a whole process table larger than 4 MiB, and still read a pid again before signalling it', async (t) => {
   const children = await widenTable(t)
-  const table = await readProcessTable()
-  const listed = await listProcesses(systemTools, 10_000)
+  const { table, listed } = await wideReadings(children)
   for (const child of children) {
     assert.equal(table.find((entry) => entry.pid === child.pid)?.command, `${wideName} 60`, 'the ownership table holds each wide process whole')
     assert.equal(listed.find((entry) => entry.pid === child.pid)?.command, `${wideName} 60`, 'the process list holds each wide process whole')
