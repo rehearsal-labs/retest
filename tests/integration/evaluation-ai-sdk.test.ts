@@ -193,7 +193,13 @@ describe('the AI SDK adapter from the packed package', () => {
       const installed = await runProgram('npm', ['install', '--prefer-offline', '--no-audit', '--no-fund', ...packages], folder, env)
       return installed.code === 0 ? { folder } : { problem: installed.stderr.trim().split('\n').at(-1) ?? `npm exited with ${installed.code}` }
     })()
-    return sdkInstall
+    // Each caller gets a promise of its own. The test runner names the test an error came from by its async context, and
+    // awaiting the promise the first caller made carries that test's context on: an error later in another test would
+    // be reported as the first test's activity after it ended, and the test it happened in would pass.
+    const install = sdkInstall
+    return new Promise((resolve, reject) => {
+      void install.then(resolve, reject)
+    })
   }
 
   function run(t: TestContext, folder: string, env: Record<string, string>): Promise<FinishedRun> {
@@ -342,11 +348,18 @@ test('${judgeName}', async () => {
     // takes them, as that platform's rule is, so there its own background requests open tunnels as well. A tunnel is the
     // judges' by its destination, a provider's host, and every other one the browser's: one tunnel to each provider
     // host means the browser reached none of them. macOS Chrome takes no proxy from the environment and opens none.
+    // Chrome's plain http requests, such as its clock check, reach the proxy as requests for a whole address, which
+    // the stand-in refuses unjudged; the judges send none.
     const providerHosts = ['api.anthropic.com:443', 'api.openai.com:443', 'retest-endpoint.openai.azure.com:443', 'retest-resource.openai.azure.com:443']
     const browserTunnels = stand.tunnels.filter((tunnel) => !providerHosts.includes(tunnel))
     assert.deepEqual(stand.tunnels.filter((tunnel) => providerHosts.includes(tunnel)).sort(), providerHosts)
-    if (process.platform === 'darwin') assert.deepEqual(browserTunnels, [], 'only the judges opened tunnels')
-    else t.diagnostic(`the browser's own tunnels through the run's proxy: ${JSON.stringify([...browserTunnels].sort())}`)
+    if (process.platform === 'darwin') {
+      assert.deepEqual(browserTunnels, [], 'only the judges opened tunnels')
+      assert.deepEqual(stand.forwards, [], 'nothing sent a plain request through the proxy')
+    } else {
+      t.diagnostic(`the browser's own tunnels through the run's proxy: ${JSON.stringify([...browserTunnels].sort())}`)
+      t.diagnostic(`the browser's own plain requests through the run's proxy: ${JSON.stringify([...stand.forwards].sort())}`)
+    }
     const decoyHosts = [sdkVariables.OPENAI_BASE_URL, sdkVariables.ANTHROPIC_BASE_URL, `https://${sdkVariables.AZURE_RESOURCE_NAME}.openai.azure.com`].map((address) => `${new URL(address).hostname}:443`)
     assert.deepEqual(browserTunnels.filter((tunnel) => decoyHosts.includes(tunnel)), [], "no tunnel reaches a host the SDK's own variables name")
     assert.equal(stand.seen.length, 4, 'one request per check, so nothing was retried')
@@ -457,19 +470,31 @@ function placesHolding(seen: Seen, value: string): string[] {
   return [...headers, ...(textHolds(seen.url, value) ? ['address'] : []), ...(textHolds(seen.body, value) ? ['body'] : [])]
 }
 
-type StandIn = { url: string; seen: Seen[]; tunnels: string[] }
+type StandIn = { url: string; seen: Seen[]; tunnels: string[]; forwards: string[] }
 
 /**
  * A local stand-in for the provider APIs the adapter calls: Anthropic's Messages, and OpenAI's Responses, which Azure
  * serves too. It answers each request with a valid structured verdict, `fail` for a criterion named fail and `pass`
  * otherwise, and a server error for a criterion named server-error, and keeps what each request carried. Given a
  * certificate it is also a proxy: it keeps each tunnel's target and ends its TLS, so a request the SDK addressed to an
- * Azure host or to a provider's own API arrives here as it was sent.
+ * Azure host or to a provider's own API arrives here as it was sent. A plain http request sent to it as a proxy is
+ * kept by its host in `forwards` and refused, never judged.
  */
 async function standIn(t: TestContext, certificate?: Certificate): Promise<StandIn> {
   const seen: Seen[] = []
   const tunnels: string[] = []
-  const server = createServer((request, response) => void answer(request, response, seen))
+  const forwards: string[] = []
+  const server = createServer((request, response) => {
+    // A proxy is asked for a plain http address by a request whose target is the whole address. The judges' requests
+    // never come that way: they go to https addresses through tunnels, or straight to the stand-in.
+    if (request.url?.startsWith('/') !== true) {
+      forwards.push(request.headers.host ?? '')
+      request.resume()
+      response.writeHead(502).end()
+      return
+    }
+    void answer(request, response, seen)
+  })
   server.on('connect', (request, socket, head) => {
     tunnels.push(request.url ?? '')
     if (certificate === undefined) {
@@ -491,7 +516,7 @@ async function standIn(t: TestContext, certificate?: Certificate): Promise<Stand
   )
   const address = server.address()
   assert.ok(address !== null && typeof address === 'object')
-  return { url: `http://127.0.0.1:${address.port}`, seen, tunnels }
+  return { url: `http://127.0.0.1:${address.port}`, seen, tunnels, forwards }
 }
 
 async function answer(request: IncomingMessage, response: ServerResponse, seen: Seen[]): Promise<void> {
