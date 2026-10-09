@@ -1,10 +1,10 @@
 import type { TestContext } from 'node:test'
 import type { CaptureStart, CapturedFrame, FrameSource, Frozen } from '../../src/media/capture.ts'
-import type { Ended, FrameMapEntry } from '../../src/media/client.ts'
+import type { Ended, FrameFormat, FrameMapEntry } from '../../src/media/client.ts'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
@@ -160,9 +160,18 @@ export function ticksBetween(earlier: number, later: number): number {
   return forward > tickCount / 2 ? forward - tickCount : forward
 }
 
-// The first video stream's fields as ffprobe prints them, one `key=value` a line.
-async function streamFields(ffprobe: string, path: string, keys: readonly string[]): Promise<Map<string, string>> {
-  const probe = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', `stream=${keys.join(',')}`, '-of', 'default=noprint_wrappers=1', path])
+// ffmpeg guesses a file's format from its first bytes unless it is told. A picture of the ticker is mostly flat colour, and
+// its PNG can compress to bytes with 0x47 every 204 bytes, which ffprobe takes for MPEG-TS packets: it then finds no
+// stream and says "End of file" of a whole PNG. Each picture's format is named, as the media process names it to its
+// encoder.
+function demuxer(format: FrameFormat): string[] {
+  return ['-f', format === 'png' ? 'png_pipe' : 'jpeg_pipe']
+}
+
+// The first video stream's fields as ffprobe prints them, one `key=value` a line. A picture's format is named.
+async function streamFields(ffprobe: string, path: string, keys: readonly string[], format?: FrameFormat): Promise<Map<string, string>> {
+  const named = format === undefined ? [] : demuxer(format)
+  const probe = await run(ffprobe, ['-v', 'error', ...named, '-select_streams', 'v:0', '-show_entries', `stream=${keys.join(',')}`, '-of', 'default=noprint_wrappers=1', path])
   const fields = new Map<string, string>()
   for (const line of probe.stdout.split('\n')) {
     const at = line.indexOf('=')
@@ -185,7 +194,7 @@ export async function imageSize(ffprobe: string, bytes: Uint8Array, format: 'png
   try {
     const path = join(folder, format === 'png' ? 'image.png' : 'image.jpg')
     await writeFile(path, bytes)
-    return sizeOf(await streamFields(ffprobe, path, ['width', 'height']))
+    return sizeOf(await streamFields(ffprobe, path, ['width', 'height'], format))
   } finally {
     await rm(folder, { recursive: true, force: true })
   }
@@ -203,17 +212,22 @@ export async function decodeVideo(needs: MediaPrerequisites, path: string): Prom
   return { frames, fps: fields.get('r_frame_rate') ?? '', codec: fields.get('codec_name') ?? '' }
 }
 
-/** Each captured frame decoded by ffmpeg to brightness, at `size` when given, or at its own size. */
+/**
+ * Each captured frame decoded by ffmpeg to brightness, at `size` when given, or at its own size. A frame whose bytes are
+ * not one whole image, or whose file on disk is not all of them, fails by its index before ffmpeg reads it.
+ */
 export async function decodeFrames(needs: MediaPrerequisites, frames: readonly CapturedFrame[], size?: { width: number; height: number }): Promise<Luma[]> {
   const folder = await mkdtemp(join(tmpdir(), 'retest-capture-frames-'))
   try {
     const decoded: Luma[] = []
     for (const [index, frame] of frames.entries()) {
+      assert.ok(wholeImage(frame.bytes, frame.format), `frame ${index} is not a whole ${frame.format === 'png' ? 'PNG' : 'JPEG'}: its ${frame.bytes.byteLength} bytes end before the image does`)
       const path = join(folder, `frame-${index}.${frame.format === 'png' ? 'png' : 'jpg'}`)
       await writeFile(path, frame.bytes)
-      const own = size ?? sizeOf(await streamFields(needs.ffprobe, path, ['width', 'height']))
+      assert.equal((await stat(path)).size, frame.bytes.byteLength, `frame ${index} was written whole to ${path}`)
+      const own = size ?? sizeOf(await streamFields(needs.ffprobe, path, ['width', 'height'], frame.format))
       const scale = size === undefined ? [] : ['-vf', `scale=${size.width}:${size.height}`]
-      const output = await run(needs.ffmpeg, ['-v', 'error', '-i', path, ...scale, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], { encoding: 'buffer', maxBuffer: 512 * 1024 * 1024 })
+      const output = await run(needs.ffmpeg, ['-v', 'error', ...demuxer(frame.format), '-i', path, ...scale, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], { encoding: 'buffer', maxBuffer: 512 * 1024 * 1024 })
       assert.equal(output.stdout.byteLength, own.width * own.height, `frame ${index} decodes to one picture`)
       decoded.push({ width: own.width, height: own.height, pixels: new Uint8Array(output.stdout) })
     }
@@ -221,6 +235,28 @@ export async function decodeFrames(needs: MediaPrerequisites, frames: readonly C
   } finally {
     await rm(folder, { recursive: true, force: true })
   }
+}
+
+const pngSignature = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
+
+/**
+ * Whether `bytes` are one whole image: a PNG from its signature through the IEND chunk that ends them, each chunk as
+ * long as its length says, or a JPEG from its start-of-image marker to the end-of-image marker that ends them. What the
+ * chunks hold, and their checksums, is ffmpeg's to read.
+ *
+ * @example wholeImage(png.subarray(0, png.byteLength - 1), 'png') // false
+ */
+export function wholeImage(bytes: Uint8Array, format: FrameFormat): boolean {
+  if (format === 'jpeg') return bytes.byteLength >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9
+  if (bytes.byteLength < pngSignature.byteLength || pngSignature.some((byte, index) => bytes[index] !== byte)) return false
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  for (let offset = pngSignature.byteLength; offset + 12 <= bytes.byteLength; ) {
+    const end = offset + 12 + view.getUint32(offset)
+    if (end > bytes.byteLength) return false
+    if (Buffer.from(bytes.buffer, bytes.byteOffset + offset + 4, 4).toString('latin1') === 'IEND') return end === bytes.byteLength
+    offset = end
+  }
+  return false
 }
 
 /**
