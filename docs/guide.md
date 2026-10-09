@@ -2,7 +2,7 @@
 
 How to set up, run and read Retest at milestone 2 and the first part of milestone 3, in detail: the config, the test API, the command line, running Retest from a program of your own, and what Retest does not do yet. The [README](../README.md) is the short tour, and the [handoff](implementation-handoff.md) records what was verified and how.
 
-Retest runs TypeScript test files against Chromium-family browsers, through its own runner and its own CDP client. A project has a config with named apps, several browser targets, emulated devices, secrets, tags and sign-in state. Retest has no runtime dependencies, and it downloads no browser.
+Retest runs TypeScript test files against Chromium-family browsers, through its own runner and its own CDP client, and against Playwright's WebKit build on macOS, through a client of its own for WebKit's inspector. A project has a config with named apps, several browser targets, emulated devices, secrets, tags and sign-in state. Retest has no runtime dependencies, and it downloads a browser only when `retest install` is asked to.
 
 Everything here was checked on macOS arm64, with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker, with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3's first part adds `press`, host checks, observations, a proxy per target and a test environment. All of its checks ran on macOS. On Linux, its own integration checks ran in Docker with Google Chrome 154 and Debian's Chromium 154. Retest handles the SIGTERM a CI runner sends on cancel, but it has not run on a CI runner yet.
 
@@ -13,7 +13,7 @@ The package is not published and is marked private. Its intended name is `@rehea
 ## Prerequisites
 
 - Node.js 24.12 or later. Retest loads `.ts` files with Node's own TypeScript transformer, so TypeScript is needed only to check types; see [TypeScript and imports](#typescript-and-imports).
-- An installed Chromium, Google Chrome or Microsoft Edge. Retest downloads no browser. Where a path is asked for, give the executable itself, not a macOS app bundle.
+- An installed Chromium, Google Chrome or Microsoft Edge, or a pinned build that `retest install` put in Retest's cache; see [Pinned browser builds](#pinned-browser-builds). Nothing is downloaded unless you ask. Where a path is asked for, give the executable itself, not a macOS app bundle.
 - macOS or Linux. Linux was verified only inside Docker, on arm64; see [Run in a container](#run-in-a-container). Retest relies on POSIX process groups, so Windows does not work.
 
 ## Install and build
@@ -35,6 +35,52 @@ cd /path/to/your/project
 npm install /tmp/rehearsal-labs-retest-0.0.0.tgz
 npx retest --help
 ```
+
+### Media recording prerequisites and installation
+
+Recording needs `retest-media` and a host-installed ffmpeg. Retest ships no ffmpeg. The source build path is exercised on macOS arm64. Linux x64 with the GNU Rust host target is a planned path and remains unverified. No media build path is provided for Windows, macOS x64 or Linux arm64.
+
+The crate uses Rust edition 2024, which requires Rust 1.85 or later. Its pinned image dependency and the crate itself require Rust 1.88 or later. Put both `cargo` and `rustc` from a matching host toolchain on `PATH`. Install ffmpeg with the host's package manager, such as `brew install ffmpeg` on macOS or `sudo apt-get install ffmpeg` on Debian. ffmpeg must provide the rawvideo demuxer and either libx264 with the MP4 muxer or libvpx with the WebM muxer. The optional encoded input route also needs image2pipe and the PNG or MJPEG decoder. The media process's own probe decides which route is available.
+
+```sh
+npx retest install media
+npx retest install --list --verify --json
+npx retest doctor
+# With the pinned crates already cached, prohibit Cargo network access:
+npx retest install media --offline
+```
+
+`install media` explicitly builds the source carried in the package. No install script runs it automatically. It checks the shipped crate, lock and notices against their source pin, builds with `cargo build --release --locked` in fresh staging and target folders, refuses a changed lock, checks the release binary's version and protocol, and records its source digest, target triple, rustc version and binary SHA-256. Cargo may fetch only the dependencies selected by the pinned lock. Offline mode needs those crates cached already. The package does not vendor crates.
+
+The binary goes under `~/Library/Caches/retest/media` on macOS or `$XDG_CACHE_HOME/retest/media` or `~/.cache/retest/media` on Linux. It uses the same generation lock as the browser installer. A damaged or unverifiable folder is named and left alone; remove that named folder only after its install has ended, then install again. `--list` checks the binary and licence hashes without launching anything; `--verify` also refuses unrecorded entries.
+
+The media discovery function checks the caller's explicit executable setting first, then `RETEST_MEDIA_BINARY`, then the checked cache record. `RETEST_FFMPEG` names ffmpeg when the caller gives none; otherwise `PATH` is searched. An explicit but unusable name refuses setup. No Cargo target folder is searched. To use a developer build, set `RETEST_MEDIA_BINARY` to its release binary. A run that requests no recording needs neither tool. When the config asks for recording, doctor reports the binary, protocol and checksum, Rust build tools when needed, ffmpeg's version and licence line, and the input, encoder and muxer requirements with fixes.
+
+`install media --media-binary <path>` and `install media --media-mirror <url>` accept only an exact prebuilt build with a checksum already pinned by Retest. No published media artifact has such a pin yet, so both commands refuse before reading or downloading a binary. A user-provided checksum cannot make an unverified build trusted. Shipping platform binaries in the package remains a separate release choice.
+
+ffmpeg's licence depends on its build. The Homebrew build exercised here reports GNU GPL version 3 or later and includes libx264 and libvpx. Retest runs it as a separate program and distributes no ffmpeg build. The crate's third-party notices and licence texts, generated from Cargo.lock, ship with the package and are copied beside the installed media binary.
+
+### Pinned browser builds
+
+Retest pins the builds it was tested with: Chrome for Testing 153.0.8010.12 for macOS arm64 and Linux x64, and for macOS arm64 also Firefox 133.0.3, Playwright's WebKit build 2359 (WebKit 26.6), Electron 44.5.1 and the two native executors, WebDriverAgent 16.13.6 and the macOS runner of appium-mac2-driver 4.3.6. `retest install` puts a pinned build into Retest's cache, and only the ones you name:
+
+```sh
+retest install --list             # what is pinned for this machine and what the cache holds; downloads nothing
+retest install --list --verify    # also reads every file of each installed build again and holds the whole against the pin
+retest install electron           # downloads, checks and records the pinned Electron
+```
+
+- The cache is `~/Library/Caches/retest` on macOS, and `$XDG_CACHE_HOME/retest` or `~/.cache/retest` on Linux. Each build has a folder of its own, named after its engine, version and platform, with the unpacked build in `build/` and its record in `build.json`: where it came from, the archive's size and SHA-256, the checksums of its executable, its pinned files and its licence notices, and one checksum of the whole build.
+- Retest downloads the archive beside the builds and keeps it under a temporary name until its size and SHA-256 match the pin. It deletes one that does not match without unpacking it. Then it unpacks the build into a staging folder and checks it: the executable is there and can run, the pinned files and licence notices are there with their checksums, no link leads outside the build, and the build holds nothing but folders, files and links, with no file that would run as its owner or group. Only then does it write the record, move the build into place and delete the archive. If unpacking fails, it keeps the verified archive, and the next install uses it.
+- One install of a build runs at a time on one machine. Another process holding that build's install lock makes the install stop with the lock's path and that process named; the lock goes when its holder ends, however it ends. Retest does not coordinate installs between machines or containers that share a cache, through a network home or a mounted folder: while one of them holds the lock, an install from another is refused. Give each its own cache.
+- `--list` and `doctor` report a build as installed only when it is one `retest install` installs and it reads as its pin says. A folder in the cache for a build that `retest install` refuses is listed as not installed by Retest, with the folder to remove; nothing in it is read, and no run launches it.
+- An install prints a short notice message, WebKit names the folder keeping its notices, and `install --list` gives one line of licence names per pin. `retest licences` lists the pins carrying notices, `retest licences webkit` prints locally available texts with source and patches pointers, `--list --json` retains every notice file, identifier and checksum, and `doctor` still verifies notices and names missing files.
+- `retest install` builds the native executors on this Mac from their pinned commits with the pinned Xcode, from the source checkouts a native run builds from. It clones nothing, and leaves a build already recorded as it is.
+- `retest run`, `retest doctor` and `retest install --list` never download or install anything.
+- A target's own `executablePath` always wins. `retest install` prints the installed binary's path, which stays the same while the build is installed: give it to `chromium({ executablePath })`, or set `RETEST_CHROMIUM` to it, or to `electron({ executablePath })`.
+- `RETEST_DOWNLOAD_MIRROR` fetches from a mirror instead of each publisher. The pinned address's host becomes the first folder under the mirror, as in `https://mirror.example.com/github.com/electron/electron/releases/download/v44.5.1/electron-v44.5.1-darwin-arm64.zip`, and the checksums still apply. Downloads go over https, or over http only from this machine. Retest refuses a mirror address with a user name, password, query or fragment in it, and prints and records only the origin and path of any address.
+- `--list --json` prints one document with each pin, its state, where it is installed, and the install command or why it is refused.
+- Exit codes: 0 when every engine named is installed; 2 when one is not, or when `--list` finds a build that no longer matches its record or a folder for a build Retest does not install; 130 and 143 when stopped.
 
 ## Tests
 
@@ -163,11 +209,66 @@ A target is a browser to run in:
 
 Each of them also takes `proxy`, described [below](#proxy).
 
-The config accepts Firefox and WebKit targets with `{ browser: 'firefox' }` or `{ browser: 'webkit' }`. Neither has a runner driver yet. A test needing one is refused at planning, before its servers or browsers start; `doctor` names the same refusal. Native targets use the runner described below.
+The config accepts Firefox and WebKit targets with `{ browser: 'firefox' }` or `{ browser: 'webkit' }`. WebKit runs on Retest's WebKit driver, described [next](#webkit), and Firefox on Retest's Firefox driver, described [after it](#firefox). Native targets use the runner described below.
+
+### WebKit
+
+A WebKit target runs Playwright's WebKit build 2359 on macOS, over the build's inspector pipe, through Retest's own client. Playwright itself is never loaded.
+
+```ts
+export default defineConfig({
+  apps: { web: { browser: 'webkit', executablePath: '/Users/me/Library/Caches/ms-playwright/webkit-2359', baseUrl: 'http://127.0.0.1:3000' } },
+})
+```
+
+- `executablePath` names the unpacked build's folder or the executable inside it. Without it, Retest reads `RETEST_WEBKIT_BUILD`. It looks nowhere else and downloads nothing. `retest install webkit` ships WebKit's licence notices with the build and refuses only while the archive's checksum is unpinned.
+- Retest checks the build's `protocol.json` against the one its driver speaks, and fails the test's setup for any other build. `doctor` reads the build without starting it: "WebKit 626.1.6+, build 2359 found; a run starts it".
+- Each test gets a browser context of its own. The browser runs with a temporary home, which Retest removes when it closes. Its helper processes, for networking, graphics and web content, run outside its process group: Retest records each one while the browser runs and ends only those. A home that a Retest process killed outright left behind is removed at the next launch.
+- `browser.started` names the engine `webkit`, product `WebKit`, version `626.1.6+, build 2359` and build `2359`: WebKit's own version and the exact build revision.
+- A WebKit target takes a viewport, a pixel ratio and a user agent. A mobile layout, a touch screen, `tap` or a proxy fails by name.
+
+Where WebKit differs from Chrome, Retest reports what WebKit does, or refuses by name:
+
+- A failed navigation is told in WebKit's words, such as "Could not connect to the server.", not Chrome's `net::ERR_` names.
+- A title keeps the control characters WebKit's `document.title` keeps. For example, the raw title `\x9BBell tab \x1B[2J` keeps ESC, while Chrome reads `\x9BBell tab [2J`. Assert the engine's raw title when checking `toHaveTitle`; the record cleans controls for display.
+- After WebKit gives up a move through the history, such as back onto a response with no content, the page keeps its document but WebKit's history stays at the entry it gave up. The next `goto` drops the entries after that one, and a later `goBack` goes to the entry WebKit gave up, not to the page that stayed. After such a move, open the page you want with `goto`.
+- `getByRole` with a name is refused for a cell, a column or row header, a grid cell or a tooltip whose name comes from its text. An explicit `aria-label` or `aria-labelledby` remains usable. An unnamed native option lookup is refused; a named lookup is refused when a native option could answer it. Use `getByText()`, `getByTestId()` or a role lookup by position with `nth()`, and `select()` to choose an option.
+- `select()` chooses several options of a `<select multiple>` only when the requested set is contiguous and reaches the first or last reachable option, or starts beside the first or last reachable option that the list already holds alone. A set with a gap, or an interior set that requires passing an unrequested option, is refused before any key is sent. An unchanged selection sends no input.
+- Console and network diagnostics cover the document and its frames on build 2359, including frames of another site. Workers are named as not covered in the capture status.
+
+### Firefox
+
+A Firefox target runs Firefox 133 on macOS on Apple silicon, over WebDriver BiDi, through Retest's own client. No WebDriver server or Playwright is involved.
+
+```ts
+export default defineConfig({
+  apps: { web: { browser: 'firefox', baseUrl: 'http://127.0.0.1:3000', viewport: { width: 1280, height: 720 } } },
+})
+```
+
+- `executablePath` names the Firefox binary explicitly; its reported version and build are recorded even when they differ from the tested build. Without it, Retest uses an intact pinned cache build, or the system app only when its version and build match Firefox 133.0.3 build 20241209150345. A damaged cache or a different system build fails setup by name, without falling back. Retest downloads nothing. On any other platform a Firefox target fails setup by name.
+- `doctor` reads the binary's version and build from the app's own files without starting it: "Firefox 133.0.3 build 20241209150345 found; a run starts it".
+- The default route starts Firefox as a child process. This route has never started a real Firefox in the recorded checks; its process lifecycle is exercised with a stand-in executable that speaks BiDi. All real Firefox checks use Launch Services. A host app that may not read `~/Library/Application Support/Firefox` cannot start a child Firefox. Set `RETEST_FIREFOX_ROUTE=launch-services` on such a machine.
+- Each launch gets a fresh profile in a temporary folder, which Retest removes when the browser closes. Firefox allows one WebDriver BiDi session per browser, so every test's page opens in a user context of its own, with its own cookies and storage, inside that one session.
+- Firefox keeps running when the Retest process that started it is killed outright. The launch records the Firefox it started, and the next launch ends a recorded Firefox whose launcher is gone, with its folder, and nothing else.
+- `browser.started` names the engine `firefox`, the product `Firefox`, its version and its reported build.
+- A Firefox target takes a viewport and pixel ratio. A mobile layout, a touch screen, a user agent, `tap` or a proxy fails by name.
+
+Where Firefox differs from Chrome, Retest reports what Firefox does, or refuses by name:
+
+- `fill` types its text key by key, and the input guard counts each key. Text holding a code point WebDriver reserves for a named key, U+E000 to U+E05D, is refused before any key is sent. When the page moves the focus away as the fill starts, the failure names `keydown` as the event Retest stopped, where Chrome names `beforeinput`.
+- `select()` on a `<select multiple>` that needs keyboard input is refused before any key is sent, also for a single option. An unchanged selection sends no input and succeeds. Firefox does not expose its native focused option, so Retest cannot verify a move before Space toggles that option. Run a test that changes options of a multiple select on Chrome or WebKit.
+- An uppercase letter or a shifted symbol is typed with Shift held, so the page also hears the Shift key go down and up. On macOS, Home follows the system's key bindings and leaves the caret where it was: typing `abcd`, then Home, then X gives `abcdX`. Shift+Home still selects to the start of the field.
+- A scroll is one trusted wheel event carrying the whole delta, as on Chrome, and Firefox moves at most one page for it. A delta larger than a page scrolls less on Firefox than on Chrome, so a scroll meant to reach the end of a long text stops short. To reach the end, scroll several times, each by no more than the box's height.
+- A refused connection is `not_actionable` with a message ending `connectionFailure.` and `errorText: 'connectionFailure'`, rather than Chrome's `net::ERR_CONNECTION_REFUSED`. Assert Firefox's own error text. A raw title keeps ESC, for example `\x9BBell tab \x1B[2J`; Chrome reads `\x9BBell tab [2J`. Assert that exact raw title when checking `toHaveTitle`.
+- A page's own script cannot use the Navigation API, which Firefox 133 lacks. Check for that API before listening for `navigateerror`; that event cannot confirm a cancellation here. In the shared fixture, a page that starts a fetch and immediately leaves for another document loses the request on Firefox. Await a required request before navigating, and verify delivery at the server.
+- `getByRole` confirms Firefox's names against Retest's whitespace normalization. Every lookup carries its own requested names. Loose and pattern names require Firefox to confirm the candidate names; a source it cannot confirm is refused by name. Password fields use their labelling markup, with hidden, nested or generated label content refused. Roles whose membership differs from Chrome, and known differing native markup, are refused by name rather than returning another set silently. These include generic, caption, presentation, rowgroup and gridcell lookups; named cells and figures; failed images; and the differing date, datalist and editable controls. Native tables with a visible caption or header of their own, or an explicit table, grid or treegrid role, permit row, unnamed-cell and header lookups. A visible native table without those cues still refuses table roles because the engines may disagree about layout tables. A cell looked up by name remains refused: Firefox's accessibility locator does not name it from its text. Use `getByText()`, `getByTestId()` or an unnamed cell's position with `nth()`. An `img` lookup is refused when an image that did not load could answer it.
+- `frame()` returns one PNG of the page. There is no live frame source.
+- Diagnostics record the network only. On Firefox 133.0.3, the console subscription runs enumerable getters in logged objects, including nested objects, before Retest receives the entry. The tested strings, numbers, plain data object and DOM node ran no getter. Subscription serialization options do not prevent object getters, and filtering received entries for primitive arguments is too late. Retest therefore keeps console `unavailable`; a strict console or runtime-error rule fails as "could not judge". Requests of the page and its frames, of its own site or another, are recorded with their responses, redirects, failures and pending ends, as on Chrome. A request a dedicated worker makes is recorded as its page's, since Firefox names only the browsing context, and only a navigation's request has a resource type, `Document`.
 
 ### Native apps
 
-Native runner wiring is in progress. Real CLI runs opened TaskPhone on iOS Simulator 26.5 and TaskDesk on macOS, filled their account fields, recorded native identity and closed their sessions. The sign-in and task flows remain unverified: `secret()` input is refused before its value is read, because executor logs and XCTest result output are not yet protected before persistence. The public swipe, keyboard dismissal and alert helpers still need construction in the test process. `doctor` still reports native targets as having no driver; that diagnostic has not been connected.
+Retest drives iOS simulator apps and native macOS apps through its runner. The reference flow ran on real targets: one test signed in on TaskPhone on iOS Simulator 26.5 with `secret()`, created a task there, changed it in Chrome and saw the change on TaskDesk on macOS. The public swipe, keyboard and alert helpers are built, but they ran only against a stand-in executor, never on a real simulator or desktop. `doctor` still reports native targets as having no driver; that diagnostic has not been connected.
 
 Configure the app bundle and the platform's launch settings:
 
@@ -191,7 +292,7 @@ const config = defineConfig({
 })
 ```
 
-`appPath` is relative to the config. iOS needs a simulator build, an installed device type and runtime, the pinned Xcode and the pinned executor sources or builds. macOS needs the native executor and Automation Mode already enabled without a prompt. A prompt is a refusal; Retest does not accept it. A native target takes no `baseUrl`, viewport, browser emulation, proxy or saved browser state. An app's targets must share one kind.
+`appPath` is relative to the config. iOS needs a simulator build, an installed device type and runtime, the pinned Xcode and the pinned executor sources or builds. macOS needs the native executor and Automation Mode already enabled without a prompt, and its window capture needs Screen Recording for the terminal or agent that runs Retest, which `retest doctor` checks. A prompt is a refusal; Retest does not accept it. A native target takes no `baseUrl`, viewport, browser emulation, proxy or saved browser state. An app's targets must share one kind.
 
 `arguments` and `environment` are optional. Retest refuses its own debugging and data-folder switches by name, executor environment names and malformed settings. Argument and environment values are excluded from execution settings: those settings retain their counts and SHA-256 hashes. Variables that supply secrets or host credentials are withheld from native tools and the launched app, including an attempted explicit environment override.
 
@@ -205,17 +306,17 @@ test('shows the account field', { apps: ['phone', 'desk'] }, async ({ phone, des
 })
 ```
 
-This example describes the API; that paired native test has not been verified. The current desktop and simulator executors expose one active app session per native resource. Pair one native app with web apps; several macOS apps, or several apps on one simulator device and runtime, are refused.
+A test may use one macOS app and one iOS app beside web apps, as the reference flow does with the phone, Chrome and the desk. The desktop's executor and each simulator serve one app session at a time, so a test with two macOS apps, or two apps on one simulator device type and runtime, is not run: the run refuses it by name before anything starts for it.
 
-Native locators use accessibility identifiers through `getByTestId`, supported roles through `getByRole`, labels through `getByLabel` and text through `getByText`. These finders can be chained to scope a lookup, with `first`, `last` and `nth` picking a match. CSS, placeholder lookup and web navigation are refused even when a test forges a command. Each action needs exactly one match. iOS takes `tap`; macOS takes `click`. Both expose `fill`, `press` and `scroll`. iOS swipe and the software keyboard and alert operations are connected in the parent, but their public helpers remain unfinished.
+Native locators use accessibility identifiers through `getByTestId`, supported roles through `getByRole`, labels through `getByLabel` and text through `getByText`. These finders can be chained to scope a lookup, with `first`, `last` and `nth` picking a match. CSS, placeholder lookup and web navigation are refused even when a test forges a command. Each action needs exactly one match. iOS takes `tap`; macOS takes `click`. Both expose `fill`, `press` and `scroll`, and `locator(step)` takes a step written as data. An iOS page also has `swipe`, `keyboard.wait()`, `keyboard.dismiss()` and `keyboard.dismissFirstRunCard()`; a macOS page has none of them, as a type error, and the runner refuses them as `unsupported` if a test reaches them anyway. `alert.accept('Allow')` and `alert.dismiss('Not Now')` press the one button with that label on either platform.
 
 The native assertion types expose `toBeVisible`, `toBeHidden`, `toBeEnabled`, `toHaveText`, `toHaveValue`, `toBeSelected` and `toHaveCount`, with `.not`. The parent judges them from its scoped native tree, and a verdict supplied by the test process cannot soften a failure. A property the platform does not expose is unsupported, including selected state on an element without one. Text checks on editable fields are refused; use a value check. The native layer refuses stale references, records input whose outcome is unknown and never resends it.
 
 An iOS test starts a fresh simulator after it acquires all its resources, and shutdown deletes that simulator. A macOS app's data and keychain are kept. `-reset` requests the app's own reset when it offers one; this is recorded as an app request and does not claim OS isolation. Backend state remains external unless the host declares a preparation. A desktop or device lease comes free only after its native session and runtime end; an uncertain shutdown retains the lease. Retest never adopts or ends an app copy it did not launch.
 
-A native secret destination is the exact bundle identifier in `secretOrigins`, such as `dev.retest.fixtures.taskphone`. It is not a web origin. Native secret input remains refused until every executor output is protected. Text redaction does not protect image pixels.
+A native secret destination is the exact bundle identifier in `secretOrigins`, such as `dev.retest.fixtures.taskphone`. It is not a web origin. A `fill` with `secret()` types into a native app only once `secretOrigins` names the bundle identifier Retest read from the installed app; the executor's output is redacted a whole line at a time before it is written. Text redaction does not protect image pixels.
 
-`native.started` records the app bundle, build, checksum, OS, executor pin and Xcode beside the session id. `native.ended` keeps unresolved action outcomes. Result files and `inspect --test` retain native sessions and named capture sources. iOS executor-screen capture was exercised through the runner. TaskDesk window capture was refused for an overlapping foreign window; no full native window capture is claimed by this wiring work. Capture writers use the run's clock; older store callers retain the clock inferred from events as a fallback. Events remain at `schemaVersion: 1`; old strict readers refuse the new event types and fields.
+`native.started` records the app bundle, build, checksum, OS, executor pin and Xcode beside the session id. `native.ended` keeps unresolved action outcomes. Result files and `inspect --test` retain native sessions and named capture sources. iOS executor-screen capture was exercised through the runner. A macOS app's window capture takes the app's own window by its window number, so another app's window over it is neither in the image nor a reason to refuse it, and it needs Screen Recording for the terminal or agent that runs Retest. Capture writers use the run's clock; older store callers retain the clock inferred from events as a fallback. Events remain at `schemaVersion: 1`; old strict readers refuse the new event types and fields.
 
 Retest finds Chrome and Edge where they install: on macOS in `/Applications` and `~/Applications`, and on Linux in the standard paths. A browser that is not there is a setup failure that lists the paths it tried, before any test that needs it. Only `chrome()` stable and `chromium({ executablePath })` were run. Edge and the other Chrome channels were not installed on the machine Retest was checked on.
 
@@ -260,9 +361,9 @@ What Retest refuses, by name:
 - A test cannot reach any window after the first. Each launch writes `electron/<app and target>/<launch>/windows.json` in the run folder. It lists every window in the order Retest learned of it, with when it opened and closed and whether a test could reach it. A window already open when Retest began to watch is marked `existing`, and its opening time is when Retest learned of it. The browser log notes each new window. When the app closes its first window, the next command fails with `session_lost`, and the message says no other window is reachable.
 - The main process, native menus and native dialogs: a test reaches only what the first window shows.
 - Sign-in state: a test cannot restore one into an Electron app, and a `test.setup` on one runs its body, then fails as `unsupported` when Retest cannot save its state. Use `userDataDir` to keep the app's data.
-- A secret is typed only on an http or https origin that the test's apps or `secretOrigins` allow. A window on a `file://` address has no such origin, so the fill is refused. A window the app serves from `http://127.0.0.1:<port>` takes the secret once `secretOrigins` names that origin.
+- In an Electron window a secret is typed only on an http or https origin that `secretOrigins` lists for it. The base URLs of the test's other apps do not count there. A window on a `file://` address has no such origin, so the fill is refused. A window the app serves from `http://127.0.0.1:<port>` takes the secret once `secretOrigins` names that origin.
 
-On Electron, a page's origin is whatever the app says it is: an app can show its own page under any address, as Retest's fixture shows its page under its service's. Allowing an origin for a secret therefore means trusting the app with it. In a test whose web app has that origin as its `baseUrl`, the base URL alone lets the secret into the Electron window. Retest's own two-app check typed its password into the Electron window that way.
+On Electron, a page's origin is whatever the app says it is: an app can show its own page under any address, as Retest's fixture shows its page under its service's. Naming an origin in `secretOrigins` therefore means trusting the app with the secret. A web app's `baseUrl` never lets a secret into an Electron window, even when the window shows that origin.
 
 The app opens its first window as it starts, and Electron answers on its pipe only once the app is ready, so the window's page has usually loaded before Retest reaches it. Retest reads the page's address from the window itself, so `page.url()`, `toHaveURL` and the secret rule know it from the start. Retest's own scripts start in that page after the app's scripts have run. If Retest cannot start its change observer there, `windows.json` and the browser log note it, and checks in that page wait out their timers instead of waking on a change.
 
@@ -371,7 +472,7 @@ A test holds everything it needs before it acts on any app. Retest works out wha
 - the data folder, for an Electron app whose target names `userDataDir`
 - one session for each app, when the host gave `sessions`
 
-A browser target needs nothing of its own. Each test gets a new browser context, so tests on one browser run side by side. An Electron app without `userDataDir` gets a new folder for each launch, so it needs nothing either. Two apps on one desktop, one simulator or one data folder take it once.
+A browser target needs nothing of its own. Each test gets a new browser context, so tests on one browser run side by side. An Electron app without `userDataDir` gets a new folder for each launch, so it needs nothing either. Two apps on one data folder take it once. A test with two apps on the desktop, or on one simulator device type and runtime, is not run at all: the run refuses it by name before it acquires anything, since one app session runs on each.
 
 A data folder is held under its real path: a link and the folder it points to are one folder, and on a volume that ignores case, so are `.data/Desk` and `.data/desk`. Retest reads a volume's case rule by writing a small file in a temporary folder beside the data folder, looking for it with its name's case turned over, and removing it. When it cannot write or read that file, the test does not run, with `setup_failed`, rather than guess.
 
@@ -408,9 +509,9 @@ What the run folder records:
 
 Limits:
 
-- Locks last one run, as before, and never keep two runs apart. The desktop, simulators and data folders last as long as the process. Two processes on one Mac do not see each other's.
+- Locks last one run, as before, and never keep two runs apart. The desktop, simulators and data folders last as long as the process. Two processes on one Mac do not see each other's leases; the desktop's lock, and the lock on a native app's declared network file, are held across processes.
 - Native runtimes start only after the test has acquired its complete lease. The native sign-in flows remain blocked as described above.
-- Commands to one app go one at a time because the test file's process refuses a second while one runs, with `concurrent_commands`. The parent does not refuse a second command itself.
+- Commands to one app go one at a time. The test file's process refuses a second while one runs, with `concurrent_commands`, and the parent refuses one that reaches it anyway, as the parent's own failure.
 
 ## Write a test
 
@@ -784,7 +885,7 @@ evaluation: {
 - `accepts` lists what the judge takes: `text`, `images` or `frames`. A judge gets only what it lists. A text judge never receives a screenshot read out as text: the check is an error instead.
 - `defaultJudge` is the judge a check without `judge` uses. With one judge, it is that one.
 - `timeoutMs` is how long a check may take, 30 seconds by default. Setting the judge up counts against it.
-- `limits` bound every run: `callsPerTest` 5, `callsPerRun` 100, `concurrentCalls` 2, `maxOutputTokens` 1000, `maxInputBytes` 8000000, `maxImages` 4, `maxImageWidth` and `maxImageHeight` 4096. These defaults are bounds, not tuned numbers. Retest's process holds the counters for every worker and takes a call before it sends it, so two workers can never both take the last one. A call taken is never given back. Nothing estimates a price.
+- `limits` bound every run: `callsPerTest` 5, `callsPerRun` 100, `concurrentCalls` 2, `maxOutputTokens` 1000, `maxInputBytes` 8000000, `maxImages` 4, `maxImageWidth` and `maxImageHeight` 4096, `maxFrames` 16 frames of recordings a check, and `maxDiagnosticRecords` 200. The media process sends at most 64 frames for one interval, whatever `maxFrames` says. These defaults are bounds, not tuned numbers. Retest's process holds the counters for every worker and takes a call before it sends it, so two workers can never both take the last one. A call taken is never given back. Nothing estimates a price.
 
 The config refuses an unknown key, a `defaultJudge` it does not declare, a judge with no `accepts`, and options that are not JSON. A run of ordinary tests loads no adapter and reads no credential, so it needs neither the AI packages nor the keys.
 
@@ -792,11 +893,12 @@ The config refuses an unknown key, a `defaultJudge` it does not declare, a judge
 
 `test.evaluate({ judge?, requirement, evidence, context?, mode?, timeoutMs? })`:
 
-- `requirement` is a sentence, or criteria by id, such as `{ saved: 'The task shows as saved.', titled: 'It shows its title.' }`. Every criterion must pass. A sentence is one criterion, with the id `requirement`.
+- `requirement` is a sentence, or criteria by id, such as `{ saved: 'The task shows as saved.', titled: 'It shows its title.' }`. Every criterion must pass. A sentence is one criterion, with the id `requirement`. For frames, name each criterion's kind with `{ kind: 'state' | 'seen' | 'never', requirement: '...' }`. The kind decides what claim the check makes; Retest never guesses it from the sentence. Existing sentences use the state question. The older `{ requirement, absence: true }` keeps its conservative rule over samples; use explicit kinds for new frame checks.
 - `evidence` is one item or a list of them, each with an id the judge cites: `e1`, `e2` and so on.
   - `{ capture: 'screenshot', app? }`: Retest's process takes a screenshot of that app's page as the check runs, and saves it in the run folder. `app` defaults to the test's first app.
   - `{ text, label? }`: text the test supplies, such as a reply it read from the page. It is redacted before the judge sees it.
-  - `{ recording: { step }, app? }`: refused by name, because Retest records no steps yet.
+  - `{ recording: { step }, app? }` or `{ recording: { lastMs }, app? }`: the frames that app's recording kept over the latest step of the test with that name, or over the `lastMs` milliseconds before the check. The judge must accept `frames`. A run that does not record the app refuses it by name; see [frames of a recording](#frames-of-a-recording).
+  - `{ diagnostics: 'console' | 'network' | ['console', 'network'], app? }`: the console or network records the attempt has kept of that app so far, as [console and network diagnostics](#console-and-network-diagnostics) describes them, cleaned and redacted again as the check takes them. The newest `maxDiagnosticRecords` are sent as text with each part's capture state, and the exact text is saved in the run folder. Nothing of an app's diagnostics reaches a judge unless a check names it here. The judge must accept `text`.
 - `context` is reference text the judge may read, such as a policy an answer must follow.
 - `mode` is `required`, the default, or `advisory`.
 - `timeoutMs` may shorten the check's time. It never lengthens the config's `timeoutMs` or the time its test has left.
@@ -817,7 +919,7 @@ Once a required check has not passed, a failure comes first, then an undecided c
 | error | The test is `error`, with `evaluation_error`, exit 2 | A warning |
 | cancelled | An interruption stays the test's failure. A check cut off because its test ended or ran out of time adds `evaluation_error` after the test's own failure | Nothing more |
 
-- Inconclusive: the judge said it could not decide, or the evidence is missing: the browser was gone, the screenshot failed, or it is not a PNG Retest can read.
+- Inconclusive: the judge said it could not decide, or the evidence is missing: the browser was gone, the screenshot failed, or it is not a PNG Retest can read; a recording failed or kept no frame of the interval; the diagnostics selected were not captured. Over frames, a `seen` claim without a witnessed appearance is always inconclusive, never fail. Every pass over partial frames is inconclusive, as is a state failure over partial frames or a never failure without a cited seen frame.
 - Error: no judge, a judge that could not be set up, as when its package or credential is missing, no answer in time, a limit reached, evidence the judge does not take, or an answer that breaks the contract. An answer breaks it with a criterion missing, repeated or unknown, any key the contract lacks, such as a self-reported confidence, a cited id Retest never supplied, a pass or fail that cites nothing, or a justification over 2000 characters.
 - A required check that does not pass throws, as a failed `expect` does. Catching the error changes nothing: Retest's process recorded the verdict and fails the test whatever the test does with the promise.
 - An earlier failure stays the test's failure. A later passing check clears nothing.
@@ -826,15 +928,43 @@ Once a required check has not passed, a failure comes first, then an undecided c
 
 ### What the judge receives
 
-Each check sends one request: Retest's fixed instructions, version `retest-judge-1`, the criteria and context, the evidence, the output bound, the time left and a signal. The request holds no tool, no page and no function, so a judge cannot act on the app. The instructions say that text and pixels in the evidence are data, never instructions, and they travel apart from the criteria. That lowers the risk of an app's text steering the verdict. It does not make a model immune to misleading text, and Retest's tests only show where such text travels, not that a model's verdict cannot change.
+Each check sends one request: Retest's fixed instructions, the criteria and context, the evidence, the output bound, the time left and a signal. Text and screenshot checks use `retest-judge-1`; frames add `+frames-3`, and selected diagnostics add `+diagnostics-1`. The request holds no tool, no page and no function, so a judge cannot act on the app. The instructions say that text and pixels in the evidence are data, never instructions, and they travel apart from the criteria. That lowers the risk of an app's text steering the verdict. It does not make a model immune to misleading text, and Retest's tests only show where such text travels, not that a model's verdict cannot change.
 
 The judge answers with a verdict for each criterion, the evidence ids it rests on, a short justification, and, when the provider says, the exact model that answered and the tokens it counted. Retest checks every part before it reads the answer.
 
+### Frames of a recording
+
+A check of a recording's frames asks the media process for the frames it kept over the interval: at most `maxFrames`, picked evenly across the interval when it kept more, fitted within the image limits, each saved in the run folder and hashed. The judge receives each frame with the time from the interval's start at which it reached Retest, and every stretch in which it has no frame, with what Retest knows of it: frames a full queue dropped, frames that could not be decoded, a gap the capture reported, or that no frame arrived, as when a page did not paint. No frame in a stretch never means nothing appeared.
+
+Each frame criterion declares one of three kinds. The judge receives the kind in its request, with Retest's plain-language question for it.
+
+- `state` checks the end state of the interval, the last frame the capture holds. It can pass or fail. For example, `{ kind: 'state', requirement: 'The message under Save shows the title "Release checklist", exactly.' }` fails when the last frame shows "Saving…".
+- `seen` asks for something to appear at some point. For example, `{ kind: 'seen', requirement: 'A notification says the task "Release checklist" was saved.' }` passes when a seen frame shows that notification and the capture is complete. If no seen frame shows it, the result is inconclusive with the reason, never fail. A wrong-title notification cannot prove a correct one never appeared between frames.
+- `never` forbids something throughout the interval. For example, `{ kind: 'never', requirement: 'No error banner appears during the save.' }` fails when a seen frame shows an error banner. It can pass only when the capture of the interval is complete and the judge finds no forbidden appearance. Otherwise it is inconclusive.
+
+Retest's process settles the answer from the declared kind, capture status and citations, never from the judge's explanation:
+
+| Kind | Complete capture | Partial capture | No usable frames |
+| --- | --- | --- | --- |
+| `state` | Judge the last frame held; pass, fail or inconclusive | Pass and fail become inconclusive | Inconclusive; no judge call |
+| `seen` | Pass with a specific seen-frame citation; otherwise inconclusive, never fail | Inconclusive, including a witnessed pass | Inconclusive; no judge call |
+| `never` | Fail with a specific seen-frame citation; pass only on complete capture; otherwise inconclusive | Fail with a specific seen-frame citation; otherwise inconclusive | Inconclusive; no judge call |
+
+Frames are missing when one reached the media process and was not kept, the capture reported a gap, the bounds left kept frames out, a kept frame could not be read, frames were not stored yet, or the recording had not placed a frame. Every pass over those partial frames stays inconclusive. The record keeps each declared kind, the judge's verdict and citations, and the parent's effective verdict and rule. A sequence or diagnostics citation alone cannot witness a required or forbidden appearance.
+
+Complete means the capture accounts for its interval without a known gap or missing frame. It does not mean every instant of the screen was observed. Frames are samples, and a stretch with no frame never proves a fleeting event was absent. The older `absence: true` marker therefore still leaves a pass inconclusive even over complete samples, with `absence_over_frames`. Use an assertion or a recorded event when the outcome needs proof beyond what the capture holds.
+
+A frame the recording has not placed is never sent: one `pending` in a recording still running, which may still end unwritten, or one `unprocessed`, which the recording ended without writing. The record names each with its capture time, and its time is a stretch the judge has no picture of. The newest frame returned from a running recording may be pending until the next frame arrives. An interval that includes it cannot count a pass; an older interval need not include that frame. Check the interval's evidence status, or select a step that is over.
+
+A run that does not record the app, and frames the pixel capture policy withholds from judges, make the check an error; a recording that failed leaves it inconclusive. None of them lets a required check pass.
+
+`retest run` records apps when recording is requested and gives evaluation checks their recording and step intervals. Browser diagnostics checks receive a read-only snapshot of the selected app's bounded records and capture states, with the attempt and session identity preserved. Taking a snapshot leaves collection running. A part that is disabled or unavailable stays so; a check with no usable selected part is inconclusive. Live native diagnostics do not yet supply this view and are reported unavailable for evaluation. The real-Chrome frame integration also exercises the gathering and settlement path directly against the media process.
+
 ### Records
 
-A check that ran, was cancelled or, for a host's check, never ran writes an `evaluation.finished` event, always the parent's, so a result rebuilt from the events lists the same checks as `result.json`. A check refused before the parent took it, as when no test was running, writes none. Each test's result lists its checks in `evaluations`: the test's own in the order they ended, then the host's. A test's own checks are numbered `evaluation-1`, `evaluation-2` and so on in each attempt. A record holds the check's id, its source, mode, judge and verdict, each criterion with its verdict and citations, a SHA-256 of the criteria and context as the judge received them, the evidence, the justification, a reason when there is no judged verdict, a failure or a warning, and the evaluator: provider, model, model revision, evaluator version, instruction version, the sampling the call sent, any setting it did not send as given with the provider's reason, latency and token usage when given. A piece of evidence names its kind, its SHA-256 and size, and for a screenshot the app, session, attempt, capture time, pixel size and file. The bytes stay in the run folder and the text stays out of the record.
+A check that ran, was cancelled or, for a host's check, never ran writes an `evaluation.finished` event, always the parent's, so a result rebuilt from the events lists the same checks as `result.json`. A check refused before the parent took it, as when no test was running, writes none. Each test's result lists its checks in `evaluations`: the test's own in the order they ended, then the host's. A test's own checks are numbered `evaluation-1`, `evaluation-2` and so on in each attempt. A record holds the check's id, its source, mode, judge and verdict, each criterion with its verdict and citations, a SHA-256 of the criteria and context as the judge received them, the evidence, the justification, a reason when there is no judged verdict, a failure or a warning, and the evaluator: provider, model, model revision, evaluator version, instruction version, the sampling the call sent, any setting it did not send as given with the provider's reason, latency and token usage when given. A piece of evidence names its kind, its SHA-256 and size, and for a screenshot the app, session, attempt, capture time, pixel size and file. A frames record names the interval on the run's clock and the step, each frame sent with its capture time, file, hash and what the recording made of it, the stretches with no frame, how many frames reached the media process and how many it kept, the frames the bounds left out and those not placed, and its status: `complete`, or `partial` or `unavailable` with the reason. A diagnostics record names the parts selected, each part's capture state, the ids of the records sent, how many the bound left out, and the file holding the text the judge received. The bytes stay in the run folder and the text stays out of the record.
 
-The judge's words, every reason, and every string an evaluator or its provider returns, model names included, pass through the redactor before Retest keeps them. Screenshots are not redacted: a check sends the page as it shows, including a secret on screen. Do not judge a screen that shows one.
+The judge's words, every reason, and every string an evaluator or its provider returns, model names included, pass through the redactor before Retest keeps them. Screenshots are not image-redacted. A check consults the pixel policy before capture and again over the capture span before saving or sending pixels. A refused capture saves and sends no image. The policy cannot infer secrets an app displays outside a declared withholding stretch; text redaction does not hide them in an allowed image.
 
 A check that did not pass adds its lines to its test's failure card, under the card's other lines: the check, each criterion, what the judge said and the evidence, then one line for each check that passed. For a failed check the card reads:
 
@@ -860,7 +990,7 @@ The provider decides which sampling settings it sends. OpenAI and Azure drop `te
 
 The adapter asks for structured output with retries off and no tools: Anthropic's native output format, and OpenAI's strict JSON schema. It asks OpenAI and Azure not to keep the request, with `store: false`. Anthropic's API has no such setting, so Retest claims nothing about what Anthropic keeps. It writes app text into the request as a JSON string, so nothing in it can end an evidence item. It checks the answer before Retest checks it again. A host that bundles the SDK can call `createAiSdkEvaluatorWith(setup, load)` from the same export, and the adapter loads `ai` and the provider's package through `load` instead of `import`.
 
-For a model deployed on an Azure OpenAI resource, install `@ai-sdk/azure` and set `provider: 'azure'`. `model` is the name of your deployment, not a model id. Name the endpoint with `resourceName`, the resource's name, or with `baseURL`, such as `https://<resource>.openai.azure.com/openai`. Give exactly one of them. A judge with both or neither fails its setup, and the message names both options. These two shapes, `<resource>.openai.azure.com` by name or by that base URL, are the ones Retest's tests exercised. Foundry project addresses (`<name>.services.ai.azure.com/api/projects/...`), other `.services.ai.azure.com` and `.cognitiveservices.azure.com` addresses, and base URLs that end in `/openai/v1` are untested. Leave `apiVersion` out unless your endpoint needs one: the SDK then sends `api-version=v1`, and Microsoft's v1 API does not need a dated version. The adapter refuses `apiVersion` where the SDK would send none: a base URL whose path ends in `/openai/v1`, a Foundry project address, or a host outside Azure's own. Read the key from a variable of your own. The usual name is `RETEST_EVALUATION_AZURE_KEY`, which Retest's live check also reads. The adapter gives the SDK the key and the endpoint itself, so the SDK never reads `AZURE_API_KEY` or `AZURE_RESOURCE_NAME`. Each check sends one request to the Responses API at that endpoint, naming the deployment as its model, with the key in the `api-key` header, a strict JSON schema, `store: false`, retries off and no tools.
+For a model deployed on an Azure OpenAI resource, install `@ai-sdk/azure` and set `provider: 'azure'`. `model` is the name of your deployment, not a model id. Name the endpoint with `resourceName`, the resource's name, or with `baseURL`, such as `https://<resource>.openai.azure.com/openai`. Give exactly one of them. A judge with both or neither fails its setup, and the message names both options. Retest's stand-in tests exercised two shapes, `<resource>.openai.azure.com` by name or by that base URL. One live run used a third against a real deployment: a base URL on `<name>.services.ai.azure.com/openai/v1`, with no `apiVersion`. Foundry project addresses (`<name>.services.ai.azure.com/api/projects/...`) and `.cognitiveservices.azure.com` addresses are untested. Leave `apiVersion` out unless your endpoint needs one: the SDK then sends `api-version=v1`, and Microsoft's v1 API does not need a dated version. The adapter refuses `apiVersion` where the SDK would send none: a base URL whose path ends in `/openai/v1`, a Foundry project address, or a host outside Azure's own. Read the key from a variable of your own. The usual name is `RETEST_EVALUATION_AZURE_KEY`, which Retest's live check also reads. The adapter gives the SDK the key and the endpoint itself, so the SDK never reads `AZURE_API_KEY` or `AZURE_RESOURCE_NAME`. Each check sends one request to the Responses API at that endpoint, naming the deployment as its model, with the key in the `api-key` header, a strict JSON schema, `store: false`, retries off and no tools.
 
 ```ts
 azure: {
@@ -871,7 +1001,7 @@ azure: {
 },
 ```
 
-Its tests ran ai 7.0.127, @ai-sdk/anthropic 4.0.71, @ai-sdk/openai 4.0.83 and @ai-sdk/azure 4.0.90 against a local stand-in for each provider's API, from the packed package. The stand-in answered at Azure addresses, and at `api.anthropic.com` and `api.openai.com` for judges with no `baseURL`, while `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `AZURE_RESOURCE_NAME` and the providers' key variables named other values. They prove the request the SDK sends and how the adapter reads the reply. No provider has been called: the live checks wait for keys supplied for them, so the model ids on this page are untested, and no Azure deployment has judged anything yet.
+Its tests ran ai 7.0.127, @ai-sdk/anthropic 4.0.71, @ai-sdk/openai 4.0.83 and @ai-sdk/azure 4.0.90 against a local stand-in for each provider's API, from the packed package. The stand-in answered at Azure addresses, and at `api.anthropic.com` and `api.openai.com` for judges with no `baseURL`, while `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `AZURE_RESOURCE_NAME` and the providers' key variables named other values. They prove the request the SDK sends and how the adapter reads the reply. One live run has called a provider: an Azure AI Foundry deployment judged one text check and one screenshot check through the adapter, and both passed. Anthropic and OpenAI have not been called, so their model ids on this page are untested. The live checks skip by name when their keys are not supplied.
 
 ### A judge of your own
 
@@ -898,7 +1028,7 @@ export default judge
 
 ## Console and network diagnostics
 
-Each test's pages have their console, their uncaught errors and their requests recorded, in passing and failing runs alike. Nothing in them fails a test unless the config asks: a test may well exercise a 404 or an error message on purpose.
+On Chrome and WebKit, each test's pages have their console, their uncaught errors and their requests recorded, in passing and failing runs alike. On Firefox, their requests are recorded. Nothing in them fails a test unless the config asks: a test may well exercise a 404 or an error message on purpose. What follows describes Chrome's records; [Per engine](#per-engine) says what WebKit records and leaves out, and why Firefox records requests only.
 
 ```text
 <run>/diagnostics/<test>-<attempt>.jsonl         one file for each test's page, named with the app in a run from a config
@@ -920,17 +1050,56 @@ Each test's pages have their console, their uncaught errors and their requests r
 
 ### Scope
 
-Capture starts on each test's page before it opens anything, and ends once the test body and the parent's checks are over, before a failure screenshot and before the page closes. Each result and each artifact names what it covers.
+Capture starts on each test's page before it opens anything, and ends once the test body and the parent's checks are over, before a failure screenshot and before the page closes. Each result and each artifact names its engine and what it covers. On Chrome:
 
 - Covered: the page's document; the frames Chrome renders in the page's own process, frames of the page's origin among them; a dedicated worker's console messages, which Chrome forwards with their level only.
 - Not covered: a frame of another site, which Chrome runs in a process of its own; a dedicated worker's requests; a service worker's own messages and requests; shared workers. A request Chrome hands to one of these, such as a worker's own script or the document of another site's frame, is marked `out_of_scope` rather than pending. A response a service worker answered for the page is recorded, with `serviceWorker: true`.
+
+### Per engine
+
+Each capture names its engine in `scope.engine`, and what it covers:
+
+| Engine | Console covers | Network covers |
+| --- | --- | --- |
+| Chrome | the page's document, frames in the page's process, a dedicated worker's messages | the page's document, frames in the page's process |
+| WebKit | the page's document and its frames, of its own site and of others | the page's document and its frames, of its own site and of others |
+| Firefox | nothing: the console is `unavailable` | the page's document and its frames, of its own site and of others |
+
+The same diagnostics pages ran on each engine on macOS, in thirteen cases with the same assertions. Chrome and WebKit passed all of them:
+
+- each console level and the other console types, every argument of a message, and the frame or worker each record came from, with the scope matching what arrived;
+- uncaught errors and unhandled rejections, each as its own kind;
+- a 404 and a 500 apart from a refused connection, each hop of a redirect, durations by the engine's own clock, and a request left pending;
+- capture into another site and back, and across a reload;
+- two pages at once, a browser shared by two files, and a stopped run;
+- the entry and request limits, with `requireComplete`;
+- secrets in messages, errors, addresses and stacks;
+- the `strict` policy, on runtime errors and on HTTP errors with an allow list;
+- a test that fails its own check, a quiet page, capture turned off, a closed page, and a browser lost mid-capture.
+
+The byte limit, the cut of an oversized message, a renderer crash, the reports and `inspect` ran on Chrome only.
+
+WebKit's records differ from Chrome's as follows. A field WebKit does not give is left out.
+
+- A response names no protocol, and a redirect's hop no size.
+- A message names its frame when WebKit names the script it came from. A message the browser logs names none, unless it is about a request.
+- A dedicated worker's messages are not captured. Its own requests are left out, and its script counts as the page's request.
+- `console.count` is recorded at the debug level, as WebKit reports it.
+- A message or a repeat that comes without WebKit's own time is counted as unread, so the console capture is partial. Retest never stamps it with its own clock.
+
+On Firefox, Retest records no console message and no runtime error. Firefox 133.0.3 runs enumerable getters while serializing logged objects before delivery. Its log subscription ignores `serializationOptions: { maxObjectDepth: 0 }`, although that option works on script results. A primitive-only filter after delivery cannot prevent those side effects, so Retest does not subscribe. Each page's console is `unavailable`, with that reason. The [real-browser probe](plans/public-beta/reviews/fix-reports/firefox-console-probe-report.md) records the safe value cases and the failed settings. Playwright's Firefox console uses its patched build's own protocol, not WebDriver BiDi, so its console capture does not establish a safe route for this Firefox build. Firefox requests are recorded, with these differences from Chrome:
+
+- A request a dedicated worker makes is recorded as the page's, since Firefox names it by the page.
+- A request has a resource type only when it is a navigation's document.
+
+The thirteen cases ran on Firefox and passed for its requests: the frames, the 404, the 500 and the refused connection, the redirect, the pending request, capture across sites, two pages at once, the shared browser, the stopped run, the limits, a secret in an address, and a lost browser. Network rules of the `strict` policy judge as on Chrome. With its console unavailable, `requireComplete` and a `strict` rule on runtime or console errors end each Firefox test as `reporting_failed`.
 
 ### Capture status
 
 A test's result lists each page's capture in `diagnostics`, with a state for its console and one for its network:
 
 - `complete`: everything in scope from start to end. Zero records means the page produced none.
-- `partial`, with a reason and the counts: records were dropped at a limit, Chrome sent an event Retest could not read, or the page crashed or its connection ended. What came before stays.
+- `partial`, with a reason and the counts: records were dropped at a limit, the browser sent an event Retest could not read, or the page crashed or its connection ended. What came before stays.
 - `unavailable`, with the reason: capture never started, or its file could not be saved. No file claims a capture.
 - `disabled`: the run turned capture off.
 
@@ -985,7 +1154,7 @@ Native screenshot evidence uses the session's actual PNG and named capture sourc
 
 Screenshots are pixels. Text redaction does not hide a secret displayed in an image. These proofs use screens with no secrets; no pixel masking capability was added. The native proof uses the local fake evaluator's decoded pixel-hash mode, which requires no model credential and measures the evidence path, not a live model's accuracy.
 
-A native target names its sources under `diagnostics`, such as `diagnostics: { network: { path: './service/network.jsonl', client: 'ios' } }`. `logs` is `'stdout'` unless you set `'none'`. With `'stdout'`, Retest launches the app itself and reads its standard output from a pipe. On the simulator it uses `simctl launch --console`. On macOS it starts the app's executable and then activates the app, because the macOS runner drives only an app it launched or activated. With `'none'`, or in a run with `capture: false`, the executor launches the app, and a log Retest did not keep says `unavailable: the app provides no log source`. `network` names the metadata file, relative to the config, and the client name its records give this app. An app without it says `unavailable: the app provides no network source`. The config refuses two apps that declare one file and client, and two targets of one app on different simulators, naming both keys. It cannot see a second run on the same machine that reads the same file. Both sources start before the app launches and finish once the body, its dispatched commands and the parent's checks are over, before anything closes. The result, the events, the artifact and `inspect --test` show them as they show a browser page's capture. See the [native diagnostics proof](plans/public-beta/proofs/native-diagnostics.md) for the targets this ran on and its limits.
+A native target names its sources under `diagnostics`, such as `diagnostics: { network: { path: './service/network.jsonl', client: 'ios' } }`. `logs` is `'stdout'` unless you set `'none'`. With `'stdout'`, Retest launches the app itself and reads its standard output from a pipe. On the simulator it uses `simctl launch --console`. On macOS it starts the app's executable and then activates the app, because the macOS runner drives only an app it launched or activated. With `'none'`, or in a run with `capture: false`, the executor launches the app, a log Retest did not keep says `unavailable: the app provides no log source`, and the capture's scope lists the app's process as not covered. `network` names the metadata file, relative to the config, and the client name its records give this app. An app without it says `unavailable: the app provides no network source`. The config refuses two apps that declare one file and client, and two targets of one app on different simulators, naming both keys. While an app with a network file runs, it holds a lock for that file, which the system lets go if Retest's process dies, so a second run on the same Mac, in this process or another, that would read the same file fails that app's setup by name instead of mixing the two runs' records. Both sources start before the app launches and finish once the body, its dispatched commands and the parent's checks are over, before anything closes. The result, the events, the artifact and `inspect --test` show them as they show a browser page's capture. See the [native diagnostics proof](plans/public-beta/proofs/native-diagnostics.md) for the targets this ran on and its limits.
 
 ## Run the example
 
@@ -1071,7 +1240,7 @@ Two fixed graces of one second sit on top:
 
 ## Run Playwright test files
 
-`retest run --playwright` runs test files written for Playwright, unchanged, as far as Retest's compatibility goes. It is early, and the lists below are all of it.
+`retest run --playwright` runs test files written for Playwright, unchanged, as far as Retest's compatibility goes. It is early, and the lists below are all of it. [The compatibility table](compatibility/playwright.md) runs a fixed corpus of Playwright tests under a pinned Playwright and under Retest, case by case, and says where they agree and which cases are declared gaps, counted out of all of them. A case agrees only when both runs end it alike, an intended failure at the same check on the same values, and only when both runs as wholes exit alike.
 
 ```sh
 retest run --playwright --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --base-url http://127.0.0.1:3000
@@ -1081,19 +1250,24 @@ retest run --playwright tests/checkout.spec.ts --browser /usr/bin/chromium --bas
 - Files end in `.spec.ts`, `.spec.js`, `.spec.mts` or `.spec.mjs`, or the same with `.test.`. With none named, Retest takes every `.spec.` file under the folder and leaves `.test.` files out, since a project's unit tests end the same way.
 - `@playwright/test` and `playwright/test` resolve to Retest's own `@rehearsal-labs/retest/playwright`, wherever the file is. Neither package has to be installed in the project.
 - Imports resolve as in Retest's own test files: `./helper` finds `./helper.ts`, then `./helper.js`, `./helper.mts` and `./helper.mjs`, then the folder's `index.ts` or `index.js`; `./helper.js` loads `./helper.ts` when that file exists; and the `paths` of the nearest `tsconfig.json` apply, as under "TypeScript and imports".
-- What runs: `test`, `test.describe`, `test.beforeEach`, `test.afterEach` and `test.step`; the `page` fixture; `page.goto`, `reload`, `goBack`, `goForward` and `title`; `getByRole`, `getByLabel`, `getByText`, `getByTestId`, `getByPlaceholder` and `locator`, on a page and on a locator; a locator's `first`, `last` and `nth`; `page.keyboard.press`; a locator's `fill`, `click`, `hover`, `press`, `check` and `uncheck`; `expect` with `toBeVisible`, `toBeHidden`, `toBeChecked`, `toBeEnabled`, `toBeDisabled`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveValue`, `toHaveURL` and `toHaveTitle`, each also after `.not`, and `toBe`, `toEqual`, `toContain` and `toMatch`; `expect.soft` and `expect.poll`.
+- What runs: `test`, `test.describe`, `test.beforeEach`, `test.afterEach` and `test.step`; the `page` fixture; `page.goto`, `reload`, `goBack`, `goForward` and `title`; `getByRole`, `getByLabel`, `getByText`, `getByTestId`, `getByPlaceholder` and `locator`, on a page and on a locator; a locator's `first`, `last` and `nth`; `page.keyboard.press`; a locator's `fill`, `click`, `hover`, `press`, `check`, `uncheck` and `selectOption`; `expect` with `toBeVisible`, `toBeHidden`, `toBeChecked`, `toBeEnabled`, `toBeDisabled`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveValue`, `toHaveURL` and `toHaveTitle`, each also after `.not`, and `toBe`, `toEqual`, `toContain` and `toMatch`; `expect.soft` and `expect.poll`.
+- `selectOption` takes one option, named by its label, `{ label: 'High' }`, or by its value, `{ value: 'high' }`, and chooses it with Retest's `select`. A bare string is refused by name, since Playwright matches it against each option's value and its label at once and Retest has to know which; so are a list, `{ index }`, `null` and an option named both ways.
 - `{ timeout }` on `goto`, `reload`, `goBack`, `goForward`, those actions and those locator and page matchers goes to Retest's own, which shortens the budget and never lengthens it.
-- Everything else fails where it is used, as `unsupported`, naming the member: "page.getByAltText is not supported yet by Retest's Playwright compatibility." Nothing is skipped or dropped. Any other option is refused by name, such as `page.goto(url, { waitUntil })`, `locator.click({ force })`, `locator.fill(value, { noWaitAfter })`, `locator.press(key, { delay })`, `page.getByRole(role, { level })` or `expect().toHaveText(…, { ignoreCase })`, and so is `test.step`'s third argument. `.not` on a value, `toContainText` with a list, `page.url`, which Playwright reads at once where Retest has to ask the page, `test.skip`, test details, a titled hook and a fixture other than `page` are each refused by name too. A test that meets one ends as an error at that line, and the run exits 2.
+- Everything else fails where it is used, as `unsupported`, naming the member: "page.getByAltText is not supported yet by Retest's Playwright compatibility." Nothing is skipped or dropped. Any other option is refused by name, such as `page.goto(url, { waitUntil })`, `locator.click({ force })`, `locator.fill(value, { noWaitAfter })`, `locator.press(key, { delay })`, `locator.selectOption(values, { force })`, `page.getByRole(role, { level })` or `expect().toHaveText(…, { ignoreCase })`, and so is `test.step`'s third argument. `.not` on a value, `toContainText` with a list, `page.url`, which Playwright reads at once where Retest has to ask the page, `getByRole('row', { name })`, `test.skip`, `test.only`, `test.use`, test details, a titled hook and a fixture other than `page` are each refused by name too. A test that meets one ends as an error at that line, and the run exits 2, or 1 when another test failed its checks.
+- Playwright's `goto`, `reload`, `goBack` and `goForward` answer a response, and `selectOption` the values it chose. Retest's answer nothing, so under `--playwright` each answers a value that fails by name, as `unsupported`, the moment the test reads anything from it: "The response page.goto() returns is not supported yet by Retest's Playwright compatibility." Awaiting the call and leaving its answer alone is fine, and a call nothing awaited is still reported as not awaited.
 - The rules are Retest's. A test with no assertion fails, a locator that matches several elements is ambiguous, an action is sent once, and `toHaveText` compares whole text.
 - Finders follow Playwright's rules where Retest can. `getByText`, `getByLabel`, `getByPlaceholder` and a role's `name` match any part of the text in any case, unless `exact: true`; both trim the text and read each run of spaces as one. `exact` beside a `RegExp`, or on a role with no name, is left out, as Playwright ignores it. `getByLabel` also finds any element that an `aria-label`, or the text an `aria-labelledby` points at, names. Reports write these locators as the file wrote them. Retest's own test files keep Retest's defaults.
 - A page that holds an open shadow root is refused. Playwright looks inside shadow roots and Retest does not, so any locator on such a page fails at once as `unsupported`, naming the shadow root's host, rather than pass on what it could not see.
+- A table row by name is refused. Names come from Chrome's accessibility tree, which gives a row no name from its cells, where Playwright names a row from them; `getByRole('row', { name })` would find no row that Playwright finds, so it fails at once by name, and the types of `@rehearsal-labs/retest/playwright` refuse it before the file runs. Take the row by position with `nth()`, or find a cell by name.
 - What still differs from Playwright:
-  - Names come from Chrome's accessibility tree, not from Playwright's own reckoning. A table row or a list item has a name only from `aria-label` or `aria-labelledby`, so `getByRole('row', { name })` is expected to find no row Playwright would name from its cells; no check asks for one.
+  - Names come from Chrome's accessibility tree, not from Playwright's own reckoning, for the roles that are not refused too. The comparison's corpus finds buttons, links, tabs, cells, column headers, headings, alerts, status lines and unnamed rows by role, and Playwright and Retest agreed on every one of those lookups.
   - `getByLabel` finds a form control that Chrome names by its `placeholder` or `title`, which Playwright's does not, and leaves out a form control Chrome leaves out of its tree, such as a hidden one, which Playwright's finds.
   - `toBeEnabled` and `toBeDisabled` take `aria-disabled` from the element or the nearest ancestor that has it, whatever the element's role. Playwright reads it only for an element whose role takes `aria-disabled`, such as a button, so a plain element inside an `aria-disabled` container is disabled to Retest and enabled to Playwright.
+  - `selectOption` chooses with the keyboard, so the page hears the keys as well as `input` and `change`, where Playwright sets the choice from a script. It waits for the select to be visible, stable, enabled and not covered, where Playwright needs it visible and enabled. It refuses an option that several options name, where Playwright takes the first. It sends nothing when the select already holds the option, where Playwright sets it again and fires `input` and `change`. It works on the select itself, where Playwright also follows a `<label>` to its control. Both compare a label trimmed with each run of spaces read as one; Playwright also drops zero-width spaces and soft hyphens first.
+  - Budgets are Retest's: a test has 60 seconds and an action 10, where Playwright gives a test 30 seconds and an action no limit of its own. Both give a check 5 seconds.
   - A `{ timeout }` longer than Retest's budget is cut to it.
-  - `goBack` and `goForward` with no entry that way fail instead of answering `null`, and `reload`, `goBack` and `goForward` answer nothing rather than a response.
-- `playwright.config.ts` is not read. The browser and the base URL come from the command line, or from `retest.config.ts`.
+  - `goBack` and `goForward` with no entry that way fail instead of answering `null`.
+- `playwright.config.ts` is not read. The browser, the base URL, the workers and the budgets come from the command line, or from `retest.config.ts`.
 - The human report's first line says `playwright compatibility`, and `run.started.options.playwright` is true, so no reader takes the run for Playwright's own.
 
 ## Check the setup
@@ -1108,6 +1282,9 @@ retest doctor
 - For each app with `start`, it starts the server, waits for `ready` and stops it. A server already running is left alone.
 - For each app with only a `baseUrl`, it checks that the address answers.
 - It checks that each secret's environment variable is set.
+- For a target of an engine Retest pins a build of, it adds a `builds` row: the installed build the target runs, with its version and checksum, or what in it no longer matches its record; a target's own path, when it wins over an installed build; for a target that names no path, the installed build, which a Firefox target then runs and a Chromium or WebKit target runs once its path or variable names it; and for a Chromium or WebKit target that names no build, with none installed, the install command or the reason `retest install` refuses it. A folder in the cache for a build `retest install` refuses is never called installed: the row says Retest did not install or check it. Chrome and Edge run the browser the machine has and get no row. Only the cache is read; nothing is downloaded or installed.
+- For a config with a macOS app, it reads whether the terminal or agent that runs Retest has Screen Recording, which the app's window capture needs. It asks macOS without a prompt and takes no picture; an iOS simulator app or a browser needs no such permission.
+- For an iOS simulator or macOS target, it reads the executor its run drives, WebDriverAgent or the macOS runner, from Retest's cache: built, with its checksum, not built yet, with the command that builds it, or what in it no longer matches its record. Then it checks that the app bundle is at `appPath`. It starts nothing, and leaves what the app holds, the simulator, Xcode and Automation Mode to a run.
 - It checks that Node is 24.12 or later, and starts Node with a test file process's flags, in the environment a run gives, to transform a snippet with an enum and a parameter property through Retest's own transform module and run it from a data URL; the project hooks take no part in that probe. Node gets a line only when one of the two fails.
 
 Each problem comes with its fix. `doctor` exits 0 when everything is ready and 2 otherwise. When a browser or a server fails, the message points to its log, which is kept under `.retest/doctor/<time>/`. Otherwise `doctor` removes its logs.
@@ -1160,6 +1337,32 @@ For one test, `inspect --test` shows every step in time order. Under a locator c
 
 Each navigation shows the page's title and what opened it. Looks that no check claimed, such as those of a check the run stopped, collapse into one line. Host checks come after the body, each with what the page showed when it failed.
 
+## The HTML report
+
+```sh
+retest run --reporter html
+retest report .retest/runs/<time>
+```
+
+Both write `report.html` into the run folder. `--reporter html` prints the human report as well, and writes the file once the run ends. `report` builds it from a folder that already exists, finished or not, and replaces an earlier one. Either way the report is made from `events.jsonl` and `result.json` alone; a folder without `result.json` is rebuilt from its events and the report says the run did not finish.
+
+The report is one file. It needs no server, loads no font, script or style sheet from anywhere, and opens from its file address. Screenshots are linked by their paths inside the run folder, so the folder can be moved or zipped and the report still shows them. Page addresses are shown as text, never as links.
+
+What it shows:
+
+- How the run ended and its exit code, with the same Tests and Exit lines the terminal prints, then the run's own failure and whether it stopped, did not check everything, or was narrowed by `test.only`.
+- Each failure first: the check, the locator, the page, both values or their diff, the wait, the screenshot, and the lines of the test around the failing call.
+- For every test, its outcome and, as a separate fact, how much of its evidence is here: complete, partial or unavailable, each loss with its reason. A screenshot the run could not save, a file that is not where its record says, or a file the safe read refused (missing, a link, outside the folder, and so on) is named in a dashed frame where the picture would have been.
+- The steps of each app in time order, as `inspect --test` shows them; the console and network records of each session, read from its diagnostics artifact, with what the capture covers and whether it is partial or unavailable; each AI check with every criterion's verdict, the evidence it cites, the judge's words, the provider, model, versions and token usage; the targets with each browser's engine and build; and the replay facts: the bundle and its modules' hashes, the configuration's hash, the requirement and its checks, where each app started, and the host's preparation and cleanup.
+- In a run that records, each recording of a test: whether it is complete, partial or unavailable, each gap the run named, the video from the run folder, what became of the frames, and how long the pixel policy withheld capture. A recording with no video says so where the video would have been and names any partial file kept; one removed after its test passed, because the config keeps recordings of failures only, says that. Click a timeline step to seek that test's recording to the step's run-clock moment. A row for a named app moves that app's video; a test-wide step moves each recording of the test. The report subtracts shortened gaps and clamps to the recording and playable video intervals. An incomplete clock mapping gives a plain refusal note and leaves the video alone.
+- Files in the run folder that no record names, such as a recording left unfinished.
+
+The file also holds the outcome as JSON, for a program that keeps only the report, in `<script type="application/json" id="retest-outcome">`: `version` (1), the run's `runId`, `status`, `exitCode`, `complete`, `counts` and `source` (`result.json`, `events.jsonl` or `run`, where its result was read from), and in `tests`, in run order, each test's `testId`, `name`, `variantKey`, `status`, `failureClass` and `evidence` (`complete`, `partial`, `unavailable` or `none`). A key without a value is left out. The browser never runs it.
+
+The report has exactly two passive JSON blocks. `retest-recording-clocks`, version 1, holds each test's generated element id, test identity and title, and each recording's identity, app, session, path and clock. Both blocks escape every string for JSON inside HTML, including `</script>`. Exactly one constant inline script reads the clocks and assigns the video's time; it contains no run data and fetches nothing. The Content-Security-Policy meta tag authorizes only that script's SHA-256 hash and the report's style hash, with event-handler attributes and other executable sources refused. Everything a test, a page, a browser or a model wrote stays text. Control characters and characters that reorder visible text are written as their escapes. Images and videos load from the report's own place; on a file address Chrome reads that as any file, so the report itself links only to paths inside the run folder.
+
+The report built by `--reporter html` reads the result the run hands its reporters, a moment before the run writes `result.json`. When something after that changes the outcome, such as a reporter that fails or a `result.json` that cannot be written, run `retest report` on the folder for a report of the final state.
+
 ## The run folder
 
 Without `--output`, a run goes to `.retest/runs/<time>`.
@@ -1180,7 +1383,7 @@ A program that calls `runFiles` can move `.retest/last-run.json` with `lastRunFi
 
 Every event says who reported it: `origin: 'parent'` for what Retest's own process saw, and `origin: 'child'` for what the test file's process claimed. Every event of a test's run carries its `variant` and `variantKey`, and every event about an app names it in `session`. Milestone 1's mode has one app, named `page`, and no variants.
 
-`browser.started` comes once for each app target, with the app and the target, and whether it is emulated. `app.started`, `app.reused` and `app.failed` tell what became of each server. `state.saved` and `state.restored` name a state, never its contents. `result.json` lists every app target's browser in `browsers`, and each screenshot names its app.
+`browser.started` comes once for each app target, with the app and the target, and whether it is emulated. Its `engine` names the web engine that ran it, `chromium`, `firefox` or `webkit`, an Electron app's being `chromium`. Its `build` is the browser's own build as its driver read it from the running browser: Chromium's source revision from `Browser.getVersion`, Firefox's `moz:buildID` from its `session.new`, and the WebKit build's revision from its folder's name, as Playwright names it (`webkit-2359`). A driver that read none writes no `build`; none is taken from a pinned table. `app.started`, `app.reused` and `app.failed` tell what became of each server. `state.saved` and `state.restored` name a state, never its contents. `result.json` lists every app target's browser in `browsers`, and each screenshot names its app.
 
 A session is one app's page in one attempt. Its id is the attempt's id and the app's name, such as `k3v9q0x2mb:web`. `observation`, `evidence.captured` and `evidence.failed` name it in `sessionId`. A screenshot's event and its entry in `result.json` also give its `attemptId`, and when it was taken in `capturedAt`. Runs recorded before sessions had ids have none of these.
 
@@ -1223,7 +1426,7 @@ Every record that comes from a session carries the same keys: `testId`, `attempt
 | each line of a diagnostics artifact | `testId`, `attemptId`, `app`, `sessionId` |
 | each screenshot an AI check sent its judge | `testId`, `attemptId`, `app`, `sessionId`, `source`, `capturedAt`, `capturedElapsedMs` |
 
-`source` says what took a screenshot: `chromium` for a Chromium page or an Electron window, or a native session's own source, `executor-screen`, `simulator-display` or `window-crop`. `capturedAt` is the wall-clock time the capture came back. `capturedElapsedMs` is the same moment on the run's clock, in whole milliseconds since the run started, the clock every event's `elapsedMs` counts on, so a screenshot falls between the events around it.
+`source` says what took a screenshot: `chromium` for a Chromium page or an Electron window, `firefox` or `webkit` for a page of those engines, each taken through the engine's own protocol, or a native session's own source, `executor-screen`, `simulator-display` or `window-crop`. `capturedAt` is the wall-clock time the capture came back. `capturedElapsedMs` is the same moment on the run's clock, in whole milliseconds since the run started, the clock every event's `elapsedMs` counts on, so a screenshot falls between the events around it.
 
 To find everything one session produced, read `events.jsonl`, `result.json` and the diagnostics artifacts, and keep what has its `sessionId`. `inspect --test` shows the source and the session on each screenshot's line:
 
@@ -1233,9 +1436,143 @@ To find everything one session produced, read `events.jsonl`, `result.json` and 
 
 A screenshot is pixels. Text redaction never reaches it: a secret the page shows is in the picture. Keep run folders where secrets may be kept.
 
-Runs do not record video yet. The frames a recording will be made of come from Chrome's screencast of one page. Chrome sends frames when it chooses to, as the page paints, and waits for each to be acknowledged before the next, so some paints never arrive as a frame. Retest keeps each frame as the JPEG or PNG Chrome encoded and stamps it with the run's clock and the page's identity. A page that stands still sends no frames, and the video shows its last frame for as long as it stood still. No frame between two moments never means nothing appeared on the page in between. Retest's own tests feed those frames to its media process and check what it wrote.
+A recording of a Chromium page uses Chrome's screencast of that page. Chrome sends frames when it chooses to, as the page paints, and waits for each to be acknowledged before the next, so some paints never arrive as a frame. Retest keeps each frame as the JPEG or PNG Chrome encoded and stamps it with the run's clock and the page's identity. A page that stands still sends no frames, and the video shows its last frame for as long as it stood still. No frame between two moments never means nothing appeared on the page in between. Retest's own tests feed those frames to its media process and check what it wrote.
 
 `schemaVersion` is still 1 and these keys are optional, so a reader built from this release reads older run folders. A reader built before them refuses a folder that has them, which is every folder with an action, a navigation or a screenshot in it.
+
+## Recording a run
+
+Recording is off by default. Ask for it in `retest.config.ts`; no recording CLI flag is implemented:
+
+```ts
+export default defineConfig({
+  apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173' }) },
+  recording: {
+    record: true,
+    apps: { web: true },
+    required: false,
+    keep: 'all',
+    fps: 10,
+    size: { width: 1280, height: 720 },
+  },
+  pixels: { web: { screenshots: 'allowed', recordings: 'allowed' } },
+})
+```
+
+`record` asks for every configured app. An `apps` entry overrides it for that app: `false` excludes an app, and `true` records only that app when `record` is false. `pixels.<app>.recordings: 'never'` forbids its recording. Naming that app as `true` is a configuration error. `required: true` with no recorded app is also an error. Frame rate is an integer from 1 to 30; width and height are even integers from 16 to 4096. Defaults are 10 fps, 1280 by 720, and `keep: 'all'`. `keep: 'failures'` removes a passed attempt's recording under [the retention rules](#what-is-kept). `RunOptions.recording` replaces the whole config block for a programmatic run.
+
+The runner currently accepts `RunOptions.media: { executable, ffmpeg? }`, or `RETEST_MEDIA_BINARY` and `RETEST_FFMPEG`. It starts no media process or discovery when recording is off. Automatic use of the install cache is awaiting the media discovery interface; an installed binary can be named explicitly. ffmpeg is a host prerequisite. No tool is downloaded by a run.
+
+Each recorded app session has one recording for its attempt. Another attempt has another id and path. Capture starts before the first action and ends after the last assertion and host check. The runner then saves the recording before closing its pages, media process and browsers. An interruption, timeout or lost browser follows the same bounded finalization path. A lost media worker is restarted once for a later recording; losing that replacement refuses further recordings.
+
+Evidence is separate from the test's observed outcome. The result and JSONL carry `evidenceStatus`, with `state: 'complete'`, `'partial'`, `'unavailable'` or `'not_requested'`. A partial or unavailable state names its gaps. When recording was not requested the optional field is absent. Human and agent reports show evidence separately. A recording failure does not turn a passed test into a failed test. If `required` is true, incomplete evidence makes the run end with `evidence_incomplete`, exit 2; an already failed test still leads with exit 1. Every test keeps its observed outcome.
+
+`recording.started` names the run, test, attempt, app session, capture mode, output, dimensions and rate. `recording.finished` adds the frame tallies, media counts, status, reasons and video facts. A recording that could not begin has only a finish event saying why. A usable video has a portable `path`; an unchecked leftover has only `partialPath` and never claims to be playable. A killed run's leftovers are removed only after its recorded owner is confirmed gone; active or unreadable owners are left alone.
+
+The recording's `clock.videoZeroUs` is the first frame's time on the run's clock. For an event, subtract it from `elapsedMs * 1000` to find the video's microsecond position. When `clock.shortened` lists shortened gaps, subtract their elapsed shortening before seeking. A screenshot keeps its own capture time and source. Sampling, still-page holds and withheld stretches never prove that nothing appeared between frames.
+
+Secret fills are withheld conservatively: the runner has no driver masking fact yet, so even a password input is treated as unread. Frames and failure screenshots of that session stay withheld until a new document or session end. An unknown action outcome keeps the stretch open. The recording reports `pixels_withheld` separately from dropped frames. AI screenshot evidence checks the same policy before capture and again before saving or sending returned pixels. The policy is active when recording is requested, an app declares `pixels`, or the config declares secrets. A screenshot check in a run with recording off still refuses pixels during a secret withholding stretch. Text redaction never protects pixels.
+
+## Artifacts
+
+Screenshots, recordings, frames, diagnostics and the report live in the run folder and nowhere else. Each has one place:
+
+```text
+<run>/artifacts/<attempt>/<app>/screenshot-failure-1.png     a screenshot, named by why it was taken and a number
+<run>/artifacts/<attempt>/<app>/screenshot-evaluation-2.png  a screenshot an AI check sent its judge
+<run>/artifacts/<attempt>/<app>/thumbnail-recording-1.jpg    a small picture made from a recording or a screenshot
+<run>/artifacts/<attempt>/<app>/recording-1.mp4              a recording; recording-1.mp4.partial while it is written
+<run>/artifacts/<attempt>/<app>/frames-1/000000.jpg          frames kept for an AI check of a stretch of time
+<run>/diagnostics/<attempt>.<app>.jsonl                      one session's console and network records
+<run>/report.html                                            the run's HTML report
+```
+
+`<attempt>` is the attempt's id. `<app>` is the app's name cut to a few letters, with a hash of the whole name, so two apps whose names differ only in case never share a folder. A name holds nothing else: no test title, no page text, no secret. A screenshot is `png` or `jpg`, as the target encoded it; a recording is `mp4` or `webm`, as the media process chose.
+
+Records name each file by its path relative to the run folder, with forward slashes, so a run folder can be moved and still read. Such a reference is made of letters, digits, `.`, `_` and `-`, in parts split by `/`, none empty and none starting with `.`. A path with `..`, an absolute path, a backslash, a scheme or any other character is not a reference, and Retest refuses it without looking at the disk.
+
+Retest reads an artifact only when all of this holds, and otherwise refuses it, naming why:
+
+- `invalid_reference`: the record's path is not a reference.
+- `missing`: nothing is there.
+- `symbolic_link` and `outside_run_folder`: some part of the path is a symbolic link. Retest follows no link in a run folder; `outside_run_folder` says the link leads out of it.
+- `hard_link`: the file has more than one name. The other name could be anywhere, so Retest reads only a file with one name.
+- `not_regular_file`: a folder, a pipe, a socket or a device.
+- `too_large`: over the size the reader stated. Every read states one.
+- `changed`: the file, or a folder above it, was swapped between the check and the open, as for a link, or the file grew or shrank while it was read.
+
+Retest checks every part of the path without following links, opens the file without following a link and without waiting on a pipe, then checks that the open file is the one it checked, that every folder above it, the run folder included, is still the folder it checked, and that the file's name still leads to it. A program that flips a folder between a link and the real folder several times, each flip landing between two of those steps, could still get a file read through the link. Node has no way to open a file relative to an open folder, and macOS no way to ask an open file for its path, so nothing closes that gap entirely. Such a program already runs as you; the checks stop a link or a second name left in a run folder, and any single swap.
+
+Retest can also list what a run folder holds against what its events and `result.json` name: each named file that is there, each named file that is not, with why, each file nothing names, and every link or special file it did not follow. The run's own files, `events.jsonl`, `result.json`, `report.html`, `logs/` and `states/`, are left out.
+
+### What is kept
+
+Everything is kept, except in two cases:
+
+- When the config keeps recordings of failures only, an attempt that passed loses its recordings, and the thumbnails made from them, once the attempt has finished and its recordings have ended. A recording an AI check judged is kept, and so is every recording of an attempt that did not pass: failed, error, inconclusive or never run.
+- When the run finishes and the media process has closed, a `.partial` file a lost recording left under `artifacts/` is removed, unless a record names it as what was left of that recording.
+
+Screenshots, frames, diagnostics, the report and logs are never removed. Nothing outside `artifacts/` is removed, a file whose path has a link in it or that has a second name is kept, and nothing is removed at any other moment. Each removal is recorded before the file goes, so no record ever names as present a file that is gone. If the file then cannot be removed, that is recorded too, and the file counts as present.
+
+A run without recording keeps its existing screenshot and diagnostics behavior. Recording runs use these artifact paths and retention rules.
+
+## What may be captured as pixels
+
+Text redaction hides a secret's value in every text Retest writes. It never reaches pixels: a screenshot or a frame shows whatever the screen showed. So Retest decides what it captures by a separate policy.
+
+### What each app allows
+
+Each app has two rules, `screenshots` and `recordings`, each `allowed` or `never`. Both are allowed unless the config says otherwise.
+
+- `screenshots` covers every single capture: the screenshot taken when a test fails, the screenshots an AI check sends its judge, and an agent session's frames.
+- `recordings` covers frames that run: saved recordings and live frames sent to a viewer. Allowing them does not turn recording on; a run records only when asked.
+
+A capture the rules forbid is not taken. The run says so where the capture would have been. An AI check whose evidence was not taken cannot pass: a required check without its evidence is never a pass.
+
+### Around a browser secret
+
+While a browser secret is typed into a field that shows its text, Retest stops requesting new captures of that app's session and pauses its screencast. A Mac window capture also stops while any session is withheld, a rule kept from when it was cut from the shared display. A capture already dispatched when the stretch opens cannot be undone; its image is discarded on arrival if its read window overlaps the stretch, and the missing interval is recorded as withheld. Capture resumes after the stretch closes and the old screencast has confirmed its stop. The stretch begins just before the first key is sent. It ends when Retest sees one of these:
+
+- the field is gone from the page or the screen, or no longer shown;
+- the field reads back empty;
+- the field now masks its text;
+- the page opens another document;
+- the session ends.
+
+A fill that sent no key ends its stretch at once. A fill whose keys may or may not have gone keeps it. A page that moves to another path within the same document has not left, so the stretch goes on until the field is seen gone.
+
+A capture is withheld when the time it could have been taken touches the stretch: from the moment it was asked for until it reached Retest. A screenshot taken just before the field was seen empty, and back just after, is withheld. A screencast frame is not asked for, so its time starts when the screencast last started: once a stretch has begun, the screencast must start again after it ends before its frames are kept.
+
+The withheld stretch is recorded as withheld by policy, with the app, the session, the secret's name and when it began and ended. It is never counted as dropped frames, and a gap in a recording that it explains never means nothing happened on the screen. A failure screenshot that falls in the stretch is withheld, and the run says why.
+
+A macOS app's window capture is withheld while any session of the run has a stretch open; the window's own image holds no other window, but the rule is kept from when the capture was cut from the Mac's display.
+
+### Browser fields that mask what is typed
+
+The policy can keep capturing a field that masks every character as it is typed, when the driver supplies its field facts before the first key and again after the last key. It recognizes these facts:
+
+- In Chromium, Firefox and WebKit, an `<input>` whose `type` property is `password` masks. The property reads `text` for a type the browser does not know, so a made-up type never counts.
+- A text input, a textarea, an element edited through `contenteditable`, or any other field shows its text. A style that hides the text, such as `-webkit-text-security`, does not count: a script can take it away, and not every engine draws it.
+- A field the driver could not read is treated as showing its text.
+
+If the field masked when the first key went and no longer masks after the last, capture is withheld from then on, and the record says captures since the first key may show the secret.
+
+### What the policy cannot protect
+
+- A secret the app shows on its own: echoed on the next page, in a message, or in a field a "show password" button reveals, whether the app or the test presses it.
+- An app that unmasks a field while the keys are being typed, before the read after the last key.
+- Text the app showed before Retest was told it is a secret, such as a one-time code a function source returns after the page already showed it.
+- Frames already sent live to a viewer before the field was read as unmasked.
+
+Keep run folders, and anything a run sends elsewhere, where the secrets they may hold can be kept.
+
+### Native secret entry
+
+Native secret entry keeps pixels by default: secure fields rely on the platform's dots and required masked read-back, while plain fields may show characters in screenshots or video. Set `recording: { nativeWithholding: true }` or the overriding environment variable `RETEST_NATIVE_WITHHOLDING=true` to enable the earlier plain-field withholding and guarded resume; secure fields never withhold in either mode.
+
+`RETEST_NATIVE_WITHHOLD_RESUME` has been removed. Withholding resumes only after the guarded rule verifies an unfocused masked or empty field, the verified filled field's disappearance, or its owned window's disappearance, with no software keyboard on iOS. Failed or uncertain reads keep an enabled stretch open. `RETEST_NATIVE_WITHHOLDING=false` restores the default. The setting applies to recording frames, failure screenshots and evaluation screenshots even when recording is off. Only the literal environment values `true` and `false` are accepted. Browser withholding is unchanged.
+
+`capture.native_entry` records the branch "typed into a secure field", "typed into a plain field, pixels kept", "typed into a plain field, pixels withheld", or the corresponding unreadable-field branch, without secret characters. A secure fill's `capture.masked_entry` records `readBack: length_matched` only after successful masked verification. Failed read-back or unknown input keeps its failure and sends no second input. The resume event keeps its earlier reason and identity requirements, and every capture whose read span overlaps an enabled stretch remains discarded after resume. These are additive version 1 events and fields; current readers accept older folders, while older strict readers refuse folders carrying the additions. Text redaction does not protect pixels or an app's later password echoes.
 
 ## Use Retest from code
 
@@ -1324,7 +1661,7 @@ An `absent` check passes at once on a blank page. Pair it with an `address` chec
 
 A check sees the final page, not the steps to it. It cannot tell whether the test reached that page by the flow you meant. It can require that no `goto` opened that page: of the app's navigations before the checks, the last one whose `cause` is not `page` must say `cause: 'action'`. Leave out the navigations the page made on its own, such as an app that tidies its address as it loads, or a script that sends it on. They come after the navigation that brought the test there, and do not say who opened the page. That says nothing about the steps before that navigation.
 
-The parent writes `host_check.passed` or `host_check.failed` for each check, with the check, the app, what the page showed on the last look, how many times it looked and for how long. `run.started` records every check the run was asked for, so a reader can tell a check that was never asked for from one that is missing. Each test's result lists its checks in `hostChecks`, in order, with `passed`, `failed` or `not_run`. A check's `text`, `name` and `path` are redacted as page text is, since a host holds the run's secrets and writes every field of a check; the page is still asked for the text, and the path still matched, as written.
+The parent writes `host_check.passed` or `host_check.failed` for each check, with the check, the app, what the page showed on the last look, how many times it looked and for how long. `run.started` records every check the run was asked for, so a reader can tell a check that was never asked for from one that is missing. Each test's result lists its checks in `hostChecks`, in order, with `passed`, `failed` or `not_run`. A check that never ran is listed in its test's `test.finished`, under `hostChecksNotRun` with its app, and a host AI check that never ran has an `evaluation.finished` with the verdict `not_run`, so a result rebuilt from the events lists every check `result.json` lists. A check's `text`, `name` and `path` are redacted as page text is, since a host holds the run's secrets and writes every field of a check; the page is still asked for the text, and the path still matched, as written.
 
 Reports show a failed check as a card of its own:
 
@@ -1401,9 +1738,46 @@ await Promise.all([
 - An attempt waits at most `waitMs`, the setup budget by default. One that gets nothing in that time does not run, with `setup_failed`. So does one that needs more sessions than either limit allows, at once.
 - An attempt gives its sessions back once it has closed its browser contexts and its host cleanups have run, a stopped run's too, within the cleanup budget. A context that could not be closed keeps its sessions until its browser closes, which may be the end of the run.
 - A stopped run withdraws every request it was waiting on.
-- `session.reserved` records, before `test.started`, the owner, how many sessions the attempt took, how long it waited and what was active once it had them. `session.released` records when it gave them back: `after: 'contexts_closed'`, or `'browser_closed'` when its contexts could not be closed. `run.started` records the owner and the limits.
+- `session.reserved` records, before `test.started`, the owner, how many sessions the attempt took, how long it waited and what was active once it had them. `session.released` records when it gave them back: `after: 'contexts_closed'`, `'browser_closed'` when its contexts could not be closed, or `'run_ended'` when not even their browser or native app could be confirmed closed, given back once every runtime of the run had been asked to close. `run.started` records the owner and the limits.
 
 Without `sessions`, nothing is counted, and runs work as before.
+
+### Agent sessions
+
+An agent, such as a model exploring an app, can drive a browser without a test file, through the same drivers, page commands, looks and session budget a test uses. The API is `AgentHost` and `AgentSession`, imported from `@rehearsal-labs/retest/agent`.
+
+```ts
+import { AgentHost } from '@rehearsal-labs/retest/agent'
+
+const host = new AgentHost({ targets: { chrome: { engine: 'chromium', executablePath } }, budget, logFolder, secrets: { values: { password: { value } } } })
+const opened = await host.open({ owner: 'worker-1', app: 'owner', purpose: 'discovery', target: 'chrome', engine: 'chromium', baseUrl })
+if (!opened.ok) throw new Error(opened.failure.message)
+const { session } = opened
+await session.act({ kind: 'goto', url: '/login' })
+const field = await session.observe({ by: 'testId', value: 'user' })
+const [first] = field.ok ? field.look.elements : []
+if (first !== undefined) await session.act({ kind: 'fill', ref: first.ref, value: 'owner-a' })
+const saved = await session.saveState()
+await session.end()
+await host.close()
+```
+
+- A target names its engine, and an open names the target and the engine. A target on another engine is refused by name, and so is a browser that says it is another engine than its target's, which the host then closes. No engine runs in another's place. Each target's browser starts once, with that engine's own driver, and every session opens in a new browser context of it. A browser that is lost is closed two seconds later through its own driver's close, which removes its profile, and started again for the next session that asks. The host closes every browser it started when it closes.
+- `open` never throws, whatever a launcher does, and gives back everything it was granted when it fails. A failed launch is forgotten, so the next open tries again. `close` waits for a browser still starting, within the setup and cleanup budgets, closes it as it arrives, and reports a close that failed instead of answering `ok`.
+- `open` waits for one session from `budget`, the same `SessionBudget` that `runFiles` takes in `sessions`, and for the named `locks`, all at once. One that gets nothing within `waitMs`, the setup budget by default, is refused with the words a test gets, holding nothing. The refusal names only the asking owner's own sessions, in `details.heldBy`, and counts every other session in `details.heldByOthers`. The session holds a lease through the same resources table a test attempt uses. Agent sessions and test runs given one budget never hold more sessions together than it allows. A lock keeps the sessions of one host apart; it is not a test run's lock.
+- Every call has a budget, and the session's `holdMs` bounds them all. It is at most the host's `timeouts.hold`, ten minutes by default, and a request for more is refused by name. A call never throws for a page problem: the answer carries the failure. A session that held its browser for its whole hold is ended. So is every session of a host that is stopped (`host.stop(reason)`), and every session of a browser that is lost. Ending stops what runs: input not yet sent is never sent, and input already sent is not taken back. Then the context is closed within the cleanup budget and the session goes back to the budget. A context that would not close keeps its session counted until its browser closes. `session.ended` settles with why it ended: `ended`, `held_too_long`, `caller_silent`, `stopped` or `lost`.
+- The caller holds its session through a lease. Every call renews it, and so does `session.renew()`, which sends nothing to the page. A session that hears nothing for its whole lease, the host's `timeouts.lease`, one minute by default, while no call is running, is ended as `caller_silent`, and its context and session are given back. A caller that waits for a person between calls renews the lease while it waits.
+- `act` sends one of the commands a test's page takes: `goto`, `reload`, `goBack`, `goForward`, `click`, `hover`, `fill`, `press`, `select`, `check`, `uncheck` and `scroll`. An element is a `locator`, or a `ref` from a look. The answer is the page's result, redacted; `input`, how far the input got (`not_sent`, `sent` or `unknown`); and the recipe it went to. A session takes one action at a time. Looks, checks and saving state may run beside each other, but never beside an action, and a call that would overlap is refused before the page is asked. Frames are taken beside anything.
+- `observe(locator)` reads a locator's matches once and lists up to 100 of them, each with a reference: `{ sessionId, observationId, element }`. A reference is good only in the session that served its look, while that look is among the session's last 32, on the document the look read, and while a fresh read of the look's locator still lists the same matches with the same text and visibility. Otherwise it is refused, `details.refused` says why (`other-session`, `unknown-look`, `expired`, `new-document`, `changed`, `no-element` or `unpinned`), and nothing is sent. `observePage()` reads the address and the title.
+- A reference acts only on the element it names, never on another element that shows the same text. `session.pinsElements` says whether the session's driver can hold one element from a look to the action. Chrome's and Firefox's can: a reference acts on the very element its look listed, wherever the look listed it, twins that show the same included. It is refused with `changed` when that element is no longer at its place, and when the page puts another element in its place while the action waits for it, the page answers `not_actionable` with `details.refused` `moved`. Either way nothing is sent. WebKit's driver cannot hold an element yet. There a reference acts only when its look listed that one element, through the look's own locator: should the page add a second match before the input goes, the action is refused instead of going to another element. Refused there, with `unpinned` and nothing sent: a reference into a look that lists more than one element, and one into a look whose locator keeps a match by its place (`first()`, `last()` or `nth()`). To act on one element of a list there, look with a locator that finds only it, or act with a durable locator.
+- A saved test keeps a recipe, never a reference. `recipe(ref, locator)` turns a reference into one only when a read proves the recipe finds that very element. Finding an element that shows the same text proves nothing, since another element can show it too. The recipe keeps no match by its place. On Chrome one read finds the look's element at its place and the recipe's element at once, and accepts the recipe only when both are one node; a recipe that finds another element is refused with `other-element`. Firefox's and WebKit's drivers cannot compare two elements yet, so there the only recipe a read proves is the look's own locator, when that read finds exactly one element, and every other recipe is refused with `unproven`. There, look with the locator you want to keep, and ask for the recipe of the one element that look lists.
+- `saveState()` saves the context's cookies and `localStorage`, with the session it came from, that session's owner and app, and when. It holds session cookies, so it is the host's to keep. `open({ state })` restores it into a new context before the page loads anything, and only for a session of the same owner and app; another is refused by name (`other-owner` or `other-app`). A session opened without it starts empty. Nothing else passes between sessions: what one does after its state was saved never reaches another.
+- `frame()` is one PNG of the page, as the driver encoded it. `frameSource()` is the driver's own live frame source for the media process, its frames carrying the session's identity and kept encoded. Chrome's is its screencast. Firefox's and WebKit's drivers give none through the session contract, so it is refused by name there.
+- `check(hostCheck, requirement)` runs a host's required check against the session's page with the runner's own host check, looking again until it passes or its time runs out, so it decides and words its result as a test's would. Its identity, the requirement's version, the check's id and the SHA-256 of its content, is the one a test held to the same requirement records for the same check, in every session and attempt. A frozen requirement refuses a changed check by name. A check that fails is a result with `details.checkId`, not a refusal.
+- The host holds the secrets. A `fill` of `{ secret: 'password' }` types only on the session's base URL origin and the origins the host lists for it. An open may name the secrets its session may type, as `secrets: ['password']`; a fill of any other is refused and that secret is not read. Every text an answer holds, looks, failures and addresses included, is redacted.
+- An agent session writes no events and no run folder.
+
+Run on macOS arm64 with Google Chrome 154, Firefox 133 and Playwright's WebKit build 2359. Everything above passed on Chrome, Firefox and WebKit, with a live frame source on Chrome only and element identity on Chrome and Firefox. Four sessions typing at once on Firefox once answered as sent while text did not reach every field; that was a defect of the Firefox driver, now fixed, and the [Firefox driver record](plans/public-beta/proofs/firefox-driver.md) has the cause.
 
 ### Preparing an attempt's state
 
@@ -1536,7 +1910,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 
 ## What Retest does not do yet
 
-- Browsers: Chromium, Chrome and Edge only. Firefox and WebKit are refused by the runner. Native wiring opens iOS simulator and macOS apps, with the unfinished public helpers and privacy refusal described above. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
+- Browsers: Chromium, Chrome and Edge, and Playwright's WebKit build 2359 and Firefox 133 on macOS. Firefox has no phone, touch or pixel ratio emulation and no proxy, and no AI check has judged a Firefox screenshot yet. WebKit has no phone or touch emulation and no proxy, its recorded frames cannot be AI evidence yet, and no AI check has judged a WebKit screenshot yet. iOS simulator and macOS apps run through the runner, one macOS app and one app per simulator in a test, with their swipe, keyboard and alert helpers run only against a stand-in executor. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
 - Checked on macOS arm64 with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3 ran on Linux only in its own integration checks, with Google Chrome 154 and Debian's Chromium 154. Linux on x86-64, Linux outside a container, Edge, Chrome beta, dev and canary, and CI runners were never run. Windows cannot work.
 - The keyboard presses one key or one shortcut at a time: no key held down across actions, and no text typed key by key. `fill` types text. On macOS, only the shortcuts in Retest's table edit a field, and no shortcut was run on Linux.
 - `select` chooses with the keyboard, and was run on macOS only. `scroll` is one wheel event, also on a touch screen: no swipe.
@@ -1544,10 +1918,10 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - Retest does not sign in to a proxy. Only an `http` proxy was run.
 - `--headed`, and `headless: false` in a config, were never run.
 - Locators search the top-level document only: no shadow DOM, no frames. No `filter()`, `and()`, `or()`, `getByAltText()` or `getByTitle()`, and no XPath.
-- No popups, dialogs, uploads, downloads, network mocking, video or visual comparison. A JavaScript dialog fails the command as unsupported.
+- No popups, dialogs, uploads, downloads, network mocking or visual comparison. A JavaScript dialog fails the command as unsupported.
 - No retries, watch mode, custom fixtures or `test.extend`, and no `test.skip()` called inside a test with a condition. Files run on workers; the tests of one file do not. A lock lasts one run and is not shared with another process.
-- No `retest install` and no browser download. No HTML report.
-- No `toMeet`, `test.eval` or agent session API. AI checks judge text and screenshots only: evidence from recorded frames is refused, a screenshot cannot be cropped to a region or masked, and no judge's accuracy has been measured on a set of labelled cases. No provider has been called through the AI SDK adapter yet.
+- `retest install` installs the pinned Electron, builds the native executors and the media process, and refuses Chrome for Testing, Firefox and WebKit while their pins have no archive checksum.
+- No `toMeet` or `test.eval`. The agent session API has no package subpath and writes no events. AI checks judge text, screenshots and recorded frames: a screenshot cannot be cropped to a region or masked, and no live judge's accuracy has been measured on the labelled corpus; only the fake judges have run it. No provider has been called through the AI SDK adapter yet.
 - Test files are loaded more than once: once to plan the run, and again for each visit that runs them. Top-level code runs each time.
 - Screenshots are not redacted. A secret the page shows appears in its screenshot.
 - A function source's value is hidden only from the moment its source gives it; page text read before that reached the test's process as it was.

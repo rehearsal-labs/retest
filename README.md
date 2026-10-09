@@ -123,7 +123,7 @@ test('a task made on the phone shows up everywhere',
 
 ## Try it from source
 
-Retest is not on npm yet. You need Node 24.12 or later and an installed Chrome or Chromium.
+Retest is not on npm yet. You need Node 24.12 or later and an installed Chrome or Chromium. For a macOS app, still planned above, the window capture needs Screen Recording for the terminal or agent that runs Retest, and `npx retest doctor` checks it.
 
 ```sh
 git clone https://github.com/rehearsal-labs/retest
