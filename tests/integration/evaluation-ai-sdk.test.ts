@@ -19,13 +19,14 @@ import { budgets, filesHolding, installPacked, packRetest, resultOf, runProgram,
 // a provider, and only with keys supplied for them on purpose; without them they stay unverified and say so.
 
 const pins = { ai: '7.0.127', '@ai-sdk/anthropic': '4.0.71', '@ai-sdk/openai': '4.0.83', '@ai-sdk/azure': '4.0.90' }
-// Intended for the live gate; not run while its keys are missing.
-const liveModels = { anthropic: 'claude-sonnet-5', openai: 'gpt-5.5-2026-04-23' }
-const liveKeys = { anthropic: process.env['RETEST_EVALUATION_ANTHROPIC_KEY'], openai: process.env['RETEST_EVALUATION_OPENAI_KEY'] }
-const missingKeys = [
-  ...(liveKeys.anthropic === undefined || liveKeys.anthropic === '' ? ['RETEST_EVALUATION_ANTHROPIC_KEY'] : []),
-  ...(liveKeys.openai === undefined || liveKeys.openai === '' ? ['RETEST_EVALUATION_OPENAI_KEY'] : []),
-]
+/**
+ * The live gates for Anthropic and OpenAI, one each, with the model each calls. Each runs when its own key is in the
+ * environment of the process running these tests, and skips by its name otherwise; no key is read from a file.
+ */
+const liveGates = [
+  { provider: 'anthropic', label: 'Anthropic', variable: 'RETEST_EVALUATION_ANTHROPIC_KEY', model: 'claude-sonnet-5' },
+  { provider: 'openai', label: 'OpenAI', variable: 'RETEST_EVALUATION_OPENAI_KEY', model: 'gpt-5.5-2026-04-23' },
+] as const
 // The Azure live gate's deployment, read once. Its key is the only secret: the resource, the endpoint, the deployment
 // and the version name where the requests go.
 const liveAzure = {
@@ -133,7 +134,25 @@ test('${judgeName} live screenshot', async ({ page }) => {
   await expect(page.getByTestId('saved-task')).toHaveText('Release checklist')
   await test.evaluate({ judge: '${judgeName}', requirement: 'The page shows a saved task titled "Release checklist".', evidence: { capture: 'screenshot' } })
 })
+
+test('${judgeName} live screenshot, false requirement', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('task-title').fill('Release checklist')
+  await page.getByTestId('save-task').click()
+  await expect(page.getByTestId('saved-task')).toHaveText('Release checklist')
+  await test.evaluate({ judge: '${judgeName}', requirement: 'The page shows a saved task titled "Quarterly tax return".', evidence: { capture: 'screenshot' } })
+})
 `
+}
+
+/**
+ * The live screenshot check whose requirement the page does not meet must fail: a judge that passed it would be
+ * judging without looking at the image it was sent.
+ */
+function assertLiveFalseRequirementFails(finished: FinishedRun, judgeName: string): void {
+  const name = `${judgeName} live screenshot, false requirement`
+  const result = testNamed(finished, name)
+  assert.deepEqual([result.status, result.failure?.class, result.evaluations?.[0]?.verdict], ['failed', 'evaluation_failed', 'fail'], `${name}: ${JSON.stringify(result.evaluations?.[0])}`)
 }
 
 describe('the AI SDK adapter from the packed package', () => {
@@ -249,23 +268,32 @@ test('judged', async () => {
     assert.equal(resultOf(finished).counts.passed, 2)
   })
 
-  test('live provider gate: one text and one screenshot check against Anthropic and OpenAI', { skip: missingKeys.length === 0 ? false : `unverified: ${missingKeys.join(' and ')} not set, so no provider was called` }, async (t) => {
-    const install = await withSdk()
-    assert.ok('folder' in install, `the pinned AI SDK packages are installed: ${'problem' in install ? install.problem : ''}`)
-    const { folder } = install
-    const app = await openApp(t)
-    const judges = `{ ${judge('anthropic', 'RETEST_EVALUATION_ANTHROPIC_KEY', liveModels.anthropic)}, ${judge('openai', 'RETEST_EVALUATION_OPENAI_KEY', liveModels.openai)} }`
-    await writeFile(join(folder, 'retest.config.ts'), config(app.url, judges))
-    await writeFile(join(folder, 'tests/judged.retest.ts'), `import { expect, test } from '@rehearsal-labs/retest'\n${liveTests('anthropic')}${liveTests('openai')}`)
-    const env = { RETEST_EVALUATION_ANTHROPIC_KEY: liveKeys.anthropic ?? '', RETEST_EVALUATION_OPENAI_KEY: liveKeys.openai ?? '' }
-    const finished = await run(t, folder, env)
-    for (const name of ['anthropic live text', 'anthropic live screenshot', 'openai live text', 'openai live screenshot']) {
-      const result = testNamed(finished, name)
-      assert.deepEqual([result.status, result.evaluations?.[0]?.verdict], ['passed', 'pass'], `${name}: ${JSON.stringify(result.evaluations?.[0])}`)
-      assert.ok(result.evaluations?.[0]?.evaluator?.modelRevision !== undefined, `${name} names the model that answered`)
-    }
-    for (const key of Object.values(env)) assert.deepEqual(filesHolding(finished.output, key), [])
-  })
+  for (const gate of liveGates) {
+    const key = process.env[gate.variable] ?? ''
+    const skip = key === '' ? `unverified: ${gate.variable} not set, so ${gate.label} was not called` : false
+    test(`live provider gate, ${gate.label}: one text and one screenshot check against ${gate.model}`, { skip }, async (t) => {
+      const install = await withSdk()
+      assert.ok('folder' in install, `the pinned AI SDK packages are installed: ${'problem' in install ? install.problem : ''}`)
+      const { folder } = install
+      const app = await openApp(t)
+      // The judge names images in what it accepts, so the screenshot check sends the capture as an image.
+      await writeFile(join(folder, 'retest.config.ts'), config(app.url, `{ ${judge(gate.provider, gate.variable, gate.model)} }`))
+      await writeFile(join(folder, 'tests/judged.retest.ts'), `import { expect, test } from '@rehearsal-labs/retest'\n${liveTests(gate.provider)}`)
+      const finished = await run(t, folder, { [gate.variable]: key })
+      for (const name of [`${gate.provider} live text`, `${gate.provider} live screenshot`]) {
+        const result = testNamed(finished, name)
+        const [evaluation] = result.evaluations ?? []
+        assert.deepEqual([result.status, evaluation?.verdict], ['passed', 'pass'], `${name}: ${JSON.stringify(evaluation)}`)
+        assert.deepEqual([evaluation?.judge, evaluation?.evaluator?.provider, evaluation?.evaluator?.model], [gate.provider, gate.provider, gate.model])
+        assert.ok(evaluation?.evaluator?.modelRevision !== undefined, `${name} names the model that answered`)
+      }
+      assertLiveFalseRequirementFails(finished, gate.provider)
+      const screenshot = testNamed(finished, `${gate.provider} live screenshot`).evaluations?.[0]?.evidence[0]
+      assert.ok(screenshot?.kind === 'screenshot' && screenshot.path !== undefined && screenshot.sha256.length === 64, 'the judge was sent the screenshot the run folder keeps')
+      assert.deepEqual(filesHolding(finished.output, key), [])
+      assert.ok(!textHolds(finished.stdout, key) && !textHolds(finished.stderr, key))
+    })
+  }
 
   test("through a proxy, Azure, and Anthropic and OpenAI given no baseURL, each send one request per check to the address the options name or the provider's own API, with the key in its own header only", async (t) => {
     const install = await withSdk()
@@ -310,8 +338,17 @@ test('${judgeName}', async () => {
     }
 
     // One tunnel and one request per check, each to the address its judge names or its provider's own API: none to a
-    // host the SDK's own variables name.
-    assert.deepEqual([...stand.tunnels].sort(), ['api.anthropic.com:443', 'api.openai.com:443', 'retest-endpoint.openai.azure.com:443', 'retest-resource.openai.azure.com:443'])
+    // host the SDK's own variables name. Retest hands the run's proxy variables to the browser too, and Chrome on Linux
+    // takes them, as that platform's rule is, so there its own background requests open tunnels as well. A tunnel is the
+    // judges' by its destination, a provider's host, and every other one the browser's: one tunnel to each provider
+    // host means the browser reached none of them. macOS Chrome takes no proxy from the environment and opens none.
+    const providerHosts = ['api.anthropic.com:443', 'api.openai.com:443', 'retest-endpoint.openai.azure.com:443', 'retest-resource.openai.azure.com:443']
+    const browserTunnels = stand.tunnels.filter((tunnel) => !providerHosts.includes(tunnel))
+    assert.deepEqual(stand.tunnels.filter((tunnel) => providerHosts.includes(tunnel)).sort(), providerHosts)
+    if (process.platform === 'darwin') assert.deepEqual(browserTunnels, [], 'only the judges opened tunnels')
+    else t.diagnostic(`the browser's own tunnels through the run's proxy: ${JSON.stringify([...browserTunnels].sort())}`)
+    const decoyHosts = [sdkVariables.OPENAI_BASE_URL, sdkVariables.ANTHROPIC_BASE_URL, `https://${sdkVariables.AZURE_RESOURCE_NAME}.openai.azure.com`].map((address) => `${new URL(address).hostname}:443`)
+    assert.deepEqual(browserTunnels.filter((tunnel) => decoyHosts.includes(tunnel)), [], "no tunnel reaches a host the SDK's own variables name")
     assert.equal(stand.seen.length, 4, 'one request per check, so nothing was retried')
     const sentTo = (host: string): Seen => {
       const [found, ...others] = stand.seen.filter((each) => each.host === host)
@@ -373,6 +410,7 @@ test('${judgeName}', async () => {
       assert.deepEqual([evaluator?.provider, evaluator?.model], ['azure', liveAzure.deployment])
       assert.ok(evaluator?.modelRevision !== undefined, `${name} names the model that answered`)
     }
+    assertLiveFalseRequirementFails(finished, 'azure')
     assert.deepEqual(filesHolding(finished.output, liveAzure.key), [])
     assert.ok(!textHolds(finished.stdout, liveAzure.key) && !textHolds(finished.stderr, liveAzure.key))
   })

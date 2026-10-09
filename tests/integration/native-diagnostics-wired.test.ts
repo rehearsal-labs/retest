@@ -16,7 +16,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
-import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { readArtifact } from '../../src/diagnostics/artifact.ts'
 import { nativePins } from '../../src/native/executors.ts'
 import { listSimulators } from '../../src/native/ios-simulator.ts'
@@ -24,6 +23,8 @@ import { systemTools } from '../../src/native/processes.ts'
 import { rebuildRecordedResult } from '../../src/store/rebuild-result.ts'
 import { budgets, eventsOf, filesHolding, repositoryRoot, runCli, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
 import { nativeSkipReason, processesWith, taskDeskApp, taskPhoneApp, within } from './native-harness.ts'
+import { endService } from './service-teardown.ts'
+import { assertNativeNetworkLockLocation } from './native-network-lock-fixture.ts'
 
 // Native diagnostics through Retest's CLI on real targets: TaskPhone on an iOS 26.5 simulator and TaskDesk on this
 // Mac, against the cross-platform fixture service started with `--network-log`. The config declares that file for the
@@ -50,7 +51,10 @@ const timeouts = budgets({ setup: 300_000, action: 30_000, assertion: 20_000, te
 
 type Service = { readonly url: string; readonly networkLog: string; requests(): RequestRecord[] }
 
-/** Starts the fixture service in a process group of its own; the test stops it with SIGTERM, and kills its group only if it stays. */
+/**
+ * Starts the fixture service in a process group of its own. The test stops it with SIGTERM; one that stays is ended
+ * through its own handle, and anything of its group still there fails the test by name.
+ */
 async function startService(t: TestContext): Promise<Service> {
   const folder = await scratchFolder(t, 'retest-native-diagnostics-service-')
   const networkLog = join(folder, 'network.jsonl')
@@ -60,7 +64,8 @@ async function startService(t: TestContext): Promise<Service> {
   const exited = new Promise<void>((resolve) => child.once('close', () => resolve()))
   t.after(async () => {
     child.kill('SIGTERM')
-    await within(exited, 10_000, 'the service did not exit within 10 s of SIGTERM').catch(() => signalGroup(pid, 'SIGKILL'))
+    await within(exited, 10_000, 'the service did not exit within 10 s of SIGTERM').catch(() => undefined)
+    await endService(child, 'the fixture service')
   })
   let stdout = ''
   let stderr = ''
@@ -151,6 +156,12 @@ function sequenceOf(events: readonly RetestEvent[], type: RetestEvent['type'], s
   assert.ok(found !== undefined, `the run recorded ${type} for ${sessionId}`)
   return found.sequence
 }
+
+// The network-file lock is a kernel lock taken with macOS's lockf, and native apps run only on a Mac, so elsewhere no
+// lock is taken at all.
+test('native network-file exclusion spans separate run temporary directories and retains its inode', { skip: process.platform === 'darwin' ? false : `unverified: the network-file lock stands on macOS's lockf, and this host is ${process.platform}` }, async t => {
+  await assertNativeNetworkLockLocation(await scratchFolder(t, 'retest-network-lock-fixture-'))
+})
 
 test('native apps keep their declared diagnostics through the CLI, say what they lack, and give the judge the phone\'s capture', { timeout: 1_200_000, skip: unverified }, async (t) => {
   assert.deepEqual(await processesWith(taskDeskExecutable), [], 'an existing TaskDesk copy is never adopted or ended')

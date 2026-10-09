@@ -6,6 +6,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { resolveExecutable, systemHost } from '../../src/browser/executables.ts'
 import { openApp } from './browser-harness.ts'
 import { browserVersion, budgets, configSource, eventsOf, hostScript, runHost, runProject, secondBrowserPath, testNamed, writeProject } from './cli-harness.ts'
 
@@ -15,6 +16,13 @@ import { browserVersion, budgets, configSource, eventsOf, hostScript, runHost, r
 // intended check on a broken one and passes again once the app is repaired.
 
 const fakeJudge = fileURLToPath(new URL('../support/fake-evaluator.ts', import.meta.url))
+
+// The Google Chrome a chrome() target runs on this machine, wherever its installer put it.
+function installedChrome(): string {
+  const found = resolveExecutable({ product: 'chrome' }, systemHost())
+  assert.ok(found.ok, found.ok ? '' : found.failure.message)
+  return found.path
+}
 const file = 'tests/saves.retest.ts'
 const name = 'saves a task'
 
@@ -61,7 +69,7 @@ test('the bundle and configuration fingerprints change with a helper, a budget o
   const first = executionOf(await cliRun(t, root))
   assert.deepEqual(first.bundle?.modules.map((module) => module.path), ['tests/helpers/titles.ts', file], 'the test file and the helper it imports, nothing else')
   assert.equal(first.sessions[0]?.product, 'Chrome')
-  assert.equal(first.sessions[0]?.version, browserVersion('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'), 'the browser as it reported itself')
+  assert.equal(first.sessions[0]?.version, browserVersion(installedChrome()), 'the browser as it reported itself')
   assert.equal(first.runtime.node, process.version)
   assert.deepEqual(first.unavailable, ['app-build:web'], 'the command line names no app build, and the record says so')
 
