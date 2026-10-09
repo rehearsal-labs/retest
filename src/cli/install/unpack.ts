@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { describeCommand, runCommand } from '../../native/processes.ts'
-import { isMissingFile } from '../../shared/error-code.ts'
+import { Deadline } from '../../protocol/deadline.ts'
+import { errorCode, isMissingFile } from '../../shared/error-code.ts'
 
 // Unpacks an archive whose checksum was already verified, with the system's own tools: ditto on macOS, unzip on Linux,
 // and hdiutil for a macOS disk image. Nothing is unpacked before its bytes match the pin.
@@ -48,8 +49,8 @@ async function copyFromDiskImage(request: UnpackRequest, app: string): Promise<s
     // hdiutil hands the attach to a system helper that outlives it, so an attach Retest ended for its time or a stop
     // can still finish after hdiutil is gone. Whatever the helper attached from this archive is detached again.
     const left = await detachLeftAttach(request, mountPoint, attached.timedOut || attached.stopped ? leftAttachWaitMs : 0)
-    if (left === undefined) await rmdir(mountPoint).catch(() => undefined)
-    return `The disk image could not be attached: ${describeCommand('hdiutil attach', attached)}.${left === undefined ? '' : ` ${left}`}`
+    const cleanup = left ?? (await removeMountPoint(mountPoint))
+    return `The disk image could not be attached: ${describeCommand('hdiutil attach', attached)}.${cleanup === undefined ? '' : ` ${cleanup}`}`
   }
   let problem: string | undefined
   try {
@@ -57,9 +58,8 @@ async function copyFromDiskImage(request: UnpackRequest, app: string): Promise<s
     if (!(await exists(source))) problem = `The disk image holds no ${app}.`
     else problem = await run(request.tools.ditto, [source, join(request.into, app)], request, 'ditto')
   } finally {
-    const detached = await detach(request, mountPoint)
-    if (detached === undefined) await rmdir(mountPoint).catch(() => undefined)
-    else problem = problem === undefined ? detached : `${problem} ${detached}`
+    const cleanup = (await detach(request, mountPoint)) ?? (await removeMountPoint(mountPoint))
+    if (cleanup !== undefined) problem = problem === undefined ? cleanup : `${problem} ${cleanup}`
   }
   return problem
 }
@@ -74,6 +74,29 @@ async function detach(request: UnpackRequest, target: string): Promise<string | 
   const forced = await runCommand(request.tools.hdiutil, ['detach', '-force', target], options)
   if (forced.code === 0) return undefined
   return `The disk image is still attached at ${target}: ${describeCommand('hdiutil detach -force', forced)}. Detach it with hdiutil detach ${target}.`
+}
+
+/** How long an empty mount point is tried again after a detach, while the system lets go of the volume. */
+const mountPointReleaseMs = 2000
+
+/** The errors rmdir gives for a mount point the system has not let go of yet. */
+const stillReleasing = new Set(['EBUSY', 'ENOTEMPTY', 'EPERM'])
+
+// hdiutil detach can return before the volume is fully released, so the mount point can be refused as busy or not empty
+// for a moment. One already gone is fine; one still there when the wait ends is reported by name, never silently kept.
+async function removeMountPoint(mountPoint: string): Promise<string | undefined> {
+  const deadline = new Deadline(mountPointReleaseMs)
+  for (;;) {
+    try {
+      await rmdir(mountPoint)
+      return undefined
+    } catch (error) {
+      const code = errorCode(error)
+      if (code === 'ENOENT') return undefined
+      if (code === undefined || !stillReleasing.has(code) || deadline.reached) return `Retest could not remove the empty mount folder ${mountPoint} after the disk image was detached; remove it by hand.`
+    }
+    await sleep(Math.min(100, deadline.waitToEndMs))
+  }
 }
 
 /** How long a stopped or timed-out attach is watched for the system helper finishing it after hdiutil is gone. */
