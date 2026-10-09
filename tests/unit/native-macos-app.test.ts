@@ -11,10 +11,10 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { nativeCaptureTimeoutMs, sessionRecordIdentity } from '../../src/native/capture.ts'
 import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
-import { appWindow, automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, windowsOnScreen } from '../../src/native/macos-app.ts'
+import { appWindow, automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, readWindowsOnScreen, windowsOnScreen } from '../../src/native/macos-app.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
 import { decodePng } from '../../src/native/png.ts'
-import { commandOf, systemTools, terminationGraceMs } from '../../src/native/processes.ts'
+import { commandOf, listProcesses, ProcessListUnread, systemTools, terminationGraceMs } from '../../src/native/processes.ts'
 import { alive, readApps, readJsonFile, readRequests } from './native-fake-executor.ts'
 import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, startedProcesses } from './native-fake-tools.ts'
 
@@ -573,6 +573,21 @@ test('the window route\'s readings keep the default grace: one that ignores SIGT
     const tookMs = performance.now() - began
     assert.ok(tookMs >= timeoutMs + terminationGraceMs, `${name} was ended after ${tookMs} ms`)
   }
+})
+
+test('a window list or process list that ran out of its time is told from one that could not be read', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-macos-readings-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const slow = join(folder, 'slow')
+  const failing = join(folder, 'failing')
+  await writeFile(slow, '#!/bin/sh\nsleep 30\n')
+  await writeFile(failing, "#!/bin/sh\necho 'execution error: the window server did not answer (-1712)' >&2\nexit 1\n")
+  await chmod(slow, 0o755)
+  await chmod(failing, 0o755)
+  assert.deepEqual(await readWindowsOnScreen({ ...systemTools, osascript: slow }, { timeoutMs: 200 }), { ok: false, problem: 'osascript did not finish in time and was ended', timedOut: true })
+  assert.deepEqual(await readWindowsOnScreen({ ...systemTools, osascript: failing }, { timeoutMs: 10_000 }), { ok: false, problem: 'osascript ended with exit code 1: execution error: the window server did not answer (-1712)', timedOut: false })
+  await assert.rejects(listProcesses({ ...systemTools, ps: slow }, 200), (error: unknown) => error instanceof ProcessListUnread && error.timedOut && error.message === 'ps did not finish in time and was ended')
+  await assert.rejects(listProcesses({ ...systemTools, ps: failing }, 10_000), (error: unknown) => error instanceof ProcessListUnread && !error.timedOut)
 })
 
 test('a window image a capture wrote is gone when Retest exits before the capture removed it', darwinOnly, async (t) => {

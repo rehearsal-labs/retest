@@ -658,13 +658,26 @@ function oneSpaced(start: string): string {
 }
 
 /**
+ * Thrown by `listProcesses` when `ps` gave no list. `timedOut` is true when it did not answer in its time, which says
+ * nothing of the processes.
+ */
+export class ProcessListUnread extends Error {
+  readonly timedOut: boolean
+
+  constructor(message: string, timedOut: boolean) {
+    super(message)
+    this.timedOut = timedOut
+  }
+}
+
+/**
  * Every process of this user's session as `ps` lists it, with its whole command line and its start.
  *
  * @example (await listProcesses(systemTools, 5000)).some(({ command }) => command.includes('/Devices/'))
  */
 export async function listProcesses(tools: NativeTools, timeoutMs: number): Promise<ListedProcess[]> {
   const result = await runCommand(tools.ps, ['-axww', '-o', 'pid=,lstart=,args='], { timeoutMs, environment: readingEnvironment, hiddenVariables: readingHidden(tools.hiddenVariables) })
-  if (result.code !== 0) throw new Error(describeCommand('ps', result))
+  if (result.code !== 0) throw new ProcessListUnread(describeCommand('ps', result), result.timedOut)
   // A table cut at the output limit can end inside a line, which would read as a process with a shorter command.
   if (result.stdout.length >= outputLimit) throw new Error(`ps listed more than the ${outputLimit} characters Retest reads of one command, so the list may be cut.`)
   const listed: ListedProcess[] = []

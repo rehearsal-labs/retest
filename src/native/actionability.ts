@@ -43,8 +43,11 @@ export type NativePort = {
   readonly executor: ExecutorSession
   readTree(timeoutMs: number, signal: AbortSignal): Promise<TreeLook>
   readField(locator: LocatorRecipe, timeoutMs: number, signal: AbortSignal): Promise<FieldRead>
-  /** Why the app is not in front with nothing of another process over `frame`, on macOS; undefined when it is, and always on iOS. */
-  frontProblem(frame: Rect, window: Rect | undefined, bounds: RequestBounds): Promise<string | undefined>
+  /**
+   * Why the app is not in front with nothing of another process over `frame`, on macOS; undefined when it is, and always
+   * on iOS. A reading that ran out of its time is a `timeout` failure rather than a reason: it says nothing of the app.
+   */
+  frontProblem(frame: Rect, window: Rect | undefined, bounds: RequestBounds): Promise<string | Failure | undefined>
   /** Why keys would not reach the app, on macOS: the app is not in front, or that could not be read. Undefined when they would, and always on iOS. */
   keysProblem(bounds: RequestBounds): Promise<string | undefined>
   /** Why a reference can no longer be acted on: the session refuses it, or the session is stopped, cancelled or lost. */
@@ -199,6 +202,9 @@ async function look(port: NativePort, subject: ActionSubject, needs: ActionNeeds
   const front = await port.frontProblem(rect.value, tree.root.frame, bounds())
   // Once this allocation is exhausted, keep the earlier readiness reason and issue the final tree read.
   if (deadline.reached && last !== undefined) return { kind: 'unready', unready: last }
+  // A front reading that ran out of time is a timed-out read like any other. Its timer can wake before this deadline
+  // reads as reached, so the check above alone would let it replace the reason the element was not ready.
+  if (typeof front === 'object') return settledReadFailure(front, last, subject, needs, deadline, port.platform)
   if (front !== undefined) return blocked('front', front)
   return settledTarget({ element, tree, reference, executorElement, frame: rect.value })
 }
@@ -284,6 +290,7 @@ async function lookAtApp(port: NativePort, input: AppInput, subject: ActionSubje
   }
   const front = await port.frontProblem(second.frame, second.frame, bounds())
   if (deadline.reached && last !== undefined) return { kind: 'unready', unready: last }
+  if (typeof front === 'object') return unsettled(settledReadFailure(front, last, subject, needs, deadline, port.platform))
   if (front !== undefined) return unsettled(blocked('front', front))
   return { kind: 'settled', result: { ok: true, area: { frame: second.frame, reference, ...(executorElement === undefined ? {} : { executorElement }) } } }
 }

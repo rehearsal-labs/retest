@@ -165,6 +165,31 @@ for (const app of [false, true]) for (const frontAt of [249.5, 250.1]) {
   })
 }
 
+// A front reading whose own timer woke early ends a moment before the deadline reads as reached. It ran out of time and
+// says nothing of the app, so it does not replace why the element could not take the input, as on a slow Linux x64 CI
+// machine, where "a window lies over it" became "could not read whether the app is in front".
+for (const app of [false, true]) {
+  test(`native ${app ? 'app-coordinate' : 'element'} readiness keeps the earlier reason over a front reading that ran out of time before the deadline`, async (t) => {
+    const port = macReadyPort(t); const clock = earlyClock(t); const reads: number[] = []; let fronts = 0
+    const readTree = port.readTree
+    port.readTree = async (timeoutMs, signal) => { reads.push(clock.now()); clock.spend(); return readTree(timeoutMs, signal) }
+    port.frontProblem = async () => {
+      fronts++
+      if (fronts === 1) return 'The earlier window is in front.'
+      clock.spend(Math.max(0, 249.5 - clock.now()))
+      return { class: 'timeout', message: "Retest could not read whether the app is in front: Reading the app's state: no answer within 1 ms." }
+    }
+    const stop = new AbortController(); const deadline = new Deadline(250)
+    const result = app
+      ? await clock.run(waitUntilAppReady(port, { verb: 'press', at: 'keys' }, deadline, stop.signal))
+      : await clock.run(waitUntilActionable(port, locatorSubject(locator, 'tap'), { verb: 'tap', enabled: true }, deadline, stop.signal))
+    assert.ok(fronts >= 2, 'the second front reading ran')
+    assert.ok(!result.ok && result.failure.class === 'not_actionable', !result.ok ? result.failure.message : 'it was ready')
+    assert.match(result.failure.message, /the app is not in front with nothing over it: The earlier window is in front/)
+    fullBudget(reads, clock.now(), 250)
+  })
+}
+
 test('optional native keyboard discovery caps its pause at the remaining stage and action budget', async (t) => {
   const port = portFor(t); const clock = earlyClock(t); let clicks = 0
   t.mock.method(port.elements, 'elementAttribute', async (_id: string, name: string) => ({ status: 'answered', value: name === 'name' ? 'field' : name === 'label' ? 'Title' : true, durationMs: 0 }))

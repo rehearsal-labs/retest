@@ -9,12 +9,12 @@ import type { ActionTarget, InputRecordDraft, NativeInputKind, NativePort, TreeL
 import type { AlertAnswer, AlertReading } from './alerts.ts'
 import type { NativeAssertionResult, NativeCheckRecord, NativeLook } from './assertions.ts'
 import type { KeyboardState } from './keyboard.ts'
-import type { NativeTools } from './processes.ts'
+import type { ListedProcess, NativeTools } from './processes.ts'
 import type { CaptureSource, NativeAppSession, NativeCapture, NativeReference, ProcessReading, UnknownOutcome } from './session.ts'
 import type { ExecutorAnswer, ExecutorClient, ExecutorSession, Rect, RequestBounds } from './webdriver-client.ts'
 import { waitUntilDeadline } from '../assertions/wait-before-read.ts'
 import { Deadline } from '../protocol/deadline.ts'
-import { failureSchema } from '../protocol/failures.ts'
+import { errorMessage, failureSchema } from '../protocol/failures.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { parse } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
@@ -24,8 +24,8 @@ import { pollNative, observeTree } from './assertions.ts'
 import { clickOnce, nativeSecretField, performAction, secureFieldPixels } from './input.ts'
 import { dismissFirstRunCard, dismissKeyboard, keyboardOf, readKeyboard, waitForKeyboard } from './keyboard.ts'
 import { identifierOf, locate, parseNativeTree, valueReading } from './locators.ts'
-import { automationOverlayPids, coveringWindows, windowsOnScreen } from './macos-app.ts'
-import { listProcesses } from './processes.ts'
+import { automationOverlayPids, coveringWindows, readWindowsOnScreen, windowsOnScreen } from './macos-app.ts'
+import { listProcesses, ProcessListUnread } from './processes.ts'
 import { redactNativeFailure } from './output.ts'
 import { NativeError, SerialLane } from './session.ts'
 import { ExecutorElements, inputDispatch } from './webdriver-client.ts'
@@ -604,26 +604,33 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
   // process may lie over the element's centre. The runner's `hittable` does not show it: an element under another app's
   // floating window read as hittable here. Passed over: the Automation Mode overlay over the whole screen, owned by the
   // exact system process, and only while the runner session is open, and the pointer's own window owned by the window
-  // server. Each read takes what is left of the time, never the whole of it.
-  async #frontProblem(frame: Rect, window: Rect | undefined, bounds: RequestBounds): Promise<string | undefined> {
+  // server. Each read takes what is left of the time, never the whole of it. A reading that ran out of its time comes
+  // back as a timeout, which the readiness wait treats as any timed-out read, never as a reason.
+  async #frontProblem(frame: Rect, window: Rect | undefined, bounds: RequestBounds): Promise<string | Failure | undefined> {
     const tools = this.#options.tools
     if (this.platform !== 'macos' || tools === undefined) return undefined
     const deadline = new Deadline(Math.max(1, Math.min(maxTimeout, Math.floor(bounds.timeoutMs))))
     const part = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: bounds.signal })
+    const unread = (problem: string, timedOut: boolean): string | Failure => (timedOut ? { class: 'timeout', message: problem } : problem)
     const state = await this.#session.appState(part().timeoutMs, bounds.signal)
-    if (!state.ok) return `Retest could not read whether the app is in front: ${state.failure.message}`
+    if (!state.ok) return unread(`Retest could not read whether the app is in front: ${state.failure.message}`, state.failure.class === 'timeout')
     if (state.state !== 'foreground') return 'the app is not in front'
     if (window === undefined) return 'the app has no window frame in its tree'
-    const windows = await windowsOnScreen(tools, part())
-    if (typeof windows === 'string') return `Retest could not read which windows are on screen (${windows})`
-    const listed = await listProcesses(tools, part().timeoutMs).catch(() => undefined)
-    if (listed === undefined) return 'Retest could not read the processes behind the windows on screen'
+    const windows = await readWindowsOnScreen(tools, part())
+    if (!windows.ok) return unread(`Retest could not read which windows are on screen (${windows.problem})`, windows.timedOut)
+    let listed: ListedProcess[]
+    try {
+      listed = await listProcesses(tools, part().timeoutMs)
+    } catch (error) {
+      return unread(`Retest could not read the processes behind the windows on screen (${errorMessage(error)})`, error instanceof ProcessListUnread && error.timedOut)
+    }
     const dock = listed.filter((entry) => entry.command.endsWith('/Dock.app/Contents/MacOS/Dock')).map((entry) => entry.pid)
     const overlay = this.#elements.ended === undefined ? automationOverlayPids(listed) : []
     const pointer = listed.filter((entry) => entry.command === windowServer || entry.command.startsWith(`${windowServer} `)).map((entry) => entry.pid)
     const screen = await this.#options.executor.windowRect(part())
-    if (screen.status !== 'answered') return `Retest could not read the main screen's frame (${screen.status === 'refused' ? screen.error : screen.message})`
-    const covering = coveringWindows(windows, { pids: this.#session.processIds, frame: window }, { screen: screen.value, dockPids: dock, automationOverlayPids: overlay })
+    if (screen.status === 'refused') return `Retest could not read the main screen's frame (${screen.error})`
+    if (screen.status !== 'answered') return unread(`Retest could not read the main screen's frame (${screen.message})`, screen.reason === 'timeout')
+    const covering = coveringWindows(windows.windows, { pids: this.#session.processIds, frame: window }, { screen: screen.value, dockPids: dock, automationOverlayPids: overlay })
     if (!covering.ok) return covering.problem
     const over = covering.windows.filter((entry) => !(entry.layer === pointerLayer && pointer.includes(entry.pid)) && holdsCentre(entry, frame))
     if (over.length === 0) return undefined

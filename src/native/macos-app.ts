@@ -605,22 +605,37 @@ const windowListScript = [
  * @example await windowsOnScreen(systemTools, { timeoutMs: 5000 }) // [{ pid: 601, layer: 24, x: 0, y: 0, width: 1728, height: 33, number: 23599 }, …]
  */
 export async function windowsOnScreen(tools: NativeTools, bounds: RequestBounds): Promise<ScreenWindow[] | string> {
+  const reading = await readWindowsOnScreen(tools, bounds)
+  return reading.ok ? reading.windows : reading.problem
+}
+
+/** The windows on screen, or why they could not be read and whether that was because osascript ran out of its time. */
+export type WindowsReading = { readonly ok: true; readonly windows: ScreenWindow[] } | { readonly ok: false; readonly problem: string; readonly timedOut: boolean }
+
+/**
+ * `windowsOnScreen`, telling a window list that did not come back in its time, which says nothing of the windows, from
+ * one that could not be read.
+ *
+ * @example await readWindowsOnScreen(systemTools, { timeoutMs: 1 }) // { ok: false, problem: 'osascript did not finish in time and was ended', timedOut: true }
+ */
+export async function readWindowsOnScreen(tools: NativeTools, bounds: RequestBounds): Promise<WindowsReading> {
+  const unreadable = (problem: string): WindowsReading => ({ ok: false, problem, timedOut: false })
   const result = await runCommand(tools.osascript, ['-l', 'JavaScript', '-e', windowListScript], { ...bounds, hiddenVariables: tools.hiddenVariables })
-  if (result.code !== 0) return describeCommand('osascript', result)
+  if (result.code !== 0) return { ok: false, problem: describeCommand('osascript', result), timedOut: result.timedOut }
   let parsed: unknown
   try {
     parsed = JSON.parse(result.stdout)
   } catch {
-    return 'the window list is not JSON'
+    return unreadable('the window list is not JSON')
   }
-  if (!Array.isArray(parsed)) return 'the window list is not a list'
+  if (!Array.isArray(parsed)) return unreadable('the window list is not a list')
   const windows: ScreenWindow[] = []
   for (const entry of parsed) {
-    if (!Array.isArray(entry) || entry.length !== 7 || !entry.every((value) => typeof value === 'number')) return 'a window entry is not seven numbers'
+    if (!Array.isArray(entry) || entry.length !== 7 || !entry.every((value) => typeof value === 'number')) return unreadable('a window entry is not seven numbers')
     const [pid = 0, layer = 0, x = 0, y = 0, width = 0, height = 0, number = 0] = entry
     windows.push({ pid, layer, x, y, width, height, number })
   }
-  return windows
+  return { ok: true, windows }
 }
 
 /**
