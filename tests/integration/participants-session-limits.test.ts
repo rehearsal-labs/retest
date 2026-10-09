@@ -156,15 +156,28 @@ const timeouts = { collection: 5000, setup: 15000, action: 2000, navigation: 100
 const stop = new AbortController()
 let waitingWhenStopped = -1
 let hostWhenStopped = -1
+let watching = false
+// The run is stopped once the attempt that holds the session is inside its hold at the app, so it is stopped in its body.
+// A fixed time after the reservation is not that: under load its browser can still be launching then, and a test whose
+// body never started is not run.
+async function stopInsideTheHold() {
+  const endsAt = performance.now() + 15000
+  while (performance.now() < endsAt) {
+    const response = await fetch(new URL('/holders?name=cancelled', ${JSON.stringify(url)}))
+    const { current } = await response.json()
+    if (current > 0) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  waitingWhenStopped = budget.snapshot().waiting
+  hostWhenStopped = budget.snapshot().host
+  stop.abort({ class: 'interrupted', message: 'The host stopped the run while sessions were held and asked for.' })
+}
 const reporter = {
   name: 'stopper',
   onEvent: (event) => {
-    if (event.type !== 'session.reserved' || stop.signal.aborted) return
-    setTimeout(() => {
-      waitingWhenStopped = budget.snapshot().waiting
-      hostWhenStopped = budget.snapshot().host
-      stop.abort({ class: 'interrupted', message: 'The host stopped the run while sessions were held and asked for.' })
-    }, 300)
+    if (event.type !== 'session.reserved' || watching) return
+    watching = true
+    void stopInsideTheHold()
   },
   onRunEnd: () => undefined,
 }

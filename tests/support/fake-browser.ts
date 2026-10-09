@@ -53,6 +53,8 @@ export type FakeOptions = {
   holdClosing?: (index: number) => Promise<void>
   screenshotFails?: boolean
   launchFails?: string
+  /** A launch waits for this before its browser is up, as a browser slow to start does. */
+  holdLaunch?: () => Promise<void>
   /** The version each browser reports, which an emulated device's user agent carries. */
   version?: string
   /** Reading a page's sign-in state fails. */
@@ -628,6 +630,7 @@ export class FakeBrowser implements OwnedBrowser {
 export function fakeLauncher(options: FakeOptions = {}): { launch: LaunchBrowser; browsers: FakeBrowser[] } {
   const browsers: FakeBrowser[] = []
   const launch: LaunchBrowser = async (launchOptions) => {
+    await options.holdLaunch?.()
     if (options.launchFails !== undefined) throw new LaunchError(options.launchFails)
     const browser = new FakeBrowser(options, launchOptions, firstFakePid - browsers.length)
     browsers.push(browser)

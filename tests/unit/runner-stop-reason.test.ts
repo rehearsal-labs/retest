@@ -107,6 +107,34 @@ test('a stopped test whose process answers the stop before it is killed carries 
   assert.match(reports(record).agent, /\nerror tests\/support\/files\/slow-click\.retest\.ts:5 clicks something that never answers\n {2}interrupted The host stopped the run: its budget ran out\.\n/)
 })
 
+// The order the cancelled run of participants-session-limits.test.ts met under load: the file was collected and its first
+// test held what it needed, but its browser was still launching when the host stopped the run. That test never started,
+// so it is not run, with the host's reason, as the tests after it are; only a test whose body ran ends as an error.
+test('a run stopped while the browser its test waits for still launches records that test as not run, with the reason', async () => {
+  const controller = new AbortController()
+  const collected = Promise.withResolvers<void>()
+  const record = await runSupportFiles(['passing.retest.ts'], {
+    signal: controller.signal,
+    // The run starts its browser as it begins; the launch is still out when the stop comes, after the first test has had
+    // time to wait for it, and the browser comes up after the stop.
+    fake: {
+      holdLaunch: async () => {
+        await collected.promise
+        await delay(30)
+        controller.abort(reason)
+        await delay(50)
+      },
+    },
+    reporters: [{ name: 'collected', onEvent: (event) => { if (event.type === 'collection.completed') collected.resolve() }, onRunEnd: () => undefined }],
+  })
+  assert.deepEqual([record.result.exitCode, record.result.status], [130, 'interrupted'])
+  assert.deepEqual(eventsOfType(record.events, 'test.started'), [], 'no test started')
+  const tests = record.result.files.flatMap((file) => file.tests)
+  assert.ok(tests.length > 0)
+  for (const test of tests) assert.deepEqual([test.status, test.failure], ['not_run', reason], test.name)
+  assert.ok(record.browsers.every((browser) => browser.closed), 'the browser that came up after the stop was closed')
+})
+
 describe('a run stopped with a Failure before it starts', async () => {
   const record = await runSupportFiles(['passing.retest.ts'], { signal: AbortSignal.abort({ class: 'setup_failed', message: 'The host had no room for this run.' }) })
 
