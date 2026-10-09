@@ -167,17 +167,11 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
   captureTest(`${engine}: withholding stops capture requests on the real page and resume captures again`, skip, async (t) => {
     const { page, identity } = await namedPage(t, engine)
     let requests = 0
-    let remoteFrames = 0
-    let unlisten: (() => void) | undefined
-    if (page instanceof FirefoxPage) {
+    // Both engines capture with the page's own screenshots, so every capture request is a call of it.
+    if (page instanceof FirefoxPage || page instanceof WebKitPage) {
       const original = page.screenshot.bind(page)
       page.screenshot = (ms) => { requests += 1; return original(ms) }
-    } else if (page instanceof WebKitPage) {
-      const original = page.proxy.bind(page)
-      page.proxy = (method, params, options) => { if (method.endsWith('startScreencast')) requests += 1; return original(method, params, options) }
-      unlisten = page.onPageProxyEvent(event => { if (event.method === 'Screencast.screencastFrame') remoteFrames += 1 })
     }
-    t.after(() => unlisten?.())
     assert.ok(page.frameSource !== undefined)
     const source = page.frameSource(identity)
     const suspension = new CaptureSuspension()
@@ -192,9 +186,9 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
     assert.ok(delivered > 0)
     suspension.suspend()
     await sleep(100)
-    const held = { requests, remoteFrames, delivered }
+    const held = { requests, delivered }
     await sleep(300) // The ticker continues painting throughout withholding.
-    assert.deepEqual({ requests, remoteFrames, delivered }, held)
+    assert.deepEqual({ requests, delivered }, held)
     suspension.resume()
     await sleep(300)
     assert.ok(delivered > held.delivered)

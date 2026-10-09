@@ -3,7 +3,6 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { ChromiumFrameSource } from '../../src/browser/capture.ts'
 import { WebKitFrameSource } from '../../src/browser/webkit/capture.ts'
-import type { PageProxyEvent } from '../../src/browser/webkit/connection.ts'
 import { FirefoxFrameSource } from '../../src/browser/firefox/capture.ts'
 import { CaptureSuspension, ScreenshotLoopSource, microsecondsSince } from '../../src/media/capture.ts'
 import type { CapturedFrame, SourceGap, StartCapture } from '../../src/media/capture.ts'
@@ -23,12 +22,13 @@ function run(suspension: CaptureSuspension, frames: CapturedFrame[] = [], gaps: 
 }
 const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
-for (const engine of ['chromium', 'webkit'] as const) {
+// Chromium records with its screencast. WebKit records with its own snapshots, a screenshot loop, whose withholding the
+// screenshot-loop cases below cover.
+for (const engine of ['chromium'] as const) {
   test(`${engine} stops pixel requests and acknowledgements while withheld, then restarts`, async () => {
     let running = false
     let reads = 0
     let receive: ((params: unknown) => void) | undefined
-    let proxyReceive: ((event: PageProxyEvent) => void) | undefined
     const commands: string[] = []
     const command = async (method: string): Promise<object> => {
       commands.push(method)
@@ -36,16 +36,13 @@ for (const engine of ['chromium', 'webkit'] as const) {
       if (method.endsWith('stopScreencast')) running = false
       return method.startsWith('Screencast.start') ? { generation: 1 } : {}
     }
-    const source = engine === 'chromium' ? new ChromiumFrameSource({
+    const source = new ChromiumFrameSource({
       id: 'c', detachReason: undefined, blockReason: undefined, send: command,
       on: (_method, listener) => { receive = listener; return () => { receive = undefined } }, onDetach: () => () => undefined,
-    }, identity) : new WebKitFrameSource({
-      screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined, proxy: command,
-      onPageProxyEvent: listener => { proxyReceive = listener; return () => { proxyReceive = undefined } }, onLost: () => () => undefined,
     }, identity)
     const arrive = (): void => {
       const params = { sessionId: 1, data: Buffer.from(png).toString('base64') }
-      receive?.(params); proxyReceive?.({ method: 'Screencast.screencastFrame', params })
+      receive?.(params)
     }
     const request = (): void => { if (running) { reads += 1; arrive() } }
     const suspension = new CaptureSuspension()
@@ -76,8 +73,7 @@ for (const engine of ['chromium', 'webkit'] as const) {
   test(`${engine} starts no screencast while initially withheld`, async () => {
     const commands: string[] = []
     const send = async (method: string): Promise<object> => { commands.push(method); return method.startsWith('Screencast.start') ? { generation: 1 } : {} }
-    const source = engine === 'chromium' ? new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
-      : new WebKitFrameSource({ screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined, proxy: send, onPageProxyEvent: () => () => undefined, onLost: () => () => undefined }, identity)
+    const source = new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
     const suspension = new CaptureSuspension(); suspension.suspend()
     try { assert.equal((await source.start(run(suspension))).ok, true); assert.deepEqual(commands, []) }
     finally { await source.stop(100) }
@@ -122,11 +118,12 @@ test('a Mac window crop asks the shared display policy before pixels when anothe
   } finally { await source.stop(100) }
 })
 
-for (const route of ['firefox', 'screenshot-loop', 'executor-screen', 'window-crop', 'simulator-display'] as const) {
+for (const route of ['firefox', 'webkit', 'screenshot-loop', 'executor-screen', 'window-crop', 'simulator-display'] as const) {
   test(`${route} asks for no images on withheld ticks`, async () => {
     let requests = 0
     const session = nativeSession('ios-simulator', () => requests++)
     const source = route === 'firefox' ? new FirefoxFrameSource({ identity, lostReason: undefined, screenshot: async () => { requests++; return png } }, identity)
+      : route === 'webkit' ? new WebKitFrameSource({ lostReason: undefined, onLost: () => () => undefined, screenshot: async () => { requests++; return png } }, identity)
       : route === 'executor-screen' || route === 'window-crop' ? sessionFrameSource(session, identity, route)
       : route === 'simulator-display' ? simulatorDisplayFrameSource({ session, udid: 'stand-in', format: 'png', tools: { ...systemTools, get xcrun() { requests++; return '/never-called' } } }, identity)
       : new ScreenshotLoopSource({ name: 'chromium', identity, unavailable: () => undefined, grabTimeoutMs: 100, grab: async () => { requests++; return { ok: true, format: 'png', bytes: png } } })
@@ -175,7 +172,7 @@ test('PolicedSource sends the source stop as withholding opens, before resume is
   finally { await source.stop(100) }
 })
 
-for (const engine of ['chromium', 'webkit'] as const) {
+for (const engine of ['chromium'] as const) {
   test(`${engine} retains an unconfirmed pause and refuses to restart`, async () => {
     const commands: string[] = []
     const send = async (method: string): Promise<object> => {
@@ -183,8 +180,7 @@ for (const engine of ['chromium', 'webkit'] as const) {
       if (method.endsWith('stopScreencast')) throw new Error('stop reply lost')
       return method.startsWith('Screencast.start') ? { generation: 1 } : {}
     }
-    const source = engine === 'chromium' ? new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
-      : new WebKitFrameSource({ screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined, proxy: send, onPageProxyEvent: () => () => undefined, onLost: () => () => undefined }, identity)
+    const source = new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
     const suspension = new CaptureSuspension()
     const reasons: string[] = []
     await source.start({ ...run(suspension), ended: reason => reasons.push(reason) })
@@ -199,22 +195,20 @@ for (const engine of ['chromium', 'webkit'] as const) {
   test(`${engine} does not acknowledge an in-flight frame if withholding opens during final stop`, async () => {
     const stopped = Promise.withResolvers<object>()
     let receive: ((params: unknown) => void) | undefined
-    let proxyReceive: ((event: PageProxyEvent) => void) | undefined
     let acknowledgements = 0
     const send = async (method: string): Promise<object> => {
       if (method.endsWith('FrameAck')) acknowledgements++
       if (method.endsWith('stopScreencast')) return stopped.promise
       return method.startsWith('Screencast.start') ? { generation: 1 } : {}
     }
-    const source = engine === 'chromium' ? new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: (_method, listener) => { receive = listener; return () => undefined }, onDetach: () => () => undefined }, identity)
-      : new WebKitFrameSource({ screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined, proxy: send, onPageProxyEvent: listener => { proxyReceive = listener; return () => undefined }, onLost: () => () => undefined }, identity)
+    const source = new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: (_method, listener) => { receive = listener; return () => undefined }, onDetach: () => () => undefined }, identity)
     const suspension = new CaptureSuspension()
     const frames: CapturedFrame[] = []
     await source.start(run(suspension, frames))
     const stopping = source.stop(100)
     suspension.suspend()
     const params = { sessionId: 1, data: Buffer.from(png).toString('base64') }
-    receive?.(params); proxyReceive?.({ method: 'Screencast.screencastFrame', params })
+    receive?.(params)
     stopped.resolve({})
     await stopping
     assert.equal(acknowledgements, 0)
@@ -236,14 +230,13 @@ test('a refused withheld-gap callback is retained without delivering the in-flig
   assert.match(stats.problems.join(' '), /gap receiver unavailable/)
 })
 
-for (const engine of ['chromium', 'webkit'] as const) {
+for (const engine of ['chromium'] as const) {
   test(`${engine} stop keeps its own budget while the withholding stop is unanswered`, async () => {
     const send = async (method: string): Promise<object> => {
       if (method.endsWith('stopScreencast')) return new Promise(() => undefined)
       return method.startsWith('Screencast.start') ? { generation: 1 } : {}
     }
-    const source = engine === 'chromium' ? new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
-      : new WebKitFrameSource({ screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined, proxy: send, onPageProxyEvent: () => () => undefined, onLost: () => () => undefined }, identity)
+    const source = new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
     const suspension = new CaptureSuspension()
     await source.start({ ...run(suspension), timeoutMs: 1000 })
     suspension.suspend()
@@ -277,7 +270,7 @@ test('an in-flight Mac crop rejected by another session’s closed stretch recor
   } finally { await source.stop(100) }
 })
 
-for (const engine of ['chromium', 'webkit'] as const) {
+for (const engine of ['chromium'] as const) {
   test(`${engine} final stop sends a whole protocol timeout within its budget`, async () => {
     let stops = 0
     const send = async (method: string, _params?: object, options?: { timeoutMs?: number }): Promise<object> => {
@@ -288,8 +281,7 @@ for (const engine of ['chromium', 'webkit'] as const) {
       }
       return method.startsWith('Screencast.start') ? { generation: 1 } : {}
     }
-    const source = engine === 'chromium' ? new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
-      : new WebKitFrameSource({ screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined, proxy: send, onPageProxyEvent: () => () => undefined, onLost: () => () => undefined }, identity)
+    const source = new ChromiumFrameSource({ id: 'c', detachReason: undefined, blockReason: undefined, send, on: () => () => undefined, onDetach: () => () => undefined }, identity)
     assert.equal((await source.start(run(new CaptureSuspension()))).ok, true)
     const stats = await source.stop(100)
     assert.equal(stops, 1)

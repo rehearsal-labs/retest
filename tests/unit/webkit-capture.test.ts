@@ -1,5 +1,4 @@
 import type { CapturedPage } from '../../src/browser/webkit/capture.ts'
-import type { PageProxyEvent } from '../../src/browser/webkit/connection.ts'
 import type { CapturedFrame, StartCapture } from '../../src/media/capture.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -8,36 +7,41 @@ import { WebKitFrameSource } from '../../src/browser/webkit/capture.ts'
 import { microsecondsSince } from '../../src/media/capture.ts'
 
 const identity = { testId: 'capture', attemptId: 'a1', app: 'web', sessionId: 'a1:web' }
+const png = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
+
+// A WebKit page as its capture sees it: snapshots the test answers, and a loss it can announce.
 class Page implements CapturedPage {
-  readonly screen = { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }
   lostReason: string | undefined
-  readonly calls: { method: string; params: object | undefined }[] = []
-  readonly listeners = new Set<(event: PageProxyEvent) => void>()
-  answer: (method: string) => Promise<unknown> = (method) => Promise.resolve(method === 'Screencast.startScreencast' ? { generation: 7 } : {})
-  proxy(method: string, params: object | undefined): Promise<unknown> { this.calls.push({ method, params }); return this.answer(method) }
-  onPageProxyEvent(listener: (event: PageProxyEvent) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
-  onLost(): () => void { return () => undefined }
-  paint(): void { for (const listener of this.listeners) listener({ method: 'Screencast.screencastFrame', params: { data: Buffer.from([255, 216, 255, 217]).toString('base64') } }) }
+  readonly asked: number[] = []
+  readonly losses = new Set<(loss: { reason: string }) => void>()
+  answer: () => Promise<Uint8Array> = () => Promise.resolve(png)
+  screenshot(timeoutMs: number): Promise<Uint8Array> { this.asked.push(timeoutMs); return this.answer() }
+  onLost(listener: (loss: { reason: string }) => void): () => void { this.losses.add(listener); return () => { this.losses.delete(listener) } }
+  lose(reason: string): void { this.lostReason = reason; for (const listener of [...this.losses]) listener({ reason }) }
 }
 function capture(frames: CapturedFrame[], reasons: string[] = []): StartCapture {
   return { fps: 30, clock: microsecondsSince(performance.now()), deliver: (frame) => frames.push(frame), ended: (reason) => reasons.push(reason), timeoutMs: 100 }
 }
 
-test('WebKit acknowledges frames that arrived before its start reply gave the generation', async () => {
+test("WebKit captures with the page's own snapshots, each the PNG the build encoded, stamped as it came back and bounded by its request", async () => {
   const page = new Page()
   const source = new WebKitFrameSource(page, identity)
   const frames: CapturedFrame[] = []
-  page.answer = (method) => { if (method === 'Screencast.startScreencast') page.paint(); return Promise.resolve(method === 'Screencast.startScreencast' ? { generation: 7 } : {}) }
-  assert.deepEqual(await source.start(capture(frames)), { ok: true, mode: 'screencast' })
-  assert.deepEqual(page.calls.find((call) => call.method.endsWith('FrameAck'))?.params, { generation: 7 })
+  let now = 0
+  // The snapshot takes 5 ms of the run's clock.
+  page.answer = () => { now += 5000; return Promise.resolve(png) }
+  assert.deepEqual(source.availability(), { available: true, mode: 'screenshot-loop' })
+  assert.deepEqual(await source.start({ ...capture(frames), clock: () => now }), { ok: true, mode: 'screenshot-loop' })
   const stats = await source.stop(100)
-  assert.deepEqual([...frames[0]?.bytes ?? []], [255, 216, 255, 217])
-  assert.equal(stats.delivered, 1)
-  assert.deepEqual(stats.clockMapping, { timestamp: 'run-arrival', targetClock: 'not-used', imageRead: 'previous-acknowledgement-to-arrival' })
-  assert.equal(page.listeners.size, 0)
+  assert.deepEqual(frames.map((frame) => [frame.format, [...frame.bytes], frame.earliestUs, frame.timestampUs, frame.identity]), [['png', [...png], 0, 5000, identity]])
+  assert.equal(source.name, 'webkit')
+  assert.deepEqual([stats.mode, stats.delivered, stats.dropped], ['screenshot-loop', 1, 0])
+  assert.deepEqual(stats.clockMapping, { timestamp: 'run-arrival', targetClock: 'not-used', imageRead: 'request-to-arrival' })
+  assert.deepEqual(page.asked, [100], "the start's own time bounds the first snapshot")
+  assert.equal(page.losses.size, 0, 'the source stopped listening for the loss')
 })
 
-test('an unanswered WebKit start and stop are bounded independently of the page', async () => {
+test('an unanswered WebKit snapshot bounds the start, and the stop of a source still waiting for one', async () => {
   const page = new Page()
   page.answer = () => new Promise(() => undefined)
   const source = new WebKitFrameSource(page, identity)
@@ -45,71 +49,86 @@ test('an unanswered WebKit start and stop are bounded independently of the page'
   const result = await source.start({ ...capture([]), timeoutMs: 20 })
   assert.equal(result.ok, false)
   assert.ok(performance.now() - started < 500)
-  assert.equal(page.listeners.size, 0)
+  assert.equal(page.losses.size, 0)
   const next = new Page()
   const running = new WebKitFrameSource(next, identity)
-  await running.start(capture([]))
+  assert.equal((await running.start(capture([]))).ok, true)
   next.answer = () => new Promise(() => undefined)
+  await sleep(60)
+  const stopping = performance.now()
   const stopped = await running.stop(20)
-  assert.match(stopped.problems[0] ?? '', /within 20 ms/)
-  assert.equal(next.listeners.size, 0)
+  assert.ok(performance.now() - stopping < 500)
+  assert.match(stopped.problems.join(' '), /A webkit capture was still out when the stop's 20 ms were up/)
+  assert.equal(next.losses.size, 0)
 })
 
-test('disposing a WebKit page ends a source even when the page stops its listeners first', async () => {
+test('a lost WebKit page ends its source once, with the reason, and nothing is handed over after', async () => {
   const page = new Page()
   const source = new WebKitFrameSource(page, identity)
   const frames: CapturedFrame[] = []
   const reasons: string[] = []
-  await source.start(capture(frames, reasons))
-  page.paint()
-  page.lostReason = 'the page was closed'
+  assert.equal((await source.start(capture(frames, reasons))).ok, true)
+  page.lose('the page was closed')
   await sleep(80)
   const stats = await source.stop(100)
   assert.equal(reasons.length, 1)
+  assert.match(reasons[0] ?? '', /the page was closed/)
   assert.match(stats.endedEarly ?? '', /the page was closed/)
-  page.paint()
-  assert.equal(frames.length, 1)
+  const before = frames.length
+  await sleep(80)
+  assert.equal(frames.length, before)
+  assert.equal(page.losses.size, 0)
 })
 
-test('an identity refusal starts no WebKit command', async () => {
+test('a snapshot that fails because the page went ends the capture with the loss', async () => {
+  const page = new Page()
+  const source = new WebKitFrameSource(page, identity)
+  const reasons: string[] = []
+  assert.equal((await source.start(capture([], reasons))).ok, true)
+  page.answer = () => {
+    page.lostReason = 'the browser was lost'
+    return Promise.reject(new Error('The connection to WebKit closed.'))
+  }
+  await sleep(80)
+  const stats = await source.stop(100)
+  assert.deepEqual(reasons.map((reason) => /the browser was lost/.test(reason)), [true])
+  assert.equal(stats.dropped, 0, 'a loss is the capture ending, not a dropped frame')
+})
+
+test('a snapshot that fails while the page stays is one dropped frame, and capture goes on', async () => {
+  const page = new Page()
+  const source = new WebKitFrameSource(page, identity)
+  const frames: CapturedFrame[] = []
+  const reasons: string[] = []
+  assert.equal((await source.start(capture(frames, reasons))).ok, true)
+  let failed = false
+  page.answer = () => {
+    if (failed) return Promise.resolve(png)
+    failed = true
+    return Promise.reject(new Error('Could not take a screenshot within 5000 ms.'))
+  }
+  await sleep(150)
+  const stats = await source.stop(100)
+  assert.equal(stats.dropped, 1)
+  assert.deepEqual(stats.problems, ['Could not take a screenshot within 5000 ms.'])
+  assert.ok(frames.length >= 2, `capture went on after the failed snapshot: ${frames.length} frames`)
+  assert.deepEqual(reasons, [])
+})
+
+test('an identity refusal asks WebKit for no snapshot', async () => {
   const page = new Page()
   const source = new WebKitFrameSource(page, identity, 'a different session')
   assert.deepEqual(source.availability(), { available: false, reason: 'a different session' })
   assert.deepEqual(await source.start(capture([])), { ok: false, reason: 'a different session' })
-  assert.equal(page.calls.length, 0)
+  assert.deepEqual(page.asked, [])
 })
 
-test('cleanup of an uncertain WebKit start stays bounded and its unknown end stays in the stats', async () => {
+test('a page that is gone is not captured, and says why', async () => {
   const page = new Page()
-  page.answer = (method) => method === 'Screencast.startScreencast' ? Promise.reject(new Error('start reply lost')) : new Promise(() => undefined)
+  page.lostReason = 'the page crashed'
   const source = new WebKitFrameSource(page, identity)
-  assert.equal((await source.start(capture([]))).ok, false)
-  const started = performance.now()
-  const stats = await source.stop(20)
-  assert.ok(performance.now() - started < 500)
-  assert.deepEqual(stats.problems, ["WebKit did not confirm the end of its uncertain screencast start within 20 ms."])
-  assert.equal(page.listeners.size, 0)
-})
-
-test('WebKit bounds each frame by the previous acknowledged frame rather than screencast start', async () => {
-  const page = new Page()
-  const source = new WebKitFrameSource(page, identity)
-  const frames: CapturedFrame[] = []
-  let now = 0
-  await source.start({ ...capture(frames), fps: 20, clock: () => now })
-  try {
-    now = 100_000
-    page.paint()
-    now = 110_000
-    page.paint()
-    now = 120_000
-    page.paint()
-    now = 200_000
-    page.paint()
-    now = 300_000
-    page.paint()
-    assert.deepEqual(frames.map(({ timestampUs, earliestUs }) => [timestampUs, earliestUs]), [
-      [100_000, 0], [200_000, 120_000], [300_000, 200_000],
-    ])
-  } finally { await source.stop(100) }
+  const reason = 'The page is gone, so WebKit cannot capture it: the page crashed.'
+  assert.deepEqual(source.availability(), { available: false, reason })
+  assert.deepEqual(await source.start(capture([])), { ok: false, reason })
+  assert.deepEqual(page.asked, [])
 })

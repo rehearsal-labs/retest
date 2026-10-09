@@ -26,8 +26,8 @@ import { webKitPath } from './engines.ts'
 
 // What is particular to WebKit, on the real build: helpers that launchd starts outside the browser's process group,
 // recorded and ended by their record; a browser lost mid-command; a command stopped after its input went; what the
-// collector covers and says when it loses its page; the screencast as a frame source; and the sweep of what a Retest
-// process killed outright left behind. The shared suites run on WebKit through the webkit-*.test.ts wrappers.
+// collector covers and says when it loses its page; the page's own snapshots as a frame source; and the sweep of what
+// a Retest process killed outright left behind. The shared suites run on WebKit through the webkit-*.test.ts wrappers.
 
 const execFileAsync = promisify(execFile)
 
@@ -224,7 +224,7 @@ test("the collector hears the page's console, its uncaught error and its request
   collection.stop()
 })
 
-test("WebKit's screencast is a frame source of JPEG frames carrying the page's session, and a page named as another session records nothing", { skip }, async (t) => {
+test("WebKit's own snapshots are a frame source of PNG frames carrying the page's session, and a page named as another session records nothing", { skip }, async (t) => {
   const app = await openApp(t)
   const browser = await webkit(t)
   const opened = await page(t, browser, app.url)
@@ -234,12 +234,12 @@ test("WebKit's screencast is a frame source of JPEG frames carrying the page's s
   assert.equal(elsewhere.availability().available, false)
   assert.equal(elsewhere.name, 'webkit')
   const source = opened.webKitFrameSource(identity)
-  assert.deepEqual(source.availability(), { available: true, mode: 'screencast' })
+  assert.deepEqual(source.availability(), { available: true, mode: 'screenshot-loop' })
   const frames: CapturedFrame[] = []
   const started = performance.now()
   const clock = () => Math.round((performance.now() - started) * 1000)
   const start = await source.start({ fps: 10, clock, deliver: (frame) => frames.push(frame), ended: () => {}, timeoutMs: 5000 })
-  assert.deepEqual(start, { ok: true, mode: 'screencast' })
+  assert.deepEqual(start, { ok: true, mode: 'screenshot-loop' })
   assert.equal((await opened.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
   assert.equal((await opened.execute({ kind: 'fill', locator: byTestId('task-title'), value: 'Release checklist' }, 5000)).ok, true)
   await delay(500)
@@ -248,8 +248,8 @@ test("WebKit's screencast is a frame source of JPEG frames carrying the page's s
   assert.ok(stats.delivered >= 1 && frames.length === stats.delivered, `delivered ${stats.delivered}`)
   for (const frame of frames) {
     assert.deepEqual(frame.identity, identity)
-    assert.equal(frame.format, 'jpeg')
-    assert.deepEqual([...frame.bytes.subarray(0, 3)], [0xff, 0xd8, 0xff], 'a JPEG')
+    assert.equal(frame.format, 'png')
+    assert.deepEqual([...frame.bytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'a PNG')
   }
   const capture = await opened.webKitCapture(2000)
   assert.ok(capture.ok)

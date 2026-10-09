@@ -189,7 +189,6 @@ export class WebKitPage implements WebSession, ElementIdentity {
   readonly #navigationStarts: Listeners<string>
   readonly #frameEvents: Listeners<FrameEvent>
   readonly #events: Listeners<TargetEvent>
-  readonly #proxyEvents: Listeners<PageProxyEvent>
   readonly #losses: Listeners<PageLoss>
   readonly #causes = new NavigationCauses()
   readonly #titles: NavigationTitles
@@ -236,7 +235,6 @@ export class WebKitPage implements WebSession, ElementIdentity {
     this.#navigationStarts = new Listeners(options.onListenerError)
     this.#frameEvents = new Listeners(options.onListenerError)
     this.#events = new Listeners(options.onListenerError)
-    this.#proxyEvents = new Listeners(options.onListenerError)
     this.#losses = new Listeners(options.onListenerError)
     this.#bridge = new WebKitTargetSession({
       connection: this.#connection,
@@ -272,14 +270,9 @@ export class WebKitPage implements WebSession, ElementIdentity {
     return setup
   }
 
-  /** The page's own events from its committed and provisional targets, for its collector and frame source. */
+  /** The page's own events from its committed and provisional targets, for its collector. */
   onTargetEvent(listener: (event: TargetEvent) => void): () => void {
     return this.#events.add(listener)
-  }
-
-  /** Events its page proxy sends itself, for its frame source. */
-  onPageProxyEvent(listener: (event: PageProxyEvent) => void): () => void {
-    return this.#proxyEvents.add(listener)
   }
 
   /** The end of the page, told once: it crashed, closed or lost its browser. One that comes later hears it at once. */
@@ -514,9 +507,9 @@ export class WebKitPage implements WebSession, ElementIdentity {
   }
 
   /**
-   * A frame source over this page's own screencast, its frames carrying the session `identify` named. A page not yet
-   * named, or named as another session, gives a source that is unavailable and says why, so one page is never recorded
-   * as another's session. Nothing is captured until it starts. Sends no input.
+   * A frame source over this page's own snapshots, a screenshot loop, its frames carrying the session `identify` named. A
+   * page not yet named, or named as another session, gives a source that is unavailable and says why, so one page is
+   * never recorded as another's session. Nothing is captured until it starts. Sends no input.
    */
   frameSource(identity: RecordIdentity): WebKitFrameSource { return this.webKitFrameSource(identity) }
 
@@ -542,11 +535,6 @@ export class WebKitPage implements WebSession, ElementIdentity {
       if (error instanceof BrowserError) return { ok: false, failure: error.failure }
       throw error
     }
-  }
-
-  /** Sends one of Retest's own commands to the page proxy, as its frame source does. */
-  proxy(method: string, params: object | undefined, options: { timeoutMs: number }): Promise<unknown> {
-    return this.#bridge.proxy(method, params, options)
   }
 
   dispose(timeoutMs: number): Promise<void> {
@@ -1008,7 +996,6 @@ export class WebKitPage implements WebSession, ElementIdentity {
   }
 
   #onPageProxyEvent(event: PageProxyEvent): void {
-    this.#proxyEvents.emit(event)
     const { method, params } = event
     if (method === 'Target.targetCreated') this.#targetCreated(params)
     else if (method === 'Target.didCommitProvisionalTarget') this.#committedTarget(params)

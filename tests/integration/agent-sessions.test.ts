@@ -364,7 +364,7 @@ test("the browser frame source carries the session's identity and keeps its fram
   assert.ok(granted.ok, granted.ok ? '' : granted.failure.message)
   const frames: CapturedFrame[] = []
   const started = await granted.source.start({ fps: 5, clock: () => Math.round(performance.now() * 1000), deliver: (frame) => frames.push(frame), ended: () => undefined, timeoutMs: 5000 })
-  assert.deepEqual(started, { ok: true, mode: engineName() === 'firefox' ? 'screenshot-loop' : 'screencast' })
+  assert.deepEqual(started, { ok: true, mode: engineName() === 'chromium' ? 'screencast' : 'screenshot-loop' })
   assertActed(await session.act({ kind: 'click', locator: { by: 'testId', value: 'grow' } }), 'changed the page')
   const deadline = performance.now() + 5000
   while (frames.length === 0 && performance.now() < deadline) await sleep(50)
@@ -372,12 +372,12 @@ test("the browser frame source carries the session's identity and keeps its fram
   const [frame] = frames
   assert.ok(frame !== undefined, 'the source handed over a frame')
   assert.deepEqual(frame.identity, { testId: 'discovery', attemptId: session.identity.owner.attemptId, app: 'web', sessionId: session.sessionId })
-  if (engineName() === 'firefox') {
-    assert.equal(frame.format, 'png')
-    assert.deepEqual([...frame.bytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-  } else {
+  if (engineName() === 'chromium') {
     assert.equal(frame.format, 'jpeg')
     assert.deepEqual([...frame.bytes.subarray(0, 3)], [0xff, 0xd8, 0xff], 'a JPEG as the browser encoded it')
+  } else {
+    assert.equal(frame.format, 'png')
+    assert.deepEqual([...frame.bytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
   }
 })
 
@@ -390,7 +390,7 @@ test('ending a session stops its granted frame source and refuses another source
   assert.ok(granted.ok, granted.ok ? '' : granted.failure.message)
   let delivered = 0
   assert.deepEqual(await granted.source.start({ fps: 5, clock: () => Math.round(performance.now() * 1000), deliver: () => { delivered += 1 }, ended: () => undefined, timeoutMs: 5000 }),
-    { ok: true, mode: engineName() === 'firefox' ? 'screenshot-loop' : 'screencast' })
+    { ok: true, mode: engineName() === 'chromium' ? 'screencast' : 'screenshot-loop' })
   const deadline = performance.now() + 5000
   while (delivered === 0 && performance.now() < deadline) await sleep(20)
   assert.ok(delivered > 0, 'the source actually captured this session')

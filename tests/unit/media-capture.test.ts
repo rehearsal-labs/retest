@@ -7,8 +7,6 @@ import { getEventListeners } from 'node:events'
 import { describe, test } from 'node:test'
 import { CaptureSuspension, microsecondsSince, recordSource } from '../../src/media/capture.ts'
 import { ChromiumFrameSource } from '../../src/browser/capture.ts'
-import { WebKitFrameSource } from '../../src/browser/webkit/capture.ts'
-import type { PageProxyEvent } from '../../src/browser/webkit/connection.ts'
 import { captureEncoderOwnership, MAX_FRAME_BYTES } from '../../src/media/client.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 
@@ -1076,23 +1074,18 @@ describe('media cleanup uses recorded launch ownership', () => {
   })
 })
 
-for (const engine of ['chromium', 'webkit'] as const) {
+// A screencast's read window; WebKit records with snapshots, whose window is each request, as a screenshot loop's is.
+for (const engine of ['chromium'] as const) {
   test(`${engine}: a delayed frame read during withholding is refused after the previous frame's cadence delivery`, async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
     const clock = new TestClock()
     let receive: ((params: unknown) => void) | undefined
-    let proxyReceive: ((event: PageProxyEvent) => void) | undefined
     const acks: number[] = []
-    const source = engine === 'chromium' ? new ChromiumFrameSource({
+    const source = new ChromiumFrameSource({
       id: 'c', detachReason: undefined, blockReason: undefined,
       send: async (method) => { if (method.endsWith('FrameAck')) acks.push(clock.now); return {} },
       on: (_method, listener) => { receive = listener; return () => { receive = undefined } },
       onDetach: () => () => undefined,
-    }, identity) : new WebKitFrameSource({
-      screen: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 }, lostReason: undefined,
-      proxy: async (method) => { if (method.endsWith('FrameAck')) acks.push(clock.now); return method.endsWith('startScreencast') ? { generation: 1 } : {} },
-      onPageProxyEvent: (listener) => { proxyReceive = listener; return () => { proxyReceive = undefined } },
-      onLost: () => () => undefined,
     }, identity)
     const suspension = new CaptureSuspension()
     const recording = new FakeRecording()
@@ -1105,7 +1098,7 @@ for (const engine of ['chromium', 'webkit'] as const) {
     await new Promise<void>((resolve) => setImmediate(resolve))
     const paint = (data = Buffer.from(jpeg).toString('base64')): void => {
       const params = { data, sessionId: frames.length + 1 }
-      receive?.(params); proxyReceive?.({ method: 'Screencast.screencastFrame', params })
+      receive?.(params)
     }
     try {
       clock.now = 100_000; paint()

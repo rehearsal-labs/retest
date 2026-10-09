@@ -67,7 +67,7 @@ test(`recorded evidence on real ${engineUnderTest().label}, secret pixels withhe
     const recording = result.recordings?.[0]
     assert.ok(recording)
     assert.deepEqual([recording.testId, recording.attemptId, recording.app, recording.sessionId], [result.testId, result.attemptId, 'web', `${result.attemptId}:web`])
-    assert.equal(recording.mode, engine.name === 'firefox' ? 'screenshot-loop' : 'screencast')
+    assert.equal(recording.mode, engine.name === 'chromium' ? 'screencast' : 'screenshot-loop')
     assert.equal(recording.source, engine.name)
     assert.ok(recording.status === 'complete' || recording.gaps.every(gap => gap.message.length > 0))
     if (result !== results[2]) await verifyScreenshots(run, result)
