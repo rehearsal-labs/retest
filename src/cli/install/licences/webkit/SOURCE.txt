@@ -39,4 +39,4 @@ Source/ThirdParty/libwebrtc/Source/third_party/libvpx/source/libvpx/LICENSE
 Swift source and licence: https://github.com/swiftlang/swift and https://swift.org/LICENSE.txt
 
 WebKit's archive SHA-256 remains unpinned. Retest refuses to download or install
-this pin for that reason. The founder has not authorized an archive download.
+this pin for that reason. No archive download has been pinned.

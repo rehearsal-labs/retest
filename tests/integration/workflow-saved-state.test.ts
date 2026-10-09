@@ -8,7 +8,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 // Release 1 workflow family 3, reuse signed-in state, against real Chrome and the task app's workflow sign-in
 // pages: a setup signs in once and saves its state, tests that name it start signed in, a test without it starts
 // signed out, a change one test makes stays out of the next, and a setup that fails keeps its dependents from
-// running. The cases are F3.1 to F3.4 in docs/plans/public-beta/workflow-cases.md.
+// running. The cases are F3.1 to F3.4 in docs/compatibility/workflow-cases.md.
 
 const file = 'tests/saved-state.retest.ts'
 const assertFailedAt = failedAtIn(file)

@@ -6,7 +6,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 5, edit and delete an object, against real Chrome and the task app's backlog, which
 // starts with three tasks for each browser context and is kept on the server. The cases are F5.1 to F5.4 in
-// docs/plans/public-beta/workflow-cases.md.
+// docs/compatibility/workflow-cases.md.
 
 const file = 'tests/edit-delete.retest.ts'
 const assertFailedAt = failedAtIn(file)

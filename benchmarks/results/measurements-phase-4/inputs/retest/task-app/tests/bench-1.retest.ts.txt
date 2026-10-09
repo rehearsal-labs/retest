@@ -1,8 +1,0 @@
-import { expect, test } from '@rehearsal-labs/retest'
-
-test('saves task 1', async ({ page }) => {
-  await page.goto('/')
-  await page.getByTestId('task-title').fill('Release checklist 1')
-  await page.getByTestId('save-task').click()
-  await expect(page.getByTestId('saved-task')).toHaveText('Release checklist 1')
-})

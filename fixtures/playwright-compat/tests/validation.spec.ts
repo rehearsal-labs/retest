@@ -1,4 +1,4 @@
-// Workflow family 6, show validation errors: F6.1 to F6.4 of docs/plans/public-beta/workflow-cases.md, written as a
+// Workflow family 6, show validation errors: F6.1 to F6.4 of docs/compatibility/workflow-cases.md, written as a
 // Playwright test against the task app. Playwright's getByLabel matches any part of a label, so the password field
 // is named exactly, to tell it from "Confirm password".
 import { test, expect } from '@playwright/test'

@@ -8,7 +8,7 @@ import { browserPath } from '../support/test-browser.ts'
 
 // Which engines this machine runs the conformance cases on. Chrome always, from RETEST_TEST_BROWSER or Google Chrome
 // where macOS installs it. On macOS, Firefox from RETEST_TEST_FIREFOX or where macOS installs it, as the Firefox
-// driver's tests find it, and WebKit from RETEST_TEST_WEBKIT or the build the WebKit proof pinned. 0.1.0 supports
+// driver's tests find it, and WebKit from RETEST_TEST_WEBKIT or the pinned WebKit build 2359. 0.1.0 supports
 // Firefox and WebKit on macOS only, so elsewhere they are not run, and say why. On macOS a missing browser fails the
 // gate, unless RETEST_CONFORMANCE_OPT_OUT names its engine; such an engine is reported as not verified, by name, and
 // never counted as passing.
@@ -37,8 +37,8 @@ export type EngineSetup =
 
 const executableVariables: Readonly<Record<Exclude<Engine, 'chrome'>, string>> = { firefox: 'RETEST_TEST_FIREFOX', webkit: 'RETEST_TEST_WEBKIT' }
 
-// Where each browser is when no variable names it: Firefox where macOS installs it, and the WebKit build the WebKit
-// proof pinned, in Playwright's cache.
+// Where each browser is when no variable names it: Firefox where macOS installs it, and the pinned WebKit build 2359,
+// in Playwright's cache.
 const knownLocations: Readonly<Record<Exclude<Engine, 'chrome'>, string>> = {
   firefox: '/Applications/Firefox.app/Contents/MacOS/firefox',
   webkit: join(homedir(), 'Library/Caches/ms-playwright/webkit-2359'),
@@ -90,7 +90,7 @@ export function engineSetup(engine: Engine): EngineSetup {
 /**
  * How the runs start Firefox: as RETEST_FIREFOX_ROUTE says when it is set, and otherwise by the driver's default, spawn,
  * unless this process may not read Firefox's data folder on macOS. A Firefox spawned by a host app without that grant
- * never starts, as the Firefox proof's record found, so the runs then take the Launch Services route, as the Firefox
+ * never starts, as Firefox's first real runs found, so the runs then take the Launch Services route, as the Firefox
  * driver's own tests do, and the results say so.
  */
 function firefoxStart(): { environment: Readonly<Record<string, string>>; notes: readonly string[] } {

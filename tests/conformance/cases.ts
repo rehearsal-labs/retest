@@ -3,14 +3,14 @@ import type { FailureClass, FailureDetail } from '../../src/protocol/failures.ts
 import type { NavigationCause, NavigationDocument } from '../../src/protocol/page-facts.ts'
 import type { Timeouts } from '../../src/protocol/timeouts.ts'
 
-// The fixed list of conformance cases for Release 1's browser scope, run on Chrome, Firefox and WebKit by
+// The fixed list of conformance cases for the first release's browser scope, run on Chrome, Firefox and WebKit by
 // `tests/conformance/run.ts` and checked by `tests/integration/conformance.test.ts`. Each case is a test in a
 // `.retest.ts` file under `fixtures/conformance/` with the outcome it must end with, or a fact about a whole run.
-// The workflow cases are the forty of docs/plans/public-beta/workflow-cases.md, families 1 to 10, each with the facts
+// The workflow cases are the forty of docs/compatibility/workflow-cases.md, families 1 to 10, each with the facts
 // its Chromium integration file checks, so a case means the same on every engine. A declared outcome is the
 // contract: a driver that ends a case otherwise is fixed, and the outcome is never edited to match it.
 
-/** The rows of the browser scope table in docs/plans/public-beta/releases.md that these cases cover. */
+/** The areas of the first release's browser scope that these cases cover. */
 export type Area =
   | 'Navigation'
   | 'Locators'
@@ -294,7 +294,7 @@ function notRun(failureClass: FailureClass, fields: Omit<FailureFields, 'step'> 
 }
 
 /**
- * A workflow case's intended failure, as docs/plans/public-beta/workflow-cases.md fixes it: in its step, at the line
+ * A workflow case's intended failure, as docs/compatibility/workflow-cases.md fixes it: in its step, at the line
  * of its check, as `check_failed`, with its message.
  */
 function failsAtCheck(operation: string, step: string, holding: string, message: RegExp): Declared {
@@ -309,7 +309,7 @@ function inFile(area: Area, group: GroupName, file: string, prefix: string, case
 }
 
 /**
- * The test cases of one workflow family, numbered as docs/plans/public-beta/workflow-cases.md numbers them: one test
+ * The test cases of one workflow family, numbered as docs/compatibility/workflow-cases.md numbers them: one test
  * per case, or for a case of two tests, such as a setup and the test that starts from its state, `a` and `b`.
  */
 function family(area: Area, number: number, file: string, cases: readonly CaseFields[], numbers?: readonly string[]): TestCase[] {

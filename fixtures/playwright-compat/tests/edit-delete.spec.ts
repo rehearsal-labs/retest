@@ -1,4 +1,4 @@
-// Workflow family 5, edit and delete an object: F5.1 to F5.4 of docs/plans/public-beta/workflow-cases.md, written
+// Workflow family 5, edit and delete an object: F5.1 to F5.4 of docs/compatibility/workflow-cases.md, written
 // as a Playwright test against the task app.
 import { test, expect } from '@playwright/test'
 

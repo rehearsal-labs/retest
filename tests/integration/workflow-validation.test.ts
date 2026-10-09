@@ -7,7 +7,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 6, show validation errors, against real Chrome and the task app's sign-up form, which
 // checks itself on submit and is checked again by the server. The cases are F6.1 to F6.4 in
-// docs/plans/public-beta/workflow-cases.md.
+// docs/compatibility/workflow-cases.md.
 
 const file = 'tests/validation.retest.ts'
 const assertFailedAt = failedAtIn(file)

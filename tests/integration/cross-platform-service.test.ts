@@ -20,8 +20,8 @@ import { endService } from './service-teardown.ts'
 // The cross-platform fixture's local service, started the way its README starts it, as its own process: sign-in,
 // tasks by id, the sync delay, broken sync for every client or one, merged changes, reset, the state file, both
 // request logs and the guards against other sites. Then the Swift both native apps compile, built and run on macOS,
-// and Retest on real Chrome against the service's web front end. The apps themselves are built and launched by hand;
-// see docs/plans/public-beta/proofs/fixtures.md.
+// and Retest on real Chrome against the service's web front end. The apps themselves are built and launched by hand,
+// as fixtures/cross-platform/README.md describes.
 
 const serverScript = join(repositoryRoot, 'fixtures/cross-platform/service/server.ts')
 const webTests = 'fixtures/cross-platform/tests/web-tasks.retest.ts'

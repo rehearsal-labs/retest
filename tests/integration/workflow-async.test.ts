@@ -8,7 +8,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 10, wait for loading and asynchronous UI state, against real Chrome and the task app's
 // reports page, which asks for its reports after a timer, gets them from a slow server and enables Export only once
-// they are in. The cases are F10.1 to F10.5 in docs/plans/public-beta/workflow-cases.md.
+// they are in. The cases are F10.1 to F10.5 in docs/compatibility/workflow-cases.md.
 
 const file = 'tests/async.retest.ts'
 const assertFailedAt = failedAtIn(file)

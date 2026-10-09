@@ -6,7 +6,7 @@ import { budgets, configSource, eventsOf, runProject, testNamed, writeProject } 
 import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 8, find items in lists and tables, against real Chrome and the task app's team table
-// and its long list of invoices. The cases are F8.1 to F8.4 in docs/plans/public-beta/workflow-cases.md.
+// and its long list of invoices. The cases are F8.1 to F8.4 in docs/compatibility/workflow-cases.md.
 
 const file = 'tests/lists.retest.ts'
 const assertFailedAt = failedAtIn(file)

@@ -4,7 +4,7 @@ import { cpus, loadavg, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// How long each way of loading TypeScript takes to start a one-test file, for docs/plans/public-beta/proofs/loader.md.
+// How long each way of loading TypeScript takes to start a one-test file, measured when Retest chose its loader.
 // Each argument names a Retest command line to time `retest list` with, as name=path to its main.js or main.ts:
 //
 //   node scripts/measure-loader.ts head=/tmp/retest-head/dist/cli/main.js source=src/cli/main.ts

@@ -126,7 +126,7 @@ const webkitNotices: readonly LicenceFile[] = [
   { path: 'licenses/abseil-cpp-LICENSE.txt', bundled: 'webkit/abseil-cpp-LICENSE.txt', sha256: '34cb75d73943f10a7f9a3b0e3e7bf8ef271065eedcb0d47481e7c831b637aeae', title: 'the notice of abseil-cpp, in libwebrtc.dylib', licence: 'Apache-2.0', published: false },
   { path: 'licenses/libvpx-LICENSE.txt', bundled: 'webkit/libvpx-LICENSE.txt', sha256: 'b80a23ff7619a3b5c150cf718b43af5a5b9a2339ff019c562c9938d91303d08c', title: 'the notice of libvpx, in libwebrtc.dylib', licence: 'BSD-3-Clause', published: false },
   { path: 'licenses/swiftCompatibilitySpan-LICENSE.txt', bundled: 'webkit/swiftCompatibilitySpan-LICENSE.txt', sha256: '99d47dad251d8d1e0ce2f26d019f2a8cfd5ca66263084b6f2cf452a86f89b7f2', title: 'the notice of the Swift compatibility library, libswiftCompatibilitySpan.dylib', licence: 'Apache-2.0 WITH Swift-exception', published: false },
-  { path: 'licenses/SOURCE.txt', bundled: 'webkit/SOURCE.txt', sha256: '81ea2bf2f192ef3e1975007d5323468f31ccfaa7a2a4353af124fd9f3e7ea270', title: 'where the WebKit revision and the Playwright patches that built this revision are published', licence: 'LGPL-2.1', published: false },
+  { path: 'licenses/SOURCE.txt', bundled: 'webkit/SOURCE.txt', sha256: '4194dc458138e6e7c4cecbc3c5955f6bd48bec959972db58bc4b0445ac093d82', title: 'where the WebKit revision and the Playwright patches that built this revision are published', licence: 'LGPL-2.1', published: false },
 ]
 
 const inspectorLicences: readonly LicenceFile[] = [
@@ -193,7 +193,7 @@ export const pinnedBuilds: readonly BuildPin[] = [
         { path: `${macChrome}/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions/${chromiumVersion}/Libraries/WidevineCdm/LICENSE`, title: "the licence of Google's Widevine module", licence: 'LicenseRef-Widevine', sha256: '20de375707692099b3132084695377ce5fec0aec05813dedcce094b8eda44386', published: true },
       ],
     },
-    provenance: 'Version, executable and licence checksums originally read from Playwright revision 1243. The founder-authorized Google publisher download has the pinned executable and both licence files byte for byte. Its measured size and archive checksum are recorded in docs/plans/public-beta/reviews/fix-reports/pin-checksums-report.md.',
+    provenance: 'Version, executable and licence checksums originally read from Playwright revision 1243. The Google publisher download has the pinned executable and both licence files byte for byte. Its size and archive checksum, pinned above, were measured from that download.',
   },
   {
     kind: 'archive',
@@ -211,7 +211,7 @@ export const pinnedBuilds: readonly BuildPin[] = [
         { path: 'chrome-linux64/WidevineCdm/LICENSE', title: "the licence of Google's Widevine module", licence: 'LicenseRef-Widevine', sha256: '20de375707692099b3132084695377ce5fec0aec05813dedcce094b8eda44386', published: true },
       ],
     },
-    provenance: 'Archive size and checksum, executable and both licence files read from the founder-authorized Google publisher download. Linux browser execution and installation remain unverified. Exact commands and checksums are in docs/plans/public-beta/reviews/fix-reports/pin-checksums-report.md.',
+    provenance: 'Archive size and checksum, executable and both licence files read from the Google publisher download. Linux browser execution and installation remain unverified.',
   },
   {
     kind: 'archive',
@@ -229,7 +229,7 @@ export const pinnedBuilds: readonly BuildPin[] = [
         { path: 'Firefox.app/Contents/Resources/omni.ja', title: "the archive that holds Firefox's about:license page, chrome/toolkit/content/global/license.html", licence: 'MPL-2.0 and the licences at about:license', sha256: '1ecdc0a4f6de9f562b24417cdaff4d2f17474d51572e65bbc4c7489cf4025c38', published: true },
       ],
     },
-    provenance: 'Version, build id, executable and omni.ja checksums originally read from the signed en-US Firefox 133.0.3 in /Applications. The founder-authorized Mozilla disk-image download carries the same executable and omni.ja. The image holds Firefox.app at its root, copied to Firefox.app under the installed build. Archive size, checksum and unpack results are recorded in docs/plans/public-beta/reviews/fix-reports/pin-checksums-report.md. Mozilla SHA256SUMS was not fetched in this pass.',
+    provenance: 'Version, build id, executable and omni.ja checksums originally read from the signed en-US Firefox 133.0.3 in /Applications. The Mozilla disk-image download carries the same executable and omni.ja. The image holds Firefox.app at its root, copied to Firefox.app under the installed build. The archive size and checksum pinned above were measured from that download, which unpacked as the pin describes. Mozilla SHA256SUMS was not fetched for this pin.',
   },
   {
     kind: 'archive',
@@ -243,7 +243,7 @@ export const pinnedBuilds: readonly BuildPin[] = [
     files: [{ path: 'protocol.json', sha256: '5962bc790bde7750ce127029962a6c1bd93aed884cbcf832da8393c2a12c106c', why: 'the protocol Retest\'s WebKit client was written against; another protocol is another build' }],
     licences: { inspected: true, files: [...inspectorLicences, ...webkitNotices] },
     sourceCode: { repository: 'https://github.com/WebKit/WebKit', revision: '4d05d732e5a84f32675bef4cc135a2e7a9269a87', patches: 'https://github.com/microsoft/playwright/tree/v1.63.0/browser_patches/webkit' },
-    provenance: 'The founder authorized keeping the nine standard notices. Their texts are retained under src/cli/install/licences/webkit with SHA-256 pins and their sources in SOURCE.txt. The source pointers name the revision in Playwright v1.63.0 UPSTREAM_CONFIG.sh, not a proven binary-to-source correspondence. Revision and original file checksums come from the WebKit proof. The founder-authorized Playwright CDN download has the same executable, protocol and four published inspector notices. Its size and archive checksum are recorded in docs/plans/public-beta/reviews/fix-reports/pin-checksums-report.md.',
+    provenance: 'The nine standard notices are kept. Their texts are retained under src/cli/install/licences/webkit with SHA-256 pins and their sources in SOURCE.txt. The source pointers name the revision in Playwright v1.63.0 UPSTREAM_CONFIG.sh, not a proven binary-to-source correspondence. Revision and original file checksums come from the WebKit proof. The founder-authorized Playwright CDN download has the same executable, protocol and four published inspector notices. Its size and archive checksum, pinned above, were measured from that download.',
   },
   {
     kind: 'archive',
@@ -268,7 +268,7 @@ export const pinnedBuilds: readonly BuildPin[] = [
       ],
     },
     treeSha256: 'f94a2b748b5f3e41b0ff1938ebd02052bb8af4cf037c2d24d21ffd51c5f7d7b4',
-    provenance: "Archive size and checksum from the Electron proof's download (docs/plans/public-beta/proofs/electron.md), which matched the release's SHASUMS256.txt; executable, licence and tree checksums read from that archive unpacked with ditto in ~/Library/Caches/retest-proofs/electron/44.5.1.",
+    provenance: "Archive size and checksum from a download of the official release, which matched the release's SHASUMS256.txt; executable, licence and tree checksums read from that archive unpacked with ditto in ~/Library/Caches/retest-proofs/electron/44.5.1.",
   },
   executorPin('webdriveragent'),
   executorPin('mac2'),

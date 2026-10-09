@@ -203,7 +203,7 @@ function dataFolders(run: FinishedRun): string[] {
 test('an Electron app is driven through the same locators, actions and checks as Chrome, and nothing of it is left running', { timeout: 240_000, skip: unverified }, async (t) => {
   assert.ok(
     existsSync(electronBinary),
-    `No Electron binary at ${electronBinary}. Download Electron ${electronVersion} as docs/plans/public-beta/proofs/electron.md says, or set RETEST_TEST_ELECTRON to an Electron binary.`,
+    `No Electron binary at ${electronBinary}. Unpack the darwin-arm64 release of Electron ${electronVersion} into its dist folder with ditto -x -k, or set RETEST_TEST_ELECTRON to an Electron binary, such as the one retest install electron prints.`,
   )
   const versions = binaryVersions()
   assert.equal(versions.electron, electronVersion)
@@ -347,7 +347,7 @@ test('an Electron app is driven through the same locators, actions and checks as
 })
 
 test('a data folder the config names is the app\'s from one launch to the next: Retest leaves it, and records it as reused', { timeout: 120_000, skip: unverified }, async (t) => {
-  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Download Electron ${electronVersion} as docs/plans/public-beta/proofs/electron.md says, or set RETEST_TEST_ELECTRON to an Electron binary.`)
+  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Unpack the darwin-arm64 release of Electron ${electronVersion} into its dist folder with ditto -x -k, or set RETEST_TEST_ELECTRON to an Electron binary, such as the one retest install electron prints.`)
   const named = join(await scratchFolder(t, 'retest-electron-data-'), 'kept', 'desktop-data')
   mkdirSync(named, { recursive: true })
   writeFileSync(join(named, 'mine.txt'), 'the tester put this here\n')
@@ -409,7 +409,7 @@ test('needs the app', async ({ page }) => {
 })
 
 test("the window's first address is known from the start, and a secret is typed on the origin secretOrigins names", { timeout: 120_000, skip: unverified }, async (t) => {
-  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Download Electron ${electronVersion} as docs/plans/public-beta/proofs/electron.md says, or set RETEST_TEST_ELECTRON to an Electron binary.`)
+  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Unpack the darwin-arm64 release of Electron ${electronVersion} into its dist folder with ditto -x -k, or set RETEST_TEST_ELECTRON to an Electron binary, such as the one retest install electron prints.`)
   // A secret is bound to http and https origins, so the fixture serves its pages from loopback for this test.
   const port = await freePort()
   const origin = `http://127.0.0.1:${port}`
@@ -448,7 +448,7 @@ test(${JSON.stringify(name)}, async ({ page }) => {
 })
 
 test("what the app prints of a typed secret reaches its log as the placeholder, and Electron's own logging is withheld", { timeout: 60_000, skip: unverified }, async (t) => {
-  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Download Electron ${electronVersion} as docs/plans/public-beta/proofs/electron.md says, or set RETEST_TEST_ELECTRON to an Electron binary.`)
+  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Unpack the darwin-arm64 release of Electron ${electronVersion} into its dist folder with ditto -x -k, or set RETEST_TEST_ELECTRON to an Electron binary, such as the one retest install electron prints.`)
   const folder = await scratchFolder(t, 'retest-electron-redact-')
   const typed = 'typed-secret-value-6c1d'
   // With this set the app would print every console line of its windows into its output, raw.

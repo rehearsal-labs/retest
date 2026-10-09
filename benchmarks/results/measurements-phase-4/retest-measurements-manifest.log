@@ -1,3 +1,0 @@
-No observed PID or fixture/benchmark remains; 3349 observed IDs. 240 resource runs.
-Browser build sets {'chromium': [{'build': '@b859317bf11f6be47f9b7799ec690a0a42a1fb33', 'product': 'Chrome', 'version': '154.0.8037.98'}], 'firefox': [{'build': '20241209150345', 'product': 'Firefox', 'version': '133.0.3'}], 'webkit': [{'build': '2359', 'product': 'WebKit', 'version': '626.1.6+, build 2359'}]}
-Media build sets 1

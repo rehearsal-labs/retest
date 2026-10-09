@@ -8,7 +8,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 9, search, filter and paginate, against real Chrome and the task app's catalogue, which
 // the server searches, filters and splits into pages for each submitted form. The cases are F9.1 to F9.4 in
-// docs/plans/public-beta/workflow-cases.md.
+// docs/compatibility/workflow-cases.md.
 
 const file = 'tests/search.retest.ts'
 const assertFailedAt = failedAtIn(file)

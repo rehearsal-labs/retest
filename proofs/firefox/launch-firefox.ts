@@ -22,7 +22,8 @@ import { processTable } from './process-table.ts'
  * starts Chromium. `launch-services` asks macOS to start the app bundle with `open`. It exists for one kind of host:
  * a macOS app that may not let its children read Firefox's data folder, so a spawned Firefox never starts. It costs
  * the child relationship and the inherited environment, and makes macOS judge every file Firefox opens by Firefox's
- * own privacy grants; `docs/plans/public-beta/proofs/firefox.md` has the evidence and what was not tested.
+ * own privacy grants. On the Mac this was written on, a spawned Firefox could not read that folder, so only the
+ * Launch Services route started a real Firefox there.
  */
 export type LaunchRoute = 'spawn' | 'launch-services'
 

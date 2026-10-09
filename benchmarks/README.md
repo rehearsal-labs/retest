@@ -1,6 +1,6 @@
 # Benchmarks
 
-The harness behind `docs/plans/speed/plan.md`. It runs the same generated tests through Retest and Playwright, against the same fixture app and the same Chrome, and writes per-phase medians. Every speed number the project publishes comes from here, with the command that produced it.
+The harness behind Retest's speed measurements. It runs the same generated tests through Retest and Playwright, against the same fixture app and the same Chrome, and writes per-phase medians. Every speed number the project publishes comes from here, with the command that produced it.
 
 ```sh
 npm run bench                      # the whole matrix, five runs per cell
@@ -74,6 +74,5 @@ Before measuring, `recording-observer.test.ts` checks CPU units against Node's i
 
 Artifact size sums regular files under `run/artifacts`. A second size includes the complete run folder. Neither includes compile caches, priming runs, project installations, benchmark logs or resource files. No product source changes are needed. The observer needs macOS SDK headers and clang; ffmpeg, ffprobe and the three browser builds are explicit installed host prerequisites. The CLI accepts their paths and refuses unavailable work rather than substituting an engine. No npm runtime package is added.
 
-Keep durable copies of every result pair under `benchmarks/results/<session>/`, and link the raw `.retest/benchmarks/<session>/` outputs in the measurements report. Include the source commit, dirty state, tool/binary versions and hashes, exact commands, load, invalid samples and cleanup findings. Historical baseline rows are comparable only to their stated scenario and settings. These one-host numbers do not establish a speed advantage, suite throughput, native performance or complete process-tree resource use.
+Keep durable copies of every result pair under `benchmarks/results/<session>/`, and name the raw `.retest/benchmarks/<session>/` outputs in its README. Include the source commit, dirty state, tool/binary versions and hashes, exact commands, load, invalid samples and cleanup findings. Historical baseline rows are comparable only to their stated scenario and settings. These one-host numbers do not establish a speed advantage, suite throughput, native performance or complete process-tree resource use.
 
-The Phase 4 host measurements are in [results/measurements-phase-4](results/measurements-phase-4/README.md). The report records the session commands, load, sampling limits and earlier attempts.

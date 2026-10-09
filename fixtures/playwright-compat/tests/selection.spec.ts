@@ -1,5 +1,5 @@
 // Workflow family 7, select options, checkboxes and radios: F7.1 to F7.4 of
-// docs/plans/public-beta/workflow-cases.md, written as a Playwright test against the task app.
+// docs/compatibility/workflow-cases.md, written as a Playwright test against the task app.
 import { test, expect } from '@playwright/test'
 
 test('chooses a plan, ticks a box and picks a theme, and the saved choices come back after a reload', async ({ page }) => {

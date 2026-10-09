@@ -1,5 +1,5 @@
 // Workflow family 10, wait for loading and asynchronous UI state: F10.1 to F10.5 of
-// docs/plans/public-beta/workflow-cases.md, written as a Playwright test against the task app. The server holds an
+// docs/compatibility/workflow-cases.md, written as a Playwright test against the task app. The server holds an
 // export until the test asks it to finish one, so the "Preparing export…" check never races a timer.
 import { test, expect } from '@playwright/test'
 

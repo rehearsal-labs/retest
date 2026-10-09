@@ -43,7 +43,7 @@ test('every app flow timeline has actual recorded pixels at its checks', {timeou
   const unavailable = (await nativeSkipReason('ios-simulator')) ?? (await nativeSkipReason('macos'))
   if (unavailable !== undefined) {
    assert.equal(unavailable.endsWith(' is missing'), false, `a missing local fixture or executor is a defect: ${unavailable}`)
-   t.skip(`The real iOS and macOS flow prerequisites documented in proofs/native.md are unavailable: ${unavailable}`)
+   t.skip(`The real iOS and macOS flow prerequisites the guide's native apps section names are unavailable: ${unavailable}`)
    return
   }
   const retained = join(proofRoot, 'fresh-flow')

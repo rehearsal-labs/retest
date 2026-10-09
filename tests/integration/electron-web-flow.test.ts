@@ -149,7 +149,7 @@ async function startService(t: TestContext, flags: readonly string[] = []): Prom
 }
 
 function binaryPresent(): void {
-  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Download Electron ${electronVersion} as docs/plans/public-beta/proofs/electron.md says, or set RETEST_TEST_ELECTRON to an Electron binary.`)
+  assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Unpack the darwin-arm64 release of Electron ${electronVersion} into its dist folder with ditto -x -k, or set RETEST_TEST_ELECTRON to an Electron binary, such as the one retest install electron prints.`)
 }
 
 // The task the Electron window created, as its own check of the created id recorded it.

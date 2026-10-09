@@ -1,6 +1,6 @@
 # Evaluation corpus
 
-A fixed set of labelled cases for Retest's AI checks: text, screenshots and frame sequences captured from Retest's own fixture apps, each with a requirement written before any judge saw it and a label for the verdict a judge that reads the evidence correctly would give. `scripts/run-evaluation-corpus.ts` runs the corpus against a named judge configuration and applies the gates of the [evaluation contract](../../docs/plans/public-beta/ai-evaluation.md). The gates hold on this corpus only. They make no claim about how a judge does on anything else.
+A fixed set of labelled cases for Retest's AI checks: text, screenshots and frame sequences captured from Retest's own fixture apps, each with a requirement written before any judge saw it and a label for the verdict a judge that reads the evidence correctly would give. `scripts/run-evaluation-corpus.ts` runs the corpus against a named judge configuration and applies the [gates](#gates) below. The gates hold on this corpus only. They make no claim about how a judge does on anything else.
 
 ## What is here
 
@@ -35,7 +35,7 @@ Kinds: `clear-pass`, `clear-failure`, `incomplete-evidence`, `clipped-content`, 
 
 ## Gates
 
-From the evaluation contract, applied by `runner/score.ts`:
+Applied by `runner/score.ts`:
 
 1. A case labelled critical never ends `pass` in any repeat.
 2. On unambiguous cases labelled pass or fail, at least 90% of judgments are correct. An inconclusive or error judgment there is not correct.

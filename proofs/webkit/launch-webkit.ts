@@ -106,7 +106,7 @@ export function defaultBuildDirectory(environment: NodeJS.ProcessEnv = process.e
  */
 export async function findWebKitBuild(directory: string = defaultBuildDirectory()): Promise<WebKitBuild> {
   if (process.platform !== 'darwin') {
-    throw new Error(`This proof launches the macOS WebKit build, and this host is ${process.platform}. The Linux route is described in docs/plans/public-beta/proofs/webkit.md and has not been run.`)
+    throw new Error(`This proof launches the macOS WebKit build, and this host is ${process.platform}. No Linux route has been run.`)
   }
   const install = `Install it outside the repository with \`npx playwright@${PINNED_BUILD.playwrightVersion} install webkit\`, or set RETEST_WEBKIT_BUILD to an unpacked build.`
   const absolute = await realpath(resolve(directory)).catch(() => {

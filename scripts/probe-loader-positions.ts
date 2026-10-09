@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Where Node puts the line and column of a call and of a thrown error in TypeScript that its transformer rewrote, for
-// docs/plans/public-beta/proofs/loader.md. Each site is compared with where it is written. Run it from the repository
+// Where Node puts the line and column of a call and of a thrown error in TypeScript that its transformer rewrote,
+// probed when Retest chose its loader. Each site is compared with where it is written. Run it from the repository
 // root with `node scripts/probe-loader-positions.ts`. It writes only under a temporary folder, which it removes.
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))

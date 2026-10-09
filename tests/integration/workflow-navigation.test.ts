@@ -6,7 +6,7 @@ import { budgets, configSource, eventsOf, runProject, testNamed, writeProject } 
 import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 1, open a page, navigate and reload, against real Chrome and the task app's small site.
-// The cases are F1.1 to F1.4 in docs/plans/public-beta/workflow-cases.md.
+// The cases are F1.1 to F1.4 in docs/compatibility/workflow-cases.md.
 
 const file = 'tests/navigation.retest.ts'
 const assertFailedAt = failedAtIn(file)

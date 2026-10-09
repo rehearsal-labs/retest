@@ -1,4 +1,4 @@
-// Workflow family 4, create an object through a form: F4.1 to F4.4 of docs/plans/public-beta/workflow-cases.md,
+// Workflow family 4, create an object through a form: F4.1 to F4.4 of docs/compatibility/workflow-cases.md,
 // written as a Playwright test against the task app.
 import { test, expect } from '@playwright/test'
 

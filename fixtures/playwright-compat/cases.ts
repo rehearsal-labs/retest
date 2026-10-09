@@ -1,7 +1,7 @@
 /**
  * The fixed corpus of the Playwright comparison: each case as `scripts/compare-playwright.ts` runs it, once under a
  * pinned Playwright and once under Retest's compatibility, from the same file. A case is Playwright's starter test or
- * one of the basic workflow cases of docs/plans/public-beta/workflow-cases.md, written as a Playwright test against
+ * one of the basic workflow cases of docs/compatibility/workflow-cases.md, written as a Playwright test against
  * the task app. `outcome` is what the case is written to do: pass, or fail in its named step at the line of its named
  * check with an assertion failure. `support` is what Retest claims for it; a claimed case whose two runs differ fails
  * the comparison, and so does a case declared a gap that has stopped being one.
@@ -41,7 +41,7 @@ export const corpusSources = {
     license: 'Apache-2.0',
     change: "the task app's address and texts in place of playwright.dev's",
   },
-  workflow: 'docs/plans/public-beta/workflow-cases.md',
+  workflow: 'docs/compatibility/workflow-cases.md',
 } as const
 
 const passes: DeclaredOutcome = { status: 'passed' }

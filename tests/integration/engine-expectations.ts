@@ -13,7 +13,7 @@ import { engineUnderTest } from './engines.ts'
 // How an engine says that it ends a case of the shared browser suites, or a conformance case, otherwise than Chrome
 // does, and how the case holds it to exactly that. Chrome is the engine every other is compared with, so it declares
 // nothing. An engine whose driver refuses an operation by name, or whose browser does something Chrome's does not,
-// declares the outcome it gives, why in one sentence, and the item of its driver's proof file that records it. A
+// declares the outcome it gives, why in one sentence, and the item of its page in docs/compatibility that records it. A
 // declared outcome is asserted as exactly as Chrome's: no skip, no choice of outcomes and no looser comparison. An
 // engine that starts to give Chrome's outcome fails the case until its declaration is removed, and a declaration that
 // names no case fails the suite. The declarations themselves are in engine-differences.ts.
@@ -21,16 +21,16 @@ import { engineUnderTest } from './engines.ts'
 /** An engine that may declare a difference: every engine but Chrome's. */
 export type DeclaringEngine = Exclude<EngineName, 'chromium'>
 
-/** The driver proof file each declaring engine cites, relative to the repository root. */
+/** The page in docs/compatibility whose engine differences each declaring engine cites, relative to the repository root. */
 export const proofFiles: Readonly<Record<DeclaringEngine, string>> = {
-  firefox: 'docs/plans/public-beta/proofs/firefox-driver.md',
-  webkit: 'docs/plans/public-beta/proofs/webkit-driver.md',
+  firefox: 'docs/compatibility/firefox.md',
+  webkit: 'docs/compatibility/webkit.md',
 }
 
-/** The heading of the section of a proof file whose numbered items a declaration cites. */
+/** The heading of the section of an engine's page whose numbered items a declaration cites. */
 export const proofSection = '## Engine differences'
 
-/** A numbered item of the engine's proof file's "Engine differences" section: its number and the bold words it opens with. */
+/** A numbered item of the "Engine differences" section of the engine's page: its number and the bold words it opens with. */
 export type ProofItem = { readonly item: number; readonly title: string }
 
 /** A value a case observes, as plain data, compared with a declaration by deep strict equality. */
@@ -104,9 +104,9 @@ function isDeclaringEngine(engine: string): engine is DeclaringEngine {
 }
 
 /**
- * Every problem with a list of declarations, in words: one for Chrome, a reason that is not one sentence, a proof item
- * the engine's proof file does not hold, and two declarations for the same case on the same engine. `proofs` holds
- * the text of each declaring engine's proof file.
+ * Every problem with a list of declarations, in words: one for Chrome, a reason that is not one sentence, an item the
+ * engine's page does not hold, and two declarations for the same case on the same engine. `proofs` holds the text of
+ * each declaring engine's page.
  *
  * @example declarationProblems(suiteDifferences, readProofs()) // []
  */
@@ -130,7 +130,7 @@ export function declarationProblems(declarations: readonly CheckedDeclaration[],
   return problems
 }
 
-// Whether the proof file's "Engine differences" section has this item, opening with these bold words.
+// Whether the page's "Engine differences" section has this item, opening with these bold words.
 function holdsItem(proof: string, documented: ProofItem): boolean {
   const start = proof.indexOf(`\n${proofSection}\n`)
   if (start === -1) return false
@@ -140,9 +140,9 @@ function holdsItem(proof: string, documented: ProofItem): boolean {
 }
 
 /**
- * The text of each declaring engine's proof file.
+ * The text of each declaring engine's page.
  *
- * @example readProofs().firefox.startsWith('# Firefox driver') // true
+ * @example readProofs().firefox.startsWith('# Firefox') // true
  */
 export function readProofs(): Record<DeclaringEngine, string> {
   return { firefox: readFileSync(join(repositoryRoot, proofFiles.firefox), 'utf8'), webkit: readFileSync(join(repositoryRoot, proofFiles.webkit), 'utf8') }

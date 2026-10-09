@@ -1,7 +1,0 @@
-import { expect, test } from '@playwright/test'
-
-test('finds releases 1', async ({ page }) => {
-  await page.goto('/')
-  await page.getByTestId('search').fill('release')
-  await expect(page.getByTestId('status')).toHaveText('3 results for release')
-})

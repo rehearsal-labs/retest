@@ -2,7 +2,7 @@
 
 Design proposal, 29 September 2026. The user has chosen a separate project and an independent implementation. Details below are recommendations for the next implementation, not capabilities already present.
 
-Updated 30 September 2026: the developer-experience plan in `docs/plans/developer-experience/` extends sections 7 and 8. It adds one test spanning several named apps, judged checks (`toMeet`) and dataset evals (`test.eval`), with 42 numbered decisions in `design.md`.
+Updated 30 September 2026: a later design extends sections 7 and 8 with one test spanning several named apps, judged checks and dataset evals. The [guide](guide.md) says which of these are built: named apps and AI checks through `test.evaluate` are, and dataset evals are not.
 
 This supersedes the earlier recommendation to host Retest inside Playwright Test. Familiar syntax remains useful, but Retest owns the execution semantics and its browser API. Do not claim Playwright compatibility until specific compatibility has been implemented and tested.
 

@@ -14,7 +14,7 @@ Any count here describes this corpus only.
 | Node.js | v24.12.0 |
 | App | `fixtures/task-app`, a fresh one for each runner |
 | Settings | one worker, no retries, a 1.5 second assertion budget: Playwright from the corpus's `playwright.config.ts`, Retest from `--workers 1 --timeouts assertion=1500`, since Retest reads no `playwright.config.ts` |
-| Corpus | Playwright's starter, `assets/example.spec.ts` of `create-playwright` 1.17.139 (sha256 `a3cbab846a58843b6350e2cc96801b4b6c41e86880451a68c9a01b149708a042`, Apache-2.0) with the task app's address and texts in place of playwright.dev's; and the basic workflow cases of `docs/plans/public-beta/workflow-cases.md`, written as Playwright tests against the task app |
+| Corpus | Playwright's starter, `assets/example.spec.ts` of `create-playwright` 1.17.139 (sha256 `a3cbab846a58843b6350e2cc96801b4b6c41e86880451a68c9a01b149708a042`, Apache-2.0) with the task app's address and texts in place of playwright.dev's; and the basic workflow cases of `docs/compatibility/workflow-cases.md`, written as Playwright tests against the task app |
 
 ## Summary
 

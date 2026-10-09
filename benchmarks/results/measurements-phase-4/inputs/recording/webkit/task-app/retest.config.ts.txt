@@ -1,7 +1,0 @@
-import { defineConfig } from '@rehearsal-labs/retest'
-export default defineConfig({
-  apps: { web: { browser: "webkit", executablePath: "/Users/dragon/Library/Caches/ms-playwright/webkit-2359", baseUrl: "http://127.0.0.1:53259", headless: true, viewport: { width: 1280, height: 720 } } },
-  diagnostics: { capture: true },
-  recording: { record: true, required: true, keep: 'all', fps: 10, size: { width: 1280, height: 720 } },
-  timeouts: { test: 30000, action: 5000, assertion: 5000, navigation: 30000 },
-})

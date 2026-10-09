@@ -1,4 +1,4 @@
-// Workflow family 2, password sign-in and sign-out: F2.1 to F2.4 of docs/plans/public-beta/workflow-cases.md,
+// Workflow family 2, password sign-in and sign-out: F2.1 to F2.4 of docs/compatibility/workflow-cases.md,
 // written as a Playwright test against the task app. The password comes from the environment, as a Playwright
 // suite reads one.
 import { test, expect, type Page } from '@playwright/test'

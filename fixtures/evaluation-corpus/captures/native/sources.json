@@ -7,7 +7,7 @@
       "app": "TaskPhone on the iOS simulator",
       "source": "simulator-display",
       "shows": "TaskPhone signed in as ada, after creating a task: id task-8143c3f6119d, title Proof task 2026-10-05T17-57-56Z, state Open",
-      "madeBy": "proofs/native/interaction.ts, run 2026-10-05T17-57-56Z (docs/plans/public-beta/proofs/native-interaction.md)",
+      "madeBy": "proofs/native/interaction.ts, run 2026-10-05T17-57-56Z",
       "original": "~/Library/Caches/retest-proofs/artifacts/interaction/2026-10-05T17-57-56Z/proof-phone-launch1-o34-created-simulator-display.png"
     },
     {
@@ -16,7 +16,7 @@
       "app": "TaskPhone on the iOS simulator",
       "source": "simulator-display",
       "shows": "TaskPhone's sign-in form, empty account and password fields, the keyboard up",
-      "madeBy": "proofs/native/interaction.ts, run 2026-10-05T17-57-56Z (docs/plans/public-beta/proofs/native-interaction.md)",
+      "madeBy": "proofs/native/interaction.ts, run 2026-10-05T17-57-56Z",
       "original": "~/Library/Caches/retest-proofs/artifacts/interaction/2026-10-05T17-57-56Z/proof-phone-launch1-o3-keyboard-simulator-display.png"
     },
     {
@@ -25,7 +25,7 @@
       "app": "TaskPhone on the iOS simulator",
       "source": "executor-screen",
       "shows": "TaskPhone signed in as ada, the new-task form with an empty title, the keyboard up over the lower part of the screen",
-      "madeBy": "the failure screenshot of tests/integration/native-api-phone.test.ts, run folder run-rRI5JO (docs/plans/public-beta/proofs/wiring.md)",
+      "madeBy": "the failure screenshot of tests/integration/native-api-phone.test.ts, run folder run-rRI5JO",
       "original": "~/Library/Caches/retest-proofs/artifacts/wiring-phone/run-rRI5JO/artifacts/phone-retest-ts-taskphone-1aj9o3hy8y9s3-3keodwczfv-phone-0rd604o397f5b-failure.png"
     },
     {
@@ -34,7 +34,7 @@
       "app": "TaskDesk on macOS",
       "source": "window-crop",
       "shows": "TaskDesk's window with its sign-in form: Account and Password fields, a Sign in button",
-      "madeBy": "the macOS lifecycle proof, run 2026-10-03T19-45-27Z (docs/plans/public-beta/proofs/native.md)",
+      "madeBy": "proofs/native/lifecycle.ts on macOS, run 2026-10-03T19-45-27Z",
       "original": "~/Library/Caches/retest-proofs/artifacts/lifecycle/2026-10-03T19-45-27Z/proof-desk-launch1-o1-window-crop.png"
     }
   ]

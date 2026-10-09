@@ -1,8 +1,8 @@
 import { expect, secret, test } from '@rehearsal-labs/retest'
 
-// "What tsc catches", section 5 of docs/plans/developer-experience/index.html, line for line. There `phone` is a
-// native Android app; in milestone 2 every app is a web page, so `phone` is an emulated Pixel 9, and the second
-// error takes its milestone 2 form: tap() on an app with no touch screen.
+// What the type check catches in one test across two apps, before a browser opens: an app the test did not declare,
+// tap() on an app with no touch screen, a test id, a role and a secret name with a typo, and a value matcher on a
+// locator. `phone` is an emulated Pixel 9, so tap() type-checks there.
 test('task syncs', { apps: ['phone', 'web'] }, async ({ phone, web, desktop }) => { // type-error TS2339 Property 'desktop' does not exist on type 'Apps<"phone" | "web">'.
   await web.getByTestId('save-task').tap() // type-error TS2349 Type 'RetestTypeError<"One of this app's targets has no touch screen. Use click().">' has no call signatures.
   await web.getByTestId('sav-task').click() // type-error TS2345 Argument of type '"sav-task"' is not assignable to parameter of type '"

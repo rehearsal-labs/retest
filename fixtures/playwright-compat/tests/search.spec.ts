@@ -1,4 +1,4 @@
-// Workflow family 9, search, filter and paginate: F9.1 to F9.4 of docs/plans/public-beta/workflow-cases.md, written
+// Workflow family 9, search, filter and paginate: F9.1 to F9.4 of docs/compatibility/workflow-cases.md, written
 // as a Playwright test against the task app.
 import { test, expect } from '@playwright/test'
 

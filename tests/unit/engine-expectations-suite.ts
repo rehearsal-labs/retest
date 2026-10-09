@@ -3,7 +3,7 @@ import { engineExpectations } from '../integration/engine-expectations.ts'
 
 // A shared suite in miniature, which engine-expectations.test.ts runs as a test process of its own: one case observes
 // RETEST_EXPECTATIONS_OBSERVED where Chrome observes 'chrome', and WebKit declares 'webkit' for the case
-// RETEST_EXPECTATIONS_CASE names, which may be no case of this file. It cites the WebKit proof's first difference.
+// RETEST_EXPECTATIONS_CASE names, which may be no case of this file. It cites the WebKit page's first difference.
 
 const declaredCase = process.env['RETEST_EXPECTATIONS_CASE'] ?? ''
 const observed = process.env['RETEST_EXPECTATIONS_OBSERVED'] ?? ''

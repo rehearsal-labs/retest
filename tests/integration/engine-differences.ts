@@ -1,9 +1,9 @@
 import type { ConformanceDifference, SuiteDifference } from './engine-expectations.ts'
 
 // Every case Firefox or WebKit ends otherwise than Chrome, with the outcome it gives, exactly, why in one sentence, and
-// the item of the engine's driver proof file that records it; engine-expectations.ts holds each case to it. Chrome
-// declares nothing. A declaration that stops holding fails its case: remove it then, with its proof item and its line
-// in the guide's section for the engine.
+// the item of the engine's page in docs/compatibility that records it; engine-expectations.ts holds each case to it.
+// Chrome declares nothing. A declaration that stops holding fails its case: remove it then, with its item on that page
+// and its line in the guide's section for the engine.
 
 const firefoxPhone = 'Firefox cannot emulate a touch screen, a mobile layout through WebDriver BiDi in the release Retest drives. A Firefox target takes a viewport, and no device.'
 const webKitPhone = "Retest's WebKit driver cannot emulate a mobile layout or a touch screen. Give this WebKit target a viewport, or a screen with isMobile and touch false."

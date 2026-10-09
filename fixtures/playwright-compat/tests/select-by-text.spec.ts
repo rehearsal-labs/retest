@@ -1,4 +1,4 @@
-// Workflow cases F4.1, F5.1, F7.1, F7.3 and F9.3 of docs/plans/public-beta/workflow-cases.md written again as a
+// Workflow cases F4.1, F5.1, F7.1, F7.3 and F9.3 of docs/compatibility/workflow-cases.md written again as a
 // Playwright test most often writes them, naming each option of a select by its text alone. Playwright matches that
 // text against each option's value and its label; Retest's compatibility refuses it by name, so each is a declared gap.
 import { test, expect } from '@playwright/test'

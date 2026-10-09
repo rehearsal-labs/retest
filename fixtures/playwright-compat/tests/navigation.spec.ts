@@ -1,4 +1,4 @@
-// Workflow family 1, open a page, navigate and reload: F1.1 to F1.4 of docs/plans/public-beta/workflow-cases.md,
+// Workflow family 1, open a page, navigate and reload: F1.1 to F1.4 of docs/compatibility/workflow-cases.md,
 // written as a Playwright test against the task app.
 import { test, expect } from '@playwright/test'
 

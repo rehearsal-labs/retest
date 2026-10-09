@@ -7,7 +7,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 7, select options, checkboxes and radios, against real Chrome and the task app's
 // preferences form, which shows every control's state as text and saves on the server. The cases are F7.1 to F7.4
-// in docs/plans/public-beta/workflow-cases.md.
+// in docs/compatibility/workflow-cases.md.
 
 const file = 'tests/selection.retest.ts'
 const assertFailedAt = failedAtIn(file)

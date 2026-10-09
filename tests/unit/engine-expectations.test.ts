@@ -106,10 +106,10 @@ test('a declaration that names no case fails: a conformance id that is not a tes
   assert.deepEqual(unconsulted([refused], 'browser-actions', new Set()), [])
 })
 
-test('a declaration cites an item of its engine\'s proof file and gives one sentence of reason', () => {
+test('a declaration cites an item of its engine\'s page and gives one sentence of reason', () => {
   assert.deepEqual(declarationProblems([refused], proofs), [])
-  assert.deepEqual(declarationProblems([{ ...refused, documented: { item: 1, title: 'Something the proof never says.' } }], proofs), [
-    'webkit browser-navigation › an address nobody answers fails with the browser navigation error cites item 1, "Something the proof never says.", which the "Engine differences" section of docs/plans/public-beta/proofs/webkit-driver.md does not hold.',
+  assert.deepEqual(declarationProblems([{ ...refused, documented: { item: 1, title: 'Something the page never says.' } }], proofs), [
+    'webkit browser-navigation › an address nobody answers fails with the browser navigation error cites item 1, "Something the page never says.", which the "Engine differences" section of docs/compatibility/webkit.md does not hold.',
   ])
   assert.equal(declarationProblems([{ ...refused, documented: { item: 999, title: webKitFirst.title } }], proofs).length, 1)
   assert.equal(declarationProblems([{ ...refused, reason: 'Two sentences. Not one.' }], proofs).length, 1)

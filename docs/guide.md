@@ -1,6 +1,6 @@
 # Retest usage guide
 
-How to set up, run and read Retest at milestone 2 and the first part of milestone 3, in detail: the config, the test API, the command line, running Retest from a program of your own, and what Retest does not do yet. The [README](../README.md) is the short tour, and the [handoff](implementation-handoff.md) records what was verified and how.
+How to set up, run and read Retest, in detail: the config, the test API, the command line, running Retest from a program of your own, and what Retest does not do yet. The [README](../README.md) is the short tour.
 
 Retest runs TypeScript test files against Chromium-family browsers, through its own runner and its own CDP client, and against Playwright's WebKit build on macOS, through a client of its own for WebKit's inspector. A project has a config with named apps, several browser targets, emulated devices, secrets, tags and sign-in state. Retest has no runtime dependencies, and it downloads a browser only when `retest install` is asked to.
 
@@ -1087,7 +1087,7 @@ WebKit's records differ from Chrome's as follows. A field WebKit does not give i
 - `console.count` is recorded at the debug level, as WebKit reports it.
 - A message or a repeat that comes without WebKit's own time is counted as unread, so the console capture is partial. Retest never stamps it with its own clock.
 
-On Firefox, Retest records no console message and no runtime error. Firefox 133.0.3 runs enumerable getters while serializing logged objects before delivery. Its log subscription ignores `serializationOptions: { maxObjectDepth: 0 }`, although that option works on script results. A primitive-only filter after delivery cannot prevent those side effects, so Retest does not subscribe. Each page's console is `unavailable`, with that reason. The [real-browser probe](plans/public-beta/reviews/fix-reports/firefox-console-probe-report.md) records the safe value cases and the failed settings. Playwright's Firefox console uses its patched build's own protocol, not WebDriver BiDi, so its console capture does not establish a safe route for this Firefox build. Firefox requests are recorded, with these differences from Chrome:
+On Firefox, Retest records no console message and no runtime error. Firefox 133.0.3 runs enumerable getters while serializing logged objects before delivery. Its log subscription ignores `serializationOptions: { maxObjectDepth: 0 }`, although that option works on script results. A primitive-only filter after delivery cannot prevent those side effects, so Retest does not subscribe. Each page's console is `unavailable`, with that reason. A probe on the real browser found getters run in nested objects too, while strings, numbers, a plain data object and a DOM node ran none. Playwright's Firefox console uses its patched build's own protocol, not WebDriver BiDi, so its console capture does not establish a safe route for this Firefox build. Firefox requests are recorded, with these differences from Chrome:
 
 - A request a dedicated worker makes is recorded as the page's, since Firefox names it by the page.
 - A request has a resource type only when it is a navigation's document.
@@ -1154,7 +1154,7 @@ Native screenshot evidence uses the session's actual PNG and named capture sourc
 
 Screenshots are pixels. Text redaction does not hide a secret displayed in an image. These proofs use screens with no secrets; no pixel masking capability was added. The native proof uses the local fake evaluator's decoded pixel-hash mode, which requires no model credential and measures the evidence path, not a live model's accuracy.
 
-A native target names its sources under `diagnostics`, such as `diagnostics: { network: { path: './service/network.jsonl', client: 'ios' } }`. `logs` is `'stdout'` unless you set `'none'`. With `'stdout'`, Retest launches the app itself and reads its standard output from a pipe. On the simulator it uses `simctl launch --console`. On macOS it starts the app's executable and then activates the app, because the macOS runner drives only an app it launched or activated. With `'none'`, or in a run with `capture: false`, the executor launches the app, a log Retest did not keep says `unavailable: the app provides no log source`, and the capture's scope lists the app's process as not covered. `network` names the metadata file, relative to the config, and the client name its records give this app. An app without it says `unavailable: the app provides no network source`. The config refuses two apps that declare one file and client, and two targets of one app on different simulators, naming both keys. While an app with a network file runs, it holds a lock for that file, which the system lets go if Retest's process dies, so a second run on the same Mac, in this process or another, that would read the same file fails that app's setup by name instead of mixing the two runs' records. Both sources start before the app launches and finish once the body, its dispatched commands and the parent's checks are over, before anything closes. The result, the events, the artifact and `inspect --test` show them as they show a browser page's capture. See the [native diagnostics proof](plans/public-beta/proofs/native-diagnostics.md) for the targets this ran on and its limits.
+A native target names its sources under `diagnostics`, such as `diagnostics: { network: { path: './service/network.jsonl', client: 'ios' } }`. `logs` is `'stdout'` unless you set `'none'`. With `'stdout'`, Retest launches the app itself and reads its standard output from a pipe. On the simulator it uses `simctl launch --console`. On macOS it starts the app's executable and then activates the app, because the macOS runner drives only an app it launched or activated. With `'none'`, or in a run with `capture: false`, the executor launches the app, a log Retest did not keep says `unavailable: the app provides no log source`, and the capture's scope lists the app's process as not covered. `network` names the metadata file, relative to the config, and the client name its records give this app. An app without it says `unavailable: the app provides no network source`. The config refuses two apps that declare one file and client, and two targets of one app on different simulators, naming both keys. While an app with a network file runs, it holds a lock for that file, which the system lets go if Retest's process dies, so a second run on the same Mac, in this process or another, that would read the same file fails that app's setup by name instead of mixing the two runs' records. Both sources start before the app launches and finish once the body, its dispatched commands and the parent's checks are over, before anything closes. The result, the events, the artifact and `inspect --test` show them as they show a browser page's capture. It ran with the fixture apps on an iOS 26.5 simulator and on macOS. The network file cannot tell two copies of one client apart.
 
 ## Run the example
 
@@ -1777,7 +1777,7 @@ await host.close()
 - The host holds the secrets. A `fill` of `{ secret: 'password' }` types only on the session's base URL origin and the origins the host lists for it. An open may name the secrets its session may type, as `secrets: ['password']`; a fill of any other is refused and that secret is not read. Every text an answer holds, looks, failures and addresses included, is redacted.
 - An agent session writes no events and no run folder.
 
-Run on macOS arm64 with Google Chrome 154, Firefox 133 and Playwright's WebKit build 2359. Everything above passed on Chrome, Firefox and WebKit, with a live frame source on Chrome only and element identity on Chrome and Firefox. Four sessions typing at once on Firefox once answered as sent while text did not reach every field; that was a defect of the Firefox driver, now fixed, and the [Firefox driver record](plans/public-beta/proofs/firefox-driver.md) has the cause.
+Run on macOS arm64 with Google Chrome 154, Firefox 133 and Playwright's WebKit build 2359. Everything above passed on Chrome, Firefox and WebKit, with a live frame source on Chrome only and element identity on Chrome and Firefox. Four sessions typing at once on Firefox once answered as sent while text did not reach every field; that was a defect of the Firefox driver, now fixed. Firefox 133 runs a preload script twice in a new window's first document, and the copy without an input guard stopped the keys.
 
 ### Preparing an attempt's state
 
@@ -1920,7 +1920,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - Locators search the top-level document only: no shadow DOM, no frames. No `filter()`, `and()`, `or()`, `getByAltText()` or `getByTitle()`, and no XPath.
 - No popups, dialogs, uploads, downloads, network mocking or visual comparison. A JavaScript dialog fails the command as unsupported.
 - No retries, watch mode, custom fixtures or `test.extend`, and no `test.skip()` called inside a test with a condition. Files run on workers; the tests of one file do not. A lock lasts one run and is not shared with another process.
-- `retest install` installs the pinned Electron, builds the native executors and the media process, and refuses Chrome for Testing, Firefox and WebKit while their pins have no archive checksum.
+- `retest install` installs the pinned Chrome for Testing, Firefox, WebKit and Electron on macOS arm64, and builds the native executors and the media process. On Linux x64 it pins Chrome for Testing only, and installing it there was not run.
 - No `toMeet` or `test.eval`. The agent session API has no package subpath and writes no events. AI checks judge text, screenshots and recorded frames: a screenshot cannot be cropped to a region or masked, and no live judge's accuracy has been measured on the labelled corpus; only the fake judges have run it. No provider has been called through the AI SDK adapter yet.
 - Test files are loaded more than once: once to plan the run, and again for each visit that runs them. Top-level code runs each time.
 - Screenshots are not redacted. A secret the page shows appears in its screenshot.
@@ -1934,8 +1934,8 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 ## Project documents
 
 - [README](../README.md)
-- [Architecture and implementation sequence](architecture.md)
-- [First implementation brief](implementation-brief.md)
-- [Milestone 1 plan](plans/milestone-1/build-plan.md), [milestone 2 plan](plans/milestone-2/build-plan.md) and [milestone 3 plan](plans/milestone-3/build-plan.md)
-- [Implementation handoff](implementation-handoff.md)
-- [Contribution rules](../AGENTS.md)
+- [Architecture](architecture.md)
+- [Playwright compatibility](compatibility/playwright.md) and [conformance on Chrome, Firefox and WebKit](compatibility/conformance.md)
+- Where [Firefox](compatibility/firefox.md) and [WebKit](compatibility/webkit.md) differ from Chrome
+- [The basic workflow cases](compatibility/workflow-cases.md)
+- [Contributing](../CONTRIBUTING.md)

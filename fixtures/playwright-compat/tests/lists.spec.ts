@@ -1,4 +1,4 @@
-// Workflow family 8, find items in lists and tables: F8.1 to F8.4 of docs/plans/public-beta/workflow-cases.md,
+// Workflow family 8, find items in lists and tables: F8.1 to F8.4 of docs/compatibility/workflow-cases.md,
 // written as a Playwright test against the task app. Playwright names a table row from its cells, so F8.1 finds the
 // row by that name.
 import { test, expect } from '@playwright/test'

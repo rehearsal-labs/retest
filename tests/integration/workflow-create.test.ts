@@ -7,7 +7,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 4, create an object through a form, against real Chrome and the task app's task board,
 // which the server keeps for each browser context. The cases are F4.1 to F4.4 in
-// docs/plans/public-beta/workflow-cases.md.
+// docs/compatibility/workflow-cases.md.
 
 const file = 'tests/create.retest.ts'
 const assertFailedAt = failedAtIn(file)

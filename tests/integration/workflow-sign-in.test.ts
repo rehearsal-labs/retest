@@ -8,7 +8,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 // Release 1 workflow family 2, password sign-in and sign-out, against real Chrome and the task app's workflow
 // sign-in pages. The password comes from the run's environment as a secret, and no file of the run holds it. The
-// cases are F2.1 to F2.4 in docs/plans/public-beta/workflow-cases.md.
+// cases are F2.1 to F2.4 in docs/compatibility/workflow-cases.md.
 
 const file = 'tests/sign-in.retest.ts'
 const assertFailedAt = failedAtIn(file)

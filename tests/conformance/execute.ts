@@ -145,7 +145,7 @@ type MissingRun = { readonly group: Group; readonly problems: readonly string[] 
  * @example const report = await runEngine(t, 'chrome')
  */
 export async function runEngine(t: TestContext, engine: Engine, options: RunEngineOptions = {}): Promise<EngineReport> {
-  // A declaration that names no case, or cites no item of its proof file, would hold nothing; no engine is judged then.
+  // A declaration that names no case, or cites no item of its engine's page, would hold nothing; no engine is judged then.
   const unsound = [...declarationProblems(conformanceDifferences, readProofs()), ...conformanceProblems(conformanceDifferences, conformanceCases)]
   if (unsound.length > 0) throw new Error(`The conformance declarations of engine-differences.ts do not hold: ${unsound.join(' ')}`)
   const setup = engineSetup(engine)
@@ -534,7 +534,7 @@ function compareOutcome(declared: Declared, actual: Actual): string[] {
 /**
  * How a failure that ended as declared differs from where and how the case says it fails: the step it names must have
  * finished failed, the failure must be located at the declared line of the case's own file, and its message must say
- * what the case says, as docs/plans/public-beta/workflow-cases.md fixes a failing case.
+ * what the case says, as docs/compatibility/workflow-cases.md fixes a failing case.
  */
 function failureDifferences(testCase: TestCase, declared: Declared, record: { group: Group; result: TestResult; attempt: readonly RetestEvent[]; target: string }): string[] {
   const { group, result, attempt, target } = record
