@@ -8,7 +8,7 @@ Everything here was checked on macOS arm64, with Google Chrome 154 and Chrome fo
 
 Some rules on this page were checked only in unit tests with the fake browser, not on Chrome: a finder after a step that keeps several elements; `first().nth()` refusing; the modifier rules of `press` beyond the shortcuts the Chrome checks press, `Shift+Tab` among them; the macOS editing commands other than `Meta+A`, and several of them, `Alt+Delete`, `Meta+ArrowUp` and `Meta+ArrowDown` among them, appear in no test at all; `check` on a `switch`, `menuitemcheckbox`, `menuitemradio` or `aria-checked="mixed"`; a wheel another element takes; `getByLabel` on a `slider`, `spinbutton` or `switch`; `toContainText` with a `RegExp`; `.not.toBeChecked()` on an element that cannot be checked; `.not.toHaveText()` on no match; and the 65,536-character limit and the "could not judge" negation, which are checked as functions alone.
 
-The package is not published and is marked private. Its intended name is `@rehearsal-labs/retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
+The package is published on npm as `@rehearsal-labs/retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
 
 ## Prerequisites
 

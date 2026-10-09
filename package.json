@@ -1,7 +1,6 @@
 {
   "name": "@rehearsal-labs/retest",
   "version": "0.0.0",
-  "private": true,
   "description": "One test across web, mobile and desktop. Built for software engineers and coding agents.",
   "type": "module",
   "license": "Apache-2.0",
