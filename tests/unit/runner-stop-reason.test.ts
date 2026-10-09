@@ -1,9 +1,12 @@
 import type { Failure } from '../../src/protocol/failures.ts'
+import type { ProcessEvent } from '../../src/runner/test-file-process.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { RunRecord } from '../support/run-harness.ts'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
+import { TestFileProcess } from '../../src/runner/test-file-process.ts'
 import { runProject, tempProject } from '../support/project.ts'
 import { eventsOfType, runSupportFiles, testNamed } from '../support/run-harness.ts'
 import { capture } from './reporters-fixtures.ts'
@@ -66,6 +69,42 @@ describe('a run stopped with a Failure as its reason', async () => {
     assert.match(agent, /^retest: 1 error, 4 not run \(5\) in [^,]+, exit 130, interrupted, incomplete\nrun failed: interrupted The host stopped the run: its budget ran out\.\n/)
     assert.match(agent, /\nerror tests\/support\/files\/slow-click\.retest\.ts:5 clicks something that never answers\n {2}interrupted The host stopped the run: its budget ran out\.\n/)
   })
+})
+
+// The host's stop kills the file's process at once, but the process can answer the stop first with its own verdict: the
+// click's answer, which is the reason at the click's place. The kill is held back here so that answer always comes first.
+test('a stopped test whose process answers the stop before it is killed carries the reason as the host gave it', async (t) => {
+  const kill = TestFileProcess.prototype.kill
+  t.mock.method(TestFileProcess.prototype, 'kill', function (this: TestFileProcess) {
+    return delay(200).then(() => kill.call(this))
+  })
+  const answers: (Failure | undefined)[] = []
+  const listen = TestFileProcess.prototype.listen
+  t.mock.method(TestFileProcess.prototype, 'listen', function (this: TestFileProcess, listener: ((event: ProcessEvent) => void) | undefined) {
+    if (listener === undefined) return listen.call(this, undefined)
+    listen.call(this, (event) => {
+      if (event.kind === 'message' && event.message.type === 'test-finished') answers.push(event.message.failure)
+      listener(event)
+    })
+  })
+  const controller = new AbortController()
+  const record = await runSupportFiles(['slow-click.retest.ts', 'passing.retest.ts'], {
+    signal: controller.signal,
+    timeouts: { action: 10_000, test: 20_000 },
+    fake: {
+      hang: 'click',
+      onCommand: (command) => {
+        if (command.kind === 'click') setTimeout(() => controller.abort(reason), 20)
+      },
+    },
+  })
+  assert.deepEqual(answers, [{ ...reason, location: { file: 'tests/support/files/slow-click.retest.ts', line: 6, column: 39 } }], 'the process answered the stop first')
+  const stopped = testNamed(record.result, 'clicks something that never answers')
+  assert.deepEqual([stopped.status, stopped.failure], ['error', reason])
+  for (const test of [testNamed(record.result, 'runs next'), ...(record.result.files[1]?.tests ?? [])]) {
+    assert.deepEqual([test.status, test.failure], ['not_run', reason], test.name)
+  }
+  assert.match(reports(record).agent, /\nerror tests\/support\/files\/slow-click\.retest\.ts:5 clicks something that never answers\n {2}interrupted The host stopped the run: its budget ran out\.\n/)
 })
 
 describe('a run stopped with a Failure before it starts', async () => {

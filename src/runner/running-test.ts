@@ -697,11 +697,13 @@ export class RunningTest {
     return scope.testId === this.#options.testId && scope.attemptId === this.#options.attemptId
   }
 
-  // A test the parent stopped has failed for that reason, unless the child recorded an earlier failure.
+  // A test the parent stopped has failed for that reason, unless the child recorded an earlier failure. A child whose
+  // first failure is the stop itself, as the answer to a command the stop cut short, only repeats the reason at that
+  // command's place; the reason stands as the parent gave it, as it does when the process ends before it answers.
   #verdict(message: Extract<TestFileMessage, { type: 'test-finished' }>): { failure?: Failure } {
     const reason = this.#revocation
     const own = message.failure
-    if (reason !== undefined) return { failure: own === undefined ? reason : withAlso(own, [reason]) }
+    if (reason !== undefined) return { failure: own === undefined || repeats(own, reason) ? reason : withAlso(own, [reason]) }
     if (message.status === 'passed') return {}
     return { failure: own ?? failure('test_error', 'The test process reported a failure without a reason.') }
   }
@@ -790,6 +792,11 @@ function commandPage(entry: InFlight, result: CommandResult, latest: PageDocumen
 
 function documentFields(document: PageDocument | undefined): PageFields {
   return document === undefined ? {} : pageFields(document.url, document.title)
+}
+
+// The same failure, as `withAlso` counts a repeat: its class and its words, wherever it was placed.
+function repeats(own: Failure, reason: Failure): boolean {
+  return own.class === reason.class && own.message === reason.message
 }
 
 function stampOf(stepId: string | undefined, location: SourceLocation | undefined): NavigationStamp {
