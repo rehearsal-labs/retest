@@ -143,7 +143,7 @@ export class OwnedProcessGroup {
       // A process recorded while its command could not be read keeps the first readable one, so a later change is seen.
       if (record !== undefined && running(entry) && sameProcess(record, entry) && unreadableCommand(record.command) && !unreadableCommand(entry.command)) this.#records.set(entry.pid, { ...record, command: entry.command })
     }
-    const owned = new Set(processes.filter((entry) => running(entry) && sameProcess(this.#records.get(entry.pid), entry)).map((entry) => entry.pid))
+    const owned = new Set(processes.filter((entry) => running(entry) && this.#sameRecorded(this.#records.get(entry.pid), entry)).map((entry) => entry.pid))
     let changed = true
     while (changed) {
       changed = false
@@ -186,7 +186,7 @@ export class OwnedProcessGroup {
         this.#revision += 1
         return undefined
       }
-      if (!sameProcess(record, current)) return undefined
+      if (!this.#sameRecorded(record, current)) return undefined
       return unreadableCommand(current.command) ? { ...current, command: record.command } : current
     } catch (error) {
       this.#failedRead(error)
@@ -296,7 +296,7 @@ export class OwnedProcessGroup {
       this.#revision += 1
       return
     }
-    if (!sameProcess(record, current)) {
+    if (!this.#sameRecorded(record, current)) {
       const changes = [
         ...(record.startedAt === current.startedAt ? [] : ['start reading changed']),
         ...(record.command === current.command || unreadableCommand(record.command) || unreadableCommand(current.command) ? [] : ['command reading changed']),
@@ -315,6 +315,19 @@ export class OwnedProcessGroup {
     } catch (error) {
       if (errorCode(error) !== 'ESRCH') problems.push(`Could not signal recorded process ${record.pid}: ${errorMessage(error)}`)
     }
+  }
+
+  /**
+   * `sameProcessIdentity`, and also a recorded descendant whose command line changed only as a helper rewrites its own
+   * while it starts, read with its start and its parent unchanged and that parent still recorded. A pid another process
+   * took has another start, or another parent, and stays refused.
+   */
+  #sameRecorded(record: OwnedProcessIdentity | undefined, current: OwnedProcessIdentity): boolean {
+    if (record === undefined) return false
+    if (sameProcessIdentity(record, current)) return true
+    if (record.pid === this.#pid || !sameBirth(record, current) || record.parentPid !== current.parentPid) return false
+    const parent = this.#records.get(record.parentPid)
+    return parent !== undefined && startedHelperCommand(record.command, current.command, parent.command)
   }
 
   #readNow(pid: number, deadline?: Deadline): OwnedProcessIdentity | undefined {
@@ -423,6 +436,37 @@ export function sameProcessIdentity(record: OwnedProcessIdentity, current: Owned
 // pid and start then tell it apart, so a reuse of a recorded pid within the same start second by such a process would pass.
 function unreadableCommand(command: string): boolean {
   return /^\(.{1,16}\)$/.test(command) || /^\[.{1,15}\]$/.test(command)
+}
+
+const selfLink = '/proc/self/exe'
+
+/**
+ * Whether a helper running its parent's own executable, first read as `recorded` and now as `current`, only rewrote its
+ * command line as it started, which Chrome's helpers on Linux do: a forked helper shows its parent's command line until
+ * it runs /proc/self/exe, then writes the executable that link names in its place, and headless Chrome appends the
+ * switches it sets for itself. Any other change stays refused: another executable, or words that are not switches.
+ *
+ * @example startedHelperCommand('/proc/self/exe --type=utility', '/opt/google/chrome/chrome --type=utility', '/opt/google/chrome/chrome --headless') // true
+ */
+function startedHelperCommand(recorded: string, current: string, parentCommand: string): boolean {
+  const executable = executableOf(parentCommand)
+  if (executable === undefined) return false
+  if (recorded === parentCommand) return [selfLink, executable].includes(firstWord(current))
+  const named = firstWord(recorded) === selfLink ? `${executable}${recorded.slice(selfLink.length)}` : recorded
+  if (firstWord(named) !== executable) return false
+  if (current === named) return true
+  return current.startsWith(`${named} `) && current.slice(named.length + 1).split(' ').every((word) => word.startsWith('--'))
+}
+
+// `ps` joins the arguments with spaces, so a command line's first word is its executable only where that path holds no
+// space; a switch or nothing after it says so. macOS Chrome's paths hold spaces, and get no executable here.
+function executableOf(command: string): string | undefined {
+  const [first = '', next] = command.split(' ', 2)
+  return first.startsWith('/') && first !== selfLink && (next === undefined || next.startsWith('--')) ? first : undefined
+}
+
+function firstWord(command: string): string {
+  return command.split(' ', 1)[0] ?? ''
 }
 
 function sameBirth(record: OwnedProcessIdentity | undefined, current: OwnedProcessIdentity): boolean {

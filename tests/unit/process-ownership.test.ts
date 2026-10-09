@@ -504,3 +504,115 @@ describe('sameProcessIdentity', () => {
     assert.equal(sameProcessIdentity(network, { ...network, command: '(Google Chrome fo) --type=renderer' }), false)
   })
 })
+
+// Readings `ps -ww -axo pid=,ppid=,pgid=,stat=,lstart=,args=` gave in the Linux image (docker/linux) for Google Chrome 155
+// launched as tests/integration/cdp.test.ts launches it, while it started its helpers. Only the profile folder is
+// shortened, and the network service's switches after it are left out.
+const linuxStarted = 'Fri Oct  9 14:20:34 2026'
+const linuxChrome = '/opt/google/chrome/chrome'
+const linuxRoot: OwnedProcessIdentity = {
+  pid: 23, parentPid: retest, groupId: 23, state: 'Rs', startedAt: 'Fri Oct  9 14:20:33 2026',
+  command: `${linuxChrome} --remote-debugging-pipe --user-data-dir=/tmp/retest-cdp --headless --no-first-run --no-default-browser-check --disable-background-networking about:blank`,
+}
+const zygoteSwitches = '--type=zygote --headless --crashpad-handler-pid=0 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/retest-cdp --change-stack-guard-on-fork=enable'
+const networkSwitches = '--type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --use-angle=swiftshader-webgl --crashpad-handler-pid=0 --enable-crash-reporter=, --noerrdialogs --user-data-dir=/tmp/retest-cdp --change-stack-guard-on-fork=enable'
+// A zygote read before it wrote the switches headless Chrome adds, and after.
+const zygote: OwnedProcessIdentity = { pid: 45, parentPid: 23, groupId: 23, state: 'R', startedAt: linuxStarted, command: `${linuxChrome} ${zygoteSwitches}` }
+const zygoteStarted = `${linuxChrome} ${zygoteSwitches} --no-first-run --ozone-platform=headless --ozone-override-screen-size=800,600 --use-angle=swiftshader-webgl`
+// The network service read between its fork and its exec, as /proc/self/exe after its exec, and named by its executable.
+const networkForked: OwnedProcessIdentity = { pid: 86, parentPid: 23, groupId: 23, state: 'R', startedAt: linuxStarted, command: linuxRoot.command }
+const networkExecuted = `/proc/self/exe ${networkSwitches}`
+const networkStarted = `${linuxChrome} ${networkSwitches}`
+
+function linuxLaunch(...processes: OwnedProcessIdentity[]): { host: OnePidHost; group: OwnedProcessGroup } {
+  const host = new OnePidHost([linuxRoot, ...processes])
+  const group = new OwnedProcessGroup(linuxRoot.pid, retest, host)
+  assert.deepEqual(group.capture(), [])
+  return { host, group }
+}
+
+describe('a Chrome helper on Linux that rewrites its own command line as it starts is the process recorded', () => {
+  test('each reading taken while a helper starts is the helper it becomes, which is ended, not refused', () => {
+    const cases = [
+      { recorded: zygote, started: zygoteStarted, how: 'the switches headless Chrome adds were appended' },
+      { recorded: { ...networkForked, command: networkExecuted }, started: networkStarted, how: '/proc/self/exe was replaced by the executable it names' },
+      { recorded: networkForked, started: networkExecuted, how: 'the fork made its exec' },
+      { recorded: networkForked, started: networkStarted, how: 'the fork made its exec and named its executable' },
+    ]
+    for (const { recorded, started, how } of cases) {
+      const { host, group } = linuxLaunch(recorded)
+      host.replace(recorded.pid, { command: started, state: 'Sl' })
+      assert.equal(group.verifiedIdentity(recorded.pid)?.command, started, how)
+      assert.deepEqual(group.signalReport('SIGKILL'), { problems: [], identityRefusals: [] }, how)
+      assert.deepEqual(host.signals.map((entry) => entry.pid), [recorded.pid, linuxRoot.pid], how)
+    }
+  })
+
+  test('a zygote read again once it started still owns the renderer it then forks', () => {
+    const { host, group } = linuxLaunch(zygote)
+    host.replace(zygote.pid, { command: zygoteStarted, state: 'S' })
+    const renderer: OwnedProcessIdentity = { pid: 166, parentPid: zygote.pid, groupId: linuxRoot.pid, state: 'Rl', startedAt: linuxStarted, command: `${linuxChrome} --type=renderer --user-data-dir=/tmp/retest-cdp` }
+    host.processes.push(renderer)
+    assert.deepEqual(group.capture(), [], 'the renderer is recorded beneath its zygote, not left as a member whose launch could not be verified')
+    assert.deepEqual(group.signalReport('SIGKILL'), { problems: [], identityRefusals: [] })
+    assert.deepEqual(host.signals.map((entry) => entry.pid), [renderer.pid, zygote.pid, linuxRoot.pid])
+  })
+
+  test('a helper the table records as it starts, and its own reading then shows renamed, is ended on both cleanup paths', async () => {
+    for (const asynchronous of [false, true]) {
+      const host = new OnePidHost([linuxRoot])
+      const system: ProcessOwnershipSystem = !asynchronous ? host : {
+        read: () => host.read(),
+        readAsync: async () => host.read(),
+        readProcess: () => { throw new Error('cleanup must use the asynchronous one-pid reading') },
+        readProcessAsync: async (pid) => host.readProcess(pid),
+        signal: (pid, signal) => host.signal(pid, signal),
+      }
+      const group = new OwnedProcessGroup(linuxRoot.pid, retest, system)
+      assert.deepEqual(group.capture(), [])
+      host.table = [linuxRoot, { ...networkForked, command: networkExecuted }]
+      host.processes = [linuxRoot, { ...networkForked, command: networkStarted, state: 'S' }]
+      const report = asynchronous ? await group.signalReportAsync('SIGKILL', new Deadline(1000)) : group.signalReport('SIGKILL')
+      assert.deepEqual(report, { problems: [], identityRefusals: [] }, `asynchronous: ${asynchronous}`)
+      assert.deepEqual(host.signals.map((entry) => entry.pid), [networkForked.pid, linuxRoot.pid], `asynchronous: ${asynchronous}`)
+    }
+  })
+
+  test('a changed command line is still refused when its start or parent changed, it runs another executable than its parent, or it changed other than by switches added at its end', () => {
+    const executed = { ...networkForked, command: networkExecuted }
+    const cases: { recorded: OwnedProcessIdentity; change: Partial<OwnedProcessIdentity>; refusal: RegExp }[] = [
+      { recorded: executed, change: { command: networkStarted, startedAt: 'Fri Oct  9 14:20:35 2026' }, refusal: /recorded descendant; start reading changed, command reading changed;/ },
+      { recorded: executed, change: { command: networkStarted, parentPid: 1 }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: zygote, change: { command: zygoteStarted, parentPid: 1 }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: networkForked, change: { command: networkStarted, parentPid: 1 }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: executed, change: { command: `/usr/bin/another-tool ${networkSwitches}` }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: networkForked, change: { command: `/usr/bin/another-tool ${networkSwitches}` }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: executed, change: { command: `${linuxChrome} --type=renderer --user-data-dir=/tmp/retest-cdp` }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: zygote, change: { command: `${linuxChrome} --type=zygote --headless` }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: zygote, change: { command: `${zygote.command}--no-first-run` }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: zygote, change: { command: `${zygote.command} --no-first-run after-exec` }, refusal: /recorded descendant; command reading changed;/ },
+      { recorded: { ...zygote, command: `/usr/bin/another-tool ${zygoteSwitches}` }, change: { command: `/usr/bin/another-tool ${zygoteSwitches} --no-first-run` }, refusal: /recorded descendant; command reading changed;/ },
+    ]
+    for (const { recorded, change, refusal } of cases) {
+      const { host, group } = linuxLaunch(recorded)
+      host.replace(recorded.pid, { ...change, state: 'S' })
+      assert.equal(group.verifiedIdentity(recorded.pid), undefined, JSON.stringify(change))
+      assert.match(group.signalReport('SIGKILL').identityRefusals.join(' '), refusal, JSON.stringify(change))
+      assert.equal(host.signals.some((entry) => entry.pid === recorded.pid), false, JSON.stringify(change))
+    }
+  })
+
+  test("macOS Chrome's paths hold spaces, so no executable is read from them, and a helper's grown command line is refused", () => {
+    const { host, group } = launched(network)
+    host.replace(network.pid, { command: `${network.command} --enable-logging` })
+    assert.match(group.signalReport('SIGKILL').identityRefusals.join(' '), /Recorded process 28955 has a different identity \(recorded descendant; command reading changed;/)
+    assert.equal(host.signals.some((entry) => entry.pid === network.pid), false)
+  })
+
+  test('the launch root is never read as a helper that started: its own grown command line is refused', () => {
+    const { host, group } = linuxLaunch()
+    host.replace(linuxRoot.pid, { command: `${linuxRoot.command} --ozone-platform=headless` })
+    assert.match(group.signalReport('SIGKILL').identityRefusals.join(' '), /Recorded process 23 has a different identity \(launch root; command reading changed;/)
+    assert.deepEqual(host.signals, [])
+  })
+})
