@@ -1,6 +1,6 @@
 import type { Deadline } from '../../protocol/deadline.ts'
 import type { OwnedProcessIdentity } from '../../shared/process-ownership.ts'
-import { readMetadataProcess, readMetadataProcessAsync } from '../../shared/metadata-process.ts'
+import { processTableOutputLimit, readMetadataProcess, readMetadataProcessAsync } from '../../shared/metadata-process.ts'
 
 const processTableQuery = {
   command: '/bin/ps',
@@ -11,7 +11,9 @@ const processTableQuery = {
 // Keep full command lines for ownership. Several hosts can have enough long arguments to exceed the shared
 // metadata reader's output bound in one query, so list pids first and read their identities in bounded groups.
 const identityBatchSize = 512
-const initialIdentitiesQuery = { ...processTableQuery, args: ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,comm='] }
+// The list of pids is a whole-table reading too and takes that bound: macOS `comm` prints a process's argv[0] whole,
+// which may be as long as its arguments, so on a Mac this list alone can pass the shorter bound.
+const initialIdentitiesQuery = { ...processTableQuery, args: ['-axo', 'pid=,ppid=,pgid=,stat=,lstart=,comm='], outputLimit: processTableOutputLimit }
 let pendingTable: Promise<OwnedProcessIdentity[]> | undefined
 
 /** Liveness and birth facts do not need command arguments; this reading cannot grant authority to signal a pid. */
