@@ -262,9 +262,9 @@ const unread: AppProcessReading = { ok: false, problem: 'lsappinfo find did not 
 const unreadProblem = 'The frame source could not confirm its app processes: lsappinfo find did not finish in time and was ended'
 const deskRuntime: SessionIdentity['runtime'] = { kind: 'macos', bundleId: 'dev.retest.fixtures.taskdesk', appPath: '/tmp/TaskDesk.app', processIds: [] }
 
-test('a window capture gives its commands its time less the image\'s grace and the reply margin, 4000 ms of a whole 5000', async () => {
-  // A start's first capture is given its whole budget up to a capture's 5000 ms; under 1.5 s the commands get 500 ms, or all of it under that.
-  for (const [startMs, commandMs] of [[20_000, 4000], [5000, 4000], [3000, 2000], [1000, 500], [200, 200]] as const) {
+test('a window capture gives its commands its time less the image\'s grace, its ending and the reply margin, 3500 ms of a whole 5000', async () => {
+  // A start's first capture is given its whole budget up to a capture's 5000 ms; under 2 s the commands get 500 ms, or all of it under that.
+  for (const [startMs, commandMs] of [[20_000, 3500], [5000, 3500], [3000, 1500], [1000, 500], [200, 200]] as const) {
     const session = new FakeSession({ ...sessionIdentity, runtime: deskRuntime })
     const source = nativeFrameSource(session, identity, () => Promise.reject(new Error('not the macOS route')), () => Promise.resolve(undefined))
     assert.deepEqual(await source.start({ ...capture([]), timeoutMs: startMs }), { ok: true, mode: 'screenshot-loop' })

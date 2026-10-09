@@ -30,17 +30,24 @@ const nativeCaptureReplyMarginMs = 500
 /** How long the window's image command, screencapture, gets to end after SIGTERM: it holds nothing to clean up. */
 export const windowImageGraceMs = 500
 
-// What a window capture too short to keep its image's grace back still gives its commands, or all its time when less.
+// What ending an image that ran out of time takes besides its grace: a fresh reading of its processes before each of its
+// two signals and readings until they are confirmed gone. That came to about 300 ms on an idle Mac and passed the reply
+// margin on a hosted macOS runner, where the capture then overran its time and ended the recording. With six stand-in
+// window captures at once on a Mac, 500 ms more kept each one inside its time; 1000 ms left the commands too little for
+// their own readings.
+const windowImageEndingMs = 500
+
+// What a window capture too short to keep its image's ending back still gives its commands, or all its time when less.
 const shortWindowCommandMs = 500
 
 // How much of a window capture's time goes to its commands. The image is the long step, and an image out of time is
-// ended with its own grace, so that grace and the reply margin are kept back from whatever time the capture is given.
-// Under 1.5 s that would leave the commands less than `shortWindowCommandMs`, and they get that much, so a short start
-// still asks. The process readings keep the default grace, which this does not keep back: one that ignores its stop
-// near the end may outlast the capture.
+// ended with its own grace and the readings around its signals, so those and the reply margin are kept back from
+// whatever time the capture is given. Under 2 s that would leave the commands less than `shortWindowCommandMs`, and
+// they get that much, so a short start still asks. The process readings keep the default grace, which this does not
+// keep back: one that ignores its stop near the end may outlast the capture.
 function windowCommandMs(timeoutMs: number): number {
   const timeMs = Math.max(1, Math.min(timeoutMs, nativeCaptureTimeoutMs))
-  return Math.max(Math.min(timeMs, shortWindowCommandMs), timeMs - nativeCaptureReplyMarginMs - windowImageGraceMs)
+  return Math.max(Math.min(timeMs, shortWindowCommandMs), timeMs - nativeCaptureReplyMarginMs - windowImageGraceMs - windowImageEndingMs)
 }
 
 /**
