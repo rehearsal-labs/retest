@@ -5,6 +5,7 @@ import fsPromises, { chmod, writeFile } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { systemUnpackTools, unpackArchive } from '../../src/cli/install/unpack.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
@@ -16,7 +17,7 @@ import { tempFolder } from '../support/temp-folder.ts'
 // The stand-in hdiutil. `attach` remembers its mount point and image, then fails, or with `stall` waits to be ended, or
 // with `mount` puts the app on the mount point and succeeds; `info` lists the images from the call named by `from` on;
 // `detach` notes what it was asked to detach, and takes the app off the mount point when that is what it was given.
-async function standInHdiutil(options: { readonly attach: 'fail' | 'stall' | 'mount'; readonly from?: number }): Promise<{ readonly tool: string; readonly calls: () => string[]; readonly mountPoint: () => string }> {
+async function standInHdiutil(options: { readonly attach: 'fail' | 'stall' | 'mount'; readonly from?: number }): Promise<{ readonly tool: string; readonly calls: () => string[]; readonly mountPoint: () => string; readonly attachReady: () => boolean; readonly infoCount: () => number }> {
   const folder = tempFolder('retest-hdiutil-')
   const tool = join(folder, 'hdiutil')
   // One process that never starts another, so ending it for a stop ends all of it.
@@ -49,7 +50,13 @@ if (args[0] === 'attach') {
 `
   await writeFile(tool, script)
   await chmod(tool, 0o755)
-  return { tool, calls: () => readFileSync(join(folder, 'calls'), 'utf8').trim().split('\n'), mountPoint: () => readFileSync(join(folder, 'mount'), 'utf8') }
+  return {
+    tool,
+    calls: () => readFileSync(join(folder, 'calls'), 'utf8').trim().split('\n'),
+    mountPoint: () => readFileSync(join(folder, 'mount'), 'utf8'),
+    attachReady: () => existsSync(join(folder, 'image')),
+    infoCount: () => existsSync(join(folder, 'count')) ? Number(readFileSync(join(folder, 'count'), 'utf8')) : 0,
+  }
 }
 
 async function imageArchive(): Promise<string> {
@@ -69,12 +76,23 @@ describe('unpacking a disk image whose attach did not finish', () => {
     assert.equal(existsSync(hdiutil.mountPoint()), false, 'the mount point is removed')
   })
 
-  test('watches a stopped attach for the helper finishing it, and detaches what it attached', { timeout: 20_000 }, async () => {
+  test('watches a stopped attach for the helper finishing it, and detaches what it attached', { timeout: 20_000 }, async (t) => {
     const hdiutil = await standInHdiutil({ attach: 'stall', from: 3 })
     const archive = await imageArchive()
     const controller = new AbortController()
-    setTimeout(() => controller.abort(), 300)
-    const problem = await unpackArchive({ archive, format: { format: 'dmg', app: 'Stand-in.app' }, into: tempFolder('retest-into-'), platform: 'darwin', tools: { ...systemUnpackTools, hdiutil: hdiutil.tool }, signal: controller.signal, timeoutMs: 10_000 })
+    let unpacking: Promise<string | undefined> | undefined
+    t.after(async () => { controller.abort(); await unpacking })
+    // The helper's progress is measured in info answers; starting a Node stand-in can itself use the real watch window.
+    t.mock.method(Date, 'now', () => hdiutil.infoCount() * 250)
+    t.after(() => t.mock.restoreAll())
+    unpacking = unpackArchive({ archive, format: { format: 'dmg', app: 'Stand-in.app' }, into: tempFolder('retest-into-'), platform: 'darwin', tools: { ...systemUnpackTools, hdiutil: hdiutil.tool }, signal: controller.signal, timeoutMs: 10_000 })
+    const startedBy = performance.now() + 10_000
+    while (!hdiutil.attachReady()) {
+      assert.ok(performance.now() < startedBy, 'the stand-in attach did not start within 10 seconds')
+      await delay(10)
+    }
+    controller.abort()
+    const problem = await unpacking
     assert.match(problem ?? '', /^The disk image could not be attached: hdiutil attach was stopped/)
     const calls = hdiutil.calls()
     assert.deepEqual(calls.slice(1), ['info', 'info', 'info', 'detach /dev/disk97'], 'the attach the helper finished later is detached')
