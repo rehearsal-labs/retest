@@ -511,9 +511,38 @@ test('a window recording whose window never comes is refused with what its last 
   }
 })
 
+// This timeout case needs prompt app readings; starting a Node stand-in can spend the capture's command budget.
+// The recorded process still has to be alive, and fake ps still checks its command and start for ownership.
+async function promptAppReadings(fake: FakeTools, pid: number): Promise<void> {
+  const application = `0x0-0x${pid.toString(16)}`
+  await writeFile(fake.tools.lsappinfo, `#!/bin/sh
+set -eu
+call_log="\${0%/*}/../calls.jsonl"
+case "\${1-}" in
+  find)
+    [ "$#" -eq 2 ] && [ "$2" = 'bundleid=${bundleId}' ] || exit 64
+    printf '%s\\n' '{"tool":"lsappinfo","args":["find","bundleid=${bundleId}"]}' >> "$call_log"
+    kill -0 ${pid} 2>/dev/null || exit 0
+    printf '%s\\n' 'ASN:${application}-"${bundleId}":'
+    ;;
+  info)
+    [ "$#" -eq 4 ] && [ "$2" = '-only' ] && [ "$3" = 'pid,bundleid' ] && [ "$4" = 'ASN:${application}:' ] || exit 64
+    printf '%s\\n' '{"tool":"lsappinfo","args":["info","-only","pid,bundleid","ASN:${application}:"]}' >> "$call_log"
+    kill -0 ${pid} 2>/dev/null || exit 0
+    printf '%s\\n' '[ NULL ]  ASN:${application}:' '    bundleID="${bundleId}"' '    pid = ${pid} type=[ NULL ]'
+    ;;
+  *) exit 64 ;;
+esac
+`)
+}
+
 test('a window capture at the start that runs past its budget is a dropped frame, and the start asks again', darwinOnly, async (t) => {
   const { setup, opened } = await launchedSession(t)
   await opened.session.launch(10_000)
+  assert.equal(opened.session.processIds.length, 1)
+  const [pid] = opened.session.processIds
+  assert.ok(pid !== undefined)
+  await promptAppReadings(setup.fake, pid)
   const asked = hangingShots(setup.fake.root)
   // The first screencapture never answers and ignores SIGTERM, so only the kill after its grace ends it.
   await setup.fake.configure({ screencaptureHangs: true })
