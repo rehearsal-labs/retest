@@ -3,6 +3,7 @@
 coverage
 dist
 node_modules
+media/target
 x-series
 **/.DS_Store
 **/*.tsbuildinfo
