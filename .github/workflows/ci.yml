@@ -2,9 +2,9 @@ name: CI
 run-name: Gates on ${{ inputs.ref }}
 
 # Every gate on Linux and on macOS. On Linux the gates run in the Docker harness with Chrome's sandbox on; on macOS
-# the integration tests run on the runner's Google Chrome and a pinned Chrome for Testing. Nothing starts this
-# workflow by itself: a person runs it by hand on a branch, a tag or a commit, and promote.yml calls it with the
-# commit it is about to publish.
+# integration uses the runner's Google Chrome, Retest's pinned Chromium, Firefox, WebKit and Electron builds, and
+# media built from the checked commit. Nothing starts this workflow by itself: a person runs it by hand on a branch,
+# a tag or a commit, and promote.yml calls it with the commit it is about to publish.
 on:
   workflow_dispatch:
     inputs:
@@ -76,7 +76,8 @@ jobs:
   macos:
     name: macOS arm64
     needs: commit
-    runs-on: macos-15
+    # WebKit build 2359 requires macOS 26.5 or later. This is the standard public arm64 runner.
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       # The runner image ships Google Chrome here, which is also where the tests look by default.
@@ -90,21 +91,45 @@ jobs:
         with:
           # The oldest Node.js package.json allows. The Linux image runs the newest Node.js 24.
           node-version: 24.12.0
+      - name: Show macOS and Xcode
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
       - run: npm ci --no-audit --no-fund
       - run: npm run build
+      - name: Install recording tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          set -euo pipefail
+          brew install ffmpeg
+          rustup toolchain install 1.88.0 --profile minimal
+          rust_tools="$(dirname "$(rustup which --toolchain 1.88.0 cargo)")"
+          echo "$rust_tools" >> "$GITHUB_PATH"
+          # GITHUB_PATH takes effect in later steps; use the exact binaries for these checks.
+          "$rust_tools/rustc" --version
+          "$rust_tools/cargo" --version
+      # Keep the publisher archives for install.test.ts and seed the product installer's cache from the same checked
+      # bytes. The second Chromium build is the pinned Chrome for Testing, so it needs no separate download.
+      - name: Prepare pinned integration archives and paths
+        run: node scripts/ci/prepare-macos-integration.ts "$RUNNER_TEMP/retest-integration"
+      - name: Install pinned browsers and build media
+        run: node dist/cli/main.js install chromium firefox webkit electron media
+      - name: Verify integration prerequisites
+        run: |
+          set -euo pipefail
+          node dist/cli/main.js install --list --verify
+          "$RETEST_TEST_BROWSER" --version
+          "$RETEST_TEST_SECOND_BROWSER" --version
+          "$RETEST_TEST_FIREFOX" --version
+          "$RETEST_TEST_ELECTRON" --version
+          "$RETEST_TEST_MEDIA_BINARY" --version
+          "$RETEST_TEST_FFMPEG" -version
+          "$RETEST_TEST_FFPROBE" -version
       - run: npm run typecheck
       - run: npm run test:unit
       - run: npm run test:types
-      # The second browser must be a different Chromium build. The script downloads one pinned Chrome for Testing
-      # version from Google and refuses an archive whose SHA-256 differs from the one recorded.
-      - name: Install Chrome for Testing
-        run: |
-          set -euo pipefail
-          second="$(node scripts/ci/install-chrome-for-testing.ts "$RUNNER_TEMP/chrome-for-testing")"
-          echo "RETEST_TEST_SECOND_BROWSER=${second}" >> "$GITHUB_ENV"
-      - name: Show the two browsers
-        run: |
-          set -euo pipefail
-          "$RETEST_TEST_BROWSER" --version
-          "$RETEST_TEST_SECOND_BROWSER" --version
-      - run: npm run test:integration
+      # TAP prints the error and its stack when a test fails; spec defers those details until the whole gate ends.
+      - name: Run integration with failure details
+        run: node --conditions=retest-source --test --test-concurrency=1 --test-reporter=tap "tests/integration/**/*.test.ts"
