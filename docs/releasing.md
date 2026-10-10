@@ -70,7 +70,7 @@ Every third-party action is pinned by its full commit SHA, with the version in a
 
 ## The first release
 
-npm lets a package name a trusted publisher only once the package exists, so 0.1.0 is published by hand. Do these once, in this order.
+npm lets a package name a trusted publisher only once the package exists, so 0.1.0 is published by hand. Follow steps 1 through 8 for that release. Apply step 10 as soon as npm serves 0.1.0. Wait until the next promotion is ready before step 9.
 
 - [ ] **1. Get the workflows onto `main`.** Push the commit that holds `promote.yml` and this `ci.yml`. The push starts nothing. GitHub offers a workflow to run by hand only once it is on the default branch.
 
@@ -124,9 +124,11 @@ npm lets a package name a trusted publisher only once the package exists, so 0.1
 
 - [ ] **8. Create the `npm` environment.** On GitHub, open the repository's Settings, then Environments, and add `npm`. Under deployment branches, allow only `main`. Under required reviewers, add yourself. The publish job waits in it until you approve, and npm accepts a publish only from this environment.
 
-- [ ] **9. Name `promote.yml` as the trusted publisher.** On npmjs.com, open the package's settings. Under Trusted publishing, choose GitHub Actions. Enter organization `rehearsal-labs`, repository `retest`, workflow filename `promote.yml` and environment `npm`, then save.
+- [ ] **9. Configure the trusted publisher when the next promotion is ready.** On npmjs.com, open the package's settings. Under Trusted publishing, choose GitHub Actions. Enter organization `rehearsal-labs`, repository `retest`, workflow filename `promote.yml` and environment `npm`. Under Allowed actions, enable direct publishing with `npm publish`, then save. `promote.yml` uses that command. [npm documents these fields and permissions](https://docs.npmjs.com/trusted-publishers/#for-github-actions).
 
-- [ ] **10. Require two-factor and disallow tokens.** In the same settings, under Publishing access, choose "Require two-factor authentication and disallow tokens" and save. A person can then publish only with two-factor, and no token can publish.
+  Complete the first successful CI publish within two days of saving the configuration. [npm expires an unused configuration after two days](https://docs.npmjs.com/trusted-publishers/#trusted-publisher-configuration-expiry). If it expires, delete it and create it again before publishing.
+
+- [ ] **10. Require two-factor and disallow tokens after 0.1.0.** As soon as npm serves 0.1.0, open the package's settings. Under Publishing access, choose "Require two-factor authentication and disallow tokens" and save. Manual publishing requires two-factor. Traditional publish tokens are blocked; trusted publishing still works. [npm explains this setting](https://docs.npmjs.com/trusted-publishers/#how-to-configure-maximum-security).
 
 From then on every release is a promotion.
 
