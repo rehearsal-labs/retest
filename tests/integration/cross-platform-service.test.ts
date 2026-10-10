@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { TestContext } from 'node:test'
 import type { RequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
@@ -6,6 +7,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -13,6 +15,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { formatRequestLine, parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
 import { ASSIGNED_ID_PATTERN, SEEDED_TASKS } from '../../fixtures/cross-platform/service/store.ts'
+import { tempFolder } from '../support/temp-folder.ts'
 import { within } from './browser-harness.ts'
 import { assertStdoutIsEvents, budgets, eventsOf, filesHolding, repositoryRoot, runProgram, runRetest, scratchFolder, testNamed, textHolds } from './cli-harness.ts'
 import { endService } from './service-teardown.ts'
@@ -52,20 +55,34 @@ type Service = {
   stop(): Promise<Exit>
 }
 
-type ServiceOptions = { flags?: readonly string[]; folder?: string }
+type ServiceStorage = { folder: string; register(child: ChildProcess): void }
+
+type ServiceOptions = { flags?: readonly string[]; storage?: ServiceStorage }
+
+/** Stops every service using the folder before removing the files its requests can still write. */
+function serviceStorage(t: TestContext, prefix = 'retest-cross-platform-'): ServiceStorage {
+  const folder = tempFolder(prefix)
+  const children: ChildProcess[] = []
+  t.after(async () => {
+    await Promise.all(children.map((child) => endService(child, 'the cross-platform service')))
+    await rm(folder, { recursive: true, force: true })
+  })
+  return { folder, register: (child) => children.push(child) }
+}
 
 /**
  * Starts the service on a free port in a process group of its own. After the test it is ended through its own handle if
  * it is still running, and anything of its group still there fails the test by name.
  */
 async function startService(t: TestContext, options: ServiceOptions = {}): Promise<Service> {
-  const folder = options.folder ?? (await scratchFolder(t, 'retest-cross-platform-'))
+  const storage = options.storage ?? serviceStorage(t)
+  const { folder } = storage
   const networkLog = join(folder, `network-${Date.now()}.jsonl`)
   const args = ['--conditions=retest-source', serverScript, '--port', '0', '--network-log', networkLog, ...(options.flags ?? [])]
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  storage.register(child)
   const { pid } = child
   assert.ok(pid !== undefined, 'the service did not start')
-  t.after(() => endService(child, 'the cross-platform service'))
   let stdout = ''
   let stderr = ''
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
@@ -560,10 +577,11 @@ test('puts back the seeded tasks on reset and signs every session out', serviceT
 })
 
 test('a reset reaches the state file, so a restart after it starts from the seeded tasks', serviceTest, async (t) => {
-  const folder = await scratchFolder(t, 'retest-cross-platform-')
+  const storage = serviceStorage(t)
+  const { folder } = storage
   const stateFile = join(folder, 'state.json')
   const flags = ['--state', stateFile, '--sync-delay-ms', '0']
-  const first = await startService(t, { folder, flags })
+  const first = await startService(t, { storage, flags })
   const token = await signIn(first, ada.id, ada.password)
   assert.deepEqual(shape(await changeTask(first, token, 'seed-ada-1', { title: 'Changed before the reset', done: true })), {
     id: 'seed-ada-1',
@@ -575,7 +593,7 @@ test('a reset reaches the state file, so a restart after it starts from the seed
   assert.equal((await call(first, 'POST', '/admin/reset')).status, 200)
   assert.deepEqual(await first.stop(), { code: 0, signal: null })
 
-  const second = await startService(t, { folder, flags })
+  const second = await startService(t, { storage, flags })
   const again = await signIn(second, ada.id, ada.password)
   assert.deepEqual((await listTasks(second, again)).map(shape), seededForAda)
   assert.equal(await readTask(second, again, created.id), undefined)
@@ -583,9 +601,10 @@ test('a reset reaches the state file, so a restart after it starts from the seed
 })
 
 test('keeps the tasks in a state file across a restart, without a credential in it, and refuses a file it did not write', serviceTest, async (t) => {
-  const folder = await scratchFolder(t, 'retest-cross-platform-')
+  const storage = serviceStorage(t)
+  const { folder } = storage
   const stateFile = join(folder, 'state.json')
-  const first = await startService(t, { folder, flags: ['--state', stateFile, '--sync-delay-ms', '0'] })
+  const first = await startService(t, { storage, flags: ['--state', stateFile, '--sync-delay-ms', '0'] })
   const token = await signIn(first, ada.id, ada.password)
   const created = await createTask(first, token, 'Kept across a restart')
   await changeTask(first, token, created.id, { done: true })
@@ -594,13 +613,13 @@ test('keeps the tasks in a state file across a restart, without a credential in 
   const state = readFileSync(stateFile, 'utf8')
   for (const value of [token, ada.password, ben.password]) assert.ok(!state.includes(value), 'the state file holds no token or password')
 
-  const second = await startService(t, { folder, flags: ['--state', stateFile, '--sync-delay-ms', '0'] })
+  const second = await startService(t, { storage, flags: ['--state', stateFile, '--sync-delay-ms', '0'] })
   assert.equal((await call(second, 'GET', '/api/tasks', { token })).status, 401, 'sessions do not survive a restart')
   const again = await signIn(second, ada.id, ada.password)
   assert.deepEqual(shape(await readTask(second, again, created.id)), { id: created.id, title: 'Kept across a restart', done: true, revision: 2 })
   assert.deepEqual(await second.stop(), { code: 0, signal: null })
 
-  const memory = await startService(t, { folder, flags: ['--sync-delay-ms', '0'] })
+  const memory = await startService(t, { storage, flags: ['--sync-delay-ms', '0'] })
   const memoryToken = await signIn(memory, ada.id, ada.password)
   assert.equal(await readTask(memory, memoryToken, created.id), undefined, 'without --state the tasks live in memory only')
   await memory.stop()
@@ -613,13 +632,13 @@ test('keeps the tasks in a state file across a restart, without a credential in 
 })
 
 test('a change the state file cannot keep is answered 500, did not happen, and is reported on stderr', serviceTest, async (t) => {
-  const folder = await scratchFolder(t, 'retest-cross-platform-state-')
+  const storage = serviceStorage(t, 'retest-cross-platform-state-')
+  const { folder } = storage
   const stateFolder = join(folder, 'state')
   mkdirSync(stateFolder)
-  const service = await startService(t, { folder, flags: ['--state', join(stateFolder, 'state.json'), '--sync-delay-ms', '0'] })
+  const service = await startService(t, { storage, flags: ['--state', join(stateFolder, 'state.json'), '--sync-delay-ms', '0'] })
   const token = await signIn(service, ada.id, ada.password)
-  // Put back in the body, never in a cleanup hook: a folder left read-only would stop the scratch folder's removal,
-  // and the hooks after it, the service's kill among them.
+  // Restore this in the body: a folder left read-only would prevent its storage from being removed after the service ends.
   chmodSync(stateFolder, 0o500)
   try {
     const change = await call(service, 'PATCH', '/api/tasks/seed-ada-1', { token, body: { done: true } })
