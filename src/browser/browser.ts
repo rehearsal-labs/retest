@@ -10,7 +10,7 @@ import { describeExit } from '../shared/process-exit.ts'
 import { BrowserError } from './browser-error.ts'
 import { CdpClosedError, CdpDisconnectedError } from './cdp/errors.ts'
 import { request, sendOptions } from './cdp-results.ts'
-import { webRuntimeIdentity } from './contract.ts'
+import { closeGraceMs, webRuntimeIdentity } from './contract.ts'
 import { Listeners } from './listeners.ts'
 import { ChromiumPage } from './page.ts'
 import { restoreState } from './storage-state.ts'
@@ -148,13 +148,15 @@ export class ChromiumBrowser implements WebRuntime {
   async #close(timeoutMs: number): Promise<void> {
     this.#closeRequested = true
     const deadline = new Deadline(timeoutMs)
-    this.#process.recordDescendants(deadline)
+    // A short protocol budget retains stop(0)'s established ownership cleanup allowance.
+    const ownershipDeadline = deadline.budgetMs < 2 * closeGraceMs ? new Deadline(2 * closeGraceMs) : deadline
+    this.#process.recordDescendants(ownershipDeadline)
     if (this.connected) {
       this.#connection.send('Browser.close', undefined, sendOptions(deadline)).catch(() => {
         // Chrome often closes the pipe instead of answering, and `stop` ends the process group either way.
       })
     }
-    const problems = await this.#process.stop(0, deadline)
+    const problems = await this.#process.stop(0, ownershipDeadline)
     try { this.#connection.close() }
     catch (error) { problems.push(`Could not close the browser's debugging pipe: ${errorMessage(error)}`) }
     problems.push(...this.#cleanupProblems)
