@@ -4,6 +4,7 @@ import { after, before, beforeEach, describe, test } from 'node:test'
 import { BidiClient } from '../../src/browser/firefox/bidi-client.ts'
 import { FirefoxPage } from '../../src/browser/firefox/page.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
+import { earlyClock } from './early-waits-clock.ts'
 import { ScriptedBidi } from './firefox-scripted-bidi.ts'
 
 // The Firefox page over a scripted BiDi endpoint: what it sets up in the tab, the commands it refuses before sending
@@ -133,7 +134,7 @@ describe('the Firefox page', () => {
     await opened.dispose(1000)
   })
 
-  test('an origin-bound fill lets go, at its next look, a navigation the page started before the look that readies its field, and sends no key meanwhile', async () => {
+  test('an origin-bound fill lets go, at its next look, a navigation the page started before the look that readies its field, and sends no key meanwhile', async (t) => {
     const opened = await page()
     endpoint.sent.length = 0
     endpoint.accept('browsingContext.activate', 'network.removeIntercept', 'network.continueRequest', 'network.failRequest')
@@ -143,8 +144,27 @@ describe('the Firefox page', () => {
       endpoint.emit('network.beforeRequestSent', { isBlocked: true, intercepts: ['fill-hold'], context, navigation: 'step-2', redirectCount: 0, timestamp: 1, request: { request: 'step-2-request', url: 'http://127.0.0.1:4173/login?step=2', method: 'GET' } })
       return { result: { intercept: 'fill-hold' } }
     })
-    const filled = await opened.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'field' }, value: 'New', secret: 'field', allowedOrigins: ['http://127.0.0.1:4173'] }, 300)
+    const clock = earlyClock(t)
+    let finished = false
+    let continued = false
+    endpoint.on('network.continueRequest', (params) => {
+      if (params['request'] === 'step-2-request') {
+        assert.equal(finished, false, 'the fill still waits when the navigation continues')
+        assert.deepEqual(endpoint.commands('network.removeIntercept'), [], 'the hold is still armed')
+        continued = true
+      }
+      return { result: {} }
+    })
+    const filling = opened.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'field' }, value: 'New', secret: 'field', allowedOrigins: ['http://127.0.0.1:4173'] }, 300)
+    void filling.then(() => { finished = true }, () => { finished = true })
+    // The first look must release the held request before this fixture advances the action clock.
+    const filled = await clock.run(filling, () => continued)
+    clock.restore()
     assert.ok(!filled.result.ok, 'the document it waits for never arrives here')
+    assert.equal(filled.result.failure.class, 'not_actionable')
+    assert.equal(filled.result.failure.details?.['check'], 'navigation')
+    assert.equal(filled.result.failure.details?.['waitedMs'], 300)
+    assert.deepEqual(endpoint.commands('script.callFunction'), [], 'no field look or registration was attempted')
     assert.equal(filled.input, 'not_sent')
     const methods = endpoint.sent.map((command) => command.method)
     const letGo = endpoint.sent.findIndex((command) => command.method === 'network.continueRequest' && command.params['request'] === 'step-2-request')
