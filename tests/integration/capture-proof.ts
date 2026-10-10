@@ -1,14 +1,17 @@
 import type { TestContext } from 'node:test'
-import type { CaptureStart, CapturedFrame, FrameSource, Frozen } from '../../src/media/capture.ts'
+import type { CaptureStart, CapturedFrame, FrameSource, Frozen, SourceRecording } from '../../src/media/capture.ts'
 import type { Ended, FrameFormat, FrameMapEntry } from '../../src/media/client.ts'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { errorMessage } from '../../src/protocol/failures.ts'
 
 // What every capture proof shares: the media binary and ffmpeg it needs, a page whose pixels say what time it is, an
 // independent decode of the video and of the frames that went in, and the check that each video frame shows the frame
@@ -152,6 +155,16 @@ function meanBrightness(luma: Luma, area: { x: number; y: number; width: number;
 /** The tick of the epoch a moment on the run's clock falls in, given when the run's clock read zero, in epoch milliseconds. */
 export function tickAt(timestampUs: number, clockZeroEpochMs: number): number {
   return Math.floor((clockZeroEpochMs + timestampUs / 1000) / tickMs) % tickCount
+}
+
+/** All twelve cell means, retained after decoding so a mixed or unreadable grid can be inspected. */
+export function tickerCellMeans(luma: Luma): number[] {
+  return Array.from({ length: columns * rows }, (_, index) => meanBrightness(luma, {
+    x: (index % columns + 0.25) / columns,
+    y: (Math.floor(index / columns) + 0.25) / rows,
+    width: 0.5 / columns,
+    height: 0.5 / rows,
+  }))
 }
 
 /** How many ticks `later` is after `earlier`, counting across the wrap; negative when it is before. */
@@ -338,7 +351,7 @@ export function shownEntries(ended: Frozen<Ended>): Frozen<FrameMapEntry>[] {
  * tick ahead of its arrival, the slack for the page's and the run's clocks, is `future`; `backwards` frames show an
  * earlier tick than the frame before them; `unreadable` frames could not be read at all.
  */
-export type TickerFrames = { readonly ticks: (number | undefined)[]; readonly lagsMs: number[]; readonly unreadable: string[]; readonly future: number[]; readonly backwards: number[]; readonly distinct: number }
+export type TickerFrames = { readonly ticks: (number | undefined)[]; readonly lagsMs: number[]; readonly unreadable: string[]; readonly future: number[]; readonly backwards: number[]; readonly distinct: number; readonly cellMeans: number[][]; readonly backwardsPairs: { previousFrame: number; previousTick: number; frame: number; tick: number }[] }
 
 export function tickerFrames(frames: readonly CapturedFrame[], pictures: readonly Luma[], clockZeroEpochMs: number): TickerFrames {
   const ticks: (number | undefined)[] = []
@@ -346,8 +359,12 @@ export function tickerFrames(frames: readonly CapturedFrame[], pictures: readonl
   const unreadable: string[] = []
   const future: number[] = []
   const backwards: number[] = []
+  const cellMeans: number[][] = []
+  const backwardsPairs: { previousFrame: number; previousTick: number; frame: number; tick: number }[] = []
+  let previousFrame = 0
   let previous: number | undefined
   for (const [index, picture] of pictures.entries()) {
+    cellMeans.push(tickerCellMeans(picture))
     const reading = readTick(picture)
     const frame = frames[index]
     if (!reading.ok || frame === undefined) {
@@ -359,10 +376,14 @@ export function tickerFrames(frames: readonly CapturedFrame[], pictures: readonl
     const behind = ticksBetween(reading.tick, tickAt(frame.timestampUs, clockZeroEpochMs))
     if (behind < -1) future.push(index + 1)
     lagsMs.push(behind * tickMs)
-    if (previous !== undefined && ticksBetween(previous, reading.tick) < 0) backwards.push(index + 1)
+    if (previous !== undefined && ticksBetween(previous, reading.tick) < 0) {
+      backwards.push(index + 1)
+      backwardsPairs.push({ previousFrame, previousTick: previous, frame: index + 1, tick: reading.tick })
+    }
     previous = reading.tick
+    previousFrame = index + 1
   }
-  return { ticks, lagsMs, unreadable, future, backwards, distinct: new Set(ticks.filter((tick) => tick !== undefined)).size }
+  return { ticks, lagsMs, unreadable, future, backwards, distinct: new Set(ticks.filter((tick) => tick !== undefined)).size, cellMeans, backwardsPairs }
 }
 
 /**
@@ -403,4 +424,140 @@ export function pausesMs(frames: readonly CapturedFrame[]): number[] {
 /** A side made even, as H.264 in 4:2:0 needs. */
 export function even(side: number): number {
   return side % 2 === 0 ? side : side - 1
+}
+
+const tickerFrameLimit = 512
+const tickerByteLimit = 32 * 1024 * 1024
+
+type TickerWireFrame = { ordinal: number; diagnosticObservedAtUs: number; sessionId?: number; metadataTimestamp?: number; data: string }
+
+/** Retention for the synthetic Chromium ticker alone; no browser log or other page is copied. */
+export class ChromiumTickerProof {
+  readonly #output: string
+  readonly #clock: () => number
+  readonly #wire: TickerWireFrame[] = []
+  readonly #files: string[] = []
+  readonly #problems: string[] = []
+  #folder: string | undefined
+  #accepting = true
+  #seen = 0
+  #stringBytes = 0
+  #capturedOmitted = 0
+  #capturedUnmatched = 0
+  #problemCount = 0
+
+  constructor(output: string, clock: () => number) {
+    this.#output = output
+    this.#clock = clock
+  }
+
+  /** Defers buffering until after the original CDP handler sampled and delivered the frame. */
+  watch(message: Record<string, unknown>): void {
+    if (!this.#accepting || message['method'] !== 'Page.screencastFrame') return
+    queueMicrotask(() => {
+      if (!this.#accepting) return
+      const params = message['params']
+      if (!isRecord(params) || typeof params['data'] !== 'string') return
+      this.#seen += 1
+      // Two bytes per character conservatively bounds the retained JavaScript strings without scanning or decoding.
+      const stringBytes = params['data'].length * 2
+      if (this.#wire.length >= tickerFrameLimit || stringBytes > tickerByteLimit - this.#stringBytes) return
+      this.#stringBytes += stringBytes
+      const sessionId = params['sessionId']
+      const metadata = params['metadata']
+      const timestamp = isRecord(metadata) ? metadata['timestamp'] : undefined
+      this.#wire.push({
+        ordinal: this.#seen,
+        diagnosticObservedAtUs: this.#clock(),
+        ...(typeof sessionId === 'number' && Number.isSafeInteger(sessionId) ? { sessionId } : {}),
+        ...(typeof timestamp === 'number' && Number.isFinite(timestamp) ? { metadataTimestamp: timestamp } : {}),
+        data: params['data'],
+      })
+    })
+  }
+
+  /** The diagnostic clock is sampled after handling, separately from the source's original arrival timestamp. */
+  status(): { folder?: string; wireSeen: number; wireKept: number; wireOmitted: number; retainedStringBytes: number; capturedOmitted: number; capturedUnmatched: number; problemCount: number; frameLimit: number; byteLimit: number; files: readonly string[]; problems: readonly string[] } {
+    return { ...(this.#folder === undefined ? {} : { folder: this.#folder }), wireSeen: this.#seen, wireKept: this.#wire.length, wireOmitted: this.#seen - this.#wire.length, retainedStringBytes: this.#stringBytes, capturedOmitted: this.#capturedOmitted, capturedUnmatched: this.#capturedUnmatched, problemCount: this.#problemCount, frameLimit: tickerFrameLimit, byteLimit: tickerByteLimit, files: [...this.#files], problems: [...this.#problems] }
+  }
+
+  /** Called only after recording stops, before the original decoding and assertions. Failures remain diagnostics. */
+  async retain(frames: readonly CapturedFrame[], report: SourceRecording): Promise<void> {
+    await Promise.resolve()
+    this.#accepting = false
+    try {
+      await mkdir(this.#output, { recursive: true })
+      this.#folder = await mkdtemp(join(this.#output, 'chromium-screencast-ticker-'))
+      await mkdir(join(this.#folder, 'wire'))
+      await mkdir(join(this.#folder, 'captured'))
+    } catch (error) {
+      this.#problem('retention folder', error)
+      return
+    }
+    const wire = []
+    const byHash = new Map<string, number[]>()
+    for (const { data, ...row } of this.#wire) {
+      const bytes = Buffer.from(data, 'base64')
+      const sha256 = createHash('sha256').update(bytes).digest('hex')
+      const ordinals = byHash.get(sha256) ?? []
+      ordinals.push(row.ordinal)
+      byHash.set(sha256, ordinals)
+      const image = `wire/${row.ordinal}.jpg`
+      await this.#write(image, bytes)
+      wire.push({ ...row, sha256, byteLength: bytes.byteLength, image })
+    }
+    const captured = []
+    let capturedBytes = 0
+    for (const [index, frame] of frames.entries()) {
+      if (captured.length >= tickerFrameLimit || frame.bytes.byteLength > tickerByteLimit - capturedBytes) {
+        this.#capturedOmitted += 1
+        continue
+      }
+      capturedBytes += frame.bytes.byteLength
+      const image = `captured/${index + 1}.${frame.format === 'png' ? 'png' : 'jpg'}`
+      const sha256 = createHash('sha256').update(frame.bytes).digest('hex')
+      await this.#write(image, frame.bytes)
+      if (!byHash.has(sha256)) this.#capturedUnmatched += 1
+      captured.push({ ordinal: index + 1, timestampUs: frame.timestampUs, earliestUs: frame.earliestUs, format: frame.format, byteLength: frame.bytes.byteLength, sha256, wireOrdinals: byHash.get(sha256) ?? [], image })
+    }
+    await this.#json('wire.json', { timestampMeaning: 'diagnosticObservedAtUs is sampled in a microtask after the original CDP handler; metadataTimestamp is Chrome metadata in seconds, without clock conversion.', frames: wire })
+    await this.#json('captured.json', { timestampMeaning: 'timestampUs and earliestUs are the original CapturedFrame values.', frames: captured })
+    await this.#json('recording.json', report)
+    if (report.ended?.path !== undefined) {
+      try {
+        await copyFile(report.ended.path, join(this.#folder, 'video.mp4'))
+        this.#files.push('video.mp4')
+      } catch (error) { this.#problem('video.mp4', error) }
+    } else { this.#problems.push('No video path was returned by the recording.'); this.#problemCount += 1 }
+    await this.#manifest()
+  }
+
+  async retainDecoded(ticker: TickerFrames, details: object): Promise<void> {
+    if (this.#folder === undefined) return
+    await this.#json('decoded-ticker.json', ticker)
+    await this.#json('diagnostic.json', details)
+    await this.#manifest()
+  }
+
+  async #write(name: string, bytes: Uint8Array | string): Promise<void> {
+    if (this.#folder === undefined) return
+    try {
+      await writeFile(join(this.#folder, name), bytes)
+      if (!this.#files.includes(name)) this.#files.push(name)
+    } catch (error) { this.#problem(name, error) }
+  }
+
+  async #json(name: string, value: object): Promise<void> {
+    try { await this.#write(name, `${JSON.stringify(value, null, 2)}\n`) } catch (error) { this.#problem(name, error) }
+  }
+
+  #manifest(): Promise<void> {
+    const status = this.status()
+    return this.#json('manifest.json', { fixture: 'synthetic Chromium Gray-code ticker', ...status, files: [...status.files.filter((name) => name !== 'manifest.json'), 'manifest.json'] })
+  }
+
+  #problem(name: string, error: unknown): void {
+    this.#problemCount += 1
+    if (this.#problems.length < 8) this.#problems.push(`${name}: ${errorMessage(error)}`)
+  }
 }

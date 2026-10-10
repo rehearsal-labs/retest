@@ -135,6 +135,10 @@ jobs:
       - run: npm run test:types
       # TAP prints the error and its stack when a test fails; spec defers those details until the whole gate ends.
       - name: Run integration with failure details
+        id: integration
+        env:
+          # Only the synthetic Chromium ticker retains images here; native and other page proofs stay excluded.
+          RETEST_CHROMIUM_TICKER_PROOF_OUT: ${{ runner.temp }}/retest-chromium-ticker-proof
         shell: bash
         run: |
           set -euo pipefail
@@ -153,3 +157,12 @@ jobs:
           trap 'exit 130' INT
           export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/scripts/ci/chrome-lifecycle.ts --import=$GITHUB_WORKSPACE/scripts/ci/browser-action-phases.ts"
           node --conditions=retest-source --test --test-concurrency=1 --test-reporter=tap "tests/integration/**/*.test.ts"
+      - name: Keep synthetic ticker failure evidence
+        if: ${{ failure() && steps.integration.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: chromium-ticker-${{ needs.commit.outputs.commit }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retest-chromium-ticker-proof
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0

@@ -36,9 +36,6 @@ import { launchWithGate, protocolOnly } from './engines.ts'
 const value = 'hunter2-never-shown'
 const secret = 'password'
 
-// Cases another engine ends otherwise assert through this, which holds Chrome's outcome or the engine's declared one.
-const engineCase = engineExpectations('browser-secrets')
-
 let browser: OwnedBrowser | undefined
 let folder: string | undefined
 
@@ -55,6 +52,10 @@ after(async () => {
   await rm(folder, { recursive: true, force: true })
   assert.ok(!log.includes(value) && !log.includes(TASK_APP_PASSWORD), 'the browser log holds a secret value')
 })
+
+// Register cleanup first so a failed declaration check cannot leave the browser open.
+// Cases another engine ends otherwise assert through this, which holds Chrome's outcome or the engine's declared one.
+const engineCase = engineExpectations('browser-secrets')
 
 function launched(): OwnedBrowser {
   assert.ok(browser !== undefined, 'the browser did not launch')

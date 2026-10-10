@@ -15,7 +15,7 @@ import { CaptureSuspension, microsecondsSince, recordSource, ScreenshotLoopSourc
 import { mediaArguments, MediaProcess } from '../../src/media/client.ts'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { groupExists, launchGated, openApp, scratchFolder, setupMs } from './browser-harness.ts'
-import { decodeFrames, decodeVideo, even, imageSize, mediaPrerequisites, pausesMs, shownFrameIds, spread, tickerFrames, tickerServer, videoAgainstTicks, watched } from './capture-proof.ts'
+import { ChromiumTickerProof, decodeFrames, decodeVideo, even, imageSize, mediaPrerequisites, pausesMs, shownFrameIds, spread, tickerFrames, tickerServer, videoAgainstTicks, watched } from './capture-proof.ts'
 
 // Chrome's screencast of one page, through the Chromium frame source, into the real media process: a plumbing proof
 // that a session's frames reach a recording with their identity and their clock. It claims nothing about the video's
@@ -254,15 +254,6 @@ test('a page records only as the session it was named, and a page not yet named 
   assert.deepEqual(unnamed.frameSource(identity).availability(), { available: false, reason: `Retest has not named the session this page is, so it records nothing as ${identity.sessionId}.` })
 })
 
-// Where the ticker proofs keep their videos and reports when RETEST_CAPTURE_PROOF_OUT names a folder.
-function keepTicker(name: string, report: SourceRecording, details: object): void {
-  const folder = process.env['RETEST_CAPTURE_PROOF_OUT']
-  if (!folder) return
-  mkdirSync(folder, { recursive: true })
-  if (report.ended?.path !== undefined) copyFileSync(report.ended.path, join(folder, `${name}.${report.ended.path.split('.').at(-1) ?? 'mp4'}`))
-  writeFileSync(join(folder, `${name}-report.json`), `${JSON.stringify({ report, ...details }, null, 2)}\n`)
-}
-
 // A page that changes on every tick, named as the session `identity` is, and the size it captures at.
 async function tickerPage(t: TestContext, needs: MediaPrerequisites, watch: (message: Record<string, unknown>) => void = () => undefined): Promise<{ page: ChromiumPage; size: { width: number; height: number } }> {
   const ticker = await tickerServer(t)
@@ -278,19 +269,27 @@ test('Chrome’s screencast of a page that changes on every tick: no frame shows
   if (needs === undefined) return
   const folder = await scratchFolder(t)
   const counter = frameCounter()
-  const { page, size } = await tickerPage(t, needs, counter.watch)
+  let proof: ChromiumTickerProof | undefined
+  const { page, size } = await tickerPage(t, needs, (message) => { counter.watch(message); proof?.watch(message) })
   const media = await startMedia(t, needs)
   const startedAt = performance.now()
   const clockZeroEpochMs = performance.timeOrigin + startedAt
   const stop = new AbortController()
   const { source, frames } = watched(page.frameSource(identity))
   const options: RecordSourceOptions = { ...recordOptions(folder, 'ticker', stop.signal), clock: microsecondsSince(startedAt), width: even(size.width), height: even(size.height), fps: 30 }
+  const output = process.env['RETEST_CHROMIUM_TICKER_PROOF_OUT'] || process.env['RETEST_CAPTURE_PROOF_OUT']
+  if (output) proof = new ChromiumTickerProof(output, options.clock)
   const recording = recordSource(source, media, options)
   await delay(3000)
   stop.abort()
   const report = await recording
+  await proof?.retain(frames, report)
+  if (proof) t.diagnostic(JSON.stringify({ tickerRetention: proof.status() }))
   const pictures = await decodeFrames(needs, frames)
   const ticker = tickerFrames(frames, pictures, clockZeroEpochMs)
+  t.diagnostic(JSON.stringify({ ticks: ticker.ticks, backwards: ticker.backwards, backwardsPairs: ticker.backwardsPairs, future: ticker.future, unreadable: ticker.unreadable, timestampsUs: frames.map((frame) => frame.timestampUs) }))
+  await proof?.retainDecoded(ticker, { clockZeroEpochMs })
+  if (proof) t.diagnostic(JSON.stringify({ tickerRetention: proof.status() }))
   const ended = report.ended
   assert.ok(ended !== undefined, report.reason)
   assert.equal(ended.status, 'ok', ended.message)
@@ -299,7 +298,8 @@ test('Chrome’s screencast of a page that changes on every tick: no frame shows
   const against = videoAgainstTicks(video.frames, ids, ticker.ticks)
   const measured = { size, capture: report.capture, frames: report.frames, gaps: report.gaps, wire: counter.count(), distinctTicks: ticker.distinct, lagMs: spread(ticker.lagsMs), pausesMs: spread(pausesMs(frames)), video: { frames: video.frames.length, fps: video.fps, codec: video.codec, checked: against.checked, unmapped: against.unmapped.length }, evidence: ended.evidence, counts: ended.frames }
   t.diagnostic(JSON.stringify(measured))
-  keepTicker('chrome-ticker', report, { measured, ticks: ticker.ticks, lagsMs: ticker.lagsMs })
+  await proof?.retainDecoded(ticker, { measured, compared: against, clockZeroEpochMs })
+  if (proof) t.diagnostic(JSON.stringify({ tickerRetention: proof.status() }))
 
   assert.equal(report.status, 'ended')
   assert.deepEqual(ticker.unreadable, [], 'every frame Chrome sent shows a tick that can be read')

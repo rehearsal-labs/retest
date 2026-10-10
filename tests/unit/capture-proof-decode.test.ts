@@ -1,11 +1,14 @@
 import type { TestContext } from 'node:test'
-import type { CapturedFrame } from '../../src/media/capture.ts'
+import type { CapturedFrame, SourceRecording } from '../../src/media/capture.ts'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { test } from 'node:test'
 import { crc32 } from 'node:zlib'
-import { decodeFrames, imageSize, wholeImage } from '../integration/capture-proof.ts'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { ChromiumTickerProof, decodeFrames, imageSize, tickerFrames, wholeImage } from '../integration/capture-proof.ts'
 
 const identity = { testId: 'decode', attemptId: 'a1', app: 'web', sessionId: 'a1:web' }
 const jpeg = Uint8Array.of(0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0xff, 0xd9)
@@ -95,4 +98,105 @@ test('a frame cut short fails by its index before ffmpeg reads it', async (t) =>
   const png = transportLookingPng(204)
   await assert.rejects(decodeFrames(needs, [frame(png), frame(png.subarray(0, 4000))]), /frame 1 is not a whole PNG: its 4000 bytes end before the image does$/)
   await assert.rejects(decodeFrames(needs, [frame(jpeg.subarray(0, 6), 'jpeg')]), /frame 0 is not a whole JPEG: its 6 bytes end before the image does/)
+})
+
+// Two literal 32x24 JPEGs of the synthetic grid.
+const tickOneJpeg = Buffer.from('/9j//gAPTGF2YzYzLjEuMTAyAP/bAEMACAQEBAQEBQUFBQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEsAAQEAAAAAAAAAAAAAAAAAAAAIAQEAAAAAAAAAAAAAAAAAAAAAEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAGAAgAwESAAISAAMSAP/aAAwDAQACEQMRAD8An8AAAAAAAAAAAAAF/gA//9k=', 'base64')
+const tickTwoJpeg = Buffer.from('/9j//gAPTGF2YzYzLjEuMTAyAP/bAEMACAQEBAQEBQUFBQUFBgYGBgYGBgYGBgYGBgcHBwgICAcHBwYGBwcICAgICQkJCAgICAkJCgoKDAwLCw4ODhERFP/EAEsAAQEAAAAAAAAAAAAAAAAAAAAIAQEAAAAAAAAAAAAAAAAAAAAAEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAGAAgAwESAAISAAMSAP/aAAwDAQACEQMRAD8An8AAAAAAAAAAAF/gAAA//9k=', 'base64')
+
+const retainedReport: SourceRecording = {
+  source: 'chromium', identity, status: 'lost', reason: 'The retention control has no video.',
+  frames: { delivered: 2, sent: 2, dropped: 0, notSent: 0, withheld: 0, refused: { identity: 0, timestamp: 0, clock: 0, outOfOrder: 0, outOfRange: 0, tooLarge: 0, empty: 0 } },
+  gaps: { reported: 0, sent: 0, notSent: 0, refused: 0, withheldStretches: 0, withheldUs: 0 }, problems: [],
+}
+
+async function retainedJson(path: string): Promise<Record<string, unknown>> {
+  const value: unknown = JSON.parse(await readFile(path, 'utf8'))
+  assert.ok(isRecord(value))
+  return value
+}
+
+function tickerMessage(bytes: Uint8Array, timestamp: number): Record<string, unknown> {
+  return { method: 'Page.screencastFrame', privateData: 'discard-this-field', params: { sessionId: 1, metadata: { timestamp, privateData: 'discard-this-field' }, data: Buffer.from(bytes).toString('base64') } }
+}
+
+test('synthetic ticker retention keeps literal older-image evidence and whole JPEGs, after the original arrival sample', async (t) => {
+  const needs = decoders(t)
+  if (needs === undefined) return
+  const output = await mkdtemp(join(tmpdir(), 'retest-ticker-retention-'))
+  t.after(() => rm(output, { recursive: true, force: true }))
+  const samples: string[] = []
+  const proof = new ChromiumTickerProof(output, () => { samples.push('diagnostic'); return 70000 })
+  proof.watch(tickerMessage(tickTwoJpeg, 10.2))
+  samples.push('original arrival')
+  assert.deepEqual(samples, ['original arrival'], 'the diagnostic clock was not sampled by the wire callback')
+  await Promise.resolve()
+  assert.deepEqual(samples, ['original arrival', 'diagnostic'])
+  proof.watch(tickerMessage(tickOneJpeg, 10.1))
+  await Promise.resolve()
+  assert.deepEqual(await readdir(output), [], 'live observation created no files')
+  const frames = [{ ...frame(tickTwoJpeg, 'jpeg'), timestampUs: 40000 }, { ...frame(tickOneJpeg, 'jpeg'), timestampUs: 60000 }]
+  const ticker = tickerFrames(frames, await decodeFrames(needs, frames), 0)
+  assert.deepEqual(ticker.ticks, [2, 1])
+  assert.deepEqual(ticker.backwards, [2], 'the older second image is still a contract failure')
+  assert.deepEqual(ticker.backwardsPairs, [{ previousFrame: 1, previousTick: 2, frame: 2, tick: 1 }])
+  assert.deepEqual(ticker.cellMeans, [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255]])
+  await proof.retain(frames, retainedReport)
+  await proof.retainDecoded(ticker, { control: 'older second image' })
+  const status = proof.status()
+  assert.ok(status.folder !== undefined)
+  assert.equal(status.wireOmitted, 0)
+  assert.deepEqual(await readFile(join(status.folder, 'captured/1.jpg')), tickTwoJpeg)
+  assert.deepEqual(await readFile(join(status.folder, 'captured/2.jpg')), tickOneJpeg)
+  assert.equal(wholeImage(await readFile(join(status.folder, 'wire/2.jpg')), 'jpeg'), true)
+  const decoded = await retainedJson(join(status.folder, 'decoded-ticker.json'))
+  assert.deepEqual(decoded['ticks'], [2, 1])
+  const wire = await retainedJson(join(status.folder, 'wire.json'))
+  assert.ok(Array.isArray(wire['frames']))
+  assert.deepEqual(wire['frames'].map((row: unknown) => { assert.ok(isRecord(row)); return [row['ordinal'], row['sessionId'], row['metadataTimestamp']] }), [[1, 1, 10.2], [2, 1, 10.1]])
+  assert.equal(JSON.stringify(wire).includes('discard-this-field'), false, 'wire metadata is allowlisted')
+  const captured = await retainedJson(join(status.folder, 'captured.json'))
+  assert.ok(Array.isArray(captured['frames']))
+  assert.deepEqual(captured['frames'].map((row: unknown) => { assert.ok(isRecord(row)); return row['wireOrdinals'] }), [[1], [2]])
+  assert.deepEqual(captured['frames'].map((row: unknown) => { assert.ok(isRecord(row)); return row['timestampUs'] }), [40000, 60000])
+  const again = new ChromiumTickerProof(output, () => 80000)
+  await again.retain([], retainedReport)
+  assert.notEqual(again.status().folder, status.folder, 'another run cannot overwrite the retained proof')
+})
+
+test('synthetic ticker wire retention reports its count and string-byte limits without creating live files', async (t) => {
+  const output = await mkdtemp(join(tmpdir(), 'retest-ticker-limits-'))
+  t.after(() => rm(output, { recursive: true, force: true }))
+  const proof = new ChromiumTickerProof(output, () => 1)
+  for (let index = 0; index < 515; index++) proof.watch(tickerMessage(tickOneJpeg, index))
+  await Promise.resolve()
+  assert.equal(proof.status().wireSeen, 515)
+  assert.equal(proof.status().wireKept, 512)
+  assert.equal(proof.status().wireOmitted, 3)
+  const bytes = new ChromiumTickerProof(output, () => 2)
+  bytes.watch({ method: 'Page.screencastFrame', params: { data: 'A'.repeat(16 * 1024 * 1024 + 1) } })
+  await Promise.resolve()
+  assert.equal(bytes.status().wireKept, 0)
+  assert.equal(bytes.status().wireOmitted, 1)
+  assert.equal(bytes.status().retainedStringBytes, 0)
+  assert.deepEqual(await readdir(output), [])
+})
+
+test('an unavailable ticker retention folder reports missing evidence and leaves the original assertion intact', async (t) => {
+  const output = await mkdtemp(join(tmpdir(), 'retest-ticker-unavailable-'))
+  t.after(() => rm(output, { recursive: true, force: true }))
+  const blocked = join(output, 'ordinary-file')
+  await writeFile(blocked, 'not a folder')
+  const proof = new ChromiumTickerProof(blocked, () => 1)
+  await proof.retain([], retainedReport)
+  assert.match(proof.status().problems[0] ?? '', /retention folder:/)
+  assert.equal(proof.status().folder, undefined)
+  const decoded = new ChromiumTickerProof(join(output, 'decoded'), () => 2)
+  await decoded.retain([], retainedReport)
+  const folder = decoded.status().folder
+  assert.ok(folder !== undefined)
+  await mkdir(join(folder, 'decoded-ticker.json'))
+  await decoded.retainDecoded(tickerFrames([], [], 0), {})
+  assert.ok(decoded.status().problems.some((problem) => problem.startsWith('decoded-ticker.json:')))
+  assert.throws(() => assert.deepEqual([2], [], 'frames never go back in time'), { code: 'ERR_ASSERTION', actual: [2], expected: [] })
 })
