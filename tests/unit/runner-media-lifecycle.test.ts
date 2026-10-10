@@ -10,7 +10,8 @@ import { fakeMediaStarter } from './runner-recording-fakes.ts'
 function runner(options: Parameters<typeof fakeMediaStarter>[0] = {}, closeFails = false) {
   const fake = fakeMediaStarter(options)
   const events: EventBody[] = []
-  const media = new RunMedia({ location: { executable: '/fake/media' }, start: async (location, timeoutMs) => { const process = await fake.start(location, timeoutMs); if (closeFails) process.close = () => Promise.reject(new Error('ownership could not confirm the encoder gone')); return process }, emit: event => void events.push(event), timeouts: { start: 30, close: 30, leftovers: 30 }, runFolder: newRunFolder() })
+  // Setup reads actual host ownership metadata even with a fake media process.
+  const media = new RunMedia({ location: { executable: '/fake/media' }, start: async (location, timeoutMs) => { const process = await fake.start(location, timeoutMs); if (closeFails) process.close = () => Promise.reject(new Error('ownership could not confirm the encoder gone')); return process }, emit: event => void events.push(event), timeouts: { start: 1000, close: 30, leftovers: 30 }, runFolder: newRunFolder() })
   return { media, fake, events }
 }
 
@@ -111,7 +112,8 @@ test('a synchronous encoder probe failure refuses recording and still closes its
 
 test('a synchronous close failure remains a recorded cleanup failure', { skip: unpinnedMedia }, async () => {
   const { media, fake, events } = runner()
-  await media.acquire()
+  const acquired = await media.acquire()
+  assert.ok(acquired.ok, JSON.stringify(acquired))
   const process = fake.started[0]
   assert.ok(process)
   process.close = () => { throw new Error('owned worker could not close') }
