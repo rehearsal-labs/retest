@@ -1,5 +1,6 @@
 import type { TestContext } from 'node:test'
 import type { ExecutorBuild } from '../../src/native/executors.ts'
+import type { RequestBounds } from '../../src/native/webdriver-client.ts'
 import type { FakeTools } from './native-fake-tools.ts'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -11,6 +12,7 @@ import { isListening } from '../../src/native/executor-process.ts'
 import { IosSimulatorRuntime, simulatorAppProcesses, sweepOrphanedSimulators } from '../../src/native/ios-simulator.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
 import { OwnedProcess } from '../../src/native/processes.ts'
+import { ExecutorClient } from '../../src/native/webdriver-client.ts'
 import { readProcessTable, readProcessTableAsync } from '../../src/shared/process-ownership.ts'
 import { alive, readApps, readJsonFile } from './native-fake-executor.ts'
 import { fakeAppBundle, fakeTools, fakeWindowProcess, hungProcesses, startedProcesses } from './native-fake-tools.ts'
@@ -35,6 +37,27 @@ async function setUp(t: TestContext, tools: Record<string, unknown> = {}): Promi
 
 function start(setup: { readonly fake: FakeTools; readonly appPath: string; readonly build: ExecutorBuild }, extra: { readonly timeoutMs?: number; readonly signal?: AbortSignal } = {}): ReturnType<typeof IosSimulatorRuntime.start> {
   return IosSimulatorRuntime.start({ target: { appPath: setup.appPath, device: 'iPhone 17', runtime: '26.5' }, build: setup.build, tools: setup.fake.tools, logFolder: join(setup.fake.root, 'logs'), timeoutMs: extra.timeoutMs ?? 30_000, signal: extra.signal })
+}
+
+// Keep the normal setup allowance so real host metadata reads finish before /status.
+async function startAwaitingStatus(t: TestContext, setup: Parameters<typeof start>[0]): ReturnType<typeof start> {
+  const realStatus = ExecutorClient.prototype.status
+  let statusReadings = 0
+  const reading = t.mock.method(ExecutorClient.prototype, 'status', async function (this: ExecutorClient, bounds: RequestBounds) {
+    const answer = await realStatus.call(this, bounds)
+    statusReadings++
+    return answer
+  })
+  let started: Awaited<ReturnType<typeof start>>
+  try {
+    started = await start(setup)
+  } finally {
+    reading.mock.restore()
+  }
+  const description = started.ok ? 'the executor answered' : started.failure.message
+  assert.equal((await setup.fake.calls()).filter((call) => call.tool === 'xcodebuild' && call.args[0] === 'test-without-building').length, 1, description)
+  assert.ok(statusReadings > 0, `the start reached a real /status request: ${description}`)
+  return started
 }
 
 async function simctlCalls(fake: FakeTools): Promise<string[]> {
@@ -168,8 +191,11 @@ test('WebDriverAgent that fails to start fails setup naming its log, and the sim
 
 test('a start that runs out of time fails setup and leaves nothing', darwinOnly, async (t) => {
   const setup = await setUp(t, { executorStart: 'hang' })
-  const started = await start(setup, { timeoutMs: 3000 })
+  const started = await startAwaitingStatus(t, setup)
+  assert.equal(started.ok, false)
   assert.match(!started.ok ? started.failure.message : '', /did not answer \/status within/)
+  assert.equal(!started.ok && started.failure.class, 'setup_failed')
+  assert.ok((await hungProcesses(setup.fake.root)).length > 0, 'the hanging executor started a recorded child')
   await nothingLeft(setup.fake)
 })
 
@@ -337,11 +363,13 @@ test('a start whose runner app never answers ends that runner app itself, when x
   })
   let started: Awaited<ReturnType<typeof start>>
   try {
-    started = await start(setup, { timeoutMs: 4000 })
+    started = await startAwaitingStatus(t, setup)
   } finally {
     signalling.mock.restore()
   }
+  assert.equal(started.ok, false)
   assert.match(!started.ok ? started.failure.message : '', /did not answer \/status within/)
+  assert.equal(!started.ok && started.failure.class, 'setup_failed')
   assert.doesNotMatch(!started.ok ? String(started.failure.details?.['also'] ?? '') : '', /could not tie/, 'the runner app tied to the start is not reported as untied')
   const runner = runnerApps(setup.fake.root)
   assert.equal(runner.length, 1)
