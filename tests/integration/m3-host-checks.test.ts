@@ -174,7 +174,7 @@ test('checks decide each test with its body: by test id and by file, in order, e
   // The checks come after the body's last assertion and the look it rested on, each with what the page showed.
   assert.match(
     timeline.stdout,
-    /✓ toHaveText getByTestId\('account'\) [^\n]*\n +looked 1 time, passed on o\d+: 1 match, text "Signed out"\n +[\d.]+ m?s {2}web {2}✗ host check address: http:\/\/127\.0\.0\.1:\d+\/ {2}[^\n]*host_check_failed\n +page "Account" at http:\/\/127\.0\.0\.1:\d+\/account\n/,
+    /✓ toHaveText getByTestId\('account'\) [^\n]*\n +looked 1 time, passed on o\d+: 1 match, text "Signed out"\n +(?:\d+ ms|\d+(?:\.\d+)?s) {2}web {2}✗ host check address: http:\/\/127\.0\.0\.1:\d+\/ {2}[^\n]*host_check_failed\n +page "Account" at http:\/\/127\.0\.0\.1:\d+\/account\n/,
   )
 })
 
