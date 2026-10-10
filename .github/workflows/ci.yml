@@ -132,4 +132,19 @@ jobs:
       - run: npm run test:types
       # TAP prints the error and its stack when a test fails; spec defers those details until the whole gate ends.
       - name: Run integration with failure details
-        run: node --conditions=retest-source --test --test-concurrency=1 --test-reporter=tap "tests/integration/**/*.test.ts"
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RETEST_CI_CHROME_LIFECYCLE_LOG="$RUNNER_TEMP/retest-chrome-lifecycle.jsonl"
+          : > "$RETEST_CI_CHROME_LIFECYCLE_LOG"
+          show_lifecycle() {
+            integration_status=$?
+            trap - EXIT
+            cat "$RETEST_CI_CHROME_LIFECYCLE_LOG" || true
+            exit "$integration_status"
+          }
+          trap show_lifecycle EXIT
+          trap 'exit 143' TERM
+          trap 'exit 130' INT
+          export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/scripts/ci/chrome-lifecycle.ts"
+          node --conditions=retest-source --test --test-concurrency=1 --test-reporter=tap "tests/integration/**/*.test.ts"
