@@ -139,15 +139,17 @@ jobs:
         run: |
           set -euo pipefail
           export RETEST_CI_CHROME_LIFECYCLE_LOG="$RUNNER_TEMP/retest-chrome-lifecycle.jsonl"
+          export RETEST_CI_BROWSER_ACTION_PHASE_LOG="$RUNNER_TEMP/retest-browser-action-phases.jsonl"
           : > "$RETEST_CI_CHROME_LIFECYCLE_LOG"
-          show_lifecycle() {
+          : > "$RETEST_CI_BROWSER_ACTION_PHASE_LOG"
+          show_diagnostics() {
             integration_status=$?
             trap - EXIT
-            cat "$RETEST_CI_CHROME_LIFECYCLE_LOG" || true
+            cat "$RETEST_CI_CHROME_LIFECYCLE_LOG" "$RETEST_CI_BROWSER_ACTION_PHASE_LOG" || true
             exit "$integration_status"
           }
-          trap show_lifecycle EXIT
+          trap show_diagnostics EXIT
           trap 'exit 143' TERM
           trap 'exit 130' INT
-          export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/scripts/ci/chrome-lifecycle.ts"
+          export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/scripts/ci/chrome-lifecycle.ts --import=$GITHUB_WORKSPACE/scripts/ci/browser-action-phases.ts"
           node --conditions=retest-source --test --test-concurrency=1 --test-reporter=tap "tests/integration/**/*.test.ts"
