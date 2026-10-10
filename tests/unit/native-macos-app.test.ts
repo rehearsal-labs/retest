@@ -9,14 +9,15 @@ import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFi
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { nativeCaptureTimeoutMs, sessionRecordIdentity } from '../../src/native/capture.ts'
+import { nativeCaptureTargetCheck, nativeCaptureTimeoutMs, nativeFrameSource, sessionRecordIdentity } from '../../src/native/capture.ts'
 import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
 import { appWindow, automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, readWindowsOnScreen, windowsOnScreen } from '../../src/native/macos-app.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
 import { decodePng } from '../../src/native/png.ts'
-import { commandOf, listProcesses, ProcessListUnread, systemTools, terminationGraceMs } from '../../src/native/processes.ts'
+import { commandOf, listProcesses, ProcessListUnread, recordedIdentity, systemTools, terminationGraceMs } from '../../src/native/processes.ts'
+import { Deadline } from '../../src/protocol/deadline.ts'
 import { alive, readApps, readJsonFile, readRequests } from './native-fake-executor.ts'
-import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, startedProcesses } from './native-fake-tools.ts'
+import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, processStart, startedProcesses } from './native-fake-tools.ts'
 
 // A macOS desktop needs a Mac: it refuses to start elsewhere, and its lock stands on the kernel lock /usr/bin/lockf takes.
 const darwinOnly = { skip: process.platform === 'darwin' ? false : 'the macOS desktop runs only on macOS' }
@@ -511,29 +512,30 @@ test('a window recording whose window never comes is refused with what its last 
   }
 })
 
-// This timeout case needs prompt app readings; starting a Node stand-in can spend the capture's command budget.
-// The recorded process still has to be alive, and fake ps still checks its command and start for ownership.
-async function promptAppReadings(fake: FakeTools, pid: number): Promise<void> {
-  const application = `0x0-0x${pid.toString(16)}`
-  await writeFile(fake.tools.lsappinfo, `#!/bin/sh
-set -eu
-call_log="\${0%/*}/../calls.jsonl"
-case "\${1-}" in
-  find)
-    [ "$#" -eq 2 ] && [ "$2" = 'bundleid=${bundleId}' ] || exit 64
-    printf '%s\\n' '{"tool":"lsappinfo","args":["find","bundleid=${bundleId}"]}' >> "$call_log"
-    kill -0 ${pid} 2>/dev/null || exit 0
-    printf '%s\\n' 'ASN:${application}-"${bundleId}":'
-    ;;
-  info)
-    [ "$#" -eq 4 ] && [ "$2" = '-only' ] && [ "$3" = 'pid,bundleid' ] && [ "$4" = 'ASN:${application}:' ] || exit 64
-    printf '%s\\n' '{"tool":"lsappinfo","args":["info","-only","pid,bundleid","ASN:${application}:"]}' >> "$call_log"
-    kill -0 ${pid} 2>/dev/null || exit 0
-    printf '%s\\n' '[ NULL ]  ASN:${application}:' '    bundleID="${bundleId}"' '    pid = ${pid} type=[ NULL ]'
-    ;;
-  *) exit 64 ;;
-esac
-`)
+// The timeout case keeps app metadata in the fixture; forked stand-ins also pay for process-group cleanup.
+// The actual app birth is read afresh, and the production target check still refuses an unowned process.
+async function fixtureTargetCheck(fake: FakeTools, appPath: string, pid: number): Promise<ReturnType<typeof nativeCaptureTargetCheck>> {
+  const app = readApps(fake.root)[appPath]
+  assert.equal(app?.pid, pid)
+  assert.ok(app?.command !== undefined && app.command !== '')
+  assert.ok(alive(pid), 'the app the session launched is still running')
+  const owned = { pid, startedAt: processStart(pid), command: app.command }
+  return nativeCaptureTargetCheck({ processState: async (bounds) => {
+    const deadline = new Deadline(Math.floor(bounds.timeoutMs), { signal: bounds.signal })
+    const stopped = (): boolean => deadline.reached || bounds.signal?.aborted === true
+    const late = { ok: false, problem: 'The fixture process reading ran out of time or was cancelled.' } as const
+    if (stopped()) return late
+    if (!alive(pid)) return { ok: true, running: false, pids: [], processes: [] }
+    const fresh = readApps(fake.root)[appPath]
+    if (fresh?.pid !== pid || fresh.command === undefined || fresh.command === '') return { ok: false, problem: 'The fixture app no longer names its recorded process.' }
+    try {
+      const observed = { pid, startedAt: processStart(pid), command: fresh.command }
+      if (stopped()) return late
+      return { ok: true, running: true, pids: [observed.pid], processes: [observed] }
+    } catch (error) {
+      return { ok: false, problem: error instanceof Error ? error.message : String(error) }
+    }
+  } }, (entry) => recordedIdentity(owned, entry) === 'same' && entry.command === owned.command)
 }
 
 test('a window capture at the start that runs past its budget is a dropped frame, and the start asks again', darwinOnly, async (t) => {
@@ -542,11 +544,11 @@ test('a window capture at the start that runs past its budget is a dropped frame
   assert.equal(opened.session.processIds.length, 1)
   const [pid] = opened.session.processIds
   assert.ok(pid !== undefined)
-  await promptAppReadings(setup.fake, pid)
+  const checkTarget = await fixtureTargetCheck(setup.fake, setup.appPath, pid)
   const asked = hangingShots(setup.fake.root)
   // The first screencapture never answers and ignores SIGTERM, so only the kill after its grace ends it.
   await setup.fake.configure({ screencaptureHangs: true })
-  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const source = nativeFrameSource(opened.session, sessionRecordIdentity(opened.session.identity), async () => { throw new Error('The macOS fixture does not capture a simulator display.') }, checkTarget)
   const frames: CapturedFrame[] = []
   const ended: string[] = []
   const starting = source.start(recordingStart(frames, ended, 20_000))
