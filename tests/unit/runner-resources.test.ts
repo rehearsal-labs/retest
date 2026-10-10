@@ -1182,17 +1182,25 @@ describe('an Electron app in a run', () => {
     })
     // The first launch outlasts the setup budget and its grace, so the pool gives up on it, and its app comes up after.
     const electron = electronLauncher({ launchMs: (index) => (index === 0 ? 1800 : 0) })
+    const previousAppConnections: boolean[][] = []
+    const launch = electron.launch
+    electron.launch = (options, timeoutMs) => {
+      previousAppConnections.push(electron.apps.map((app) => app.connected))
+      return launch(options, timeoutMs)
+    }
     const timeouts = { ...quickTimeouts, setup: 300, test: 5000 }
     const runs = await Promise.all([runWith(root, ['tests/a.retest.ts'], { electron, timeouts }), runWith(root, ['tests/b.retest.ts'], { electron, timeouts })])
     const tests = runs.flatMap(results)
     const abandoned = tests.find((each) => each.status === 'not_run')
     const ran = tests.find((each) => each.status === 'passed')
     assert.ok(abandoned !== undefined && ran !== undefined, JSON.stringify(tests.map((each) => [each.name, each.status, each.failure?.message])))
+    assert.equal(abandoned.failure?.class, 'setup_failed')
     assert.match(abandoned.failure?.message ?? '', /did not start within the 300 ms setup budget/)
     assert.equal(electron.apps.length, 2)
+    assert.deepEqual(previousAppConnections, [[], [false]], 'the late first app existed and had quit before the second launch was issued')
     assert.equal(electron.most(), 1, 'the app that came up late was gone before the other run had the folder')
     const waited = runs.flatMap((each) => eventsOf(each.events, 'resource.acquired')).find((event) => event.waitedMs > 0)
-    assert.ok(waited !== undefined && waited.waitedMs >= 1700, `the other run waited ${waited?.waitedMs} ms, until the late app was gone`)
+    assert.ok(waited !== undefined, 'the other run waited for the data folder')
   })
 
   test('a data folder on a disk whose case rule cannot be read keeps the test from running, and says why', async () => {
