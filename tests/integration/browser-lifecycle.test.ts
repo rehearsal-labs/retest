@@ -205,10 +205,12 @@ test('a click stopped after its press was sent is never released, and says the p
   const page = await openPage(t, browser, site.url)
   assertOk(await goto(page, '/'))
   const stop = new AbortController()
-  const clicking = timed(page.execute({ kind: 'click', locator: byTestId('hold') }, 10_000, stop.signal))
+  const clicking = page.execute({ kind: 'click', locator: byTestId('hold') }, 10_000, stop.signal)
   await awaitPosts(site, '/pressed', 1)
+  const stoppedAt = performance.now()
   stop.abort(interrupted)
-  const { value, ms } = await clicking
+  const value = await clicking
+  const ms = performance.now() - stoppedAt
   assert.deepEqual(failureOf(value), {
     class: 'interrupted',
     message:

@@ -214,7 +214,9 @@ test('the task page can be driven by role, label and text alone', async (t) => {
 })
 
 test('an action on a locator that matches nothing fails as not found when the time runs out', async (t) => {
-  const page = await locatorsPage(t)
+  const site = await servePages(t, { '/': '<!doctype html><title>Absent targets</title><button>Present</button><label>Name<input></label><p>Caption</p>' })
+  const page = await openPage(t, browser(), site.url)
+  assertOk(await goto(page, '/'))
   for (const locator of [byRole('button', 'Missing'), byLabel('Missing'), byText('Missing')]) {
     const failure = failureOf(await click(page, locator, 300))
     assert.equal(failure.class, 'not_found')

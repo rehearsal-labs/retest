@@ -5,6 +5,9 @@ import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
+import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { keptLooks } from '../../src/agent/looks.ts'
 import { openApp, servePages } from './browser-harness.ts'
 import { filesHolding } from './cli-harness.ts'
@@ -36,13 +39,13 @@ const toolbar = `<!doctype html>
 const other = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Other</title></head><body><button type="button">Save</button></body></html>'
 
 // Three empty fields, and a button that moves the last to the front, as an app that sorts its rows does. The second
-// button locks the fields, then a moment later sorts them and unlocks them, as an app that sorts while it loads does.
+// button locks the fields, then sorts and unlocks them when the test releases its route, as a loading app does.
 const fields = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Fields</title></head>
 <body>
 <div data-testid="fields"><input data-testid="f-1" aria-label="First"><input data-testid="f-2" aria-label="Second"><input data-testid="f-3" aria-label="Third"></div>
 <button type="button" data-testid="sort" onclick="const box = document.querySelector('[data-testid=fields]'); box.prepend(box.lastElementChild)">Sort</button>
-<button type="button" data-testid="sort-later" onclick="const box = document.querySelector('[data-testid=fields]'); for (const field of box.children) field.readOnly = true; setTimeout(() => { box.prepend(box.lastElementChild); for (const field of box.children) field.readOnly = false }, 1500)">Sort later</button>
+<button type="button" data-testid="sort-later" onclick="const box = document.querySelector('[data-testid=fields]'); for (const field of box.children) field.readOnly = true; (async () => { while (await fetch('/sort-permitted').then(response => response.text()) !== 'sort') await new Promise(resolve => setTimeout(resolve, 20)); box.prepend(box.lastElementChild); for (const field of box.children) field.readOnly = false })()">Sort later</button>
 </body></html>`
 
 async function posted(site: { posts(path: string): number }, path: string, count: number): Promise<void> {
@@ -211,7 +214,8 @@ test('fields that show the same, put in another order, are never typed into thro
 })
 
 test('on a driver that pins, fields put in another order while an action waits for its field are refused as moved, and nothing is typed', async (t) => {
-  const site = await servePages(t, { '/fields': fields })
+  const pages = { '/fields': fields, '/sort-permitted': 'wait' }
+  const site = await servePages(t, pages)
   const { host } = await agentHost(t)
   const session = await openOn(host, { app: 'web', purpose: 'discovery', baseUrl: site.url })
   if (!pinsOn(session)) {
@@ -219,13 +223,34 @@ test('on a driver that pins, fields put in another order while an action waits f
     return
   }
   assertActed(await session.act({ kind: 'goto', url: '/fields' }), 'opened the fields')
-  // The page locks its fields now, and sorts and unlocks them a moment later, while the fill below waits to type.
+  // The page sorts only after the fill actually finds its field read-only.
   assertActed(await session.act({ kind: 'click', locator: { by: 'testId', value: 'sort-later' } }), 'asked the page to sort later')
   const look = await session.observe({ by: 'role', role: 'textbox' })
   assert.ok(look.ok)
   const second = look.look.elements[1]
   assert.ok(second !== undefined)
-  const typed = await session.act({ kind: 'fill', ref: second.ref, value: 'meant for f-2' }, { timeoutMs: 5000 })
+  const waited = Promise.withResolvers<void>()
+  let observedWaiting = false
+  const enter = IsolatedWorld.prototype.enter
+  const observing = t.mock.method(IsolatedWorld.prototype, 'enter', async function (this: IsolatedWorld, ...args: Parameters<IsolatedWorld['enter']>) {
+    const reading = await enter.call(this, ...args)
+    if (args[0] === prepareFunction && isRecord(reading.value) && reading.value['status'] === 'blocked' && reading.value['check'] === 'editable') {
+      observedWaiting = true
+      waited.resolve()
+    }
+    return reading
+  })
+  let typed: Awaited<ReturnType<AgentSession['act']>>
+  const typing = session.act({ kind: 'fill', ref: second.ref, value: 'meant for f-2' }, { timeoutMs: 5000 })
+  try {
+    await Promise.race([waited.promise, typing.then((result) => {
+      assert.ok(observedWaiting, `the fill ended before it waited for its read-only field: ${JSON.stringify(result)}`)
+    })])
+    pages['/sort-permitted'] = 'sort'
+    typed = await typing
+  } finally {
+    observing.mock.restore()
+  }
   assert.ok(!typed.result.ok)
   assert.equal(typed.input, 'not_sent')
   assert.equal(typed.result.failure.class, 'not_actionable', typed.result.failure.message)
