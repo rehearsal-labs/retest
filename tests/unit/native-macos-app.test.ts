@@ -866,8 +866,18 @@ test('a desktop start refused before its runner was started says it left nothing
 
 test('a desktop start whose runner was started never says it left nothing behind', darwinOnly, async (t) => {
   const setup = await setUp(t, { executorStart: 'fail' })
-  const failed = await MacosDesktop.start(desktopOptions(setup))
+  // A private sweep root keeps unrelated fixture records from refusing this launch.
+  const temporary = await mkdtemp(join(setup.fake.root, 'start-'))
+  const previousTemporary = process.env['TMPDIR']
+  process.env['TMPDIR'] = temporary
+  let failed: Awaited<ReturnType<typeof MacosDesktop.start>>
+  try { failed = await MacosDesktop.start(desktopOptions(setup)) }
+  finally {
+    if (previousTemporary === undefined) delete process.env['TMPDIR']
+    else process.env['TMPDIR'] = previousTemporary
+  }
   assert.equal(failed.ok, false)
+  assert.equal((await setup.fake.calls()).filter((call) => call.tool === 'xcodebuild' && call.args[0] === 'test-without-building').length, 1, 'the failing executor was actually launched: ' + JSON.stringify(failed))
   assert.equal(!failed.ok && failed.idle, undefined)
 })
 
