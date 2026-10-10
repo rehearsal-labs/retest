@@ -23,7 +23,7 @@ test('scoped locators, picks, CSS, placeholders, patterns, state and page matche
   const app = await openApp(t)
   const run = await runRetest(t, { files: [scenario('lookup')], baseUrl: app.url, timeouts: budgets({ action: 1500, assertion: 1500 }) })
   assertStdoutIsEvents(run)
-  assert.equal(run.exit.code, 1, run.stderr)
+  assert.equal(run.exit.code, 1, JSON.stringify({ stderr: run.stderr, failure: run.result?.failure, counts: run.result?.counts }))
 
   for (const name of [
     'scoped lookups find inside a list, and picks choose among its matches',

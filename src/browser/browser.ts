@@ -147,14 +147,14 @@ export class ChromiumBrowser implements WebRuntime {
   // `closeGraceMs`, and the profile removed.
   async #close(timeoutMs: number): Promise<void> {
     this.#closeRequested = true
-    this.#process.recordDescendants()
     const deadline = new Deadline(timeoutMs)
+    this.#process.recordDescendants(deadline)
     if (this.connected) {
       this.#connection.send('Browser.close', undefined, sendOptions(deadline)).catch(() => {
         // Chrome often closes the pipe instead of answering, and `stop` ends the process group either way.
       })
     }
-    const problems = await this.#process.stop(0)
+    const problems = await this.#process.stop(0, deadline)
     try { this.#connection.close() }
     catch (error) { problems.push(`Could not close the browser's debugging pipe: ${errorMessage(error)}`) }
     problems.push(...this.#cleanupProblems)

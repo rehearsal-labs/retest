@@ -85,6 +85,83 @@ test('a browser cleanup whose caller deadline ended reports unconfirmed ownershi
   }
 })
 
+test('Chromium close forwards one caller deadline through descendant capture and process cleanup', async () => {
+  const child = new ChildProcess()
+  Object.defineProperty(child, 'pid', { value: 6405 })
+  const root: OwnedProcessIdentity = { pid: 6405, parentPid: 5001, groupId: 6405, startedAt: 'today', command: '/owned/browser' }
+  let running = true
+  const snapshots: (Deadline | undefined)[] = []
+  const asynchronousSnapshots: (Deadline | undefined)[] = []
+  const processReadings: { pid: number; deadline: Deadline | undefined }[] = []
+  const signals: { pid: number; signal: NodeJS.Signals | 0 }[] = []
+  const snapshot = (): OwnedProcessIdentity[] => running ? [root] : []
+  const ownership = new OwnedProcessGroup(root.pid, root.parentPid, {
+    read: (deadline) => { snapshots.push(deadline); return snapshot() },
+    readAsync: async (deadline) => { asynchronousSnapshots.push(deadline); return snapshot() },
+    readProcessAsync: async (pid, deadline) => { processReadings.push({ pid, deadline }); return running ? root : undefined },
+    signal: (pid, signal) => { signals.push({ pid, signal }); running = false; child.emit('exit', null, signal) },
+  })
+  const before = new Set(process.listeners('exit'))
+  const owned = new ChromiumProcess(child, undefined, { readable: new PassThrough(), writable: new PassThrough() }, undefined, ownership)
+  const connection = new CdpConnection({ listen: () => undefined, send: () => ({ written: true, withdraw: () => {} }), close: () => undefined }, { timeoutMs: 5000, onDiagnostic: () => undefined })
+  const browser = new ChromiumBrowser({ process: owned, connection, executablePath: '/owned/browser', version: { product: 'Chrome', version: '1', userAgent: 'test' }, onListenerError: () => undefined })
+  snapshots.length = 0
+  try {
+    await browser.close(5000)
+    await browser.gone
+    const deadline = snapshots[0]
+    assert.ok(deadline instanceof Deadline)
+    assert.equal(deadline.budgetMs, 5000, 'the pre-close capture uses the caller budget')
+    assert.equal(asynchronousSnapshots[0], deadline, 'process cleanup keeps the existing caller deadline')
+    assert.deepEqual(processReadings.map((reading) => reading.pid), [root.pid])
+    assert.equal(processReadings[0]?.deadline, deadline, 'the immediate pre-signal identity read keeps that deadline')
+    assert.deepEqual(signals, [{ pid: root.pid, signal: 'SIGKILL' }])
+    assert.equal(running, false)
+  } finally {
+    if (running) { running = false; child.emit('exit', 0, null) }
+    connection.close()
+    await browser.gone
+    for (const listener of process.listeners('exit')) if (!before.has(listener)) process.off('exit', listener)
+  }
+})
+
+test('Chromium close with an expired caller budget refuses signals and retains the unconfirmed profile', async (t) => {
+  const profile = await mkdtemp(join(tmpdir(), 'retest-browser-deadline-profile-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  const child = new ChildProcess()
+  Object.defineProperty(child, 'pid', { value: 6406 })
+  const root: OwnedProcessIdentity = { pid: 6406, parentPid: 5001, groupId: 6406, startedAt: 'today', command: '/owned/browser' }
+  let running = true
+  const signals: number[] = []
+  const ownership = new OwnedProcessGroup(root.pid, root.parentPid, {
+    read: () => running ? [root] : [],
+    signal: (pid) => { signals.push(pid); running = false; child.emit('exit', null, 'SIGKILL') },
+  })
+  const before = new Set(process.listeners('exit'))
+  const owned = new ChromiumProcess(child, profile, { readable: new PassThrough(), writable: new PassThrough() }, undefined, ownership)
+  const connection = new CdpConnection({ listen: () => undefined, send: () => ({ written: true, withdraw: () => {} }), close: () => undefined }, { timeoutMs: 5000, onDiagnostic: () => undefined })
+  const browser = new ChromiumBrowser({ process: owned, connection, executablePath: '/owned/browser', version: { product: 'Chrome', version: '1', userAgent: 'test' }, onListenerError: () => undefined })
+  try {
+    await assert.rejects(browser.close(0), (error: unknown) => {
+      assert.ok(error instanceof BrowserError)
+      assert.equal(error.failure.class, 'cleanup_failed')
+      assert.match(error.message, /not confirmed before its deadline/)
+      assert.doesNotMatch(error.message, /was still there/, 'a failed reading establishes no liveness fact')
+      return true
+    })
+    assert.deepEqual(signals, [])
+    assert.equal(running, true)
+    assert.equal(existsSync(profile), true, 'an expired browser budget is not proof of absence')
+    assert.equal(ownership.initialProcessAbsent, false)
+    assert.equal(ownership.remains(), true)
+  } finally {
+    if (running) { running = false; child.emit('exit', 0, null) }
+    connection.close()
+    await browser.gone
+    for (const listener of process.listeners('exit')) if (!before.has(listener)) process.off('exit', listener)
+  }
+})
+
 test('the browser exit hook stays installed while the final asynchronous ownership reading is pending', async () => {
   const child = new ChildProcess()
   Object.defineProperty(child, 'pid', { value: 6403 })
