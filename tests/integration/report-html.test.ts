@@ -336,7 +336,7 @@ async function reportBrowser(t: TestContext) {
   return { browser, page, request, state, requestedUrls, requestOrigins }
 }
 
-// Chrome 154's native media controls use these six inline SVG icons. Pin their entire data URI bytes, not a scheme.
+// Chrome's native media controls use these pinned inline SVG images. Pin their entire data URI bytes, not a scheme.
 // The report contains none of these URIs, and its CSP excludes author-supplied data images.
 const chromeControlImageHashes = new Set([
   '6e9507b2fdf358e1da8766056477b2cb687dd3f854db9e11760d7ec6266aded4',
@@ -345,6 +345,12 @@ const chromeControlImageHashes = new Set([
   '9650c23900a7f176ce836489e0e7e5a78ad52dd1d0cd52668450ef3b0b5051c8',
   '3a206a5ef9360c72ac1f2a8937513ee99c3b744f87166ee53b7dc1210210ae1c',
   '45ed1ccb8617180e8232d68eb867e968f57916988d08f19436db1718bc332278',
+  // Chrome 155's loading_mask_1.svg, checked against Chromium's Blink source:
+  // https://chromium.googlesource.com/chromium/src/+/main/third_party/blink/renderer/modules/media_controls/resources/default_100_percent/loading_mask_1.svg
+  '494c11e1495dd9894f9ff46d04eb0da0039a77600c8cf1f1687ba1a973e3cb98',
+  // Chrome 155's paired loading_mask_2.svg, checked against Chromium's Blink source:
+  // https://chromium.googlesource.com/chromium/src/+/main/third_party/blink/renderer/modules/media_controls/resources/default_100_percent/loading_mask_2.svg
+  '016f41f4b94aad71385dd35f428d5423b7043da3ee6e74de454cc51c59123f8c',
 ])
 
 test('a step click in a recorded real-Chrome run seeks its video from a file report, and incomplete mappings refuse the jump', { timeout: 180_000, skip: recordingSkip }, async t => {
