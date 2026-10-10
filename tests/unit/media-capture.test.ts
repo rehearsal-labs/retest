@@ -462,6 +462,33 @@ describe('recordSource names the recording and every frame, and reports what cap
     assert.deepEqual(recording.calls, ['frame 1', 'gap pixels_withheld', 'frame 5', 'finish'])
   })
 
+  test('a policy timestamp starts withholding even when the suspension listener runs later', async () => {
+    const recording = new FakeRecording()
+    const clock = new TestClock()
+    const suspension = new CaptureSuspension()
+    const stop = new AbortController()
+    const source = new FakeSource()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, { suspension }, clock))
+    await captureStarted(source)
+    clock.now = 1000
+    source.deliver(frame(1000))
+    // The policy began at 2000; its notification reaches capture only once the clock reads 7000.
+    clock.now = 7000
+    suspension.suspend(2000)
+    source.deliver(frame(3000))
+    clock.now = 8000
+    suspension.resume()
+    clock.now = 9000
+    source.deliver(frame(7500), frame(9000))
+    stop.abort()
+    const report = await running
+    assert.deepEqual(recording.sent.map((each) => [each.frameId, each.timestampUs]), [['1', 1000], ['4', 9000]])
+    assert.deepEqual(report.frames, { delivered: 4, sent: 2, dropped: 0, notSent: 0, withheld: 2, refused: noneRefused })
+    assert.deepEqual(recording.gaps, [{ fromUs: 2000, toUs: 8000, reason: 'pixels_withheld' }])
+    assert.deepEqual(report.gaps, { ...noGaps, reported: 1, sent: 1, withheldStretches: 1, withheldUs: 6000 })
+    assert.deepEqual(recording.calls, ['frame 1', 'gap pixels_withheld', 'frame 4', 'finish'])
+  })
+
   test('a read begun before suspension stays withheld after resume when its pixel interval overlaps the stretch', async () => {
     const recording = new FakeRecording()
     const clock = new TestClock()

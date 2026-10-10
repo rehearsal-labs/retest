@@ -1461,7 +1461,7 @@ export class RunSession {
     const scope = { testId: record.testId, attemptId: record.attemptId, session: record.session, sessionId: record.sessionId }
     const recorder = this.#recorders.get(record.attemptId)
     if (record.type === 'capture.withheld') {
-      recorder?.withhold(record.sessionId)
+      recorder?.withhold(record.sessionId, record.fromUs)
       const native = this.#nativeEntryField
       const field = native?.sessionId === record.sessionId && native.secret === record.secret ? { nativeField: native.field } : {}
       const from = field.nativeField === 'secure' ? native?.exposedFromUs : record.exposedFromUs

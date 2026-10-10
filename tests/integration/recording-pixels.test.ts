@@ -37,7 +37,7 @@ test('a real secret fill withholds its pixels from video and kept frames until a
   const restarts: Promise<unknown>[] = []
   let recorder: AttemptRecorder | undefined
   const policy = new PixelCapturePolicy({ clock, rules: () => defaultAppPixelRules, record: record => {
-    if (record.type === 'capture.withheld') recorder?.withhold(record.sessionId)
+    if (record.type === 'capture.withheld') recorder?.withhold(record.sessionId, record.fromUs)
     if (record.type === 'capture.resumed') restarts.push(recorder?.resume(record.sessionId) ?? Promise.resolve())
   } })
   let kept: FrameSequence | undefined

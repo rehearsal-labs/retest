@@ -220,7 +220,7 @@ describe('a run that records', { skip: unpinnedMedia }, async () => {
     const recording = media.started[0]?.recordings.find((each) => each.start.identity.attemptId === secretTest.attemptId)
     assert.ok(recording !== undefined)
     assert.ok(recording.frames.every((frame) => frame.timestampUs < stretch.fromUs), 'no frame from the stretch on reached the media process')
-    assert.ok(recording.gaps.some((gap) => gap.reason === 'pixels_withheld' && gap.fromUs <= stretch.fromUs + 1000), JSON.stringify(recording.gaps))
+    assert.ok(recording.gaps.some((gap) => gap.reason === 'pixels_withheld' && gap.fromUs <= stretch.fromUs), JSON.stringify(recording.gaps))
   })
 
   test('an unfinished recorded run rebuilds with unavailable evidence on its test and run', () => {
@@ -267,7 +267,7 @@ describe('a secret typed, then a page that opens another document', { skip: unpi
     const page = run.browsers[0]?.framed[0]
     assert.ok((page?.sources.length ?? 0) >= 2, 'the capture was started again after the stretch')
     const gap = recording.gaps.find((each) => each.reason === 'pixels_withheld')
-    assert.ok(gap !== undefined && gap.fromUs <= withheld.fromUs + 1000 && gap.toUs >= resumed.untilUs - 1000, JSON.stringify({ gap, withheld, resumed }))
+    assert.ok(gap !== undefined && gap.fromUs <= withheld.fromUs && gap.toUs >= resumed.untilUs, JSON.stringify({ gap, withheld, resumed }))
   })
 
   test('the recording is partial with the withheld stretch named, and the test keeps its pass', () => {

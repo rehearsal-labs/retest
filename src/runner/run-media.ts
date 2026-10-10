@@ -438,8 +438,8 @@ export class AttemptRecorder implements AttemptRecordings {
   }
 
   /** Withholds the session's frames, as a stretch of the pixel policy begins. */
-  withhold(sessionId: string): void {
-    for (const active of this.#active.values()) if (active.identity.sessionId === sessionId) active.source.withhold()
+  withhold(sessionId: string, fromUs: number): void {
+    for (const active of this.#active.values()) if (active.identity.sessionId === sessionId) active.source.withhold(fromUs)
   }
 
   /** Lets the session's frames through again and starts its capture afresh, once its stretch has ended. */

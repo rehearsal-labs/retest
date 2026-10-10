@@ -83,8 +83,8 @@ export class PolicedSource implements FrameSource {
   }
 
   /** Withholds frames and stops the source from now, as a stretch begins. */
-  withhold(): void {
-    this.#options.suspension.suspend()
+  withhold(fromUs?: number): void {
+    this.#options.suspension.suspend(fromUs)
     // Stop dispatch now; resume must reconcile this stop before opening a fresh source.
     this.#withholdingStop ??= this.#stopCurrent(this.#options.stopTimeoutMs)
   }

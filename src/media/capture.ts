@@ -560,18 +560,18 @@ export type RecordSourceOptions = {
  */
 export class CaptureSuspension {
   #suspended = false
-  readonly #listeners = new Set<(suspended: boolean) => void>()
+  readonly #listeners = new Set<(suspended: boolean, fromUs?: number) => void>()
 
   /** Whether frames are being withheld now. */
   get suspended(): boolean {
     return this.#suspended
   }
 
-  /** Withholds every frame from now until `resume`. */
-  suspend(): void {
+  /** Withholds every frame until `resume`, from the policy's `fromUs` when supplied. */
+  suspend(fromUs?: number): void {
     if (this.#suspended) return
     this.#suspended = true
-    for (const listener of this.#listeners) listener(true)
+    for (const listener of this.#listeners) listener(true, fromUs)
   }
 
   /** Lets frames through again from now. */
@@ -582,7 +582,7 @@ export class CaptureSuspension {
   }
 
   /** Calls `listener` on every change until the returned function is called. `recordSource` is the one listener. */
-  listen(listener: (suspended: boolean) => void): () => void {
+  listen(listener: (suspended: boolean, fromUs?: number) => void): () => void {
     this.#listeners.add(listener)
     return () => this.#listeners.delete(listener)
   }
@@ -723,7 +723,7 @@ export async function recordSource(source: FrameSource, media: MediaRecorder, op
   const sender = new FrameSender({ identity: source.identity, recording, tally: report.frames, gaps: report.gaps, problems: report.problems, clock: options.clock, startUs: options.clock() })
   const { suspension } = options
   if (suspension?.suspended === true) sender.suspend(sender.startUs)
-  const unlisten = suspension?.listen((suspended) => (suspended ? sender.suspend(options.clock()) : sender.resume(options.clock())))
+  const unlisten = suspension?.listen((suspended, fromUs) => (suspended ? sender.suspend(fromUs ?? options.clock()) : sender.resume(options.clock())))
   const stopping = Promise.withResolvers<'signal' | 'source' | 'recording'>()
   const onAbort = (): void => stopping.resolve('signal')
   options.signal.addEventListener('abort', onAbort, { once: true })
