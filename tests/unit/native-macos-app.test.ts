@@ -1,5 +1,6 @@
 import type { TestContext } from 'node:test'
 import type { CapturedFrame, StartCapture } from '../../src/media/capture.ts'
+import type { NativeCaptureSession } from '../../src/native/capture.ts'
 import type { ExecutorBuild } from '../../src/native/executors.ts'
 import type { FakeTools } from './native-fake-tools.ts'
 import assert from 'node:assert/strict'
@@ -9,6 +10,7 @@ import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFi
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
+import { setTimeout as wait } from 'node:timers/promises'
 import { nativeCaptureTargetCheck, nativeCaptureTimeoutMs, nativeFrameSource, sessionRecordIdentity } from '../../src/native/capture.ts'
 import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
 import { appWindow, automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, readWindowsOnScreen, windowsOnScreen } from '../../src/native/macos-app.ts'
@@ -495,9 +497,42 @@ test('a window recording whose window never comes is refused with what its last 
   await opened.session.launch(10_000)
   await setup.fake.configure({ appWindowReadings: Array.from({ length: 400 }, () => ({ absent: true })) })
   const absent = 'No window of the app is on screen where its tree places it (4,3 20x10); a minimised or hidden window, or one on another Space, is not on screen. Retest captured nothing.'
+  const proofStarted = performance.now()
+  const absentCapture = await opened.session.capture(nativeCaptureTimeoutMs, { source: 'window-crop' })
+  const captureMs = Math.ceil(performance.now() - proofStarted)
+  assert.ok(!absentCapture.ok, 'an actual window capture refuses the absent app window')
+  assert.deepEqual(absentCapture.failure, { class: 'not_actionable', message: absent, details: { transient: true } })
+  assert.equal((await setup.fake.calls()).some((call) => call.tool === 'screencapture'), false)
+  assert.equal(opened.session.processIds.length, 1)
+  const [pid] = opened.session.processIds
+  assert.ok(pid !== undefined)
+  const checkTarget = await fixtureTargetCheck(setup.fake, setup.appPath, pid)
+  // Stable absence replies take the real capture's measured time, so the start keeps room for its last whole capture.
+  const windowAbsent: NativeCaptureSession = {
+    get identity() { return opened.session.identity },
+    get ended() { return opened.session.ended },
+    get cancelled() { return opened.session.cancelled },
+    get appStatus() { return opened.session.appStatus },
+    capture: async (timeoutMs, options) => {
+      assert.ok(timeoutMs > 0 && timeoutMs <= nativeCaptureTimeoutMs)
+      assert.equal(options.source, 'window-crop')
+      const deadline = new Deadline(Math.floor(timeoutMs), { signal: options.signal })
+      const stopped = (): boolean => deadline.reached || options.signal?.aborted === true
+      const late = (): Awaited<ReturnType<NativeCaptureSession['capture']>> => ({ ok: false, failure: { class: 'timeout', message: 'The absent-window fixture was stopped or ran out of time.' } })
+      if (stopped()) return late()
+      assert.ok(captureMs < deadline.remainingMs, `the proved ${captureMs} ms capture fits its ${deadline.remainingMs} ms command budget`)
+      try {
+        await wait(captureMs, undefined, { signal: options.signal })
+      } catch (error) {
+        if (!(error instanceof Error && error.name === 'AbortError')) throw error
+        return late()
+      }
+      return stopped() ? late() : absentCapture
+    },
+  }
   // One budget holds less than a whole capture's time and the other several captures; both end inside the budget.
   for (const budgetMs of [4500, nativeCaptureTimeoutMs + 3000]) {
-    const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+    const source = nativeFrameSource(windowAbsent, sessionRecordIdentity(opened.session.identity), async () => { throw new Error('The macOS fixture does not capture a simulator display.') }, checkTarget)
     const frames: CapturedFrame[] = []
     const ended: string[] = []
     const asked = performance.now()
