@@ -23,7 +23,10 @@ for (const engine of engines) {
     const report = await runEngine(t, engine, keep === undefined || keep === '' ? {} : { keep })
     assert.ok(report.availability.available, `${engineNames[engine]} did not run: ${report.availability.available ? '' : report.availability.reason}`)
     for (const group of report.groups) {
-      await t.test(`run ${group.group}`, () => assert.deepEqual(group.problems, [], `run ${group.group}`))
+      await t.test(`run ${group.group}`, (run) => {
+        if (group.diagnostics !== undefined) run.diagnostic(JSON.stringify({ group: group.group, ...group.diagnostics }))
+        assert.deepEqual(group.problems, [], `run ${group.group}`)
+      })
     }
     for (const each of report.cases) {
       const declared = conformanceCases.find((candidate) => candidate.id === each.id)

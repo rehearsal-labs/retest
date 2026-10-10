@@ -1,6 +1,6 @@
 import type { TestContext } from 'node:test'
 import type { TaskApp } from '../../fixtures/task-app/server.ts'
-import type { RetestEvent, TestStatus } from '../../src/protocol/events.ts'
+import type { ExitCode, RetestEvent, RunStatus, TestStatus } from '../../src/protocol/events.ts'
 import type { FailureClass } from '../../src/protocol/failures.ts'
 import type { TestResult } from '../../src/protocol/result.ts'
 import type { Exit } from '../integration/cli-harness.ts'
@@ -89,6 +89,23 @@ export type GroupReport = {
   readonly exit?: Exit
   readonly durationMs?: number
   readonly problems: readonly string[]
+  /** The run's own failure and cleanup reasons when this group did not end as declared. */
+  readonly diagnostics?: GroupDiagnostics
+}
+
+type GroupDiagnosticFailure = {
+  readonly origin: 'run' | 'file' | 'cleanup'
+  readonly class: FailureClass
+  readonly message: string
+}
+
+type GroupDiagnostics = {
+  readonly status: RunStatus
+  readonly exitCode: ExitCode
+  readonly complete: boolean
+  readonly fileFailureCount: number
+  readonly cleanupFailureCount: number
+  readonly failures: readonly GroupDiagnosticFailure[]
 }
 
 /** A browser a run started, as `browser.started` named it. */
@@ -422,7 +439,40 @@ function groupReport(group: Group, run: GroupRun | MissingRun | undefined): Grou
   const problems = [...run.problems]
   const { exit } = run.ended
   if (exit.code !== group.exitCode || exit.signal !== null) problems.push(`The run exited with ${exitText(exit)}, declared ${group.exitCode}.`)
-  return { group: group.name, declaredExit: group.exitCode, exit, durationMs: Math.round(run.ended.durationMs), problems }
+  const diagnostics = problems.length === 0 ? undefined : groupDiagnostics(run.ended)
+  return { group: group.name, declaredExit: group.exitCode, exit, durationMs: Math.round(run.ended.durationMs), problems, ...(diagnostics === undefined ? {} : { diagnostics }) }
+}
+
+// Only the run's infrastructure reasons are shown here. Case observations already have their own differences.
+function groupDiagnostics(ended: EndedRun): GroupDiagnostics | undefined {
+  const { result } = ended
+  if (result === undefined) return undefined
+  const fileFailures = result.files.flatMap((file) => file.failure === undefined ? [] : [file.failure])
+  const cleanupFailures = result.files.flatMap((file) => file.tests.flatMap((test) => test.cleanupFailures ?? []))
+  const failures: GroupDiagnosticFailure[] = [
+    ...(result.failure === undefined ? [] : [{ origin: 'run' as const, class: result.failure.class, message: diagnosticMessage(result.failure.message) }]),
+    ...fileFailures.map((failure) => ({ origin: 'file' as const, class: failure.class, message: diagnosticMessage(failure.message) })),
+    ...cleanupFailures.map((failure) => ({ origin: 'cleanup' as const, class: failure.class, message: diagnosticMessage(failure.message) })),
+  ]
+  return {
+    status: result.status,
+    exitCode: result.exitCode,
+    complete: result.complete,
+    fileFailureCount: fileFailures.length,
+    cleanupFailureCount: cleanupFailures.length,
+    failures: failures.slice(0, 8),
+  }
+}
+
+function diagnosticMessage(message: string): string {
+  let redacted = message
+  const values = Object.values(heldValues).sort((left, right) => right.length - left.length)
+  for (const value of values) redacted = redacted.replaceAll(value, '[redacted]')
+  return redacted
+    .replace(/https?:\/\/[^\s"'<>]+/g, '[address]')
+    .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s"'<>]+/g, '[path]')
+    .replace(/[\u0000-\u0020\u007f]+/g, ' ')
+    .slice(0, 240)
 }
 
 /** An exit as a person reads it. */
