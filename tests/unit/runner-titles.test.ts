@@ -1,6 +1,7 @@
 import type { CommandResult, PageCommand } from '../../src/protocol/commands.ts'
 import type { ChildEvent, EventBody } from '../../src/protocol/events.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
+import type { NotedNavigation } from '../../src/runner/page-navigations.ts'
 import type { SecretFillContext } from '../../src/runner/running-test.ts'
 import type { ScriptedTest } from '../support/scripted-process.ts'
 import assert from 'node:assert/strict'
@@ -10,6 +11,8 @@ import { describe, test } from 'node:test'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { failure, truncateText } from '../../src/protocol/failures.ts'
 import { resultFile, testId } from '../../src/protocol/run-folder.ts'
+import { bounded } from '../../src/runner/bounded.ts'
+import { PageNavigations } from '../../src/runner/page-navigations.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { SecretFiller } from '../../src/runner/secrets.ts'
 import { runProject, tempProject } from '../support/project.ts'
@@ -92,6 +95,78 @@ describe('navigations', () => {
     assert.deepEqual(order, ['navigation / Home goto', 'action.completed', 'navigation /login (no title) page', 'action.failed'])
     const [click] = bodies(run, 'action.failed')
     assert.deepEqual([click?.failure.class, click?.failure.message], ['session_lost', lost], 'the page answered, so nothing about it is unknown')
+  })
+
+  for (const titleDelayMs of [0, 700, 60_000]) {
+    test(`a navigation timeout does not wait further for a title delayed ${titleDelayMs} ms`, async () => {
+      const answered = Promise.withResolvers<void>()
+      let run: ScriptedTest
+      run = await scriptedTest({
+        fake: {
+          hang: 'goto',
+          titleDelayMs,
+          titles: { '/hang': 'Loading' },
+          onCommand: (command) => {
+            if (command.kind === 'goto') run.page.navigate('/hang', 'goto')
+          },
+          holdAnswer: async (command) => {
+            if (command.kind !== 'goto') return
+            answered.resolve()
+          },
+        },
+        timeouts: { navigation: 200, test: 5000 },
+      })
+      const responding = run.command(1, { kind: 'goto', url: '/hang' })
+      await answered.promise
+      const response = await bounded(responding, 250)
+      assert.ok(response.status === 'done', 'the browser answered, so optional titles cannot hold the command')
+      const answer = response.value
+      assert.deepEqual(answer.ok ? undefined : [answer.failure.class, answer.failure.message], ['timeout', 'goto took longer than 200 ms.'])
+      const [navigation] = bodies(run, 'navigation')
+      const [action] = bodies(run, 'action.failed')
+      assert.deepEqual([navigation?.url, navigation?.title], [`${origin}/hang`, titleDelayMs === 0 ? 'Loading' : undefined])
+      assert.deepEqual(run.events.map(({ body }) => body.type), ['navigation', 'action.failed'])
+      assert.ok(action !== undefined && action.durationMs >= 200, `reported after ${action?.durationMs} ms`)
+      assert.equal(run.process.sent.filter((message) => message.type === 'command-result').length, 1)
+      // A later read settles the old title, but its navigation and command already have their sole records.
+      await run.page.execute({ kind: 'observe', locator: saveTask }, 1000)
+      await new Promise((resolve) => setImmediate(resolve))
+      assert.deepEqual(run.events.map(({ body }) => body.type), ['navigation', 'action.failed'])
+      assert.equal(run.process.sent.filter((message) => message.type === 'command-result').length, 1)
+      const report = await run.finish()
+      assert.equal(report.observed?.[0]?.class, 'timeout')
+    })
+  }
+
+  test('flushing one app leaves another title waiting and frees later navigation from the flushed title', async () => {
+    const recorded: NotedNavigation[] = []
+    const pending = new PageNavigations((navigation) => recorded.push(navigation))
+    const old = Promise.withResolvers<string | undefined>()
+    const other = Promise.withResolvers<string | undefined>()
+    pending.note('page', { url: `${origin}/hang`, title: old.promise, cause: 'goto', document: 'new' }, {})
+    pending.note('other', { url: `${origin}/other`, title: other.promise, cause: 'goto', document: 'new' }, {})
+    pending.writeWaiting('page')
+    assert.deepEqual(recorded.map(({ app, document }) => [app, document.url, document.title]), [['page', `${origin}/hang`, undefined]])
+    assert.equal(pending.waiting('page'), undefined)
+    assert.ok(pending.waiting('other') !== undefined)
+    pending.note('page', { url: `${origin}/after`, title: Promise.resolve('After'), cause: 'goto', document: 'new' }, {})
+    const next = await bounded(pending.waiting('page') ?? Promise.resolve(), 200)
+    assert.equal(next.status, 'done', 'the new navigation is not held behind the old title')
+    assert.deepEqual(recorded.map(({ app, document }) => [app, document.url, document.title]), [
+      ['page', `${origin}/hang`, undefined],
+      ['page', `${origin}/after`, 'After'],
+    ])
+    const otherWritten = pending.waiting('other')
+    other.resolve('Other')
+    await otherWritten
+    old.resolve('Late')
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(recorded.map(({ app, document }) => [app, document.url, document.title]), [
+      ['page', `${origin}/hang`, undefined],
+      ['page', `${origin}/after`, 'After'],
+      ['other', `${origin}/other`, 'Other'],
+    ])
+    assert.equal(pending.waiting('other'), undefined)
   })
 
   describe('in a run', async () => {

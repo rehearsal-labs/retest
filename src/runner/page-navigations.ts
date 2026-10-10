@@ -67,9 +67,13 @@ export class PageNavigations {
     this.writeWaiting()
   }
 
-  /** Writes every navigation still waiting at once, in order, each without the title it has not settled. */
-  writeWaiting(): void {
-    for (const entry of this.#waiting) this.#settle(entry, undefined)
+  /** Writes the app's waiting navigations, or every app's when omitted, without titles still to come. */
+  writeWaiting(app?: string): void {
+    const waiting = [...this.#waiting].filter((entry) => app === undefined || entry.app === app)
+    // A later navigation must not wait behind titles whose records have already been written.
+    if (app === undefined) this.#written.clear()
+    else this.#written.delete(app)
+    for (const entry of waiting) this.#settle(entry, undefined)
   }
 
   #settle(entry: Entry, title: string | undefined): void {

@@ -423,6 +423,8 @@ export class RunningTest {
       result = thrownResult(command, error)
     }
     entry.pageAnswer = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
+    // A timeout spent the command's budget already. Optional titles cannot delay the page's answer further.
+    if (!result.ok && result.failure.class === 'timeout') this.#navigations.writeWaiting(app)
     const earlier = result.ok && !isNavigationKind(result.kind) ? entry.navigations : this.#navigations.waiting(app)
     if (earlier !== undefined) await earlier
     this.#complete(entry)
