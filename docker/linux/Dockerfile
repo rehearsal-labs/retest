@@ -39,7 +39,8 @@ RUN rustc --version \
   && if [ "$TARGETARCH" = "amd64" ]; then \
     cargo fetch --locked --manifest-path media/Cargo.toml \
     && cargo build --release --locked --offline --manifest-path media/Cargo.toml \
-    && media/target/release/retest-media --version; \
+    && media/target/release/retest-media --version \
+    && cargo test --locked --offline --manifest-path media/Cargo.toml replies::tests; \
   fi
 
 # The two browsers the integration tests run on. /opt/google/chrome/chrome is also where chrome() looks first.

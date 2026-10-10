@@ -12,22 +12,23 @@ import { rebuildResult } from '../../src/store/rebuild-result.ts'
 import { buildReport } from '../../src/reporters/html/build-report.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
 import { countParts } from '../../src/reporters/format.ts'
-import { assertStdoutIsEvents, readFinishedRun, repositoryRoot, waitFor } from './cli-harness.ts'
-import { encoderPid, finishRecordingRun, killOwned, ownershipOf, partialFiles, recordingRun, recordingSkip } from './recording-harness.ts'
+import { assertKilledStdoutIsEventPrefix, assertStdoutIsEvents, readFinishedRun, repositoryRoot, waitFor } from './cli-harness.ts'
+import { encoderPid, finishRecordingRun, killOwned, ownershipOf, partialFiles, recordingRun, recordingSkip, saveProof as saveRecordingProof } from './recording-harness.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 import { decoder, ffmpeg, ffprobe, preserve, reportFor } from './evidence-support.test.ts'
 
-// Existing real-Chrome failure scenarios and their assertions are retained verbatim below.
+// Each real-Chrome shutdown scenario runs once, with the recording, cleanup and report checks sharing its evidence.
 async function saveProof(run: FinishedRun, name: string, t: TestContext): Promise<void> {
   writeFileSync(join(run.output, 'cli-output.json'), JSON.stringify({exit:run.exit, stdout:run.stdout, stderr:run.stderr},null,2))
   const kept=preserve(run,name)
   await t.test(`${name} terminal, JSONL and HTML evidence agree`,async()=>{
-  assertStdoutIsEvents(run)
   if (run.result !== undefined) {
+    assertStdoutIsEvents(run)
     await reportFor({...run,output:kept})
     assert.deepEqual([run.exit.code,run.exit.signal], [run.result.exitCode,null], 'terminal process and result/JSONL/HTML exit agree')
     assert.ok(run.stdout.includes(run.result.runId), 'terminal names the run it reports')
   } else {
+    assertKilledStdoutIsEventPrefix(run)
     const result = rebuildResult(run.events)
     const report = await buildReport({directory:run.output,shown:run.output,source:'events.jsonl',result,events:run.events,warnings:['Runner ended before result.json.']})
     writeFileSync(join(kept,'report.html'),report)
@@ -52,12 +53,13 @@ async function saveProof(run: FinishedRun, name: string, t: TestContext): Promis
     }
   }
   })
+  saveRecordingProof(run, name)
 }
 
 async function decoded(run: FinishedRun, recording: RecordingRecord): Promise<void> {
   assert.ok(recording.path && recording.video && recording.clock, 'a usable recording has path, video facts and clock mapping')
   const path=join(run.output,recording.path)
-  const probe=await decoder(ffprobe,['-v','error','-count_frames','-show_entries','stream=codec_name,width,height,nb_read_frames:format=duration','-of','json',path])
+  const probe=await decoder(ffprobe,['-v','error','-count_frames','-show_entries','stream=codec_name,width,height,nb_read_frames:format=duration','-of','json',path],{timeoutMs:15000})
   const read:{streams:{codec_name:string;width:number;height:number;nb_read_frames:string}[];format:{duration:string}}=JSON.parse(probe.toString())
   assert.equal(read.streams.length,1)
   const stream=read.streams[0]
@@ -65,7 +67,8 @@ async function decoded(run: FinishedRun, recording: RecordingRecord): Promise<vo
   assert.deepEqual([stream.codec_name,stream.width,stream.height,Number(stream.nb_read_frames)],[recording.video.codec,recording.video.width,recording.video.height,recording.video.outputFrames])
   assert.ok(recording.video.outputFrames>0)
   assert.ok(Math.abs(Number(read.format.duration)*1e6-recording.video.durationUs)<=100000)
-  await decoder(ffmpeg,['-v','error','-xerror','-i',path,'-f','null','-'])
+  await decoder(ffmpeg,['-v','error','-xerror','-i',path,'-f','null','-'],{timeoutMs:15000})
+  console.log(`decoded ${recording.recordingId}: ${stream.nb_read_frames} ${stream.codec_name} frames, ${read.format.duration} s, ${stream.width}x${stream.height}`)
 }
 
 const waiting = `import { expect, test } from '@rehearsal-labs/retest'

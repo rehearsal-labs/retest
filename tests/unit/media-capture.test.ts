@@ -81,11 +81,13 @@ class FakeRecording implements RecordingTarget {
   readonly #outcome: (index: number) => FrameOutcome
   readonly #finish: 'ok' | 'lost'
   readonly #frameThrows: boolean
+  readonly #gapOutcome: ((gap: CaptureGap) => boolean) | undefined
 
-  constructor(options: { outcome?: (index: number) => FrameOutcome; finish?: 'ok' | 'lost'; frameThrows?: true } = {}) {
+  constructor(options: { outcome?: (index: number) => FrameOutcome; finish?: 'ok' | 'lost'; frameThrows?: true; gapOutcome?: (gap: CaptureGap) => boolean } = {}) {
     this.#outcome = options.outcome ?? (() => 'sent')
     this.#finish = options.finish ?? 'ok'
     this.#frameThrows = options.frameThrows === true
+    this.#gapOutcome = options.gapOutcome
     this.#ended.promise.catch(() => {})
   }
 
@@ -104,7 +106,7 @@ class FakeRecording implements RecordingTarget {
   captureGap(gap: CaptureGap): boolean {
     this.calls.push(`gap ${gap.reason}`)
     this.gaps.push({ ...gap })
-    return this.finishes.length === 0
+    return this.#gapOutcome?.(gap) ?? this.finishes.length === 0
   }
 
   finish(_timeoutMs: number, endTimestampUs?: number): Promise<Ended> {
@@ -416,7 +418,7 @@ describe('recordSource names the recording and every frame, and reports what cap
     assert.deepEqual(report.gaps, { ...noGaps, reported: 6, sent: 2, refused: 4 })
   })
 
-  test('a gap the recording no longer takes, once it is finishing, is counted as not sent', async () => {
+  test('a gap reported while the source stops still reaches the recording before finish', async () => {
     const recording = new FakeRecording()
     const clock = new TestClock()
     const source = new FakeSource({
@@ -430,6 +432,22 @@ describe('recordSource names the recording and every frame, and reports what cap
     assert.deepEqual(report.gaps, { ...noGaps, reported: 1, sent: 1 }, 'a gap the source reports as it stops still reaches the recording')
     recording.finishes.push(0)
     assert.equal(recording.captureGap({ fromUs: 0, toUs: 1, reason: 'capture_failed' }), false)
+  })
+
+  test('a gap refused by the recording is counted as not sent', async () => {
+    const recording = new FakeRecording({ gapOutcome: () => false })
+    const clock = new TestClock()
+    const source = new FakeSource()
+    const stop = new AbortController()
+    const running = recordSource(source, FakeMedia.starting(recording), options(stop.signal, {}, clock))
+    const capture = await captureStarted(source)
+    clock.now = 400
+    capture.gap?.({ fromUs: 100, toUs: 300, reason: 'capture_failed' })
+    stop.abort()
+    const report = await running
+    assert.deepEqual(recording.gaps, [{ fromUs: 100, toUs: 300, reason: 'capture_failed' }])
+    assert.deepEqual(recording.calls, ['gap capture_failed', 'finish'])
+    assert.deepEqual(report.gaps, { ...noGaps, reported: 1, notSent: 1 })
   })
 
   test('a suspension withholds every frame, however late it comes, and the recording is told of the stretch', async () => {

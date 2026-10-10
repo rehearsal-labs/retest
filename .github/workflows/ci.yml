@@ -127,8 +127,11 @@ jobs:
           "$RETEST_TEST_MEDIA_BINARY" --version
           "$RETEST_TEST_FFMPEG" -version
           "$RETEST_TEST_FFPROBE" -version
+      - name: Verify media reply delivery
+        run: cargo test --locked --offline --manifest-path media/Cargo.toml replies::tests
       - run: npm run typecheck
-      - run: npm run test:unit
+      - name: Run unit tests one file at a time
+        run: node --conditions=retest-source --test --test-concurrency=1 "tests/unit/**/*.test.ts"
       - run: npm run test:types
       # TAP prints the error and its stack when a test fails; spec defers those details until the whole gate ends.
       - name: Run integration with failure details

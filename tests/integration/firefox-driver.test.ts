@@ -217,7 +217,7 @@ test('a Firefox killed while an action waits for its element fails as a lost ses
   assert.equal(browser.connected, false)
 })
 
-test('a Firefox click stopped while its press is busy keeps the class of the stop, says its input went, and is never released', { skip }, async (t) => {
+test('a Firefox click stopped while its press is busy keeps the stop and lets the single sent sequence settle once', { skip }, async (t) => {
   const site = await servePages(t, { '/': BUSY_ON_PRESS })
   const browser = await firefox(t)
   const page = await browser.newPage({ baseUrl: site.url }, setupMs)
@@ -239,6 +239,7 @@ test('a Firefox click stopped while its press is busy keeps the class of the sto
   assert.ok(settled.result.ok && settled.result.kind === 'observe')
   assert.equal(settled.input, 'not_sent')
   t.diagnostic(`the button heard: ${settled.result.observation.text ?? ''}`)
+  assert.equal(settled.result.observation.text, 'pressed released clicked', 'the single sequence already sent settles once after the stop')
   assert.equal(site.posts('/pressed'), 1, 'the press was sent once')
 })
 

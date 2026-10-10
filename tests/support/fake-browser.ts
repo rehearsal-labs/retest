@@ -59,6 +59,8 @@ export type FakeOptions = {
   version?: string
   /** Reading a page's sign-in state fails. */
   captureFails?: boolean
+  /** The session cookie a sign-in creates for this executable; absent, the page-index value is used. */
+  sessionCookieValue?: (executablePath: string, pageIndex: number) => string
   /** Called with each command as it arrives, before it runs. */
   onCommand?: (command: BrowserCommand) => void
   /** Each command's answer waits for this, as the answer of a page that is slow to reply, whatever stopped it meanwhile. */
@@ -472,7 +474,8 @@ export class FakePage implements OwnedPage {
       return
     }
     if (testId === 'sign-in') {
-      const value = `signed-in-${this.#browser.pages.indexOf(this)}`
+      const pageIndex = this.#browser.pages.indexOf(this)
+      const value = this.#browser.options.sessionCookieValue?.(this.#browser.launchOptions.executablePath, pageIndex) ?? `signed-in-${pageIndex}`
       this.cookies = [{ name: sessionCookie, value, domain: '127.0.0.1', path: '/', expires: -1, httpOnly: true, secure: false }]
       return
     }

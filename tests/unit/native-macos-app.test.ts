@@ -146,7 +146,12 @@ test('sessions on one desktop run one after another', darwinOnly, async (t) => {
   await first.session.dispose(5000)
   const opened = await second
   assert.deepEqual(order, ['first disposed', 'second opened'])
-  if (opened.ok) await opened.session.dispose(5000)
+  if (!opened.ok) throw new Error(opened.failure.message)
+  try {
+    assert.deepEqual(await opened.session.appState(5000), { ok: true, state: 'not_running' }, 'the waiting session acquired a usable executor')
+  } finally {
+    await opened.session.dispose(5000)
+  }
 })
 
 test('an app killed under the session has ended unexpectedly, and activate does not launch it again', darwinOnly, async (t) => {

@@ -62,9 +62,9 @@ export function observations(folder: string, recording: RecordingRecord): { fram
   return { folder: root, frames: readFileSync(join(root, 'frames.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)), ended: JSON.parse(readFileSync(join(root, 'end.json'), 'utf8')) }
 }
 
-export function decoder(command: string, args: string[], maximum: number = 64 * 1024 * 1024): Promise<Buffer> {
+export function decoder(command: string, args: string[], options: { maximum?: number; timeoutMs?: number } = {}): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = execFile(command, args, { encoding: 'buffer', timeout: 60000, maxBuffer: maximum }, (error, stdout) => error === null ? resolve(stdout) : reject(error))
+    const child = execFile(command, args, { encoding: 'buffer', timeout: options.timeoutMs ?? 60000, maxBuffer: options.maximum ?? 64 * 1024 * 1024 }, (error, stdout) => error === null ? resolve(stdout) : reject(error))
     const identity = child.pid === undefined ? undefined : execFileSync('/bin/ps', ['-ww', '-o', 'lstart=,args=', '-p', String(child.pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' } }).trim()
     appendFileSync(join(proofRoot, 'decoder-processes.jsonl'), JSON.stringify({ pid: child.pid, command, args, identity }) + '\n')
   })

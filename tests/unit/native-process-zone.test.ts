@@ -23,6 +23,10 @@ test('a start reads the same whatever time zone the reading process runs in, fro
     const pid = other.pid ?? assert.fail('the stand-in process started')
     const west = readAs('Etc/GMT+12', pid)
     const east = readAs('Etc/GMT-14', pid)
+    for (const start of [west.commandOf, west.table, east.commandOf, east.table]) {
+      assert.match(start, /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/, 'the reader found an actual process start')
+      assert.ok(Number.isFinite(Date.parse(start)), 'the process start is a valid date')
+    }
     assert.equal(west.commandOf, east.commandOf, 'commandOf read the same start in both time zones')
     assert.equal(west.table, east.table, 'the process table read the same start in both time zones')
     assert.equal(west.commandOf, west.table, 'commandOf and the process table agree')

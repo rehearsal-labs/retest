@@ -337,11 +337,15 @@ mod tests {
     #[derive(Clone, Default)]
     struct Gated {
         open: Arc<(Mutex<bool>, Condvar)>,
+        writing: Arc<(Mutex<bool>, Condvar)>,
         written: Shared,
     }
 
     impl Write for Gated {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let (writing, started) = &*self.writing;
+            *writing.lock().expect("lock") = true;
+            started.notify_all();
             let (open, opened) = &*self.open;
             let mut open = open.lock().expect("lock");
             while !*open {
@@ -351,6 +355,20 @@ mod tests {
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    impl Gated {
+        fn wait_for_write(&self) {
+            let (writing, started) = &*self.writing;
+            let (writing, _) = started
+                .wait_timeout_while(
+                    writing.lock().expect("lock"),
+                    Duration::from_secs(5),
+                    |writing| !*writing,
+                )
+                .expect("wait");
+            assert!(*writing, "the writer reached the blocked pipe");
         }
     }
 
@@ -374,7 +392,7 @@ mod tests {
         let replies = Replies::new(Box::new(gated.clone())).expect("starts");
         // The writer takes the first reply and waits in its write; everything after it queues.
         replies.send(&bye(0));
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        gated.wait_for_write();
         assert!(
             !replies.offer_live("r", &bye(100), &[]),
             "the slot was empty"
@@ -397,11 +415,44 @@ mod tests {
     }
 
     #[test]
+    fn the_newest_waiting_live_frame_is_delivered_with_its_payload() {
+        let gated = Gated::default();
+        let replies = Replies::new(Box::new(gated.clone())).expect("starts");
+        replies.send(&bye(0));
+        gated.wait_for_write();
+        assert!(!replies.offer_live("r", &bye(100), b"old"));
+        assert!(replies.offer_live("r", &bye(101), b"new"));
+        replies.send(&bye(1));
+        let (open, opened) = &*gated.open;
+        *open.lock().expect("lock") = true;
+        opened.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while types(&gated.written.0.lock().expect("lock")).len() < 3 {
+            assert!(
+                Instant::now() < deadline,
+                "the replacement was never written"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        replies.close();
+        let written = gated.written.0.lock().expect("lock").clone();
+        assert_eq!(types(&written), ["bye0", "bye1", "bye101"]);
+        let mut reader = written.as_slice();
+        let first = read_envelope(&mut reader).expect("first reply");
+        let second = read_envelope(&mut reader).expect("second reply");
+        let newest = read_envelope(&mut reader).expect("newest live frame");
+        assert!(first.payload.is_empty());
+        assert!(second.payload.is_empty());
+        assert_eq!(newest.payload, b"new");
+        assert!(reader.is_empty());
+    }
+
+    #[test]
     fn a_waiting_live_frame_is_written_once_nothing_else_waits() {
         let gated = Gated::default();
         let replies = Replies::new(Box::new(gated.clone())).expect("starts");
         replies.send(&bye(0));
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        gated.wait_for_write();
         replies.offer_live("r", &bye(100), &[]);
         replies.send(&bye(1));
         let (open, opened) = &*gated.open;
@@ -428,7 +479,7 @@ mod tests {
         let replies = Replies::holding(Box::new(gated.clone()), budget).expect("starts");
         // The writer takes the first reply and waits in its write; the next two pass the budget between them.
         replies.send(&bye(0));
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        gated.wait_for_write();
         let half = vec![7u8; budget / 2 + 1];
         replies.send_with_payload(&bye(1), &half);
         let sending = {

@@ -20,6 +20,7 @@ import { childLogFile, eventsFile, resultFile, statesFolder } from '../../src/pr
 import { parse, type Schema } from '../../src/protocol/schema.ts'
 import { errorCode } from '../../src/shared/error-code.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { readEvents as readInterruptedEvents } from '../../src/store/read-run-folder.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { browserPath, groupExists, processesUsing, waitForGroupEnd } from './browser-harness.ts'
 import { engineUnderTest, type TestEngine } from './engines.ts'
@@ -347,7 +348,7 @@ export type FinishedRun = {
   stderr: string
   durationMs: number
   output: string
-  /** `events.jsonl`, every line validated. Empty when the run never created its folder. */
+  /** Validated `events.jsonl`; only a confirmed killed run may omit a torn final line. Empty before the folder exists. */
   events: RetestEvent[]
   /** `result.json`, validated, when the run wrote it. */
   result: RunResult | undefined
@@ -371,10 +372,12 @@ export async function runRetest(t: TestContext, request: RunRequest): Promise<Fi
  */
 export async function readFinishedRun({ retest, output }: StartedRun): Promise<FinishedRun> {
   const exit = await retest.exited
-  const events = existsSync(join(output, eventsFile)) ? readEvents(readFileSync(join(output, eventsFile), 'utf8')) : []
+  const hasResult = existsSync(join(output, resultFile))
+  const read = exit.signal === 'SIGKILL' && !hasResult ? readKilledEvents : readEvents
+  const events = existsSync(join(output, eventsFile)) ? read(readFileSync(join(output, eventsFile), 'utf8')) : []
   for (const { pid, what } of reportedProcesses(events)) retest.ownGroup(pid, what)
   assertJudged(events)
-  const result = existsSync(join(output, resultFile)) ? readResult(readFileSync(join(output, resultFile), 'utf8')) : undefined
+  const result = hasResult ? readResult(readFileSync(join(output, resultFile), 'utf8')) : undefined
   const { stdout, stderr, durationMs } = retest
   return { exit, stdout, stderr, durationMs, output, events, result }
 }
@@ -449,6 +452,18 @@ export function readEvents(text: string): RetestEvent[] {
   )
   assert.equal(new Set(events.map((event) => event.runId)).size <= 1, true, 'events come from one run')
   return events
+}
+
+// A fatal interruption can cut only the final write short; complete saved and delivered events remain contiguous.
+function readKilledEvents(text: string): RetestEvent[] {
+  const reading = readInterruptedEvents(text)
+  assert.ok(reading.ok, `the killed event stream is readable: ${reading.ok ? '' : reading.problem}`)
+  assert.deepEqual(
+    reading.events.map((event) => event.sequence),
+    reading.events.map((_event, index) => index),
+    'killed events are numbered in order from 0',
+  )
+  return reading.events
 }
 
 /** A run result, validated against the version 1 schema. */
@@ -726,6 +741,14 @@ export function assertStdoutIsEvents(run: FinishedRun): void {
   assert.ok(run.stdout === '' || run.stdout.endsWith('\n'), 'stdout ends with a whole line')
   const printed = completeLines(run.stdout).map((line, index) => parseLine(retestEventSchema, line, `stdout line ${index + 1}`))
   assert.deepEqual(printed, run.events, 'stdout carries exactly the events in events.jsonl')
+}
+
+/** A killed reporter may stop delivering after a durable event, including midway through its final stdout line. */
+export function assertKilledStdoutIsEventPrefix(run: FinishedRun): void {
+  assert.deepEqual(run.exit, { code: null, signal: 'SIGKILL' }, 'the runner was fatally killed')
+  assert.equal(run.result, undefined, 'the killed runner wrote no settled result')
+  const printed = readKilledEvents(run.stdout)
+  assert.deepEqual(printed, run.events.slice(0, printed.length), 'stdout carries an uninterrupted prefix of the saved events')
 }
 
 /** The results of the tests with this name, one for each variant that ran, in the order they ran. */

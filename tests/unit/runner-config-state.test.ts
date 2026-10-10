@@ -48,7 +48,12 @@ function project(setupExpects = 'Signed in'): string {
 const files = ['tests/archive.retest.ts', 'tests/sign-in.retest.ts']
 
 describe('a setup that passes', async () => {
-  const record = await runProject(project(), { files })
+  const record = await runProject(project(), { files, fake: {
+    sessionCookieValue: (executablePath) => {
+      assert.ok(executablePath === '/fake/stable' || executablePath === '/fake/beta')
+      return executablePath === '/fake/stable' ? 'stable-session-2718' : 'beta-session-3141'
+    },
+  } })
   const tests = record.result.files.flatMap((file) => file.tests)
 
   test('runs once per target before the tests that need its state, and is marked as a setup', () => {
@@ -61,7 +66,9 @@ describe('a setup that passes', async () => {
 
   test('the saved state is restored into the new page of each test that names it, for its own target', () => {
     const restored = record.browsers.map((browser) => browser.pages[1]?.options.storageState?.cookies.map((cookie) => cookie.value))
-    assert.deepEqual(restored, [['signed-in-0'], ['signed-in-0']])
+    assert.deepEqual(record.browsers.map((browser) => browser.launchOptions.executablePath), ['/fake/stable', '/fake/beta'])
+    assert.deepEqual(record.browsers.map((browser) => browser.pages[0]?.cookies.map((cookie) => cookie.value)), [['stable-session-2718'], ['beta-session-3141']])
+    assert.deepEqual(restored, [['stable-session-2718'], ['beta-session-3141']])
     assert.ok(record.browsers.every((browser) => browser.pages[2]?.options.storageState === undefined), 'a test without state starts signed out')
     assert.deepEqual(tests.map((result) => result.status), ['passed', 'passed', 'passed', 'passed', 'passed', 'passed'])
   })
@@ -73,7 +80,9 @@ describe('a setup that passes', async () => {
       { state: 'signed-in', app: 'web', target: 'beta', variantKey: 'web=beta' },
     ])
     assert.equal(eventsOfType(record.events, 'state.restored').length, 2)
-    assert.ok(!record.lines.some((line) => line.includes('signed-in-0')), 'no event holds the cookie')
+    for (const cookie of ['signed-in-0', 'stable-session-2718', 'beta-session-3141']) {
+      assert.ok(!record.lines.some((line) => line.includes(cookie)), 'no event holds the cookie')
+    }
   })
 
   test('no state file is left once the run ends', () => {

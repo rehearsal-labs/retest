@@ -183,6 +183,7 @@ test('a WebKit click stopped while its press is busy keeps the class of the stop
   const settled = await opened.dispatch({ kind: 'observe', locator: byTestId('status') }, 5000)
   assert.ok(settled.result.ok && settled.result.kind === 'observe')
   t.diagnostic(`the button heard: ${settled.result.observation.text ?? ''}`)
+  assert.equal(settled.result.observation.text, 'pressed', 'stopping never releases or clicks the pressed button')
   assert.equal(site.posts('/pressed'), 1, 'the press was sent once')
 })
 

@@ -13,7 +13,7 @@ import { launchBrowser } from '../../src/browser/launch.ts'
 import { launchWebKit } from '../../src/browser/webkit/browser.ts'
 import { ariaRoles } from '../../src/protocol/aria-role.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
-import { browserPath, closeMs, scratchFolder, setupMs } from './browser-harness.ts'
+import { browserPath, closeMs, scratchFolder, servePages, setupMs } from './browser-harness.ts'
 import { webKitPath } from './engines.ts'
 
 // Role membership on Chrome and WebKit, read side by side: each element kind the WebKit review and its fix read, on a
@@ -377,5 +377,55 @@ if (process.platform !== 'darwin') {
     assert.deepEqual('failure' in all ? [all.failure, all.role] : all, ['unsupported', 'option'])
     const named = answerOf(await webkit.execute({ kind: 'observe', locator: { by: 'role', role: 'option', name: 'Lab' } }, 10_000))
     assert.deepEqual('failure' in named ? [named.failure, named.role] : named, ['unsupported', 'option'], "a name one of the select's options carries")
+  })
+
+  test('fixed role and label contracts select the intended element and keep explicit refusal boundaries', async (t) => {
+    const html = `<!doctype html>
+      <button aria-label="Save task">chosen save</button><button aria-label="Discard task">decoy discard</button>
+      <a href="/chosen" aria-label="Open task">chosen link</a><a href="/decoy" aria-label="Other task">decoy link</a>
+      <h2 aria-label="Task heading">chosen heading</h2><h2 aria-label="Other heading">decoy heading</h2>
+      <label for="chosen-field">Task title</label><input id="chosen-field" value="chosen title">
+      <label for="decoy-field">Other title</label><input id="decoy-field" value="decoy title">
+      <table><tr><th>Task</th><th>Other</th></tr><tr><td aria-label="Chosen cell">chosen cell</td><td aria-label="Other cell">decoy cell</td></tr></table>
+      <div role="listbox"><div role="option" aria-label="Custom choice">chosen option</div></div>`
+    const site = await servePages(t, { '/': html, '/native': html + '<select aria-label="Native choice"><option>Native one</option><option>Native two</option></select>' })
+    const folder = await scratchFolder(t)
+    const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'fixed-chrome.log'), headless: true }))
+    const other = await opened(t, await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'fixed-webkit.log'), headless: true }, setupMs * 3))
+    const supported: readonly { locator: LocatorRecipe; text?: string; value?: string }[] = [
+      { locator: { by: 'role', role: 'button', name: 'Save task' }, text: 'chosen save' },
+      { locator: { by: 'role', role: 'link', name: 'Open task' }, text: 'chosen link' },
+      { locator: { by: 'role', role: 'heading', name: 'Task heading' }, text: 'chosen heading' },
+      { locator: { by: 'role', role: 'textbox', name: 'Task title' }, value: 'chosen title' },
+      { locator: { by: 'label', text: 'Task title' }, value: 'chosen title' },
+      { locator: { by: 'role', role: 'option', name: 'Custom choice' }, text: 'chosen option' },
+      { locator: { by: 'role', role: 'cell', name: 'Chosen cell' }, text: 'chosen cell' },
+    ]
+    for (const page of [chrome, other]) {
+      assert.ok((await page.execute({ kind: 'goto', url: site.url }, 5000)).ok)
+      for (const row of supported) {
+        const result = await page.execute({ kind: 'observe', locator: row.locator }, 10_000)
+        assert.ok(result.ok && result.kind === 'observe', `${page === chrome ? 'Chrome' : 'WebKit'} ${describeLocator(row.locator)}: ${JSON.stringify(result)}`)
+        assert.equal(result.observation.count, 1, describeLocator(row.locator))
+        if (row.text !== undefined) assert.equal(result.observation.text, row.text, describeLocator(row.locator))
+        if (row.value !== undefined) assert.equal(result.observation.value, row.value, describeLocator(row.locator))
+      }
+      const missing = await page.execute({ kind: 'observe', locator: { by: 'role', role: 'button', name: 'Missing task' } }, 10_000)
+      assert.ok(missing.ok && missing.kind === 'observe')
+      assert.equal(missing.observation.count, 0, 'a supported missing lookup is answered, not refused')
+    }
+    assert.ok((await other.execute({ kind: 'goto', url: `${site.url}/native` }, 5000)).ok)
+    const refused: readonly LocatorRecipe[] = [
+      { by: 'role', role: 'generic' },
+      { by: 'role', role: 'option' },
+      { by: 'role', role: 'option', name: 'Native one' },
+    ]
+    for (const locator of refused) {
+      const result = await other.execute({ kind: 'observe', locator }, 10_000)
+      assert.ok(!result.ok, `${describeLocator(locator)} must retain its explicit refusal`)
+      assert.equal(result.failure.class, 'unsupported')
+      assert.equal(result.failure.details?.['role'], locator.by === 'role' ? locator.role : undefined)
+      assert.ok(result.failure.message.startsWith(`Could not look up ${describeLocator(locator)}: `))
+    }
   })
 }
