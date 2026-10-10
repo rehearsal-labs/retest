@@ -3,9 +3,9 @@ import type { FirefoxBrowser } from '../../src/browser/firefox/browser.ts'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { setTimeout as delay } from 'node:timers/promises'
+import { isRecord } from '../../src/browser/cdp/message.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
-import { byTestId, closeMs, observe, openPage, scratchFolder, servePages, setupMs } from './browser-harness.ts'
+import { byTestId, closeMs, observe, observeUntil, openPage, scratchFolder, servePages, setupMs } from './browser-harness.ts'
 import { firefoxPath, testFirefoxRoute } from './engines.ts'
 
 // The navigation hold a Firefox fill bound to origins keeps while it types, on the real browser (review F-3 and F-10):
@@ -16,9 +16,9 @@ const onFirefoxHost = process.platform === 'darwin' && process.arch === 'arm64'
 const skip = onFirefoxHost ? false : 'Retest runs Firefox on macOS on Apple silicon only'
 const secretValue = 'correct-horse-battery-staple-held'
 
-async function firefox(t: TestContext): Promise<FirefoxBrowser> {
+async function firefox(t: TestContext, socket?: Parameters<typeof launchFirefox>[2]): Promise<FirefoxBrowser> {
   const folder = await scratchFolder(t)
-  const browser = await launchFirefox({ executablePath: firefoxPath(), logFile: join(folder, 'browser.log'), headless: true, route: testFirefoxRoute() }, setupMs * 3)
+  const browser = await launchFirefox({ executablePath: firefoxPath(), logFile: join(folder, 'browser.log'), headless: true, route: testFirefoxRoute() }, setupMs * 3, socket)
   t.after(() => browser.close(closeMs).catch(() => undefined))
   return browser
 }
@@ -43,20 +43,64 @@ const SIGN_IN_WITH_FRAME = `<!doctype html><input data-testid="password" type="p
   }, 50)
 </script>`
 
-test("every request a frame makes while a secret fill bound to origins types arrives, and none is left paused", { skip }, async (t) => {
-  const browser = await firefox(t)
+test("every request a frame makes while an origin-bound secret fill is active arrives, and none is left paused", { skip }, async (t) => {
+  let held: {
+    requested: ReturnType<typeof Promise.withResolvers<void>>
+    release: ReturnType<typeof Promise.withResolvers<void>>
+    allowed: boolean
+    dropped: boolean
+    expiresAt: number
+  } | undefined
+  const browser = await firefox(t, (url) => new class extends WebSocket {
+    override send(data: Parameters<WebSocket['send']>[0]): void {
+      const message: unknown = typeof data === 'string' ? JSON.parse(data) : undefined
+      const waiting = held
+      if (waiting === undefined || !isRecord(message) || message['method'] !== 'input.performActions') return super.send(data)
+      waiting.requested.resolve()
+      void waiting.release.promise.then(() => {
+        if (waiting.allowed && !waiting.dropped && !t.signal.aborted && performance.now() < waiting.expiresAt && this.readyState === WebSocket.OPEN) super.send(data)
+      })
+    }
+  }(url))
   const site = await servePages(t, { '/': SIGN_IN_WITH_FRAME, '/frame': POLLING_FRAME })
   const page = await openPage(t, browser, site.url)
   const went = await page.execute({ kind: 'goto', url: '/' }, setupMs)
   assert.ok(went.ok, JSON.stringify(went))
-  await delay(500)
+  await observeUntil(page, 'stats', seen => Number((seen.text ?? '').split(' ')[0]) > 0, setupMs)
   for (let round = 0; round < 3; round += 1) {
-    const filled = await page.execute({ kind: 'fill', locator: byTestId('password'), value: secretValue, secret: 'password', allowedOrigins: [site.url] }, setupMs)
-    assert.ok(filled.ok, JSON.stringify(filled))
+    const waiting = { requested: Promise.withResolvers<void>(), release: Promise.withResolvers<void>(), allowed: false, dropped: false, expiresAt: performance.now() + setupMs }
+    held = waiting
+    let filling = true
+    const typing = page.execute({ kind: 'fill', locator: byTestId('password'), value: secretValue, secret: 'password', allowedOrigins: [site.url] }, setupMs, t.signal).finally(() => {
+      filling = false
+      waiting.dropped = true
+      waiting.release.resolve()
+    })
+    const endedBeforeProgress = typing.then(result => {
+      assert.ok(waiting.allowed, 'the fill ended before its active hold let a frame POST settle: ' + JSON.stringify(result))
+    })
+    try {
+      // The unchanged native input waits while the real navigation hold lets the frame's request proceed.
+      await Promise.race([waiting.requested.promise, endedBeforeProgress])
+      const before = Number(((await observe(page, 'stats')).text ?? '').split(' ')[1])
+      const receivedBefore = site.posts('/ping')
+      assert.ok(Number.isFinite(before))
+      await Promise.race([observeUntil(page, 'stats', seen => Number((seen.text ?? '').split(' ')[1]) > before && site.posts('/ping') > receivedBefore, setupMs), endedBeforeProgress])
+      assert.ok(filling, 'the frame POST settled while the origin-bound fill was active')
+      waiting.allowed = true
+      waiting.release.resolve()
+      const filled = await typing
+      assert.ok(filled.ok, JSON.stringify(filled))
+    } finally {
+      waiting.dropped = true
+      waiting.release.resolve()
+      held = undefined
+    }
   }
-  // Everything the frame started settles at once once the fills are done: none waits on a hold that has gone.
-  await delay(1000)
-  const stats = (await observe(page, 'stats')).text ?? ''
+  const stats = (await observeUntil(page, 'stats', seen => {
+    const [started, settled] = (seen.text ?? '').split(' ').map(Number)
+    return started !== undefined && settled !== undefined && started > 20 && started - settled <= 2
+  }, setupMs)).text ?? ''
   const [started, settled] = stats.split(' ').map(Number)
   assert.ok(started !== undefined && settled !== undefined && started > 20, `the frame kept posting: ${stats}`)
   assert.ok(started - settled <= 2, `at most the posts on their way are unsettled, not ones the hold kept: ${stats}`)
