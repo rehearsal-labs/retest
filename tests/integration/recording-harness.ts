@@ -4,7 +4,7 @@ import type { RecordingRecord } from '../../src/protocol/recording.ts'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { mediaTarget } from '../../src/cli/install/media-pins.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { rebuildRecordedResult } from '../../src/store/rebuild-result.ts'
@@ -22,7 +22,7 @@ const recordingTools = [
 /**
  * The skip for a test that records with the real media binary and ffmpeg, or false where it can run. On macOS it is
  * always false, so a gate that forgot to build the binary fails by name. Elsewhere a machine with no pinned media target
- * records nothing, and one without the tools, such as the Linux image, cannot record.
+ * records nothing, and one without the tools cannot record.
  *
  * @example test('records a video', { skip: recordingSkip }, async (t) => {})
  */
@@ -61,7 +61,8 @@ export function encoderPid(mediaPid: number): number {
   const rows = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,comm='], { encoding: 'utf8', timeout: 5000 }).split('\n')
   const matches = rows.flatMap(row => {
     const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(row)
-    return match?.[1] !== undefined && Number(match[2]) === mediaPid && match[3]?.endsWith('/ffmpeg') === true ? [Number(match[1])] : []
+    // macOS reports the executable path in comm; Linux reports its basename. The direct parent stays required.
+    return match?.[1] !== undefined && Number(match[2]) === mediaPid && basename(match[3] ?? '') === 'ffmpeg' ? [Number(match[1])] : []
   })
   assert.equal(matches.length, 1, 'the running recording has one ffmpeg encoder')
   return matches[0] ?? 0
