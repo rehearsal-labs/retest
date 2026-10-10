@@ -4,17 +4,17 @@ How to set up, run and read Retest, in detail: the config, the test API, the com
 
 Retest runs TypeScript test files against Chromium-family browsers, through its own runner and its own CDP client, and against Playwright's WebKit build on macOS, through a client of its own for WebKit's inspector. A project has a config with named apps, several browser targets, emulated devices, secrets, tags and sign-in state. Retest has no runtime dependencies, and it downloads a browser only when `retest install` is asked to.
 
-Everything here was checked on macOS arm64, with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker, with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3's first part adds `press`, host checks, observations, a proxy per target and a test environment. All of its checks ran on macOS. On Linux, its own integration checks ran in Docker with Google Chrome 154 and Debian's Chromium 154. Retest handles the SIGTERM a CI runner sends on cancel, but it has not run on a CI runner yet.
+Retest has been exercised on macOS arm64 and in Docker on Linux x64 and arm64. The hosted release gates run on all three platforms and require every lane to pass the same commit. See [Releasing Retest](releasing.md) for the gate setup and prerequisites.
 
 Some rules on this page were checked only in unit tests with the fake browser, not on Chrome: a finder after a step that keeps several elements; `first().nth()` refusing; the modifier rules of `press` beyond the shortcuts the Chrome checks press, `Shift+Tab` among them; the macOS editing commands other than `Meta+A`, and several of them, `Alt+Delete`, `Meta+ArrowUp` and `Meta+ArrowDown` among them, appear in no test at all; `check` on a `switch`, `menuitemcheckbox`, `menuitemradio` or `aria-checked="mixed"`; a wheel another element takes; `getByLabel` on a `slider`, `spinbutton` or `switch`; `toContainText` with a `RegExp`; `.not.toBeChecked()` on an element that cannot be checked; `.not.toHaveText()` on no match; and the 65,536-character limit and the "could not judge" negation, which are checked as functions alone.
 
-The package is published on npm as `@rehearsal-labs/retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
+The npm package name is `@rehearsal-labs/retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
 
 ## Prerequisites
 
 - Node.js 24.12 or later. Retest loads `.ts` files with Node's own TypeScript transformer, so TypeScript is needed only to check types; see [TypeScript and imports](#typescript-and-imports).
 - An installed Chromium, Google Chrome or Microsoft Edge, or a pinned build that `retest install` put in Retest's cache; see [Pinned browser builds](#pinned-browser-builds). Nothing is downloaded unless you ask. Where a path is asked for, give the executable itself, not a macOS app bundle.
-- macOS or Linux. Linux was verified only inside Docker, on arm64; see [Run in a container](#run-in-a-container). Retest relies on POSIX process groups, so Windows does not work.
+- macOS or Linux. Linux was exercised inside Docker, on x64 and arm64; see [Run in a container](#run-in-a-container). Retest relies on POSIX process groups, so Windows does not work.
 
 ## Install and build
 
@@ -38,7 +38,7 @@ npx retest --help
 
 ### Media recording prerequisites and installation
 
-Recording needs `retest-media` and a host-installed ffmpeg. Retest ships no ffmpeg. The source build path is exercised on macOS arm64. Linux x64 with the GNU Rust host target is a planned path and remains unverified. No media build path is provided for Windows, macOS x64 or Linux arm64.
+Recording needs `retest-media` and a host-installed ffmpeg. Retest ships no ffmpeg. The source build path is exercised on macOS arm64 and Linux x64 with the GNU Rust host target. Hosted Linux x64 checks also build the npm package's source offline into a fresh target and cache, and verify its protocol and recorded checksum. No media build path is provided for Windows, macOS x64 or Linux arm64.
 
 The crate uses Rust edition 2024, which requires Rust 1.85 or later. Its pinned image dependency and the crate itself require Rust 1.88 or later. Put both `cargo` and `rustc` from a matching host toolchain on `PATH`. Install ffmpeg with the host's package manager, such as `brew install ffmpeg` on macOS or `sudo apt-get install ffmpeg` on Debian. ffmpeg must provide the rawvideo demuxer and either libx264 with the MP4 muxer or libvpx with the WebM muxer. The optional encoded input route also needs image2pipe and the PNG or MJPEG decoder. The media process's own probe decides which route is available.
 
@@ -91,7 +91,7 @@ npm run test:integration  # real processes and real browsers, one file at a time
 npm test                  # all three, in that order
 ```
 
-The integration tests need two browsers. They never skip.
+The core browser integration tests need two Chromium browsers. Platform, media and live-provider tests report a skip when their prerequisites are unavailable.
 
 - The first is `RETEST_TEST_BROWSER`, or `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` when that exists. Config runs find Google Chrome by themselves, through `chrome()`.
 - The second is `RETEST_TEST_SECOND_BROWSER`, or Chrome for Testing where Playwright unpacks it on macOS: `~/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`. It is a plain browser build. No Playwright code runs.
@@ -1911,7 +1911,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 ## What Retest does not do yet
 
 - Browsers: Chromium, Chrome and Edge, and Playwright's WebKit build 2359 and Firefox 133 on macOS. Firefox has no phone, touch or pixel ratio emulation and no proxy, and no AI check has judged a Firefox screenshot yet. WebKit has no phone or touch emulation and no proxy, its recorded frames cannot be AI evidence yet, and no AI check has judged a WebKit screenshot yet. iOS simulator and macOS apps run through the runner, one macOS app and one app per simulator in a test, with their swipe, keyboard and alert helpers run only against a stand-in executor. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
-- Checked on macOS arm64 with Google Chrome 154 and Chrome for Testing 153, and on Linux arm64 inside Docker with Google Chrome 154, Debian's Chromium 154 and Chrome for Testing 153. Milestone 3 ran on Linux only in its own integration checks, with Google Chrome 154 and Debian's Chromium 154. Linux on x86-64, Linux outside a container, Edge, Chrome beta, dev and canary, and CI runners were never run. Windows cannot work.
+- Exercised on macOS arm64 and in hosted Docker gates on Linux x64 and arm64. Linux outside a container, Edge, and Chrome beta, dev and canary remain unverified. Windows cannot work.
 - The keyboard presses one key or one shortcut at a time: no key held down across actions, and no text typed key by key. `fill` types text. On macOS, only the shortcuts in Retest's table edit a field, and no shortcut was run on Linux.
 - `select` chooses with the keyboard, and was run on macOS only. `scroll` is one wheel event, also on a touch screen: no swipe.
 - Host checks are given only by a program, through `runFiles`. They read the final page, not the steps to it, and not frames or shadow roots. A navigation's `cause` says what opened that page, and nothing about the steps before.
@@ -1921,7 +1921,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - No popups, dialogs, uploads, downloads, network mocking or visual comparison. A JavaScript dialog fails the command as unsupported.
 - No retries, watch mode, custom fixtures or `test.extend`, and no `test.skip()` called inside a test with a condition. Files run on workers; the tests of one file do not. A lock lasts one run and is not shared with another process.
 - `retest install` installs the pinned Chrome for Testing, Firefox, WebKit and Electron on macOS arm64, and builds the native executors and the media process. On Linux x64 it pins Chrome for Testing only, and installing it there was not run.
-- No `toMeet` or `test.eval`. The agent session API writes no events. AI checks judge text, screenshots and recorded frames: a screenshot cannot be cropped to a region or masked, and no live judge's accuracy has been measured on the labelled corpus; only the fake judges have run it. No provider has been called through the AI SDK adapter yet.
+- No `toMeet` or `test.eval`. The agent session API writes no events. AI checks judge text, screenshots and recorded frames: a screenshot cannot be cropped to a region or masked, and no live judge's accuracy has been measured on the labelled corpus; only the fake judges have run it. The Azure AI SDK adapter has been exercised against a live deployment.
 - Test files are loaded more than once: once to plan the run, and again for each visit that runs them. Top-level code runs each time.
 - Screenshots are not redacted. A secret the page shows appears in its screenshot.
 - A function source's value is hidden only from the moment its source gives it; page text read before that reached the test's process as it was.
