@@ -538,25 +538,44 @@ test('${letter} two apps', { apps: ['owner', 'member'] }, async ({ owner, member
   test('the wait for sessions counts against no budget of the test', async () => {
     const holding = (letter: string): string => `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('${letter} holds the only session', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.getByTestId('saved-task')).toHaveText('')\n})\n`
     const root = tempProject({ [configFileName]: config, 'tests/a.retest.ts': holding('a'), 'tests/b.retest.ts': holding('b') })
-    const launcher = fakeLauncher({
-      holdAnswer: async (command) => {
-        if (command.kind === 'goto') await sleep(500)
-      },
-    })
-    const recorded = await run(root, ['tests/a.retest.ts', 'tests/b.retest.ts'], {
-      workers: 2,
-      sessions: { owner: 'agent-1', budget: new SessionBudget({ perOwner: 1, host: 1 }) },
-      timeouts: { ...quickTimeouts, test: 800 },
-      launcher,
-    })
-    assert.equal(recorded.result.exitCode, 0, JSON.stringify(recorded.result.files.flatMap((file) => file.tests.map((each) => each.failure?.message))))
-    const waited = eventsFor(recorded.events, 'session.reserved').map((event) => event.waitedMs).sort((first, second) => first - second)
-    assert.equal(waited[0], 0)
-    const longest = waited[1] ?? 0
-    assert.ok(longest > 400, `one attempt waited ${longest} ms for the only session`)
-    const second = recorded.result.files.flatMap((file) => file.tests).find((each) => each.attemptId === eventsFor(recorded.events, 'session.reserved').find((event) => event.waitedMs === longest)?.attemptId)
-    assert.equal(second?.status, 'passed', 'it passed, though its wait and its run together took longer than its 800 ms budget')
-    assert.ok((second?.durationMs ?? 0) + longest > 800)
+    const testBudget = 800
+    const budget = new SessionBudget({ perOwner: 1, host: 1 })
+    const held = await budget.reserve({ owner: 'host', count: 1, holder: 'host holds the only session', waitMs: 20_000 }, new Promise<void>(() => undefined))
+    assert.ok(held.ok)
+    const bothWaiting = Promise.withResolvers<void>()
+    const reserve = budget.reserve.bind(budget)
+    budget.reserve = (request, stopped) => {
+      const pending = reserve(request, stopped)
+      if (budget.snapshot().waiting === 2) bothWaiting.resolve()
+      return pending
+    }
+    try {
+      const running = run(root, ['tests/a.retest.ts', 'tests/b.retest.ts'], {
+        workers: 2,
+        sessions: { owner: 'agent-1', budget, waitMs: 20_000 },
+        timeouts: { ...quickTimeouts, test: testBudget },
+      })
+      await Promise.race([
+        bothWaiting.promise,
+        running.then((recorded) => assert.fail(`the run ended before both attempts waited for sessions: ${JSON.stringify(recorded.result.files.flatMap((file) => file.tests.map((each) => [each.name, each.status, each.failure?.message])))}`)),
+      ])
+      // Start the hold after both requests queue, so staggered child startup cannot shorten either measured wait.
+      await sleep(testBudget + 200)
+      held.lease.release()
+      const recorded = await running
+      assert.equal(recorded.result.exitCode, 0, JSON.stringify(recorded.result.files.flatMap((file) => file.tests.map((each) => each.failure?.message))))
+      const reserved = eventsFor(recorded.events, 'session.reserved')
+      assert.equal(reserved.length, 2)
+      for (const reservation of reserved) {
+        assert.ok(reservation.waitedMs > testBudget, `the attempt waited ${reservation.waitedMs} ms for the only session`)
+        const waited = recorded.result.files.flatMap((file) => file.tests).find((each) => each.attemptId === reservation.attemptId)
+        assert.equal(waited?.status, 'passed', `it passed, though its wait and its run together took longer than its ${testBudget} ms budget`)
+        assert.ok((waited?.durationMs ?? 0) + reservation.waitedMs > testBudget)
+      }
+      assert.deepEqual(budget.snapshot(), { host: 0, owners: new Map(), waiting: 0 }, 'every session came back when the run ended')
+    } finally {
+      held.lease.release()
+    }
   })
 
   test('an attempt that needs more sessions than any limit allows does not run, and the rest do', async () => {
