@@ -327,12 +327,25 @@ test('a start that fails after WebDriverAgent came up ends the runner app it rec
 
 test('a start whose runner app never answers ends that runner app itself, when xcodebuild\'s end does not', darwinOnly, async (t) => {
   const setup = await setUp(t, { executorStart: 'runner-not-ready', runnerSurvivesXcodebuild: true, shutdownLeavesProcesses: true })
-  const started = await start(setup, { timeoutMs: 4000 })
+  const realKill = process.kill.bind(process)
+  const signalledRunnerPids: number[] = []
+  // The timeout may deliver SIGTERM before the runner's own signal handler starts.
+  const signalling = t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => {
+    const delivered = realKill(pid, signal)
+    if (delivered === true && signal === 'SIGTERM' && runnerApps(setup.fake.root).includes(pid)) signalledRunnerPids.push(pid)
+    return delivered
+  })
+  let started: Awaited<ReturnType<typeof start>>
+  try {
+    started = await start(setup, { timeoutMs: 4000 })
+  } finally {
+    signalling.mock.restore()
+  }
   assert.match(!started.ok ? started.failure.message : '', /did not answer \/status within/)
   assert.doesNotMatch(!started.ok ? String(started.failure.details?.['also'] ?? '') : '', /could not tie/, 'the runner app tied to the start is not reported as untied')
   const runner = runnerApps(setup.fake.root)
   assert.equal(runner.length, 1)
-  assert.deepEqual(await signalled(setup.fake.root), runner)
+  assert.deepEqual(signalledRunnerPids, runner)
   await nothingLeft(setup.fake)
 })
 
