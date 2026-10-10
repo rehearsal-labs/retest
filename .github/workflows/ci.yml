@@ -78,7 +78,7 @@ jobs:
     needs: commit
     # WebKit build 2359 requires macOS 26.5 or later. This is the standard public arm64 runner.
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       # The runner image ships Google Chrome here, which is also where the tests look by default.
       RETEST_TEST_BROWSER: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
