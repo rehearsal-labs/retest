@@ -280,18 +280,6 @@ describe('a secret typed, then a page that opens another document', { skip: unpi
   })
 })
 
-// A run that names no media binary reads RETEST_MEDIA_BINARY, so the variable is kept out of these runs whatever the
-// machine running the tests has set.
-async function withoutMediaVariable<T>(work: () => Promise<T>): Promise<T> {
-  const saved = process.env['RETEST_MEDIA_BINARY']
-  delete process.env['RETEST_MEDIA_BINARY']
-  try {
-    return await work()
-  } finally {
-    if (saved !== undefined) process.env['RETEST_MEDIA_BINARY'] = saved
-  }
-}
-
 describe('a run whose media process cannot start', async () => {
   const root = tempProject({ 'retest.config.ts': config('recording: { record: true },'), 'tests/tasks.retest.ts': tests })
   const missing = await recordProject(root, { files: ['tests/tasks.retest.ts'], startMedia: fakeMediaStarter({ refuse: 'spawn ENOENT' }).start })
@@ -334,13 +322,13 @@ test('saves a task', async ({ page }) => {
 })
 `
   const root = tempProject({ 'retest.config.ts': config('recording: { record: true, required: true },'), 'tests/tasks.retest.ts': passing })
-  const run = await withoutMediaVariable(() => recordProject(root, { files: ['tests/tasks.retest.ts'] }))
+  const run = await recordProject(root, { files: ['tests/tasks.retest.ts'], media: { executable: join(root, 'missing-retest-media') } })
 
   test('passes its test and ends with exit 2 and its own named failure', () => {
     const [result] = allTests(run.result)
     assert.equal(result?.status, 'passed')
     assert.equal(result?.recordings?.[0]?.gaps[0]?.code, 'media_unavailable')
-    assert.match(result?.recordings?.[0]?.gaps[0]?.message ?? '', /RETEST_MEDIA_BINARY/)
+    assert.match(result?.recordings?.[0]?.gaps[0]?.message ?? '', /^The explicit media setting or RETEST_MEDIA_BINARY does not name an executable\./)
     assert.deepEqual({ exitCode: run.result.exitCode, status: run.result.status, failure: run.result.failure?.class }, { exitCode: 2, status: 'error', failure: 'evidence_incomplete' })
   })
 })
