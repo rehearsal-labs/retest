@@ -3,7 +3,7 @@ import type { ScriptedPage } from './browser-fixtures.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { NavigationCauses } from '../../src/browser/navigation-causes.ts'
-import { disarmFunction, pageFactsFunction, prepareFunction, selectionFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { disarmFunction, pageFactsFunction, prepareFunction, selectionFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { isRecord, mainFrame, scriptedPage, value } from './browser-fixtures.ts'
 
 const facts = { href: 'http://app.test/start', title: 'Start' }
@@ -35,6 +35,7 @@ function causePage(hooks: Hooks = {}): CausePage {
           return value(typing(params) ? ready : { ...ready, token: null, plan: { quietMs: 0, keys: [{ key: 'b', toggle: false }] } })
         }
         if (source === selectionFunction) return value({ status: 'selected', selected: ['B'], page: facts })
+        if (source === registrationFunction) return value(true)
         if (source === verdictFunction) return value({ reached: ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'keydown', 'keyup'], intercepted: null, landed: '<a>', leaving: null })
         if (source === disarmFunction) {
           hooks.duringDisarm?.()

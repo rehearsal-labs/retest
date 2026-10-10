@@ -3,14 +3,16 @@ import type { IsolatedWorld } from './isolated-world.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { describeLocator } from '../protocol/locator.ts'
 import { s } from '../protocol/schema.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
 import { shorten } from '../protocol/text.ts'
+import { CdpAbortedError, CdpTimeoutError } from './cdp/errors.ts'
 import { describeAction, pageSelectionSchema, selectionOf } from './element-queries.ts'
 import { isGoneContext } from './isolated-world.ts'
 import { originRefusal } from './origin-refusal.ts'
-import { disarmFunction, strayFunction, verdictFunction } from './page-scripts.ts'
+import { disarmFunction, registrationFunction, strayFunction, verdictFunction } from './page-scripts.ts'
 
 const guardedEvents = [
   'pointerdown',
@@ -42,12 +44,14 @@ export type Guard = { context: number; token: number }
  * the first one another element took, which the guard stopped, and `landed` the element at the press point, or
  * the one with the keyboard focus, when the guard was done. `leaving` is the origin a fill bound to origins saw
  * the page set off to open before the text arrived; the guard cancelled that navigation and stopped the typing.
+ * `unregistered` means the document went before its verdict request was acknowledged, and no input was sent.
  * `selection`, for a key typed to a select, is what the select held when its own input or change event arrived, or
  * when the key was released if neither did. `replaced` means the page moved to a new document before the guard was done, and `stopped` that the new
  * document's own guard stopped typing that arrived there, meant for the document it replaced.
  */
 export type GuardVerdict =
   | { kind: 'seen'; reached: GuardedEvent[]; intercepted: Interception | null; landed: string | null; leaving: string | null; selection?: Selection }
+  | { kind: 'unregistered' }
   | { kind: 'replaced' }
   | { kind: 'stopped'; event: GuardedEvent; by: string; origin: string }
 
@@ -106,9 +110,16 @@ export async function guardInput(
   deadline: Deadline,
   input: () => Promise<void>,
 ): Promise<GuardVerdict> {
-  // Asked before the input goes, so the answer still comes when the input makes the page open a new document.
-  // When the input itself fails, that failure is the answer, and this one is never read.
+  // Request order does not prove the browser entered this function before processing input in another domain.
+  // The matching guard must acknowledge the request before input can replace its document.
   const verdict = settled(world.callIn(guard.context, verdictFunction, [guard.token], seenSchema, deadline))
+  try {
+    await waitForGuardRegistration(world, guard, deadline)
+  } catch (error) {
+    if (!isGoneContext(error)) throw error
+    return { kind: 'unregistered' }
+  }
+  // When the input itself fails, that failure is the answer, and the guard's verdict is never read.
   await input()
   await disarmGuard(world, guard, deadline)
   const answer = await verdict
@@ -119,6 +130,25 @@ export async function guardInput(
   if (!isGoneContext(answer.error)) throw answer.error
   const stray = await world.call(strayFunction, [], straySchema, deadline)
   return stray === null ? { kind: 'replaced' } : { kind: 'stopped', ...stray }
+}
+
+// A marker belongs to one arming in one document, and a read can run before the pending verdict request does.
+async function waitForGuardRegistration(world: IsolatedWorld, guard: Guard, deadline: Deadline): Promise<void> {
+  const command = { method: 'Runtime.callFunctionOn', sessionId: undefined }
+  for (;;) {
+    if (deadline.signal?.aborted === true) throw new CdpAbortedError(command, { written: false })
+    if (deadline.expired) throw new CdpTimeoutError(command, { timeoutMs: deadline.budgetMs, written: true })
+    const ready = await world.callIn(guard.context, registrationFunction, [guard.token], s.boolean(), deadline)
+    if (deadline.signal?.aborted) throw new CdpAbortedError(command, { written: false })
+    if (deadline.expired) throw new CdpTimeoutError(command, { timeoutMs: deadline.budgetMs, written: true })
+    if (ready) return
+    try {
+      await sleep(Math.min(10, deadline.remainingMs), undefined, { signal: deadline.signal })
+    } catch (error) {
+      if (deadline.signal?.aborted) throw new CdpAbortedError(command, { written: false })
+      throw error
+    }
+  }
 }
 
 /**
@@ -144,6 +174,7 @@ export async function disarmGuard(world: IsolatedWorld, guard: Guard, deadline: 
  * @example guardFailure({ kind: 'replaced' }, { action: 'click', multiline: false }, { by: 'testId', value: 'save' })
  */
 export function guardFailure(verdict: GuardVerdict, intent: GuardedIntent, locator: LocatorRecipe | undefined): Failure | undefined {
+  if (verdict.kind === 'unregistered') return beforeInputFailure(describeAction(intent, locator))
   switch (intent.action) {
     case 'press':
       return keyFailure(verdict, intent.key, locator)
@@ -204,6 +235,7 @@ function typingFailure(verdict: GuardVerdict, intent: ActionIntent, locator: Loc
  * @example wheelFailure({ kind: 'replaced' }, undefined)
  */
 export function wheelFailure(verdict: GuardVerdict, locator: LocatorRecipe | undefined): Failure | undefined {
+  if (verdict.kind === 'unregistered') return beforeInputFailure(`scroll ${locator === undefined ? 'the page' : describeLocator(locator)}`)
   const target = locator === undefined ? 'the page' : describeLocator(locator)
   if (verdict.kind !== 'seen') return movedAway('scroll', target)
   const { reached, intercepted, landed } = verdict
@@ -235,6 +267,7 @@ export function wheelFailure(verdict: GuardVerdict, locator: LocatorRecipe | und
 export function keyFailure(verdict: GuardVerdict, key: string, locator: LocatorRecipe | undefined): Failure | undefined {
   const target = locator === undefined ? '' : ` on ${describeLocator(locator)}`
   const pressed = `${shorten(key)}${target}`
+  if (verdict.kind === 'unregistered') return beforeInputFailure(`press ${pressed}`)
   if (verdict.kind !== 'seen') {
     return {
       class: 'outcome_unknown',
@@ -269,6 +302,7 @@ export function keyFailure(verdict: GuardVerdict, key: string, locator: LocatorR
  */
 export function hoverFailure(verdict: GuardVerdict, locator: LocatorRecipe): Failure | undefined {
   const target = describeLocator(locator)
+  if (verdict.kind === 'unregistered') return beforeInputFailure(`hover ${target}`)
   if (verdict.kind !== 'seen') return movedAway('hover', target)
   const { reached, intercepted, landed } = verdict
   if (intercepted !== null) {
@@ -295,6 +329,7 @@ export function hoverFailure(verdict: GuardVerdict, locator: LocatorRecipe): Fai
  */
 export function selectKeyFailure(verdict: GuardVerdict, intent: Extract<ActionIntent, { action: 'select' }>, locator: LocatorRecipe): Failure | undefined {
   const action = describeAction(intent, locator)
+  if (verdict.kind === 'unregistered') return beforeInputFailure(action)
   if (verdict.kind !== 'seen') {
     return {
       class: 'outcome_unknown',
@@ -331,6 +366,14 @@ function pointerTaken({ verb, pointer }: PointerInput, target: string, { event, 
       return pointer === 'click'
         ? failure(`it took the press and the release, but the click went to another element, ${by}. Retest stopped the click before the page received it.`)
         : failure(`it took the touch, but the click that follows a tap went to another element, ${by}. Retest stopped the click before the page received it.`)
+  }
+}
+
+function beforeInputFailure(action: string): Failure {
+  return {
+    class: 'not_actionable',
+    message: `Could not ${action}: the page moved to a new document before Retest sent input.`,
+    details: { reason: 'the page moved to a new document', inputSent: false },
   }
 }
 

@@ -9,7 +9,7 @@ import { Channel } from '../../src/browser/cdp/channel.ts'
 import { CdpClosedError, CdpDisconnectedError, CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
 import { CdpSession as Session } from '../../src/browser/cdp/session.ts'
 import { Dispatch } from '../../src/browser/dispatch.ts'
-import { disarmFunction, prepareFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { disarmFunction, prepareFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { never, protocolError, scriptedPage, value } from './browser-fixtures.ts'
 
@@ -66,10 +66,11 @@ describe('how far a command’s input got', () => {
 })
 
 // A click on a scripted page: its element is ready, and each input and page call answers as `script` says.
-function clickPage(script: { input?: (method: string, params: unknown) => Promise<unknown>; verdict?: () => Promise<unknown>; prepare?: () => Promise<unknown> } = {}) {
+function clickPage(script: { input?: (method: string, params: unknown) => Promise<unknown>; verdict?: () => Promise<unknown>; registration?: () => Promise<unknown>; prepare?: () => Promise<unknown> } = {}) {
   return scriptedPage({
     call: (functionDeclaration) => {
       if (functionDeclaration === prepareFunction) return script.prepare?.() ?? value({ status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page: facts, plan: null })
+      if (functionDeclaration === registrationFunction) return script.registration?.() ?? value(true)
       if (functionDeclaration === verdictFunction) return script.verdict?.() ?? value({ reached: ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'], intercepted: null, landed: '<button>', leaving: null })
       if (functionDeclaration === disarmFunction) return value(true)
       return Promise.reject(new Error('unexpected call'))
@@ -96,6 +97,19 @@ describe('a web session says how far each command’s input got', () => {
     const { result, input } = await page.dispatch({ kind: 'click', locator: save }, 1000)
     assert.deepEqual(result, { ok: true, kind: 'click', page: { url: 'http://app.test/start', title: 'Start' } })
     assert.equal(input, 'sent')
+  })
+
+  test('a document that disappears before the guard request is acknowledged refuses the click and reports no input', async () => {
+    const { page, sent } = clickPage({ verdict: never, registration: () => Promise.reject(protocolError('Runtime.callFunctionOn', 'Execution context was destroyed.')) })
+    const { result, input } = await page.dispatch({ kind: 'click', locator: save }, 1000)
+    assert.equal(input, 'not_sent')
+    assert.ok(!result.ok)
+    assert.deepEqual(result.failure, {
+      class: 'not_actionable',
+      message: "Could not click getByTestId('save-task'): the page moved to a new document before Retest sent input.",
+      details: { reason: 'the page moved to a new document', inputSent: false },
+    })
+    assert.equal(sent.filter(({ method }) => method.startsWith('Input.')).length, 0)
   })
 
   test('a click stopped before its input goes sends none, and says so', async () => {

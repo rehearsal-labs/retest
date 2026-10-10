@@ -281,7 +281,7 @@ const armHelper = String.raw`
     }
     guard.count += 1
     guard.armed = armed
-    guard.latest = { token: guard.count, verdict, settle: armed.settle }
+    guard.latest = { token: guard.count, verdict, settle: armed.settle, requested: false }
     armed.token = guard.count
     return armed
   }
@@ -821,7 +821,14 @@ export const setOffFunction: string = `function setOff(token) {
 export const verdictFunction: string = `function verdict(token) {
   const latest = globalThis.retestGuard?.latest
   if (latest?.token !== token) throw new Error('No input guard is armed with token ' + token)
+  latest.requested = true
   return latest.verdict
+}`
+
+/** Whether the verdict request entered this document for the guard armed with `token`. */
+export const registrationFunction: string = `function registered(token) {
+  const latest = globalThis.retestGuard?.latest
+  return latest?.token === token && latest.requested === true
 }`
 
 /** Ends the arming `token` names, which settles its verdict with what the guard saw so far. */

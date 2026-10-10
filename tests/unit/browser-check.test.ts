@@ -1,7 +1,7 @@
 import type { SentCommand } from './browser-fixtures.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { checkedFunction, disarmFunction, prepareFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { checkedFunction, disarmFunction, prepareFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { scriptedPage, value } from './browser-fixtures.ts'
 
 const page = { href: 'http://app.test/settings', title: 'Settings' }
@@ -22,6 +22,7 @@ function checkPage({ readiness, states = [true], reached = clicked }: Script, to
     other: () => Promise.resolve({}),
     call: (source) => {
       if (source === prepareFunction) return value(ready)
+      if (source === registrationFunction) return value(true)
       if (source === verdictFunction) return value({ reached, intercepted: null, landed: '<label>', leaving: null })
       if (source === disarmFunction) return value(true)
       if (source === checkedFunction) return value(states[Math.min(read++, states.length - 1)])
@@ -92,6 +93,7 @@ test('a click another element took fails the check by its name, and its state is
     other: () => Promise.resolve({}),
     call: (source) => {
       if (source === prepareFunction) return value({ status: 'ready', point: { x: 10, y: 20 }, token: 1, via: null, scale: 1, page, plan: null })
+      if (source === registrationFunction) return value(true)
       if (source === verdictFunction) return value({ reached: [], intercepted: { event: 'pointerdown', by: '<div class="cookie-banner">' }, landed: '<div>', leaving: null })
       if (source === disarmFunction) return value(true)
       return Promise.reject(new Error('unexpected call'))

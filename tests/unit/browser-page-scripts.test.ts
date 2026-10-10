@@ -13,6 +13,7 @@ import {
   prepareFunction,
   readPageFunction,
   readStorageFunction,
+  registrationFunction,
   selectionFunction,
   strayFunction,
   verdictFunction,
@@ -27,6 +28,7 @@ const functions = [
   ['observeKeyed', keyedObserveFunction, 'function observeKeyed(limit, queries, ...elements)'],
   ['prepare', prepareFunction, 'async function prepare(intent, query, ...elements)'],
   ['verdict', verdictFunction, 'function verdict(token'],
+  ['registered', registrationFunction, 'function registered(token'],
   ['disarm', disarmFunction, 'function disarm(token'],
   ['stray', strayFunction, 'function stray()'],
   ['armDocument', armDocumentFunction, 'function armDocument(action, strokes)'],
@@ -69,6 +71,23 @@ async function pressReady(page: FakePage, element: FakeElement): Promise<{ verdi
   assert.equal(page.document.activeElement, element, 'Retest focused the element')
   return { verdict: page.call(verdictFunction, 1) }
 }
+
+test('the registration marker proves only the matching verdict request entered, and resets for each arming', async () => {
+  const page = fakePage()
+  const field = page.element('field')
+  await page.call(prepareFunction, { action: 'press' }, oneElement, field)
+  assert.equal(page.call(registrationFunction, 1), false)
+  const first = page.call(verdictFunction, 1)
+  assert.equal(page.call(registrationFunction, 1), true)
+  assert.equal(page.call(registrationFunction, 2), false, 'another token cannot acknowledge this request')
+  await page.call(prepareFunction, { action: 'press' }, oneElement, field)
+  assert.equal(page.call(registrationFunction, 1), false, 'the previous request cannot acknowledge a new arming')
+  assert.equal(page.call(registrationFunction, 2), false, 'arming does not acknowledge a request')
+  const second = page.call(verdictFunction, 2)
+  assert.equal(page.call(registrationFunction, 2), true)
+  page.call(disarmFunction, 2)
+  await Promise.all([first, second])
+})
 
 test('a press decides at its keydown and answers then, and the rest of the keystroke belongs to the page, wherever it goes', async () => {
   const page = fakePage()

@@ -12,7 +12,7 @@ import { waitUntilActionable } from '../../src/browser/actionability.ts'
 import { CdpDisconnectedError } from '../../src/browser/cdp/errors.ts'
 import { describeAction, describeChoices } from '../../src/browser/element-queries.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
-import { disarmFunction, prepareFunction, selectionFunction, setOffFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { disarmFunction, prepareFunction, selectionFunction, setOffFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { FakeOption, FakeSelect, fakePage, oneElement } from './browser-fake-page.ts'
 import { functionsCalled, isRecord, never, scriptedPage, scriptedSession, value } from './browser-fixtures.ts'
@@ -307,6 +307,7 @@ function selectPage({ plan = typed('c'), looks = [], reached = ['keydown', 'keyu
         if (typing) return value({ status: 'ready', point: null, token: 1, via: null, scale: 1, page: formPage, plan: null })
         return value(looks[look++] ?? { status: 'ready', point: { x: 10, y: 20 }, token: null, via: null, scale: 1, page: formPage, plan })
       }
+      if (source === registrationFunction) return value(true)
       if (source === verdictFunction) {
         const selection = heard === undefined ? {} : { selection: { status: heard, selected: ['Canada'], page: { href: 'http://app.test/form?step=1', title: 'Form' } } }
         return value({ reached, intercepted: null, landed: '<select>', leaving: null, ...selection })
@@ -352,10 +353,12 @@ test('a select types the planned start of the label on its keyboard, each key gu
     prepareFunction,
     prepareFunction,
     verdictFunction,
+    registrationFunction,
     disarmFunction,
     setOffFunction,
     prepareFunction,
     verdictFunction,
+    registrationFunction,
     disarmFunction,
     selectionFunction,
   ])
@@ -478,6 +481,7 @@ test('an answer lost to a closed connection after a key went is outcome_unknown,
       const [intent] = Array.isArray(params['arguments']) ? params['arguments'] : []
       const keyed = isRecord(intent) && isRecord(intent['value']) && intent['value']['typing'] === true
       if (source === prepareFunction) return value(keyed ? { status: 'ready', point: null, token: 1, via: null, scale: 1, page: formPage, plan: null } : { status: 'ready', point: { x: 10, y: 20 }, token: null, via: null, scale: 1, page: formPage, plan: typed('c') })
+      if (source === registrationFunction) return value(true)
       if (source === verdictFunction) return never()
       return value(true)
     },

@@ -2,7 +2,7 @@ import type { GuardVerdict } from '../../src/browser/input-guard.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { wheelFailure } from '../../src/browser/input-guard.ts'
-import { armDocumentFunction, disarmFunction, prepareFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { armDocumentFunction, disarmFunction, prepareFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { functionsCalled, scriptedPage, value } from './browser-fixtures.ts'
 
 const page = { href: 'http://app.test/feed', title: 'Feed' }
@@ -14,6 +14,7 @@ function wheelPage(point: { x: number; y: number }, scale: number, verdict: unkn
   return scriptedPage({
     call: (source) => {
       if (source === prepareFunction || source === armDocumentFunction) return value(ready)
+      if (source === registrationFunction) return value(true)
       if (source === verdictFunction) return value(verdict)
       if (source === disarmFunction) return value(true)
       return Promise.reject(new Error('unexpected call'))
@@ -29,14 +30,14 @@ test('an element is scrolled by one wheel event at its centre, whose delta is in
   const { page: owned, sent } = wheelPage({ x: 120, y: 340 }, 0.5)
   assert.deepEqual(await owned.execute({ kind: 'scroll', locator: terms, x: 0, y: 600 }, 1000), { ok: true, kind: 'scroll', page: { url: 'http://app.test/feed', title: 'Feed' } })
   assert.deepEqual(wheels(sent), [{ type: 'mouseWheel', x: 120, y: 340, deltaX: 0, deltaY: 300 }])
-  assert.deepEqual(functionsCalled(sent), [prepareFunction, verdictFunction, disarmFunction])
+  assert.deepEqual(functionsCalled(sent), [prepareFunction, verdictFunction, registrationFunction, disarmFunction])
 })
 
 test('the page is scrolled at the centre of the viewport, which the document arms for any of its elements', async () => {
   const { page: owned, sent } = wheelPage({ x: 400, y: 300 }, 1)
   assert.deepEqual(await owned.execute({ kind: 'scroll', x: -50, y: 0 }, 1000), { ok: true, kind: 'scroll', page: { url: 'http://app.test/feed', title: 'Feed' } })
   assert.deepEqual(wheels(sent), [{ type: 'mouseWheel', x: 400, y: 300, deltaX: -50, deltaY: 0 }])
-  assert.deepEqual(functionsCalled(sent), [armDocumentFunction, verdictFunction, disarmFunction])
+  assert.deepEqual(functionsCalled(sent), [armDocumentFunction, verdictFunction, registrationFunction, disarmFunction])
 })
 
 test('a scroll with no distance, or a distance that is not a finite number, is usage before anything is sent', async () => {

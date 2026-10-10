@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 import {
   assertOk,
@@ -19,6 +21,7 @@ import {
   fill,
   goto,
   launchEngine,
+  launchGated,
   observe,
   observeUntil,
   openApp,
@@ -28,7 +31,7 @@ import {
   type Target,
 } from './browser-harness.ts'
 import { engineExpectations } from './engine-expectations.ts'
-import { launchWithGate } from './engines.ts'
+import { launchWithGate, protocolOnly } from './engines.ts'
 
 const value = 'hunter2-never-shown'
 const secret = 'password'
@@ -222,6 +225,44 @@ test('a fill bound to its origin still lets the page move within the document, a
       engineCase.assertOutcome(each, site.posts('/typed'), 1)
     })
   })
+})
+
+test('a fill waits for its verdict request to enter the document before input can replace it', async (t) => {
+  if (!protocolOnly(t, 'chromium', 'the gate holds a DevTools verdict request')) return
+  const site = await servePages(t, {
+    '/': `<!doctype html><input data-testid="field">${reportsTyping}<script>
+      const field = document.querySelector('[data-testid="field"]')
+      field.addEventListener('focus', () => history.pushState(null, '', '/focused'))
+      field.addEventListener('input', () => { location.href = '/done' })
+    </script>`,
+    '/done': '<!doctype html><p data-testid="done">Done</p>',
+  })
+  let verdictHeld = false
+  let verdictReleased = false
+  let registrationAsked = false
+  let textDispatched = false
+  const browser = await launchGated(t, {
+    hold(method, params) {
+      const source = isRecord(params) ? params['functionDeclaration'] : undefined
+      if (method === 'Runtime.callFunctionOn' && source === verdictFunction) {
+        verdictHeld = true
+        // Independent of input and navigation: the Runtime handler reaches the browser after this delay.
+        return delay(150).then(() => { verdictReleased = true })
+      }
+      if (method === 'Runtime.callFunctionOn' && source === registrationFunction) registrationAsked = true
+      if (method === 'Input.insertText') {
+        assert.ok(registrationAsked && verdictReleased, 'text cannot overtake the pending verdict request')
+        textDispatched = true
+      }
+      return undefined
+    },
+  })
+  const page = await openPage(t, browser, site.url)
+  assertOk(await goto(page, '/'))
+  assert.deepEqual(await fillBound(page, [site.url]), { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
+  await observeUntil(page, 'done', (seen) => seen.text === 'Done')
+  assert.equal(site.posts('/typed'), 1)
+  assert.ok(verdictHeld && textDispatched, 'the proof delayed a real verdict request and then sent text')
 })
 
 // A page whose load handler sends the browser to another origin, so the navigation is already under way when

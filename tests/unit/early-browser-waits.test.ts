@@ -14,7 +14,7 @@ import { BidiClient } from '../../src/browser/firefox/bidi-client.ts'
 import { FirefoxPage } from '../../src/browser/firefox/page.ts'
 import { inWindowOrder } from '../../src/browser/firefox/window-order.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
-import { checkedFunction, disarmFunction, prepareFunction, selectionFunction, setOffFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { checkedFunction, disarmFunction, prepareFunction, selectionFunction, setOffFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { WebKitPage } from '../../src/browser/webkit/page.ts'
 import { listPlanFunction } from '../../src/browser/webkit/select.ts'
 import { WebKitTargetSession } from '../../src/browser/webkit/target-session.ts'
@@ -103,6 +103,7 @@ for (const engine of ['Chrome', 'Firefox', 'WebKit']) {
         return { status: reads.at(-1)! >= 120 ? 'selected' : 'other', selected: reads.at(-1)! >= 120 ? ['Wanted'] : [], page: facts }
       }
       if (fn === listPlanFunction) return { status: 'single' }
+      if (fn === registrationFunction) return true
       if (fn === verdictFunction) return { reached: ['keydown', 'keyup'], intercepted: null, landed: '<select>', leaving: null }
       if (fn === setOffFunction) return false
       if (fn === disarmFunction) return true

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { BrowserError } from '../../src/browser/browser-error.ts'
 import { CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
-import { disarmFunction, pageLookFunction, prepareFunction, readPageFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { disarmFunction, pageLookFunction, prepareFunction, readPageFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { functionsCalled, isRecord, mainFrame, never, scriptedPage, value } from './browser-fixtures.ts'
 
 // A page over a scripted session: `call` answers each call into Retest's world by its function.
@@ -17,6 +17,7 @@ const facts = { href: 'http://app.test/start?token=1', title: 'Start' }
 test('a press readies its element, then sends the key down and up as real key events while the guard watches', async () => {
   const { page, sent } = pageAnswering((functionDeclaration) => {
     if (functionDeclaration === prepareFunction) return value({ status: 'ready', point: null, token: 1, via: null, scale: 1, page: facts, plan: null })
+    if (functionDeclaration === registrationFunction) return value(true)
     if (functionDeclaration === verdictFunction) return value({ reached: ['keydown'], intercepted: null, landed: '<input>', leaving: null })
     if (functionDeclaration === disarmFunction) return value(true)
     return Promise.reject(new Error('unexpected call'))
@@ -28,6 +29,7 @@ test('a press readies its element, then sends the key down and up as real key ev
     [
       'Runtime.callFunctionOn',
       'Runtime.callFunctionOn',
+      'Runtime.callFunctionOn',
       { type: 'rawKeyDown', key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16, modifiers: 8, location: 1 },
       { type: 'rawKeyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 },
       { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: 8 },
@@ -35,7 +37,7 @@ test('a press readies its element, then sends the key down and up as real key ev
       'Runtime.callFunctionOn',
     ],
   )
-  assert.deepEqual(functionsCalled(sent), [prepareFunction, verdictFunction, disarmFunction])
+  assert.deepEqual(functionsCalled(sent), [prepareFunction, verdictFunction, registrationFunction, disarmFunction])
   const [prepared] = sent.filter(({ method }) => method === 'Runtime.callFunctionOn')
   assert.ok(isRecord(prepared?.params) && Array.isArray(prepared.params['arguments']))
   assert.deepEqual(prepared.params['arguments'][0], { value: { action: 'press', strokes: 2 } }, 'the guard waits for both keys to come up')
@@ -44,6 +46,7 @@ test('a press readies its element, then sends the key down and up as real key ev
 test('a hover readies its element, then moves the mouse to its centre while the guard watches, and presses nothing', async () => {
   const { page, sent } = pageAnswering((functionDeclaration) => {
     if (functionDeclaration === prepareFunction) return value({ status: 'ready', point: { x: 30, y: 40 }, token: 1, via: null, scale: 1, page: facts, plan: null })
+    if (functionDeclaration === registrationFunction) return value(true)
     if (functionDeclaration === verdictFunction) return value({ reached: ['pointerover', 'pointermove', 'mouseover', 'mousemove'], intercepted: null, landed: '<button>', leaving: null })
     if (functionDeclaration === disarmFunction) return value(true)
     return Promise.reject(new Error('unexpected call'))
