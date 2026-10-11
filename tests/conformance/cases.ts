@@ -233,7 +233,8 @@ const lifecycleBudgets: Partial<Timeouts> = { action: 20_000, assertion: 20_000,
 
 /** Every run, in the order the runner makes them on each engine. */
 export const groups: readonly Group[] = [
-  { name: 'web', folder: 'web', app: 'task-app', exitCode: 1, args: ['--workers', '4', '--browsers', '2'] },
+  // Method and deadline cases run serially; the locks and limits groups exercise competing workers explicitly.
+  { name: 'web', folder: 'web', app: 'task-app', exitCode: 1, args: ['--workers', '1', '--browsers', '1'] },
   { name: 'workflow', folder: 'workflow', app: 'task-app', exitCode: 1 },
   { name: 'projects', folder: 'projects', app: 'task-app', exitCode: 0 },
   { name: 'projects-narrow', folder: 'projects', app: 'task-app', exitCode: 0, args: ['--target', 'web=narrow'] },
@@ -241,7 +242,7 @@ export const groups: readonly Group[] = [
   { name: 'server-fails', folder: 'server-fails', app: 'silent-app-server', exitCode: 2 },
   { name: 'participants', folder: 'participants', app: 'task-app', exitCode: 0 },
   { name: 'limits', folder: 'limits', app: 'task-app', exitCode: 0, host: 'host.ts' },
-  { name: 'locks', folder: 'locks', app: 'task-app', exitCode: 0, args: ['--workers', '3'] },
+  { name: 'locks', folder: 'locks', app: 'task-app', exitCode: 0, args: ['--workers', '3', '--browsers', '2'] },
   { name: 'only', folder: 'only', app: 'task-app', exitCode: 0 },
   { name: 'only-ci', folder: 'only', app: 'task-app', exitCode: 2, ci: true },
   { name: 'filter', folder: 'filter', app: 'task-app', exitCode: 0, args: ['--grep', 'kept by the filter'] },
@@ -1094,7 +1095,7 @@ const workflow: TestCase[] = [
 ]
 
 const runs: RunCase[] = [
-  { kind: 'run', id: 'R1', area: 'Scheduling', group: 'web', summary: 'the method cases ran in two browsers shared by four workers', fact: { kind: 'browsers', count: 2 } },
+  { kind: 'run', id: 'R1', area: 'Scheduling', group: 'locks', summary: 'the lock holders ran in two browsers shared by three workers', fact: { kind: 'browsers', count: 2 } },
   { kind: 'run', id: 'R2', area: 'Scheduling', group: 'locks', summary: 'a holder waited for the lock another holder held', fact: { kind: 'lock-waited' } },
   { kind: 'run', id: 'R3', area: 'Web participants', group: 'limits', summary: 'a holder waited for the session the other holder held', fact: { kind: 'sessions-waited' } },
   { kind: 'run', id: 'R4', area: 'Basic configuration', group: 'web', summary: 'discovery found every method case file and nothing else', fact: { kind: 'discovered' } },

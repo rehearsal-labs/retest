@@ -104,9 +104,9 @@ export class FirefoxBrowser implements WebRuntime {
   }
 
   /** The test gate loses a launched browser through its recorded ownership, never by an unchecked numeric pid. */
-  crash(): void {
+  async crash(timeoutMs?: number): Promise<void> {
     if (this.#process.crash === undefined) throw new BrowserError({ class: 'unsupported', message: 'This Firefox handle offers no verified process ownership for a deliberate crash.' })
-    this.#process.crash()
+    await this.#process.crash(timeoutMs)
   }
 
   /**

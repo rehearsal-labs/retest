@@ -42,8 +42,8 @@ class FakeSession implements CaptureSession {
   }
 
   /** Chrome sends a screencast frame. */
-  paint(sessionId: number, data: string = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64')): void {
-    for (const listener of this.#listeners.get('Page.screencastFrame') ?? []) listener({ data, sessionId, metadata: { timestamp: 1 } })
+  paint(sessionId: number, data: string = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'), timestamp?: number): void {
+    for (const listener of this.#listeners.get('Page.screencastFrame') ?? []) listener({ data, sessionId, metadata: timestamp === undefined ? {} : { timestamp } })
   }
 
   detach(reason: string): void {
@@ -90,6 +90,24 @@ describe('the Chromium frame source over one page’s session', () => {
       assert.deepEqual(run.frames.map(({ timestampUs, earliestUs }) => [timestampUs, earliestUs]), [
         [100_000, 0], [200_000, 120_000], [300_000, 200_000],
       ], 'each acknowledgement advances the next read boundary even when its frame waits or is superseded')
+    } finally { await source.stop(1000) }
+  })
+
+  test('an older Chrome frame arriving late is acknowledged and superseded without moving the recording backwards', async () => {
+    const session = new FakeSession()
+    const source = new ChromiumFrameSource(session, identity)
+    const run = capture(30)
+    await source.start(run.start)
+    try {
+      for (const [sessionId, timestamp, arrivedUs] of [[1, 10, 100_000], [2, 12, 200_000], [3, 11, 300_000], [4, 13, 400_000]] as const) {
+        run.setNow(arrivedUs)
+        session.paint(sessionId, Buffer.from(String(timestamp)).toString('base64'), timestamp)
+      }
+      assert.deepEqual(session.acknowledged(), [1, 2, 3, 4], 'discarding an older image must still release Chrome’s next frame')
+      assert.deepEqual(run.frames.map(({ timestampUs, bytes }) => [timestampUs, bytes.toString()]), [[100_000, '10'], [200_000, '12'], [400_000, '13']], 'source ordering does not replace the run’s arrival clock')
+      const stats = await source.stop(1000)
+      assert.equal(stats.superseded, 1)
+      assert.equal(stats.dropped, 0)
     } finally { await source.stop(1000) }
   })
 

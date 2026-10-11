@@ -203,7 +203,7 @@ test('a Firefox killed while an action waits for its element fails as a lost ses
   const clicking = page.dispatch({ kind: 'click', locator: byTestId('far') }, 10_000)
   await Promise.race([waitingForElement.promise, clicking.then((result) => assert.fail(`The click ended before observing the disabled element: ${JSON.stringify(result)}`))])
   looked.mock.restore()
-  first.crash()
+  await first.crash(closeMs)
   const lost = await clicking
   assert.ok(!lost.result.ok)
   assert.equal(lost.result.failure.class, 'session_lost')
@@ -215,7 +215,7 @@ test('a Firefox killed while an action waits for its element fails as a lost ses
   assert.equal((await frozen.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
   const pressing = frozen.dispatch({ kind: 'click', locator: byTestId('freeze') }, 10_000)
   await awaitPosts(site, '/pressed', 1)
-  browser.crash()
+  await browser.crash(closeMs)
   const { result, input } = await pressing
   t.diagnostic(`input after the loss: ${input}`)
   assert.notEqual(input, 'not_sent')
@@ -279,7 +279,7 @@ test("the collector hears the page's requests and a failed one, hears no console
   const failed = sink.observations.find((observation) => observation.kind === 'failed')
   assert.ok(failed?.kind === 'failed' && failed.reason.length > 0, JSON.stringify(failed))
   assert.deepEqual([sink.unread, sink.refused], [[], []])
-  browser.crash()
+  await browser.crash(closeMs)
   await until(() => sink.losses.length > 0, 5000, 'the loss was told')
   await delay(200)
   assert.equal(sink.losses.length, 1, 'the loss is told once')

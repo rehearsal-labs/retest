@@ -14,7 +14,7 @@ export type CaptureSession = Pick<CdpSession, 'id' | 'send' | 'on' | 'onDetach' 
  */
 export type ChromiumCaptureOptions = { format?: 'jpeg' | 'png'; quality?: number; maxWidth?: number; maxHeight?: number }
 
-const frameSchema = s.object({ data: s.string(), sessionId: s.number({ integer: true }) })
+const frameSchema = s.object({ data: s.string(), sessionId: s.number({ integer: true }), metadata: s.optional(s.object({ timestamp: s.optional(s.number()) })) })
 // An acknowledgement is small and Chrome answers it at once; this only keeps an unanswered one from waiting forever.
 const acknowledgeTimeoutMs = 5000
 const keptProblems = 8
@@ -30,7 +30,8 @@ type State = 'idle' | 'starting' | 'running' | 'stopping' | 'ended' | 'stopped'
  * are kept as Chrome encoded them, JPEG or PNG, out of the protocol's base64 and never decoded; each is stamped with the
  * run's clock when it reaches Retest. At most one frame is handed over each `1/fps` of a second: one that comes sooner
  * waits for its turn, and a newer frame that comes before then takes its place and the older one is counted as
- * superseded. Frames that come while capture stops are still counted, and the one waiting is handed over before the stop
+ * superseded. A delayed image whose Chrome frame-swap timestamp precedes an image already received is also
+ * superseded, while its acknowledgement still releases the next frame. Frames that come while capture stops are still counted, and the one waiting is handed over before the stop
  * resolves. Sends no input.
  *
  * The screencast was chosen over a `Page.captureScreenshot` loop because it is Chrome's own frame stream, which sends
@@ -60,6 +61,7 @@ export class ChromiumFrameSource implements FrameSource {
   #stoppedAtUs: number | undefined
   #firstUs: number | undefined
   #lastUs: number | undefined
+  #lastSwapTimestamp: number | undefined
   // When on the run's clock the last frame was handed over, which the next turn is counted from.
   #acknowledgedUs: number | undefined
   #handedOverUs: number | undefined
@@ -192,7 +194,7 @@ export class ChromiumFrameSource implements FrameSource {
   }
 
   #frame(params: unknown): void {
-    let frame: { data: string; sessionId: number }
+    let frame: { data: string; sessionId: number; metadata?: { timestamp?: number } }
     try {
       frame = readProtocol(frameSchema, params, { method: 'Page.screencastFrame', sessionId: this.#session.id })
     } catch (error) {
@@ -219,6 +221,13 @@ export class ChromiumFrameSource implements FrameSource {
       this.#problem('Chrome sent a frame with no image in it.')
       return
     }
+    const swapTimestamp = frame.metadata?.timestamp
+    // Chrome can finish encoding an older frame after a newer one. Its swap order is independent of our arrival clock.
+    if (swapTimestamp !== undefined && this.#lastSwapTimestamp !== undefined && swapTimestamp < this.#lastSwapTimestamp) {
+      this.#superseded += 1
+      return
+    }
+    if (swapTimestamp !== undefined) this.#lastSwapTimestamp = swapTimestamp
     const timestampUs = capture.clock()
     // Acknowledgement lets the next read begin before cadence delivery. Keep the bound from before this frame’s ack.
     this.#offer({ identity: this.identity, timestampUs, earliestUs: earliestUs ?? timestampUs, format: this.#options.format ?? 'jpeg', bytes })

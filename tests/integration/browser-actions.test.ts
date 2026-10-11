@@ -744,7 +744,7 @@ test('a browser lost between the key down and the key up leaves the outcome unkn
   assertOk(await goto(page, '/actions'))
   const pressing = press(page, 'query', 'Enter', 5000)
   await releaseHeld.promise
-  crashBrowser(browser)
+  await crashBrowser(browser)
   const failure = failureOf(await pressing)
   assert.equal(failure.class, 'outcome_unknown', JSON.stringify(failure))
   assert.match(failure.message, /^Retest lost the page after it began to press Enter on getByTestId\('query'\), so it cannot tell whether that took effect: /)

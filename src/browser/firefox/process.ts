@@ -13,6 +13,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { waitBeforeRead } from '../../assertions/wait-before-read.ts'
 import { promisify } from 'node:util'
 import { Deadline } from '../../protocol/deadline.ts'
+import { defaultTimeouts } from '../../protocol/timeouts.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { s, parse } from '../../protocol/schema.ts'
 import { describeExit } from '../../shared/process-exit.ts'
@@ -159,21 +160,42 @@ export class FirefoxProcess {
     this.#wakeLook?.()
   }
 
-  /** Ends only freshly verified recorded processes, for tests that deliberately lose this browser. */
-  crash(): void {
+  /** Ends only freshly verified recorded processes, after their stopped states prevent another fork. */
+  async crash(timeoutMs: number = defaultTimeouts.cleanup): Promise<void> {
     this.expectExit()
-    // End the browser first. Ending its content processes first lets the still-live Remote Agent answer an input
-    // with a protocol error before the browser connection is lost. Every signal still needs a fresh owned identity.
-    // Record new content processes while their live ancestry still reaches the browser. After it ends, newly
-    // orphaned children cannot be claimed merely because they share its process group.
-    const problems = this.#ownership.capture()
-    const browser = this.#ownership.verifiedIdentity()
-    if (browser !== undefined) {
-      try { process.kill(browser.pid, 'SIGKILL') }
-      catch (error) { problems.push(`Could not end the recorded Firefox process ${browser.pid}: ${errorMessage(error)}`) }
+    const deadline = new Deadline(timeoutMs)
+    const problems: string[] = []
+    try {
+      await this.#stopForCrash(deadline)
+      // The Remote Agent ends before content, so a lost input cannot receive a content-process protocol error.
+      const browser = this.#ownership.verifiedIdentity()
+      if (browser !== undefined) process.kill(browser.pid, 'SIGKILL')
+      problems.push(...this.#ownership.signalNow('SIGKILL', deadline))
+    } catch (error) {
+      problems.push(errorMessage(error))
+    } finally {
+      // A failed state read must not leave this test's verified processes suspended.
+      problems.push(...this.#ownership.signalNow('SIGCONT'))
     }
-    problems.push(...this.#ownership.signalNow('SIGKILL'))
     if (problems.length > 0) throw new Error(problems.join(' '))
+  }
+
+  async #stopForCrash(deadline: Deadline): Promise<void> {
+    for (;;) {
+      if (deadline.expired) throw new Error('Firefox did not confirm its stopped process states before the crash deadline.')
+      const problems = this.#ownership.signalNow('SIGSTOP', deadline)
+      if (problems.length > 0) throw new Error(problems.join(' '))
+      const reading = this.#table.readAsync()
+      if (!(await settlesWithin(reading, deadline))) throw new Error('Firefox process states could not be read before the crash deadline.')
+      const entries = await reading
+      const family = new Set([this.pid])
+      let changed = true
+      while (changed) {
+        changed = false
+        for (const entry of entries) if (!family.has(entry.pid) && family.has(entry.parentPid)) { family.add(entry.pid); changed = true }
+      }
+      if (entries.every(entry => !isRunning(entry) || (!family.has(entry.pid) && entry.groupId !== this.pid) || entry.state?.startsWith('T') === true)) return
+    }
   }
 
   /**

@@ -51,7 +51,7 @@ export type TestEngine = {
    */
   launchGated?(options: EngineLaunch, timeoutMs: number, gate: InputGate): Promise<OwnedBrowser>
   /** Ends a browser the test launched at once, as a crash would, by what the engine's driver owns of it. */
-  crash?(browser: OwnedBrowser): void
+  crash?(browser: OwnedBrowser): void | Promise<void>
   target(settings?: string, build?: 'first' | 'second'): string
   readonly secondBuild?: 'distinct'
   readonly environment: Readonly<Record<string, string>>
@@ -102,7 +102,7 @@ const firefox: TestEngine = {
   launchGated: (options, timeoutMs, gate) => launchFirefox({ ...options, executablePath: firefoxPath(), route: testFirefoxRoute() }, timeoutMs, firefoxGate(gate)),
   crash: (browser) => {
     if (!(browser instanceof FirefoxBrowser)) throw new Error('The Firefox crash gate needs the Firefox browser this test launched')
-    browser.crash()
+    return browser.crash()
   },
   // The machine has one Firefox, so a test that asks for a second build gets the same one.
   target: (settings) => `{ browser: 'firefox', executablePath: ${JSON.stringify(firefoxPath())}, ${settings ?? ''} }`,
@@ -181,12 +181,12 @@ export async function launchWithGate(t: TestContext, gate: InputGate, reason: st
 /**
  * Ends the browser of the engine under test at once, as a crash would; an engine whose entry cannot fails by name.
  *
- * @example crashBrowser(browser)
+ * @example await crashBrowser(browser)
  */
-export function crashBrowser(browser: OwnedBrowser): void {
+export async function crashBrowser(browser: OwnedBrowser): Promise<void> {
   const engine = engineUnderTest()
   if (engine.crash === undefined) throw new Error(`The ${engine.label} entry of engines.ts cannot end its browser as a crash would.`)
-  engine.crash(browser)
+  await engine.crash(browser)
 }
 
 // Chrome's protocol: key events and text insertion are commands of their own, and the main frame's documents are told

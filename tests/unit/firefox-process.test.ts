@@ -39,7 +39,7 @@ test('a deliberate Firefox crash refuses a reused pid after checking its recorde
   const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-crash-'))
   const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'launch-services', folder, profile: join(folder, 'profile'), ownership, child: undefined, output: Promise.resolve([]), table: { readAsync: async () => entries() } })
   current = { ...firefoxEntry, startedAt: 'a different recorded start' }
-  assert.throws(() => firefox.crash(), /different identity/)
+  await assert.rejects(firefox.crash(), /different identity/)
   assert.deepEqual(signals, [], 'a numeric pid alone never grants signal authority')
   current = undefined
   firefox.expectExit()
@@ -53,8 +53,12 @@ test('a deliberate Firefox crash records newly started content before ending the
   const signals: number[] = []
   let lastRead: number | undefined
   const entries = (): OwnedProcessIdentity[] => [launchd, ...alive.values()]
-  const signal = (pid: number): true => {
+  const signal = (pid: number, sent: NodeJS.Signals | 0): true => {
     assert.equal(lastRead, pid, 'each signal immediately follows the recorded pid identity check')
+    const entry = alive.get(pid)
+    if (entry !== undefined && sent === 'SIGSTOP') { alive.set(pid, { ...entry, state: 'T' }); return true }
+    if (entry !== undefined && sent === 'SIGCONT') { alive.set(pid, { ...entry, state: 'S' }); return true }
+    assert.equal(sent, 'SIGKILL')
     signals.push(pid)
     alive.delete(pid)
     if (pid === firefoxPid) alive.set(helper.pid, { ...helper, parentPid: 1 })
@@ -71,11 +75,73 @@ test('a deliberate Firefox crash records newly started content before ending the
   t.after(async () => { alive.clear(); firefox.expectExit(); await firefox.exited; await firefox.stop(0) })
   t.mock.method(process, 'kill', (pid: number, sent?: string | number) => {
     assert.equal(sent, 'SIGKILL')
-    return signal(pid)
+    return signal(pid, sent)
   })
   alive.set(helper.pid, helper)
-  firefox.crash()
+  await firefox.crash()
   assert.deepEqual(signals, [firefoxPid, helper.pid], 'content cannot answer a lost-input error before the browser is ended')
+})
+
+test('a crash stops process creation before recording and killing a late Firefox helper', async (t) => {
+  const helper = { ...firefoxEntry, pid: firefoxPid + 1, parentPid: firefoxPid, command: 'firefox content process' }
+  const alive = new Map([firefoxEntry].map(entry => [entry.pid, entry]))
+  const signals: { pid: number; signal: NodeJS.Signals | 0 }[] = []
+  let spawned = false
+  let lastRead: number | undefined
+  const entries = (): OwnedProcessIdentity[] => [launchd, ...alive.values()]
+  const signal = (pid: number, sent: NodeJS.Signals | 0): true => {
+    assert.equal(lastRead, pid, 'each signal follows a fresh identity check')
+    signals.push({ pid, signal: sent })
+    const entry = alive.get(pid)
+    if (entry !== undefined && sent === 'SIGSTOP') alive.set(pid, { ...entry, state: 'T' })
+    if (entry !== undefined && sent === 'SIGCONT') alive.set(pid, { ...entry, state: 'S' })
+    if (sent === 'SIGKILL') {
+      alive.delete(pid)
+      const remaining = alive.get(helper.pid)
+      if (pid === firefoxPid && remaining !== undefined) alive.set(helper.pid, { ...remaining, parentPid: 1 })
+    }
+    return true
+  }
+  const ownership = new OwnedProcessGroup(firefoxPid, 1, { read: entries, readProcess: pid => {
+    lastRead = pid
+    if (pid === firefoxPid && !spawned) { spawned = true; alive.set(helper.pid, helper) }
+    return alive.get(pid)
+  }, signal })
+  assert.deepEqual(ownership.capture(), [])
+  const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-late-fork-'))
+  const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'launch-services', folder, profile: join(folder, 'profile'), ownership, child: undefined, output: Promise.resolve([]), table: { readAsync: async () => entries() } })
+  t.after(async () => { alive.clear(); firefox.expectExit(); await firefox.exited; await firefox.stop(0) })
+  t.mock.method(process, 'kill', (pid: number, sent?: string | number) => {
+    assert.ok(sent === 'SIGKILL' || sent === 'SIGSTOP' || sent === 'SIGCONT')
+    return signal(pid, sent)
+  })
+  await firefox.crash()
+  assert.deepEqual(signals.filter(entry => entry.signal === 'SIGKILL').map(entry => entry.pid), [firefoxPid, helper.pid])
+  assert.deepEqual([...alive.values()], [])
+})
+
+test('a crash whose stopped-state reading fails resumes its verified Firefox without killing it', async (t) => {
+  let current: OwnedProcessIdentity | undefined = firefoxEntry
+  const sent: (NodeJS.Signals | 0)[] = []
+  const entries = (): OwnedProcessIdentity[] => [launchd, ...(current === undefined ? [] : [current])]
+  const signal = (pid: number, value: NodeJS.Signals | 0): true => {
+    assert.equal(pid, firefoxPid)
+    sent.push(value)
+    if (current !== undefined) current = { ...current, state: value === 'SIGSTOP' ? 'T' : 'S' }
+    return true
+  }
+  const ownership = new OwnedProcessGroup(firefoxPid, 1, { read: entries, readProcess: pid => current?.pid === pid ? current : undefined, signal })
+  assert.deepEqual(ownership.capture(), [])
+  const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-crash-read-failed-'))
+  const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'launch-services', folder, profile: join(folder, 'profile'), ownership, child: undefined, output: Promise.resolve([]), table: { readAsync: async () => { throw new Error('host state unavailable') }, watchAsync: async () => entries() } })
+  t.after(async () => { current = undefined; firefox.expectExit(); await firefox.exited; await firefox.stop(0) })
+  t.mock.method(process, 'kill', (pid: number, value?: string | number) => {
+    assert.ok(value === 'SIGSTOP' || value === 'SIGCONT' || value === 'SIGKILL')
+    return signal(pid, value)
+  })
+  await assert.rejects(firefox.crash(), /host state unavailable/)
+  assert.deepEqual(sent, ['SIGSTOP', 'SIGCONT'])
+  assert.equal(current?.state, 'S')
 })
 
 /** A machine whose Firefox is alive until `end()`, counting how often each kind of reading was taken. */

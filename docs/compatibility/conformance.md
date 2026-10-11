@@ -6,15 +6,17 @@ Each case is a test in a file under `fixtures/conformance/`, run through the com
 
 The cases cover the first release's browser scope: navigation, locators, actions, assertions, test structure, basic configuration, sign-in state, participants with their own accounts, scheduling and failure handling. AI checks and diagnostic output are in that scope too, and have fixtures of their own for each engine.
 
-Generated 2026-10-05T09:01:51.637Z on darwin arm64, Node 24.12.0, Retest 0.0.0 at commit b59eed5 with uncommitted changes.
+An engine that refuses an operation by name, or whose browser does something Chrome's does not, ends a case otherwise only where `tests/integration/engine-differences.ts` declares it, with the outcome it gives, why, and the item of the engine's page in `docs/compatibility/` that records it. Such a case is held to that outcome exactly, and is marked **declared** in its cell; the declarations are listed under the tables. Chrome declares nothing.
+
+Generated 2026-10-11T17:46:50.078Z on darwin arm64, Node 24.12.0, Retest 0.0.0 at commit d19c196 with uncommitted changes.
 
 ## Engines
 
 | Engine | Available | Browsers the runs launched | Cases as declared |
 | --- | --- | --- | --- |
-| Chrome | yes | Chrome 154.0.8037.93 (`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`) | 147 of 148 cases; 15 of 15 runs |
-| Firefox | yes This process may not read ~/Library/Application Support/Firefox, so the runs started Firefox through Launch Services rather than as a child process. | Firefox 133.0.3 (`/Applications/Firefox.app/Contents/MacOS/firefox`) | 146 of 148 cases; 15 of 15 runs |
-| WebKit | yes | WebKit 626.1.6+, build 2359 (`/Users/dragon/Library/Caches/ms-playwright/webkit-2359/Playwright.app/Contents/MacOS/Playwright`) | 142 of 148 cases; 15 of 15 runs |
+| Chrome | yes | Chrome 154.0.8037.99 (`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`) | 148 of 148 cases; 15 of 15 runs |
+| Firefox | yes This process may not read ~/Library/Application Support/Firefox, so the runs started Firefox through Launch Services rather than as a child process. | Firefox 133.0.3 (`/Applications/Firefox.app/Contents/MacOS/firefox`) | 148 of 148 cases; 15 of 15 runs |
+| WebKit | yes | WebKit 626.1.6+, build 2359 (`/Users/dragon/Library/Caches/ms-playwright/webkit-2359/Playwright.app/Contents/MacOS/Playwright`) | 148 of 148 cases; 15 of 15 runs |
 
 ## Cases
 
@@ -24,7 +26,7 @@ Generated 2026-10-05T09:01:51.637Z on darwin arm64, Node 24.12.0, Retest 0.0.0 a
 | N2 | Navigation | `web/navigation.retest.ts` › reload, back and forward move through the history, and the page reads its address and title | passed | passed | passed | passed |
 | N3 | Navigation | `web/navigation.retest.ts` › a link, Enter in a form and a new path set by a click are each the action that caused them | passed | passed | passed | passed |
 | N4 | Navigation | `web/navigation.retest.ts` › goto follows a redirect from the server, and a check waits for the page the page itself moves to | passed | passed | passed | passed |
-| N5 | Navigation | `web/navigation.retest.ts` › toHaveURL fails naming both addresses | failed check_failed at toHaveURL | failed check_failed at toHaveURL, **differs** | failed check_failed at toHaveURL | failed check_failed at toHaveURL |
+| N5 | Navigation | `web/navigation.retest.ts` › toHaveURL fails naming both addresses | failed check_failed at toHaveURL | failed check_failed at toHaveURL | failed check_failed at toHaveURL | failed check_failed at toHaveURL |
 | N6 | Navigation | `web/navigation.retest.ts` › goBack with no earlier entry fails and sends nothing | failed not_actionable at goBack | failed not_actionable at goBack | failed not_actionable at goBack | failed not_actionable at goBack |
 | N7 | Navigation | `web/navigation.retest.ts` › a page that never finishes loading fails when its navigation time runs out | failed timeout at goto | failed timeout at goto | failed timeout at goto | failed timeout at goto |
 | L1 | Locators | `web/locators.retest.ts` › each kind of locator finds its element: test id, role and name, label, text, placeholder and CSS | passed | passed | passed | passed |
@@ -40,13 +42,13 @@ Generated 2026-10-05T09:01:51.637Z on darwin arm64, Node 24.12.0, Retest 0.0.0 a
 | A2 | Actions | `web/actions.retest.ts` › a click is a real press and release that the page hears once, as trusted input | passed | passed | passed | passed |
 | A3 | Actions | `web/actions.retest.ts` › hover moves the mouse onto an element, again at the same place, and onto a disabled one | passed | passed | passed | passed |
 | A4 | Actions | `web/actions.retest.ts` › keys move the focus, Enter submits a form once, and shortcuts hold their modifiers | passed | passed | passed | passed |
-| A5 | Actions | `web/actions.retest.ts` › select chooses by label, by value and several options at once, and the page hears trusted input | passed | passed | passed | passed |
+| A5 | Actions | `web/actions.retest.ts` › select chooses by label, by value and several options at once, and the page hears trusted input | passed | passed | error unsupported at select, **declared** | passed |
 | A6 | Actions | `web/actions.retest.ts` › check and uncheck work a checkbox, an element whose role is checkbox, a hidden checkbox through its label, and radios | passed | passed | passed | passed |
-| A7 | Actions | `web/actions.retest.ts` › the wheel scrolls an element to its end and the page near its end, which each answer once | passed | passed | failed check_failed at toBeEnabled, **differs** | passed |
+| A7 | Actions | `web/actions.retest.ts` › the wheel scrolls an element to its end and the page near its end, which each answer once | passed | passed | failed check_failed at toBeEnabled, **declared** | passed |
 | A8 | Actions | `web/actionability.retest.ts` › a click waits for a button that is enabled a moment after the page loads, and clicks it once | passed | passed | passed | passed |
 | A9 | Actions | `web/actionability.retest.ts` › a click on a covered button is refused when its time runs out, naming what covers it | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click |
 | A10 | Actions | `web/actionability.retest.ts` › a click on a disabled button is refused when its time runs out | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click |
-| A11 | Actions | `web/actionability.retest.ts` › a click on a hidden element is refused when its time runs out | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click, **differs** |
+| A11 | Actions | `web/actionability.retest.ts` › a click on a hidden element is refused when its time runs out | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click |
 | A12 | Actions | `web/actionability.retest.ts` › a covered checkbox is not checked | failed not_actionable at check | failed not_actionable at check | failed not_actionable at check | failed not_actionable at check |
 | A13 | Actions | `web/actionability.retest.ts` › a checkbox covered as the pointer arrives takes no click, and the page hears no part of one | failed not_actionable at check | failed not_actionable at check | failed not_actionable at check | failed not_actionable at check |
 | A14 | Actions | `web/actionability.retest.ts` › a covered list is not scrolled | failed not_actionable at scroll | failed not_actionable at scroll | failed not_actionable at scroll | failed not_actionable at scroll |
@@ -133,11 +135,11 @@ Generated 2026-10-05T09:01:51.637Z on darwin arm64, Node 24.12.0, Retest 0.0.0 a
 | F6.2 | Assertions | `workflow/f06-validation.retest.ts` › each wrong value gets its own message, fixing a field clears only its own, and a valid form is accepted | passed | passed | passed | passed |
 | F6.3 | Assertions | `workflow/f06-validation.retest.ts` › an email the server knows is refused beside its field, and the typed values stay | passed | passed | passed | passed |
 | F6.4 | Assertions | `workflow/f06-validation.retest.ts` › a form that accepts a short password fails at the password error | failed check_failed at toHaveText in step "the short password is refused" | failed check_failed at toHaveText in step "the short password is refused" | failed check_failed at toHaveText in step "the short password is refused" | failed check_failed at toHaveText in step "the short password is refused" |
-| F7.1 | Actions | `workflow/f07-selection.retest.ts` › chooses a plan, ticks a box and picks a theme, and the saved choices come back after a reload | passed | passed | passed | error unsupported at select, **differs** |
-| F7.2 | Actions | `workflow/f07-selection.retest.ts` › unticks a ticked box, chooses by value, and a second radio replaces the first | passed | passed | passed | error unsupported at uncheck, **differs** |
-| F7.3 | Actions | `workflow/f07-selection.retest.ts` › the Business plan shows a seats choice that the other plans hide | passed | passed | passed | error unsupported at select, **differs** |
-| F7.4 | Actions | `workflow/f07-selection.retest.ts` › a save that ignores a checkbox fails at the saved summary | failed check_failed at toHaveText in step "the saved preferences match the form" | failed check_failed at toHaveText in step "the saved preferences match the form" | failed check_failed at toHaveText in step "the saved preferences match the form" | error unsupported at check, **differs** |
-| F8.1a | Locators | `workflow/f08-lists.retest.ts` › reads the table row by row and finds a member by name | passed | passed | error unsupported at toBeVisible, **differs** | error unsupported at toBeVisible, **differs** |
+| F7.1 | Actions | `workflow/f07-selection.retest.ts` › chooses a plan, ticks a box and picks a theme, and the saved choices come back after a reload | passed | passed | passed | passed |
+| F7.2 | Actions | `workflow/f07-selection.retest.ts` › unticks a ticked box, chooses by value, and a second radio replaces the first | passed | passed | passed | passed |
+| F7.3 | Actions | `workflow/f07-selection.retest.ts` › the Business plan shows a seats choice that the other plans hide | passed | passed | passed | passed |
+| F7.4 | Actions | `workflow/f07-selection.retest.ts` › a save that ignores a checkbox fails at the saved summary | failed check_failed at toHaveText in step "the saved preferences match the form" | failed check_failed at toHaveText in step "the saved preferences match the form" | failed check_failed at toHaveText in step "the saved preferences match the form" | failed check_failed at toHaveText in step "the saved preferences match the form" |
+| F8.1a | Locators | `workflow/f08-lists.retest.ts` › reads the table row by row and finds a member by name | passed | passed | error unsupported at toBeVisible, **declared** | error unsupported at toBeVisible, **declared** |
 | F8.1b | Locators | `workflow/f08-lists.retest.ts` › a table row found by its name is refused by name at once | error unsupported at toBeVisible | error unsupported at toBeVisible | error unsupported at toBeVisible | error unsupported at toBeVisible |
 | F8.2 | Locators | `workflow/f08-lists.retest.ts` › sorts the table by name one way and then the other | passed | passed | passed | passed |
 | F8.3 | Locators | `workflow/f08-lists.retest.ts` › finds an invoice far down a long list and opens it | passed | passed | passed | passed |
@@ -151,7 +153,7 @@ Generated 2026-10-05T09:01:51.637Z on darwin arm64, Node 24.12.0, Retest 0.0.0 a
 | F10.3 | Assertions | `workflow/f10-async.retest.ts` › offers to try again after a failed load, and loads on the second try | passed | passed | passed | passed |
 | F10.4 | Assertions | `workflow/f10-async.retest.ts` › a loading line that never goes away fails at the hidden check | failed check_failed at toBeHidden in step "the loading line goes once the reports are in" | failed check_failed at toBeHidden in step "the loading line goes once the reports are in" | failed check_failed at toBeHidden in step "the loading line goes once the reports are in" | failed check_failed at toBeHidden in step "the loading line goes once the reports are in" |
 | F10.5 | Assertions | `workflow/f10-async.retest.ts` › reports that never arrive fail at the list check | failed check_failed at toHaveCount in step "the reports arrive" | failed check_failed at toHaveCount in step "the reports arrive" | failed check_failed at toHaveCount in step "the reports arrive" | failed check_failed at toHaveCount in step "the reports arrive" |
-| R1 | Scheduling | Run `web`: the method cases ran in two browsers shared by four workers | holds | holds | holds | holds |
+| R1 | Scheduling | Run `locks`: the lock holders ran in two browsers shared by three workers | holds | holds | holds | holds |
 | R2 | Scheduling | Run `locks`: a holder waited for the lock another holder held | holds | holds | holds | holds |
 | R3 | Web participants | Run `limits`: a holder waited for the session the other holder held | holds | holds | holds | holds |
 | R4 | Basic configuration | Run `web`: discovery found every method case file and nothing else | holds | holds | holds | holds |
@@ -173,38 +175,41 @@ Generated 2026-10-05T09:01:51.637Z on darwin arm64, Node 24.12.0, Retest 0.0.0 a
 
 | Run | Folder | Declared exit | Chrome | Firefox | WebKit |
 | --- | --- | --- | --- | --- | --- |
-| web | `web` | 1 | exit code 1, 15.6 s | exit code 1, 13.7 s | exit code 1, 15.3 s |
-| workflow | `workflow` | 1 | exit code 1, 19.6 s | exit code 1, 23.6 s | exit code 1, 19.3 s |
-| projects | `projects` | 0 | exit code 0, 2.6 s | exit code 0, 2.3 s | exit code 0, 2.6 s |
-| projects-narrow | `projects` | 0 | exit code 0, 1.7 s | exit code 0, 2.0 s | exit code 0, 1.6 s |
-| server | `server` | 0 | exit code 0, 1.9 s | exit code 0, 2.3 s | exit code 0, 1.8 s |
-| server-fails | `server-fails` | 2 | exit code 2, 2.7 s | exit code 2, 2.7 s | exit code 2, 2.5 s |
-| participants | `participants` | 0 | exit code 0, 5.5 s | exit code 0, 6.9 s | exit code 0, 6.1 s |
-| limits | `limits` | 0 | exit code 0, 3.0 s | exit code 0, 3.6 s | exit code 0, 3.4 s |
-| locks | `locks` | 0 | exit code 0, 4.0 s | exit code 0, 4.3 s | exit code 0, 5.7 s |
-| only | `only` | 0 | exit code 0, 1.7 s | exit code 0, 2.1 s | exit code 0, 2.2 s |
-| only-ci | `only` | 2 | exit code 2, 0.6 s | exit code 2, 0.5 s | exit code 2, 0.5 s |
-| filter | `filter` | 0 | exit code 0, 1.9 s | exit code 0, 2.4 s | exit code 0, 2.2 s |
-| cancel-after-input | `lifecycle` | 130 | exit code 130, 2.1 s | exit code 130, 2.2 s | exit code 130, 1.9 s |
-| lost-after-input | `lifecycle` | 2 | exit code 2, 1.3 s | exit code 2, 1.8 s | exit code 2, 2.1 s |
-| lost-while-looking | `lifecycle` | 2 | exit code 2, 1.3 s | exit code 2, 1.7 s | exit code 2, 1.9 s |
+| web | `web` | 1 | exit code 1, 29.8 s | exit code 1, 32.8 s | exit code 1, 32.9 s |
+| workflow | `workflow` | 1 | exit code 1, 23.1 s | exit code 1, 28.2 s | exit code 1, 24.0 s |
+| projects | `projects` | 0 | exit code 0, 2.0 s | exit code 0, 2.6 s | exit code 0, 2.6 s |
+| projects-narrow | `projects` | 0 | exit code 0, 1.5 s | exit code 0, 2.3 s | exit code 0, 1.6 s |
+| server | `server` | 0 | exit code 0, 1.7 s | exit code 0, 2.4 s | exit code 0, 1.8 s |
+| server-fails | `server-fails` | 2 | exit code 2, 2.6 s | exit code 2, 3.5 s | exit code 2, 2.5 s |
+| participants | `participants` | 0 | exit code 0, 4.5 s | exit code 0, 7.4 s | exit code 0, 5.8 s |
+| limits | `limits` | 0 | exit code 0, 2.8 s | exit code 0, 3.7 s | exit code 0, 3.2 s |
+| locks | `locks` | 0 | exit code 0, 3.9 s | exit code 0, 5.6 s | exit code 0, 4.7 s |
+| only | `only` | 0 | exit code 0, 1.6 s | exit code 0, 2.5 s | exit code 0, 2.0 s |
+| only-ci | `only` | 2 | exit code 2, 0.6 s | exit code 2, 0.5 s | exit code 2, 0.6 s |
+| filter | `filter` | 0 | exit code 0, 1.5 s | exit code 0, 2.4 s | exit code 0, 1.9 s |
+| cancel-after-input | `lifecycle` | 130 | exit code 130, 1.5 s | exit code 130, 2.3 s | exit code 130, 1.7 s |
+| lost-after-input | `lifecycle` | 2 | exit code 2, 1.4 s | exit code 2, 2.0 s | exit code 2, 1.8 s |
+| lost-while-looking | `lifecycle` | 2 | exit code 2, 1.4 s | exit code 2, 2.0 s | exit code 2, 1.7 s |
+
+## Declared differences
+
+| Engine | Case | Declared outcome | Why | Recorded in |
+| --- | --- | --- | --- | --- |
+| Firefox | A5 | error unsupported at select | Firefox's driver refuses keyboard input to a multiple select before any key, since Firefox shows no option holding the list's focus to check before Space toggles it. | `docs/compatibility/firefox.md`, Engine differences 4 |
+| Firefox | A7 | failed check_failed at toBeEnabled | Firefox scrolls an element by at most one page for one wheel event, so a 2000 pixel turn moves the terms without reaching their end. | `docs/compatibility/firefox.md`, Engine differences 5 |
+| Firefox | F8.1a | error unsupported at toBeVisible | Firefox's accessibility tree does not name a cell from its text, so the driver refuses a cell looked up by such a name. | `docs/compatibility/firefox.md`, Engine differences 7 |
+| WebKit | F8.1a | error unsupported at toBeVisible | WebKit's accessibility tree does not name a cell from its text, so the driver refuses a cell looked up by such a name. | `docs/compatibility/webkit.md`, Engine differences 4 |
 
 ## Differences
 
 ### Chrome
 
-- N5 (toHaveURL fails naming both addresses): It gave up after 299 ms, before its 300 ms had passed.
+None: every case and every run ended as declared.
 
 ### Firefox
 
-- A7 (the wheel scrolls an element to its end and the page near its end, which each answer once): It ended failed check_failed at toBeEnabled, declared passed. Its failure says: "getByTestId('accept') is disabled. Looked 7 times in 1500 ms."
-- F8.1a (reads the table row by row and finds a member by name): It ended error unsupported at toBeVisible, declared passed. Its failure says: "Could not look up getByRole('cell', { name: 'Grace Hopper' }): Chrome names a cell from its text, and Firefox's accessibility tree does not, so Retest refuses the lookup rather than find less on Firefox. Find it with getByText() or getByTestId(), or by its position with nth()."
+None: every case and every run ended as declared.
 
 ### WebKit
 
-- A11 (a click on a hidden element is refused when its time runs out): It gave up after 499 ms, before its 500 ms had passed.
-- F7.1 (chooses a plan, ticks a box and picks a theme, and the saved choices come back after a reload): It ended error unsupported at select, declared passed. Its failure says: "Could not look up getByLabel('Plan'): the page holds a hidden <label>, whose text WebKit's accessibility tree still gives the control it labels and Chrome's does not, so Retest refuses the lookup rather than find a different set on WebKit. Find it with getByText(), getByTestId() or a CSS locator." Its choices were [], declared [["select",true,null],["check",true,null],["check",true,null]].
-- F7.2 (unticks a ticked box, chooses by value, and a second radio replaces the first): It ended error unsupported at uncheck, declared passed. Its failure says: "Could not look up getByLabel('Product updates'): the page holds a hidden <label>, whose text WebKit's accessibility tree still gives the control it labels and Chrome's does not, so Retest refuses the lookup rather than find a different set on WebKit. Find it with getByText(), getByTestId() or a CSS locator." Its choices were [], declared [["uncheck",true,null],["select",true,null],["check",true,null],["check",true,null]].
-- F7.3 (the Business plan shows a seats choice that the other plans hide): It ended error unsupported at select, declared passed. Its failure says: "Could not look up getByLabel('Plan'): the page holds a hidden <label>, whose text WebKit's accessibility tree still gives the control it labels and Chrome's does not, so Retest refuses the lookup rather than find a different set on WebKit. Find it with getByText(), getByTestId() or a CSS locator."
-- F7.4 (a save that ignores a checkbox fails at the saved summary): It ended error unsupported at check, declared failed check_failed at toHaveText in step "the saved preferences match the form". Its failure says: "Could not look up getByLabel('Weekly summary'): the page holds a hidden <label>, whose text WebKit's accessibility tree still gives the control it labels and Chrome's does not, so Retest refuses the lookup rather than find a different set on WebKit. Find it with getByText(), getByTestId() or a CSS locator." Its choices were [], declared [["check",true,null]].
-- F8.1a (reads the table row by row and finds a member by name): It ended error unsupported at toBeVisible, declared passed. Its failure says: "Could not look up getByRole('cell', { name: 'Grace Hopper' }): Chrome names a cell from its text, and WebKit's accessibility tree does not, so Retest refuses the lookup rather than find less on WebKit. Find it with getByText() or getByTestId(), or by its position with nth()."
+None: every case and every run ended as declared.
