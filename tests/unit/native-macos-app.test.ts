@@ -7,11 +7,13 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { createServer, Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { nativeCaptureTargetCheck, nativeCaptureTimeoutMs, nativeFrameSource, sessionRecordIdentity } from '../../src/native/capture.ts'
 import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
+import { freePort, isListening } from '../../src/native/executor-process.ts'
 import { appWindow, automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, readWindowsOnScreen, windowsOnScreen } from '../../src/native/macos-app.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
 import { decodePng } from '../../src/native/png.ts'
@@ -50,6 +52,52 @@ async function startDesktop(t: TestContext, setup: { readonly fake: FakeTools; r
 }
 
 const session = { owner, launch: { arguments: ['-reset'], environment: { RETEST_SERVICE_URL: 'http://127.0.0.1:9' } }, redact: (text: string): string => text }
+
+test('a port taken after allocation is replaced before the desktop starts its one executor', darwinOnly, async (t) => {
+  const setup = await setUp(t)
+  const taken = await freePort()
+  let replacement = await freePort()
+  while (replacement === taken) replacement = await freePort()
+  const draws = [taken, replacement].map(port => (port - 20_000 + 0.5) / (49_152 - 20_000))
+  t.mock.method(Math, 'random', () => draws.shift() ?? 0.5)
+  const holder = createServer()
+  t.after(() => new Promise<void>(resolve => holder.close(() => resolve())))
+  const close = Server.prototype.close
+  let occupied = false
+  t.mock.method(Server.prototype, 'close', function(this: Server, callback?: (error?: Error) => void): Server {
+    const address = this.address()
+    if (!occupied && address !== null && typeof address !== 'string' && address.port === taken && address.address === '::1') {
+      occupied = true
+      return close.call(this, error => {
+        holder.listen({ port: taken, host: '127.0.0.1' }, () => callback?.(error))
+      })
+    }
+    return close.call(this, callback)
+  })
+  const desktop = await startDesktop(t, setup)
+  assert.equal(occupied, true, 'the other listener took the port after its final free probe closed')
+  assert.equal(desktop.port, replacement)
+  assert.equal(await isListening('127.0.0.1', taken), true, 'the other listener remains untouched')
+  const starts = (await setup.fake.calls()).filter(call => call.tool === 'xcodebuild' && call.args.includes('test-without-building'))
+  assert.equal(starts.length, 1, 'a refused port never starts an executor')
+})
+
+test('an explicitly requested occupied port is refused without starting an executor or ending its listener', darwinOnly, async (t) => {
+  const setup = await setUp(t)
+  const holder = createServer()
+  await new Promise<void>(resolve => holder.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise<void>(resolve => holder.close(() => resolve())))
+  const address = holder.address()
+  assert.ok(address !== null && typeof address !== 'string')
+  const started = await MacosDesktop.start({ build: setup.build, tools: setup.fake.tools, logFolder: join(setup.fake.root, 'logs'), timeoutMs: 20_000, desktopLock: join(setup.fake.root, 'desktop.lock'), port: address.port })
+  assert.equal(started.ok, false)
+  if (started.ok) return
+  assert.equal(started.idle, true)
+  assert.match(started.failure.message, /Something already listens/)
+  assert.equal(await isListening('127.0.0.1', address.port), true)
+  const starts = (await setup.fake.calls()).filter(call => call.tool === 'xcodebuild' && call.args.includes('test-without-building'))
+  assert.equal(starts.length, 0)
+})
 
 test('one runner serves the desktop: the app is launched at its path, captured as its window, terminated, and nothing is left', darwinOnly, async (t) => {
   const setup = await setUp(t)

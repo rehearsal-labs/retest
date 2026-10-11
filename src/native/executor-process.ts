@@ -59,9 +59,10 @@ const executorDefaultPorts: readonly number[] = Object.values(nativePins.executo
 
 /**
  * A failed start: why, and the processes it recorded as its own and could not end. `idle` says the start was refused
- * before xcodebuild was started, so it left nothing running.
+ * before xcodebuild was started, so it left nothing running. `portInUse` names an idle refusal that lets a caller
+ * replace an automatically chosen port without repeating a launch.
  */
-export type FailedStart = { readonly ok: false; readonly failure: Failure; readonly leftRunning: readonly RecordedProcess[]; readonly idle?: true }
+export type FailedStart = { readonly ok: false; readonly failure: Failure; readonly leftRunning: readonly RecordedProcess[]; readonly idle?: true; readonly portInUse?: true }
 
 /** A line of xcodebuild's output that explains why an executor did not start. */
 type KnownFailure = { readonly pattern: RegExp; readonly message: string }
@@ -89,7 +90,7 @@ const knownFailures: readonly KnownFailure[] = [
 export async function startExecutor(options: StartExecutorOptions): Promise<{ readonly ok: true; readonly process: OwnedProcess; readonly os: string | undefined; readonly xcodebuild: StartedProcess; readonly runnerApps: readonly StartedProcess[] } | FailedStart> {
   const deadline = new Deadline(options.bounds.timeoutMs)
   if (executorDefaultPorts.includes(options.port)) return refusedStart(`Port ${options.port} is an executor's default port, which another tool driving the same executor would use; Retest runs an executor only on a port of its own.`)
-  if (await isListening('127.0.0.1', options.port)) return refusedStart(`Something already listens on 127.0.0.1:${options.port}, the port the executor was to use.`)
+  if (await isListening('127.0.0.1', options.port)) return { ...refusedStart(`Something already listens on 127.0.0.1:${options.port}, the port the executor was to use.`), portInUse: true }
   const swept = await sweepOwnedFolders(options.tools).catch((error: unknown) => ({ removed: [], kept: 0, problems: [`Retest could not look through the temporary folder for what earlier runs left: ${errorMessage(error)}`] }))
   if (swept.problems.length > 0) return refusedStart(`${swept.problems.join(' ')} Remove it, since it may hold what an earlier run typed.`)
   const before = await runnerAppsNow(options)

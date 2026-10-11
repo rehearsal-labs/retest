@@ -155,29 +155,35 @@ export class MacosDesktop {
       const os = await readMacosVersion(options.tools, options.signal)
       if (os === undefined) return await fail({ class: 'setup_failed', message: 'Retest could not read the macOS version with sw_vers.' })
       const folder = await makeOwnedFolder('retest-macos-', options.tools)
-      const port = options.port ?? (await freePort())
+      let port = options.port ?? (await freePort())
       launching = true
-      // startExecutor refuses an executor's default port, which `freePort` never gives.
-      const runner = await startExecutor({
-      executor: 'mac2',
-      build: options.build,
-      destination: `platform=macOS,arch=${options.build.architecture}`,
-      port,
-      environment: { TEST_RUNNER_USE_HOST: '127.0.0.1' },
-      logFile: join(options.logFolder, `macos-runner-${process.pid}-${port}.log`),
-      resultFolder: folder,
-      tools: options.tools,
-      bounds: { timeoutMs: deadline.commandTimeoutMs, signal: options.signal },
-      isRunnerApp: (command) => command.startsWith(runnerPath),
-      tie: 'listening-port',
-      onProcesses: (processes) => {
-        recorded.runnerApps = processes.runnerApps
-        lock.note(processes)
-      },
-    })
-    if (!runner.ok) return await fail(runner.failure, folder, runner.leftRunning, runner.idle === true)
-    process.off('exit', exitHook)
-    return { ok: true, desktop: new MacosDesktop({ options, runner, port, os, folder, runnerApps: runner.runnerApps, lock }) }
+      let runner: Awaited<ReturnType<typeof startExecutor>>
+      for (;;) {
+        runner = await startExecutor({
+          executor: 'mac2',
+          build: options.build,
+          destination: `platform=macOS,arch=${options.build.architecture}`,
+          port,
+          environment: { TEST_RUNNER_USE_HOST: '127.0.0.1' },
+          logFile: join(options.logFolder, `macos-runner-${process.pid}-${port}.log`),
+          resultFolder: folder,
+          tools: options.tools,
+          bounds: { timeoutMs: deadline.commandTimeoutMs, signal: options.signal },
+          isRunnerApp: (command) => command.startsWith(runnerPath),
+          tie: 'listening-port',
+          onProcesses: (processes) => {
+            recorded.runnerApps = processes.runnerApps
+            lock.note(processes)
+          },
+        })
+        if (runner.ok || options.port !== undefined || runner.portInUse !== true || runner.idle !== true || deadline.expired || options.signal?.aborted) break
+        // A different listener took an automatic port before any executor started. Select again within this start.
+        port = await freePort()
+        if (deadline.expired || options.signal?.aborted) break
+      }
+      if (!runner.ok) return await fail(runner.failure, folder, runner.leftRunning, runner.idle === true)
+      process.off('exit', exitHook)
+      return { ok: true, desktop: new MacosDesktop({ options, runner, port, os, folder, runnerApps: runner.runnerApps, lock }) }
     } catch (error) {
       return await fail({ class: 'setup_failed', message: `Starting the macOS runner failed: ${errorMessage(error)}` })
     }
