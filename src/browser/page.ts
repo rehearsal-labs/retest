@@ -690,6 +690,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       } catch (error) {
         // The time ran out during a read, so the previous read is the latest there is.
         if (!(error instanceof CdpTimeoutError)) throw error
+        if (finalRead && last === undefined) throw error
         if (finalRead) break
         await waitBeforeRead(deadline, Math.min(firstSelectionPauseMs * 2 ** attempt, maxSelectionPauseMs))
         continue

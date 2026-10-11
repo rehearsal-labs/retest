@@ -661,6 +661,22 @@ describe('a look at the page', () => {
 })
 
 describe('RedactedStream', () => {
+  test('a reader cut masks an unfinished known prefix and does not change natural EOF behavior', () => {
+    const stream = taught({ password: 'hunter2' }).stream()
+    assert.equal(stream.write('safe hunt'), 'safe ')
+    assert.equal(stream.cut(), '')
+    assert.equal(stream.cut(), '')
+    const natural = taught({ password: 'hunter2' }).stream()
+    assert.equal(natural.write('safe hunt'), 'safe ')
+    assert.equal(natural.end(), 'hunt')
+  })
+
+  test('a reader cut keeps a complete value redacted and ordinary text intact', () => {
+    const stream = taught({ password: 'hunter2' }).stream()
+    assert.equal(stream.write('hunter2 safe tail'), '{{password}} safe tail')
+    assert.equal(stream.cut(), '')
+  })
+
   test('holds back a chunk that ends partway into a value until the next chunk says', () => {
     const stream = taught({ password: 'hunter2' }).stream()
     assert.equal(stream.write('log in with hun'), 'log in with ')

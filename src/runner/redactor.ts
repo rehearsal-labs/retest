@@ -319,4 +319,11 @@ export class RedactedStream {
     this.#held = ''
     return rest
   }
+
+  /** Finishes a reader stopped before EOF, keeping an unfinished known value out of the output. */
+  cut(): string {
+    const rest = this.#redactor.scan(this.#held, true).text
+    this.#held = ''
+    return rest
+  }
 }

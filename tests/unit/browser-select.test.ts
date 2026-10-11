@@ -289,7 +289,7 @@ type SelectScript = {
   reached?: string[]
   heard?: string
   setOff?: boolean
-  selections?: string[]
+  selections?: (string | Promise<unknown>)[]
 }
 
 // A page whose select's look answers each of `looks` in turn and then plans `plan`, whose keys the guard saw reach the
@@ -316,6 +316,7 @@ function selectPage({ plan = typed('c'), looks = [], reached = ['keydown', 'keyu
       if (source === setOffFunction) return value(setOff)
       if (source === selectionFunction) {
         const status = selections[Math.min(read++, selections.length - 1)]
+        if (status instanceof Promise) return status
         return value({ status, selected: status === 'selected' ? ['Canada'] : ['Chile'], page: formPage })
       }
       return Promise.reject(new Error('unexpected call'))
@@ -505,3 +506,18 @@ async function timed<T>(work: Promise<T>): Promise<{ value: T; ms: number }> {
   const start = performance.now()
   return { value: await work, ms: performance.now() - start }
 }
+
+test('a select whose final reads never answer times out and never repeats keys after a late answer', async () => {
+  const selection = Promise.withResolvers<unknown>()
+  const { page, sent } = selectPage({ heard: 'selected', selections: [selection.promise] })
+  const answer = await page.dispatch(command, 1500)
+  assert.ok(!answer.result.ok)
+  assert.equal(answer.result.failure.class, 'timeout')
+  assert.equal(answer.result.failure.details?.['inputSent'], true)
+  assert.equal(answer.input, 'sent')
+  assert.deepEqual(keyEvents(sent).map(({ type, key }) => [type, key]), [['keyDown', 'c'], ['keyUp', 'c']])
+  assert.ok(functionsCalled(sent).includes(selectionFunction), 'the final selection read was requested')
+  selection.resolve(await value({ status: 'selected', selected: ['Canada'], page: formPage }))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(keyEvents(sent).length, 2, 'a late selection reply never sends another key')
+})

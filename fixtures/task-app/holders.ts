@@ -13,7 +13,8 @@ type Holder = { current: number; most: number; holds: number }
  * - `GET /holders/hold?name=inbox&ms=300` holds `inbox` for `ms` milliseconds, then answers with a page whose
  *   `overlap` is the most holders of `inbox` the hold saw at once, itself included. With `until=2` it answers as
  *   soon as that many hold it at once, which shows two visitors overlapping without waiting out the whole hold. With
- *   `release=1` it holds until `GET /holders/release?name=inbox`, so a test decides when the hold ends.
+ *   `release=1` it holds until `GET /holders/release?name=inbox`, so a test decides when the hold ends. With
+ *   `barrier=3` the first requests wait for three actual holders to overlap; after that, later requests answer at once.
  * - `GET /holders?name=inbox` answers `{ current, most, holds }` as JSON: holders now, the most at once since the
  *   app started, and how many holds began.
  */
@@ -36,6 +37,7 @@ export function holderRoutes(): Route[] {
         const name = query.get('name') ?? ''
         const holdMs = Math.min(longestHoldMs, Math.max(0, Number(query.get('ms') ?? '0') || 0))
         const until = Number(query.get('until') ?? '0') || 0
+        const barrier = Number(query.get('barrier') ?? '0') || 0
         const released = query.get('release') === '1'
         const holder = holderOf(name)
         holder.current += 1
@@ -56,7 +58,7 @@ export function holderRoutes(): Route[] {
         }
         const watch = (): void => {
           seen = Math.max(seen, holder.current)
-          if (until > 0 && seen >= until) finish()
+          if ((barrier > 0 && holder.most >= barrier) || (until > 0 && seen >= until)) finish()
         }
         const timer = setTimeout(finish, released ? longestHoldMs : holdMs)
         timer.unref()

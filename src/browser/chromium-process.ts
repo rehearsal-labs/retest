@@ -41,13 +41,15 @@ export type StartOptions = {
 }
 
 /**
- * Where a browser's output goes once it starts. `closed` settles once nothing more can arrive and the log is closed.
+ * Where a browser's output goes once it starts. `closed` settles once reading stopped and the log is closed.
  * `writersRemain` says whether anything may still write to the output, as a pipe not yet at its end says; without it,
  * only `closed` tells.
  */
 export type BrowserOutput = {
   readonly closed: Promise<string[]>
   cancel(): void
+  /** Stops local readers after verified owned shutdown, preserving accepted output and every queued write. */
+  finishReading?(): void
   writersRemain?(): boolean
 }
 
@@ -57,7 +59,7 @@ const pollMs = 25
  * process Retest did not record is never signaled, so one that hangs would otherwise hold `gone` and every lease behind it.
  */
 const exitedGroupLimitMs = 5 * closeGraceMs
-// Once nothing can write to the output any more, what is left is Retest's own queued log writes and the log's close.
+// Once output ends or its local readers stop, Retest's queued log writes and the log's close have their own bound.
 const ownWritingLimitMs = 10 * closeGraceMs
 const ownedGroups = new Map<number, OwnedProcessGroup>()
 
@@ -88,6 +90,7 @@ export class ChromiumProcess {
   #exit: ProcessExit | undefined
   #stopping: Promise<string[]> | undefined
   #gone: Promise<void> | undefined
+  #outputCompletion: Promise<string[]> | undefined
 
   /**
    * Starts the executable as the leader of a new process group.
@@ -151,6 +154,7 @@ export class ChromiumProcess {
       throw new Error(`The browser's process group ${this.pid} still had processes ${exitedGroupLimitMs} ms after its main process exited; processes Retest did not record are never signaled.`)
     }
     if (ownedGroups.get(this.pid) === this.#ownership) ownedGroups.delete(this.pid)
+    await this.#settleOutput(deadline)
     await this.#output.closed
   }
 
@@ -227,7 +231,7 @@ export class ChromiumProcess {
     try {
       const shownGone = this.#exit !== undefined && !(await this.#ownership.remainsAsync(deadline))
       if (!shownGone) problems.unshift(...leftAlone)
-      problems.push(...await outputWithin(this.#output, closeGraceMs))
+      problems.push(...await this.#settleOutput(deadline))
       const { profile } = this
       if (profile !== undefined && !(await this.#ownership.remainsAsync(deadline))) {
         await rm(profile, { recursive: true, force: true, maxRetries: 3 }).catch((error: unknown) => {
@@ -247,6 +251,11 @@ export class ChromiumProcess {
   // The main process has exited and no process of its group is left.
   async #ended(grace: Deadline, deadline: Deadline): Promise<boolean> {
     return (await this.waitForExit(Math.min(grace.remainingMs, deadline.remainingMs))) !== undefined && (await groupEnds(this.#ownership, grace, { deadline }))
+  }
+
+  #settleOutput(deadline: Deadline): Promise<string[]> {
+    this.#outputCompletion ??= outputWithin(this.#output, closeGraceMs, async () => this.#exit !== undefined && !(await this.#ownership.remainsAsync(deadline)))
+    return this.#outputCompletion
   }
 }
 
@@ -369,8 +378,11 @@ async function spawnInGroup(options: StartOptions): Promise<ChromiumProcess> {
  * was busy with other work such as synchronous process readings, so the clock alone is no proof the output is still
  * open: on a busy host every healthy close failed so. When the bound passes, waiting I/O is read first, then the output
  * is judged by whether anything can still write to it. Once nothing can, Retest's own writing gets its own bound.
+ * If a writer remains after verified owned shutdown, an output with safe reader finish support may stop its local
+ * readers and flush accepted bytes and queued writes within that same writing bound. This does not claim remote
+ * EOF or collect bytes an inherited writer sends later. An output without this support still fails and is canceled.
  */
-async function outputWithin(output: BrowserOutput, timeoutMs: number): Promise<string[]> {
+async function outputWithin(output: BrowserOutput, timeoutMs: number, confirmedGone: () => Promise<boolean>): Promise<string[]> {
   const first = await settledWithin(output.closed, timeoutMs)
   if (first !== undefined) return first
   await ioTurns(2)
@@ -381,6 +393,13 @@ async function outputWithin(output: BrowserOutput, timeoutMs: number): Promise<s
     if (written !== undefined) return written
     output.cancel()
     return [`Retest did not finish writing and closing the browser's log within ${ownWritingLimitMs} ms after its output ended.`]
+  }
+  if (output.finishReading !== undefined && await confirmedGone()) {
+    output.finishReading()
+    const written = await settledWithin(output.closed, ownWritingLimitMs)
+    if (written !== undefined) return written
+    output.cancel()
+    return [`Retest did not finish writing and closing the browser's log within ${ownWritingLimitMs} ms after its output reading stopped.`]
   }
   output.cancel()
   return [`The browser's redacted output did not finish writing and closing within ${timeoutMs} ms.`]

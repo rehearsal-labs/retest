@@ -12,8 +12,7 @@ import { holders, runHostProgram } from './participants-harness.ts'
 const holdMs = 700
 
 // A test file whose tests hold `name` at the task app for a while, one with one app and, when asked, one with two.
-function holdingFile(letter: string, name: string, twoApps: boolean): string {
-  const hold = `/holders/hold?name=${name}&ms=${holdMs}`
+function holdingFile(letter: string, name: string, twoApps: boolean, hold: string): string {
   const two = twoApps
     ? `
 
@@ -32,8 +31,8 @@ test('${letter} holds with one app', async ({ page }) => {
 `
 }
 
-function holdingFiles(name: string): Record<string, string> {
-  return Object.fromEntries(['a', 'b', 'c', 'd'].map((letter, index) => [`tests/${letter}.retest.ts`, holdingFile(letter, name, index < 2)]))
+function holdingFiles(name: string, hold = `/holders/hold?name=${name}&ms=${holdMs}`): Record<string, string> {
+  return Object.fromEntries(['a', 'b', 'c', 'd'].map((letter, index) => [`tests/${letter}.retest.ts`, holdingFile(letter, name, index < 2, hold)]))
 }
 
 const appsConfig = (url: string): string => `{ apps: { web: chrome({ baseUrl: ${JSON.stringify(url)} }), admin: chrome({ baseUrl: ${JSON.stringify(url)} }) }, defaultApp: 'web' }`
@@ -46,8 +45,11 @@ function reserved(events: readonly RetestEvent[]): Extract<RetestEvent, { type: 
 test('under workers, concurrent attempts never hold more sessions than the configured limits, and without limits they would', async (t) => {
   const app = await openApp(t)
 
-  // The control: without limits, four workers hold the counter more than twice at once.
-  const control = await writeProject(t, { 'retest.config.ts': configSource(appsConfig(app.url)), ...holdingFiles('unlimited') })
+  // The first three actual requests wait for each other; a short timer cannot establish overlap under startup skew.
+  const control = await writeProject(t, {
+    'retest.config.ts': configSource(appsConfig(app.url)),
+    ...holdingFiles('unlimited', '/holders/hold?name=unlimited&barrier=3&ms=10000'),
+  })
   const free = await runProject(t, control, { args: ['--workers', '4'], timeouts: budgets({ navigation: 10_000 }) })
   assert.equal(free.exit.code, 0, free.stderr)
   assert.ok((await holders(app.url, 'unlimited')).most >= 3, 'without limits, three or more pages held at once')
@@ -236,6 +238,7 @@ function abortedOwnerProgram(url: string): string {
   return `import { chrome, defineConfig } from '@rehearsal-labs/retest'
 import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const folder = process.argv.at(-1) ?? ''
 const loaded = validateConfig(defineConfig({ apps: { web: chrome({ baseUrl: ${JSON.stringify(url)} }) } }), join(process.cwd(), 'host.config.ts'))
@@ -268,12 +271,42 @@ const options = (owner, file, signal) => ({
 const first = runFiles(options('owner-a', 'tests/a.retest.ts', stop.signal), [reporter('owner-a')])
 await reservedA.promise
 const second = runFiles(options('owner-b', 'tests/b.retest.ts', new AbortController().signal), [reporter('owner-b')])
-// Long enough for owner-a's page to hold the counter and owner-b to be waiting for the session.
-await new Promise((resolve) => setTimeout(resolve, 1500))
-const waiting = budget.snapshot().waiting
-stop.abort({ class: 'interrupted', message: 'The host stopped the first owner while the second waited.' })
-const [a, b] = await Promise.all([first, second])
-process.stdout.write(JSON.stringify({ a: a.exitCode, b: b.exitCode, waiting, after: times['owner-a after'] }) + '\\n')
+// Reservation precedes page setup. The page must hold its request while the second owner waits for over 200 ms.
+const stageStop = new AbortController()
+const stageEndsAt = performance.now() + timeouts.setup
+const holding = (async () => {
+  let heldSince
+  for (;;) {
+    const remaining = stageEndsAt - performance.now()
+    if (remaining <= 0) throw new Error('Owner A did not hold its page while owner B waited within the setup budget.')
+    const signal = AbortSignal.any([stageStop.signal, AbortSignal.timeout(Math.ceil(remaining))])
+    const response = await fetch(new URL('/holders?name=one-at-a-time', ${JSON.stringify(url)}), { signal })
+    const { current } = await response.json()
+    const now = performance.now()
+    if (now >= stageEndsAt) throw new Error('Owner A did not hold its page while owner B waited within the setup budget.')
+    if (current === 1 && budget.snapshot().waiting === 1) {
+      heldSince ??= now
+      if (now - heldSince >= 201) return
+    } else {
+      heldSince = undefined
+    }
+    await delay(Math.min(20, stageEndsAt - now), undefined, { signal: stageStop.signal })
+  }
+})()
+try {
+  await Promise.race([
+    holding,
+    first.then(() => { throw new Error('Owner A ended before its page held the counter while owner B waited.') }),
+  ])
+  const waiting = budget.snapshot().waiting
+  stop.abort({ class: 'interrupted', message: 'The host stopped the first owner while the second waited.' })
+  const [a, b] = await Promise.all([first, second])
+  process.stdout.write(JSON.stringify({ a: a.exitCode, b: b.exitCode, waiting, after: times['owner-a after'] }) + '\\n')
+} finally {
+  stageStop.abort()
+  stop.abort({ class: 'interrupted', message: 'The host stopped the first owner while the second waited.' })
+  await Promise.allSettled([holding, first, second])
+}
 `
 }
 

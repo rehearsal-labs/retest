@@ -6,6 +6,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { hasElementIdentity } from '../../src/agent/identity.ts'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
+import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { launch, observe, openPage, servePages } from './browser-harness.ts'
 import { engineName, pinningEngines } from './agent-harness.ts'
 
@@ -24,7 +27,7 @@ const rows = `<!doctype html>
 <div data-testid="row-1"><span>First</span> <button type="button" onclick="fetch('/clicked/delete-1', { method: 'POST' })">Delete</button> <input type="checkbox" aria-label="Done"> <select aria-label="Owner"><option>Ann</option><option>Bob</option></select></div>
 <div data-testid="row-2"><span>Second</span> <button type="button" onclick="fetch('/clicked/delete-2', { method: 'POST' })">Delete</button> <input type="checkbox" aria-label="Done"> <select aria-label="Owner"><option>Ann</option><option>Bob</option></select></div>
 <div data-testid="fields"><input data-testid="f-1"><input data-testid="f-2"><input data-testid="f-3"></div>
-<button type="button" data-testid="sort-later" onclick="const box = document.querySelector('[data-testid=fields]'); for (const field of box.children) field.readOnly = true; setTimeout(() => { box.prepend(box.lastElementChild); for (const field of box.children) field.readOnly = false }, 1500)">Sort later</button>
+<button type="button" data-testid="sort-later" onclick="const box = document.querySelector('[data-testid=fields]'); for (const field of box.children) field.readOnly = true; (async () => { while (await fetch('/sort-permitted').then(response => response.text()) !== 'sort') await new Promise(resolve => setTimeout(resolve, 20)); box.prepend(box.lastElementChild); for (const field of box.children) field.readOnly = false })()">Sort later</button>
 </body></html>`
 
 // Two checkboxes; clicking the second keeps it unchecked and moves it to the front, so the first, already checked, takes
@@ -142,7 +145,8 @@ test('element identity on a real page of the engine under test', async (outer) =
   })
 
   await outer.test('fields put in another order while a pinned fill waits for its field are refused as moved, and nothing is typed', async (t) => {
-    const site = await servePages(t, { '/': rows })
+    const pages = { '/': rows, '/sort-permitted': 'wait' }
+    const site = await servePages(t, pages)
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
     assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
@@ -150,7 +154,29 @@ test('element identity on a real page of the engine under test', async (outer) =
     const [before] = await keysOf(page, [textboxes])
     const secondKey = before?.keys[1]
     assert.ok(before !== undefined && secondKey !== undefined)
-    const typed = await page.dispatchTo({ kind: 'fill', locator: { ...textboxes, pick: 1 }, value: 'meant for f-2' }, secondKey, 5000)
+    // Sorting must follow an actual read-only wait, rather than a timer that can expire before the keyed read.
+    const waited = Promise.withResolvers<void>()
+    let observedWaiting = false
+    const enter = IsolatedWorld.prototype.enter
+    const observing = t.mock.method(IsolatedWorld.prototype, 'enter', async function (this: IsolatedWorld, ...args: Parameters<IsolatedWorld['enter']>) {
+      const reading = await enter.call(this, ...args)
+      if (args[0] === prepareFunction && isRecord(reading.value) && reading.value['status'] === 'blocked' && reading.value['check'] === 'editable') {
+        observedWaiting = true
+        waited.resolve()
+      }
+      return reading
+    })
+    let typed: Awaited<ReturnType<ElementIdentity['dispatchTo']>>
+    const typing = page.dispatchTo({ kind: 'fill', locator: { ...textboxes, pick: 1 }, value: 'meant for f-2' }, secondKey, 5000)
+    try {
+      await Promise.race([waited.promise, typing.then(() => {
+        assert.ok(observedWaiting, 'The pinned fill ended before it waited for its read-only field.')
+      })])
+      pages['/sort-permitted'] = 'sort'
+      typed = await typing
+    } finally {
+      observing.mock.restore()
+    }
     assert.ok(!typed.result.ok)
     assert.deepEqual([typed.result.failure.class, typed.result.failure.details, typed.input], ['not_actionable', { refused: 'moved', inputSent: false }, 'not_sent'], typed.result.failure.message)
     const [after] = await keysOf(page, [textboxes])

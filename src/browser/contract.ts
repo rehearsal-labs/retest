@@ -122,7 +122,7 @@ export type ObservationScope = { readonly sessionId: string; readonly generation
  * How to launch a browser. `hiddenVariables` are environment variables its process must not see, such as the ones AI
  * judges' credentials are read from; the browser inherits every other variable of this process.
  */
-export type OutputRedactor = { write(text: string): string; end(): string }
+export type OutputRedactor = { write(text: string): string; end(): string; cut?(): string }
 export type LaunchOptions = { executablePath: string; logFile: string; headless: boolean; hiddenVariables?: readonly string[]; redact?: (text: string) => string; redactStream?: () => OutputRedactor }
 
 /**
