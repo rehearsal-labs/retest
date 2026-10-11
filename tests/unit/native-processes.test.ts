@@ -3,11 +3,12 @@ import type { MetadataProcessRequest } from '../../src/shared/metadata-process.t
 import type { ListedProcess, NativeTools } from '../../src/native/processes.ts'
 import type { OwnedProcessIdentity } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
-import { ChildProcess, execFileSync, spawn } from 'node:child_process'
+import childProcess, { ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { openSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -166,6 +167,16 @@ test('a short command stopped by its signal is ended, and one stopped before it 
 test('a command that cannot start answers exit 127 and is not started', async () => {
   const result = await runCommand('/nonexistent/tool', [], { timeoutMs: 1000 })
   assert.deepEqual([result.code, result.started], [127, false])
+})
+
+test('a synchronous process-start failure answers exit 127 without claiming ownership or starting input', async (t) => {
+  const before = process.listenerCount('exit')
+  t.mock.method(childProcess, 'spawn', () => { throw new Error('spawn ENOMEM') })
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
+  const result = await runCommand('/bin/echo', ['must not run'], { timeoutMs: 1000 })
+  assert.deepEqual(result, { code: 127, signal: null, stdout: '', stderr: 'spawn ENOMEM', timedOut: false, stopped: false, started: false, cleanupProblems: [] })
+  assert.equal(process.listenerCount('exit'), before, 'a process that never started has no ownership exit hook')
 })
 
 test('a long-running process stops its recorded descendants, and its exit hook goes with them', async (t) => {

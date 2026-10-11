@@ -253,9 +253,13 @@ async function endHelpers(helpers: readonly ChildProcess[], signal: NodeJS.Signa
 // A helper shares the stand-in's process group, parent and output, as Firefox's content processes do, and names the
 // reports folder in its command line so the test can tell it from every other process.
 async function startHelper(config: StandInConfig, name: string): Promise<ChildProcess> {
-  const script = `process.stderr.write('stand-in ' + process.argv[2] + ' started\\n'); setTimeout(() => {}, ${config.lifetimeMs})`
-  const helper = spawn(process.execPath, ['-e', script, '--', config.reports, name], { stdio: ['ignore', 'inherit', 'inherit'] })
-  await once(helper, 'spawn')
+  const script = `process.stderr.write('stand-in ' + process.argv[2] + ' started\\n', () => process.send('ready')); setTimeout(() => {}, ${config.lifetimeMs})`
+  const helper = spawn(process.execPath, ['-e', script, '--', config.reports, name], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+  const ready = once(helper, 'message')
+  const ended = once(helper, 'exit').then(() => { throw new Error('The stand-in helper ended before confirming its output was written.') })
+  const [message] = await Promise.race([ready, ended])
+  if (message !== 'ready') throw new Error('The stand-in helper did not confirm its output was written.')
+  helper.disconnect()
   const line: StandInHelper = { name, pid: helper.pid ?? 0 }
   appendFileSync(join(config.reports, 'helpers.jsonl'), `${JSON.stringify(line)}\n`)
   return helper

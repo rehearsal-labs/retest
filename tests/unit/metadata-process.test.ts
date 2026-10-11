@@ -1,8 +1,10 @@
+import type { MetadataProcessRequest } from '../../src/shared/metadata-process.ts'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
+import { Worker } from 'node:worker_threads'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { metadataOutputLimit, processTableOutputLimit, readMetadataProcess, readMetadataProcessAsync, useMetadataWorkerModule } from '../../src/shared/metadata-process.ts'
 
@@ -24,6 +26,65 @@ test('a whole process table larger than a short reading may print is read whole 
     assert.equal(lines.length, 5000)
     assert.match(lines.at(-1) ?? '', /^ 5099     1  5099 S    Mon Oct {2}5 09:00:00 2026 {5}\/fake\/process-5099 x{1200}$/, 'the last process is read whole')
   }
+})
+
+test('completed metadata readings reuse their output buffer instead of allocating a process-table buffer on every look', async (t) => {
+  const buffers = new Map<number, Set<SharedArrayBuffer>>()
+  const post = Worker.prototype.postMessage
+  t.mock.method(Worker.prototype, 'postMessage', function (this: Worker, request: MetadataProcessRequest): void {
+    const seen = buffers.get(request.output.byteLength) ?? new Set<SharedArrayBuffer>()
+    seen.add(request.output)
+    buffers.set(request.output.byteLength, seen)
+    post.call(this, request)
+  })
+  for (let reading = 0; reading < 6; reading += 1) {
+    for (const outputLimit of [metadataOutputLimit, processTableOutputLimit]) {
+      const query = { command: '/bin/echo', args: [String(reading)], environment, outputLimit }
+      assert.equal(readMetadataProcess(query), `${reading}\n`)
+      assert.equal(await readMetadataProcessAsync(query), `${reading}\n`)
+    }
+  }
+  assert.deepEqual([...buffers].map(([limit, seen]) => [limit, seen.size]), [[metadataOutputLimit, 1], [processTableOutputLimit, 1]])
+})
+
+test('concurrent metadata readings hold separate output buffers until each completion is consumed', async (t) => {
+  const restore = useMetadataWorkerModule(new URL('./metadata-gated-worker.ts', import.meta.url))
+  t.after(restore)
+  let worker: Worker | undefined
+  const buffers: SharedArrayBuffer[] = []
+  const post = Worker.prototype.postMessage
+  t.mock.method(Worker.prototype, 'postMessage', function (this: Worker, request: MetadataProcessRequest): void {
+    worker = this
+    buffers.push(request.output)
+    post.call(this, request)
+  })
+  const readings = ['first', 'second', 'third'].map((text) => readMetadataProcessAsync({ command: '/bin/echo', args: [text], environment, outputLimit: processTableOutputLimit }))
+  assert.equal(new Set(buffers).size, 3, 'a query in flight never shares its output with another')
+  assert.ok(worker !== undefined)
+  post.call(worker, { release: true })
+  assert.deepEqual(await Promise.all(readings), ['first\n', 'second\n', 'third\n'])
+  assert.equal(readMetadataProcess({ command: '/bin/echo', args: ['later'], environment, outputLimit: processTableOutputLimit }), 'later\n')
+  const reused = buffers[3]
+  assert.ok(reused !== undefined && buffers.slice(0, 3).includes(reused), 'a completed buffer can serve the next reading')
+})
+
+test('an abandoned metadata query never returns its output buffer for another reading', async (t) => {
+  const restore = useMetadataWorkerModule(new URL('./metadata-gated-worker.ts', import.meta.url))
+  t.after(restore)
+  const buffers: SharedArrayBuffer[] = []
+  const post = Worker.prototype.postMessage
+  t.mock.method(Worker.prototype, 'postMessage', function (this: Worker, request: MetadataProcessRequest): void {
+    buffers.push(request.output)
+    post.call(this, request)
+  })
+  const stop = new AbortController()
+  const waiting = readMetadataProcessAsync({ command: '/bin/echo', args: ['abandoned'], environment, outputLimit: processTableOutputLimit, deadline: new Deadline(1000, { signal: stop.signal }) })
+  stop.abort()
+  await assert.rejects(waiting, /caller deadline.*cancelled/)
+  restore()
+  assert.equal(readMetadataProcess({ command: '/bin/echo', args: ['fresh'], environment, outputLimit: processTableOutputLimit }), 'fresh\n')
+  assert.equal(buffers.length, 2)
+  assert.notEqual(buffers[0], buffers[1], 'a worker whose completion was never confirmed cannot lend its buffer')
 })
 
 test('a short reading keeps its 4 MiB bound, a bound past the table bound is refused, and a table past its bound fails rather than being cut', () => {
@@ -133,6 +194,8 @@ test('a host started from text with --input-type reads metadata through its work
   assert.equal(stdout, 'answered\n')
 })
 
+// The successful query waits for its completion under the production query bound. Only the case testing expiry
+// imposes a short deadline; worker startup speed is not what this host-liveness check proves.
 test('a host with only an asynchronous metadata query stays alive until its answer or caller failure', async () => {
   for (const stalled of [false, true]) {
     const worker = new URL('./metadata-stalled-worker.ts', import.meta.url).href
@@ -141,7 +204,7 @@ test('a host with only an asynchronous metadata query stays alive until its answ
       const { Deadline } = await import(${JSON.stringify(new URL('../../src/protocol/deadline.ts', import.meta.url).href)})
       ${stalled ? `useMetadataWorkerModule(new URL(${JSON.stringify(worker)}))` : ''}
       try {
-        process.stdout.write(await readMetadataProcessAsync({ command: '/bin/echo', args: ['answered'], environment: { PATH: '/usr/bin:/bin' }, deadline: new Deadline(200) }))
+        process.stdout.write(await readMetadataProcessAsync({ command: '/bin/echo', args: ['answered'], environment: { PATH: '/usr/bin:/bin' }${stalled ? ', deadline: new Deadline(200)' : ''} }))
       } catch (error) {
         process.stderr.write(String(error))
         process.exitCode = 2

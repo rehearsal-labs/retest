@@ -4,7 +4,11 @@ import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ROW_COUNT } from '../../fixtures/task-app/locators-page.ts'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
+import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { observedItemLimit } from '../../src/protocol/commands.ts'
+import { describeLocator } from '../../src/protocol/locator.ts'
 import {
   assertOk,
   byLabel,
@@ -24,6 +28,7 @@ import {
 } from './browser-harness.ts'
 import { engineExpectations } from './engine-expectations.ts'
 import { observationOf } from '../support/observation.ts'
+import { earlyClock } from '../unit/early-waits-clock.ts'
 
 const browser = sharedBrowser()
 
@@ -218,9 +223,27 @@ test('an action on a locator that matches nothing fails as not found when the ti
   const page = await openPage(t, browser(), site.url)
   assertOk(await goto(page, '/'))
   for (const locator of [byRole('button', 'Missing'), byLabel('Missing'), byText('Missing')]) {
-    const failure = failureOf(await click(page, locator, 300))
-    assert.equal(failure.class, 'not_found')
-    assert.match(failure.message, /no element matched within 300 ms/)
+    await t.test(describeLocator(locator), async (each) => {
+      const clock = earlyClock(each, 300)
+      let missing = false
+      const enter = IsolatedWorld.prototype.enter
+      each.mock.method(IsolatedWorld.prototype, 'enter', async function (this: IsolatedWorld, ...args: Parameters<IsolatedWorld['enter']>) {
+        const seen = await enter.call(this, ...args)
+        if (!missing && args[0] === prepareFunction && isRecord(seen.value) && seen.value['status'] === 'missing') {
+          missing = true
+          clock.spend(300)
+        }
+        return seen
+      })
+      // Advance the deadline only after the real browser answered the missing lookup. Host scheduling must not turn
+      // a test of not_found into a test of an unanswered page; the driver's final read still uses the real browser.
+      const result = await clock.run(click(page, locator, 300), () => missing)
+      clock.restore()
+      assert.ok(missing, 'the browser confirmed the locator matched nothing')
+      const failure = failureOf(result)
+      assert.equal(failure.class, 'not_found')
+      assert.match(failure.message, /no element matched within 300 ms/)
+    })
   }
 })
 

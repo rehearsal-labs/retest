@@ -1,6 +1,8 @@
 import type { ChildOutput } from '../../src/runner/contract.ts'
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { after, before, describe, test } from 'node:test'
+import { promisify } from 'node:util'
 import { isArray } from '../../src/protocol/schema.ts'
 import { runProject, tempProject } from '../support/project.ts'
 import { runSupportFiles } from '../support/run-harness.ts'
@@ -8,7 +10,18 @@ import { runSupportFiles } from '../support/run-harness.ts'
 const hostVariable = 'RETEST_UNIT_HOST_TOKEN'
 const secretVariable = 'RETEST_UNIT_ENV_SECRET'
 
-before(() => {
+const systemVariables = new Set<string>()
+
+before(async () => {
+  // A fresh Node process with an empty supplied environment shows only variables the runtime or OS creates, such as
+  // CoreFoundation's encoding on macOS and libuv's io_uring setting under Linux container restrictions.
+  const { stdout } = await promisify(execFile)(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(Object.keys(process.env)))'], { env: {}, timeout: 5000 })
+  const names: unknown = JSON.parse(stdout)
+  assert.ok(isArray(names))
+  for (const name of names) {
+    assert.equal(typeof name, 'string')
+    if (typeof name === 'string') systemVariables.add(name)
+  }
   process.env[hostVariable] = 'host-only-4417'
   process.env[secretVariable] = 'secret-value-8812'
 })
@@ -17,16 +30,13 @@ after(() => {
   delete process.env[secretVariable]
 })
 
-// macOS's CoreFoundation sets this in every process that starts without it, so the parent never passed it.
-const setByTheSystem = '__CF_USER_TEXT_ENCODING'
-
 // The names the test printed, from its line of output.
 function printed(output: readonly ChildOutput[]): string[] {
   const match = /environment (\[.*\])/.exec(output.map((chunk) => chunk.text).join(''))
   assert.ok(match?.[1] !== undefined, 'the test printed its environment')
   const names: unknown = JSON.parse(match[1])
   assert.ok(isArray(names))
-  return names.flatMap((name) => (typeof name === 'string' && name !== setByTheSystem ? [name] : []))
+  return names.flatMap((name) => (typeof name === 'string' && !systemVariables.has(name) ? [name] : []))
 }
 
 describe('the test environment', () => {

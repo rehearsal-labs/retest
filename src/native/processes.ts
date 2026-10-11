@@ -1,4 +1,5 @@
-import type { ChildProcess } from 'node:child_process'
+import type { ChildProcess, ChildProcessByStdio } from 'node:child_process'
+import type { Readable } from 'node:stream'
 import type { MetadataProcessOptions } from '../shared/metadata-process.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
 import type { OwnedProcessIdentity, ProcessOwnershipSystem } from '../shared/process-ownership.ts'
@@ -122,12 +123,17 @@ const pollMs = 25
  */
 export async function runCommand(command: string, args: readonly string[], options: CommandOptions): Promise<CommandResult> {
   if (options.signal?.aborted === true) return { code: null, signal: null, stdout: '', stderr: '', timedOut: false, stopped: true, started: false, cleanupProblems: [] }
-  const child = spawn(command, args, {
-    cwd: options.cwd,
-    env: childEnvironment(options.environment, options.hiddenVariables),
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  let child: ChildProcessByStdio<null, Readable, Readable>
+  try {
+    child = spawn(command, args, {
+      cwd: options.cwd,
+      env: childEnvironment(options.environment, options.hiddenVariables),
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (error) {
+    return { code: 127, signal: null, stdout: '', stderr: errorMessage(error), timedOut: false, stopped: false, started: false, cleanupProblems: [] }
+  }
   const output = { stdout: '', stderr: '' }
   child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
     if (output.stdout.length < outputLimit) output.stdout += chunk

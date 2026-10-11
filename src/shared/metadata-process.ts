@@ -46,6 +46,9 @@ export const metadataFailure: number = 1
 
 const queryLimitMs = 5000
 const workerAllowanceMs = 1000
+// One spare of each production capacity. Only a completed query can return its buffer: an abandoned worker may
+// still be writing, and a concurrent query must hold a different buffer until its completion signal is consumed.
+const spareOutputs = new Map<number, SharedArrayBuffer>()
 let bridge: Worker | undefined
 let workerModule: URL = new URL(import.meta.url.endsWith('.ts') ? './metadata-process-worker.ts' : './metadata-process-worker.js', import.meta.url)
 
@@ -57,16 +60,20 @@ let workerModule: URL = new URL(import.meta.url.endsWith('.ts') ? './metadata-pr
  */
 export function readMetadataProcess(options: MetadataProcessOptions): string {
   const query = submit(options)
-  for (;;) {
-    checkCaller(query, options.deadline)
-    const state = Atomics.load(query.control, 0)
-    if (state === metadataComplete) return answer(query)
-    const remaining = query.deadline - performance.now()
-    if (remaining <= 0) {
-      if (abandoned(query)) throw new Error('The metadata worker did not answer the query.')
-      continue
+  try {
+    for (;;) {
+      checkCaller(query, options.deadline)
+      const state = Atomics.load(query.control, 0)
+      if (state === metadataComplete) return answer(query)
+      const remaining = query.deadline - performance.now()
+      if (remaining <= 0) {
+        if (abandoned(query)) throw new Error('The metadata worker did not answer the query.')
+        continue
+      }
+      Atomics.wait(query.control, 0, state, remaining)
     }
-    Atomics.wait(query.control, 0, state, remaining)
+  } finally {
+    releaseOutput(query)
   }
 }
 
@@ -98,6 +105,7 @@ export async function readMetadataProcessAsync(options: MetadataProcessOptions):
       if (waiting.async) await waiting.value
     }
   } finally {
+    releaseOutput(query)
     clearInterval(pending)
     options.deadline?.signal?.removeEventListener('abort', wake)
   }
@@ -119,7 +127,8 @@ function submit(options: MetadataProcessOptions): Query {
   if (!Number.isSafeInteger(outputLimit) || outputLimit < metadataOutputLimit || outputLimit > processTableOutputLimit) throw new RangeError(`A metadata query's output limit lies between ${metadataOutputLimit} and ${processTableOutputLimit} bytes.`)
   const worker = metadataWorker()
   const controlBuffer = new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
-  const output = new SharedArrayBuffer(outputLimit)
+  const output = spareOutputs.get(outputLimit) ?? new SharedArrayBuffer(outputLimit)
+  spareOutputs.delete(outputLimit)
   const control = new Int32Array(controlBuffer)
   const request: MetadataProcessRequest = {
     command: options.command, args: options.args, environment: { ...options.environment, TZ: 'UTC0' }, timeoutMs,
@@ -146,6 +155,13 @@ function abandoned(query: Query): boolean {
     discardWorker(query.worker)
     return true
   }
+}
+
+function releaseOutput(query: Query): void {
+  const capacity = query.output.byteLength
+  if (Atomics.load(query.control, 0) !== metadataComplete) return
+  if (capacity !== metadataOutputLimit && capacity !== processTableOutputLimit) return
+  if (!spareOutputs.has(capacity)) spareOutputs.set(capacity, query.output)
 }
 
 function answer(query: Query): string {
