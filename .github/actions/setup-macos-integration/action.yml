@@ -1,0 +1,48 @@
+name: Set up macOS integration
+description: Prepare the checked source and the same pinned browser and media prerequisites for each isolated shard.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      with:
+        node-version: 24.12.0
+    - run: npm ci --no-audit --no-fund
+      shell: bash
+    - run: npm run build
+      shell: bash
+    - name: Install recording tools
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'
+      run: |
+        set -euo pipefail
+        brew install ffmpeg
+        rustup toolchain install 1.88.0 --profile minimal
+        rust_tools="$(dirname "$(rustup which --toolchain 1.88.0 cargo)")"
+        echo "$rust_tools" >> "$GITHUB_PATH"
+        "$rust_tools/rustc" --version
+        "$rust_tools/cargo" --version
+    - name: Prepare pinned integration archives and paths
+      shell: bash
+      run: node scripts/ci/prepare-macos-integration.ts "$RUNNER_TEMP/retest-integration"
+    - name: Install pinned browsers and build media
+      shell: bash
+      run: node dist/cli/main.js install chromium firefox webkit electron media
+    - name: Verify integration prerequisites
+      shell: bash
+      run: |
+        set -euo pipefail
+        sw_vers
+        uname -m
+        xcodebuild -version
+        node dist/cli/main.js install --list --verify
+        "$RETEST_TEST_BROWSER" --version
+        "$RETEST_TEST_SECOND_BROWSER" --version
+        "$RETEST_TEST_FIREFOX" --version
+        "$RETEST_TEST_ELECTRON" --version
+        "$RETEST_TEST_MEDIA_BINARY" --version
+        "$RETEST_TEST_FFMPEG" -version
+        "$RETEST_TEST_FFPROBE" -version
+    - name: Verify media reply delivery
+      shell: bash
+      run: cargo test --locked --offline --manifest-path media/Cargo.toml replies::tests

@@ -43,6 +43,8 @@ node --conditions=retest-source --test tests/integration/<file>.test.ts
 
 Run the integration files your change touches, and name them in your pull request. On Linux, `docker/linux/run.sh` builds the Docker image the Linux checks run in, and runs every check inside it. The full lists run on Linux and macOS before each release.
 
+For CI debugging, choose `suite=unit` or `suite=integration`, a platform and the exact test paths. [The release guide](docs/releasing.md#run-the-gates-by-hand) has the command. Full CI assigns every file to a shard and runs one file at a time on each machine; focused runs do not establish release coverage.
+
 ## Rules every change keeps
 
 - **No new runtime dependencies.** Retest has no third-party runtime npm packages. The AI SDK packages are optional peers. Do not add Playwright, Puppeteer, Selenium, Vitest or another test framework, even as an internal helper.

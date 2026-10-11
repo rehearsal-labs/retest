@@ -1,10 +1,8 @@
 name: CI
-run-name: Gates on ${{ inputs.ref }}
+run-name: ${{ inputs.commit && 'Release gates' || inputs.suite || 'all' }} on ${{ inputs.commit || inputs.ref }}
 
-# Every gate on Linux and on macOS. On Linux the gates run in the Docker harness with Chrome's sandbox on; on macOS
-# integration uses the runner's Google Chrome, Retest's pinned Chromium, Firefox, WebKit and Electron builds, and
-# media built from the checked commit. Nothing starts this workflow by itself: a person runs it by hand on a branch,
-# a tag or a commit, and promote.yml calls it with the commit it is about to publish.
+# Manual debugging can choose a suite, platform and exact files. Promotion calls this with only a commit,
+# which always plans the full matrix. No push, tag or schedule starts this workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -13,75 +11,79 @@ on:
         required: true
         type: string
         default: main
+      suite:
+        description: Full release coverage or a focused check.
+        type: choice
+        options: [all, checks, unit, integration]
+        default: all
+      platform:
+        description: Platforms to check.
+        type: choice
+        options: [all, linux-x64, linux-arm64, macos-arm64]
+        default: all
+      files:
+        description: Optional space-separated test paths. Requires the unit or integration suite.
+        type: string
+        default: ''
   workflow_call:
     inputs:
       commit:
-        description: The full commit SHA to check.
+        description: The full commit SHA to check with every gate.
         required: true
         type: string
 
 permissions:
   contents: read
 
+# New manual work replaces old work in the same suite/platform. Promotion has a run-specific group and is never cancelled here.
+concurrency:
+  group: ${{ inputs.commit && format('retest-ci-promotion-{0}', github.run_id) || format('retest-ci-manual-{0}-{1}-{2}', github.ref, inputs.suite || 'all', inputs.platform || 'all') }}
+  cancel-in-progress: ${{ !inputs.commit }}
+
 jobs:
-  # A branch can move while a macOS machine is still queued, so every job checks the one commit named here.
   commit:
-    name: Resolve the commit
+    name: Resolve the commit and assign every test file
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       commit: ${{ steps.resolve.outputs.commit }}
+      full: ${{ steps.plan.outputs.full }}
+      checks: ${{ steps.plan.outputs.checks }}
+      unit: ${{ steps.plan.outputs.unit }}
+      linux: ${{ steps.plan.outputs.linux }}
+      macos: ${{ steps.plan.outputs.macos }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.commit || inputs.ref }}
           persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24.12.0
       - name: Resolve the commit
         id: resolve
         run: |
           set -euo pipefail
           commit="$(git rev-parse HEAD)"
           echo "commit=${commit}" >> "$GITHUB_OUTPUT"
-          {
-            printf '### Gates on `%s`\n\n' "$(git rev-parse --short HEAD)"
-            printf '%s\n\n' "$(git log -1 --format=%s HEAD)"
-            printf 'Commit `%s`.\n' "$commit"
-          } >> "$GITHUB_STEP_SUMMARY"
+          printf 'Commit `%s`.\n\n' "$commit" >> "$GITHUB_STEP_SUMMARY"
+      - name: Assign every selected test file once per platform
+        id: plan
+        env:
+          RETEST_CI_SCOPE: ${{ inputs.suite }}
+          RETEST_CI_PLATFORM: ${{ inputs.platform }}
+          RETEST_CI_TEST_FILES: ${{ inputs.files }}
+        run: node scripts/ci/write-test-plan.ts
 
-  linux:
-    name: Linux ${{ matrix.arch }}
+  checks:
+    name: Build and types ${{ matrix.platform }}
     needs: commit
     strategy:
       fail-fast: false
       matrix:
-        # The harness was verified on arm64. Most CI machines people run Retest on are x64.
-        include:
-          - arch: x64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJSON(needs.commit.outputs.checks) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.commit.outputs.commit }}
-          persist-credentials: false
-      # Builds docker/linux/Dockerfile (Node.js 24, Google Chrome and Debian's Chromium) and runs build, typecheck,
-      # unit, types and integration in it: as a user other than root, with no capability, and with the seccomp
-      # profile that lets Chrome's sandbox start.
-      - name: Run every gate in the Linux harness
-        run: sh docker/linux/run.sh
-
-  macos:
-    name: macOS arm64
-    needs: commit
-    # WebKit build 2359 requires macOS 26.5 or later. This is the standard public arm64 runner.
-    runs-on: macos-26
-    timeout-minutes: 120
-    env:
-      # The runner image ships Google Chrome here, which is also where the tests look by default.
-      RETEST_TEST_BROWSER: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -89,55 +91,96 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          # The oldest Node.js package.json allows. The Linux image runs the newest Node.js 24.
-          node-version: 24.12.0
-      - name: Show macOS and Xcode
-        run: |
-          sw_vers
-          uname -m
-          xcodebuild -version
+          node-version: ${{ matrix.platform == 'macos-arm64' && '24.12.0' || '24' }}
       - run: npm ci --no-audit --no-fund
       - run: npm run build
-      - name: Install recording tools
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: '1'
-        run: |
-          set -euo pipefail
-          brew install ffmpeg
-          rustup toolchain install 1.88.0 --profile minimal
-          rust_tools="$(dirname "$(rustup which --toolchain 1.88.0 cargo)")"
-          echo "$rust_tools" >> "$GITHUB_PATH"
-          # GITHUB_PATH takes effect in later steps; use the exact binaries for these checks.
-          "$rust_tools/rustc" --version
-          "$rust_tools/cargo" --version
-      # Keep the publisher archives for install.test.ts and seed the product installer's cache from the same checked
-      # bytes. The second Chromium build is the pinned Chrome for Testing, so it needs no separate download.
-      - name: Prepare pinned integration archives and paths
-        run: node scripts/ci/prepare-macos-integration.ts "$RUNNER_TEMP/retest-integration"
-      - name: Install pinned browsers and build media
-        run: node dist/cli/main.js install chromium firefox webkit electron media
-      - name: Verify integration prerequisites
-        run: |
-          set -euo pipefail
-          node dist/cli/main.js install --list --verify
-          "$RETEST_TEST_BROWSER" --version
-          "$RETEST_TEST_SECOND_BROWSER" --version
-          "$RETEST_TEST_FIREFOX" --version
-          "$RETEST_TEST_ELECTRON" --version
-          "$RETEST_TEST_MEDIA_BINARY" --version
-          "$RETEST_TEST_FFMPEG" -version
-          "$RETEST_TEST_FFPROBE" -version
-      - name: Verify media reply delivery
-        run: cargo test --locked --offline --manifest-path media/Cargo.toml replies::tests
       - run: npm run typecheck
-      - name: Run unit tests one file at a time
-        run: node --conditions=retest-source --test --test-concurrency=1 "tests/unit/**/*.test.ts"
       - run: npm run test:types
-      # TAP prints the error and its stack when a test fails; spec defers those details until the whole gate ends.
-      - name: Run integration with failure details
+
+  unit:
+    name: Unit ${{ matrix.platform }} ${{ matrix.shard }}/${{ matrix.total }}
+    needs: commit
+    if: ${{ needs.commit.outputs.unit != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.commit.outputs.unit) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.commit.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ matrix.platform == 'macos-arm64' && '24.12.0' || '24' }}
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Run assigned unit files one at a time
+        env:
+          RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
+        run: node scripts/ci/run-tests.ts "$RETEST_CI_FILES" "$RUNNER_TEMP/retest-ci-results"
+      - name: Keep file results and timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: unit-${{ matrix.platform }}-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retest-ci-results/results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  linux:
+    name: Integration ${{ matrix.platform }} ${{ matrix.shard }}/${{ matrix.total }}
+    needs: [commit, checks, unit]
+    if: ${{ always() && needs.commit.result == 'success' && needs.checks.result == 'success' && (needs.unit.result == 'success' || needs.unit.result == 'skipped') && needs.commit.outputs.linux != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.commit.outputs.linux) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.commit.outputs.commit }}
+          persist-credentials: false
+      - name: Run assigned integration files in the Linux harness
+        env:
+          RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
+          RETEST_LINUX_RESULTS: ${{ runner.temp }}/retest-ci-results
+        run: sh docker/linux/run.sh sh -c 'npm run build && exec node scripts/ci/run-tests.ts "$1" /home/node/ci-results' retest-ci "$RETEST_CI_FILES"
+      - name: Keep file results and timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: integration-${{ matrix.platform }}-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retest-ci-results/results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos:
+    name: Integration macOS ${{ matrix.lane }} ${{ matrix.shard }}/${{ matrix.total }}
+    needs: [commit, checks, unit]
+    if: ${{ always() && needs.commit.result == 'success' && needs.checks.result == 'success' && (needs.unit.result == 'success' || needs.unit.result == 'skipped') && needs.commit.outputs.macos != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.commit.outputs.macos) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.lane == 'native' && 75 || 60 }}
+    env:
+      RETEST_TEST_BROWSER: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.commit.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-macos-integration
+      - name: Run assigned integration files one at a time
         id: integration
         env:
-          # Only the synthetic Chromium ticker retains images here; native and other page proofs stay excluded.
+          RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
           RETEST_CHROMIUM_TICKER_PROOF_OUT: ${{ runner.temp }}/retest-chromium-ticker-proof
         shell: bash
         run: |
@@ -156,13 +199,44 @@ jobs:
           trap 'exit 143' TERM
           trap 'exit 130' INT
           export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$GITHUB_WORKSPACE/scripts/ci/chrome-lifecycle.ts --import=$GITHUB_WORKSPACE/scripts/ci/browser-action-phases.ts"
-          node --conditions=retest-source --test --test-concurrency=1 --test-reporter=tap "tests/integration/**/*.test.ts"
+          node scripts/ci/run-tests.ts "$RETEST_CI_FILES" "$RUNNER_TEMP/retest-ci-results"
+      - name: Keep file results and timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: integration-macos-${{ matrix.lane }}-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retest-ci-results/results.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Keep synthetic ticker failure evidence
         if: ${{ failure() && steps.integration.outcome == 'failure' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: chromium-ticker-${{ needs.commit.outputs.commit }}-${{ github.run_attempt }}
+          name: chromium-ticker-${{ matrix.lane }}-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/retest-chromium-ticker-proof
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 0
+
+  result:
+    name: Verify every requested job finished
+    needs: [commit, checks, unit, linux, macos]
+    if: ${{ always() && needs.commit.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RETEST_CI_RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Refuse failed, cancelled or missing requested jobs
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs'
+          const results = JSON.parse(process.env.RETEST_CI_RESULTS)
+          for (const name of ['checks', 'unit', 'linux', 'macos']) {
+            const requested = JSON.parse(results.commit.outputs[name]).length > 0
+            const expected = requested ? 'success' : 'skipped'
+            if (results[name].result !== expected) throw new Error(`${name}: expected ${expected}, got ${results[name].result}`)
+          }
+          const full = results.commit.outputs.full === 'true'
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, full ? 'Every job in the full release matrix succeeded.\n' : 'The requested focused checks succeeded. Full release coverage was not run.\n')
+          JS
