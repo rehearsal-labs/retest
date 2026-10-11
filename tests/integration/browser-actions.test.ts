@@ -975,7 +975,7 @@ test('the wheel turned on the terms scrolls them to their end, which enables Acc
   const accept = (await lastLook(page, 'accept-state', (seen) => seen.text === 'enabled')).text
   // Read once Accept has settled, so an engine that scrolls the terms less is held to their having moved at all.
   const moved = Number((await observe(page, 'terms-scrolled')).text) > 0
-  const clicked = await click(page, 'accept')
+  const clicked = await click(page, 'accept', 2000)
   engineCase.assertOutcome(
     t,
     { scrolled, moved, accept, clicked },

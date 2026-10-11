@@ -17,6 +17,7 @@ import { after, before } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
@@ -227,41 +228,41 @@ export function goto(page: OwnedPage, url: string, timeoutMs = 5000): Promise<Co
   return page.execute({ kind: 'goto', url }, timeoutMs)
 }
 
-export function click(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+export function click(page: OwnedPage, target: Target, timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   return page.execute({ kind: 'click', locator: locatorOf(target) }, timeoutMs)
 }
 
-export function tap(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+export function tap(page: OwnedPage, target: Target, timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   return page.execute({ kind: 'tap', locator: locatorOf(target) }, timeoutMs)
 }
 
-export function fill(page: OwnedPage, target: Target, value: string, timeoutMs = 2000): Promise<CommandResult> {
+export function fill(page: OwnedPage, target: Target, value: string, timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   return page.execute({ kind: 'fill', locator: locatorOf(target), value }, timeoutMs)
 }
 
 /** Presses a key on the element `target` names, or, with none, on the page's keyboard. */
-export function press(page: OwnedPage, target: Target | undefined, key: string, timeoutMs = 2000): Promise<CommandResult> {
+export function press(page: OwnedPage, target: Target | undefined, key: string, timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   const locator = target === undefined ? {} : { locator: locatorOf(target) }
   return page.execute({ kind: 'press', ...locator, key }, timeoutMs)
 }
 
 /** Selects options by label, a string, or by `{ value }`. A list goes as the test's list, `multiple`. */
-export function select(page: OwnedPage, target: Target, choice: OptionChoice | readonly OptionChoice[], timeoutMs = 2000): Promise<CommandResult> {
+export function select(page: OwnedPage, target: Target, choice: OptionChoice | readonly OptionChoice[], timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   const list = Array.isArray(choice)
   const choices = (list ? [...choice] : [choice]).map((item: OptionChoice) => (typeof item === 'string' ? { label: item } : item))
   return page.execute({ kind: 'select', locator: locatorOf(target), choices, ...(list ? { multiple: true } : {}) }, timeoutMs)
 }
 
-export function check(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+export function check(page: OwnedPage, target: Target, timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   return page.execute({ kind: 'check', locator: locatorOf(target) }, timeoutMs)
 }
 
-export function uncheck(page: OwnedPage, target: Target, timeoutMs = 2000): Promise<CommandResult> {
+export function uncheck(page: OwnedPage, target: Target, timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   return page.execute({ kind: 'uncheck', locator: locatorOf(target) }, timeoutMs)
 }
 
 /** Turns the wheel on the element `target` names, or, with none, at the centre of the viewport. */
-export function scroll(page: OwnedPage, target: Target | undefined, delta: { x?: number; y?: number }, timeoutMs = 2000): Promise<CommandResult> {
+export function scroll(page: OwnedPage, target: Target | undefined, delta: { x?: number; y?: number }, timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   const locator = target === undefined ? {} : { locator: locatorOf(target) }
   return page.execute({ kind: 'scroll', ...locator, x: delta.x ?? 0, y: delta.y ?? 0 }, timeoutMs)
 }
