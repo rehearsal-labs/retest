@@ -36,7 +36,7 @@ import { isWebUrl } from '../../protocol/url.ts'
 import { invalidSelector, shadowRefused, waitUntilActionable } from '../actionability.ts'
 import { BrowserError } from '../browser-error.ts'
 import { Channel } from '../cdp/channel.ts'
-import { CdpClosedError, CdpDisconnectedError, CdpInvalidResponseError, CdpProtocolError, CdpTimeoutError } from '../cdp/errors.ts'
+import { CdpAbortedError, CdpClosedError, CdpDisconnectedError, CdpInvalidResponseError, CdpProtocolError, CdpTimeoutError } from '../cdp/errors.ts'
 import { CdpSession } from '../cdp/session.ts'
 import { isRecord } from '../cdp/message.ts'
 import { readProtocol } from '../cdp-results.ts'
@@ -187,6 +187,7 @@ export class WebKitPage implements WebSession, ElementIdentity {
   readonly #openSidePage: (deadline: Deadline) => Promise<SidePage>
   readonly #navigations: Listeners<PageNavigation>
   readonly #navigationStarts: Listeners<string>
+  #navigationChecks = 0
   readonly #frameEvents: Listeners<FrameEvent>
   readonly #events: Listeners<TargetEvent>
   readonly #losses: Listeners<PageLoss>
@@ -813,7 +814,16 @@ export class WebKitPage implements WebSession, ElementIdentity {
       if (token !== null && (await pageSetOff(this.#world, { document, token }, deadline))) return selectionLeft(typed)
       const typing: GuardedIntent = { ...intent, typing: { strokes: keyStrokes(key) } }
       const acting = { locator, intent: typing, input: () => pressKey(this.#bridge.session, key, deadline, dispatch), commandToken }
-      const seeing = await this.#actSeeing(acting, document, deadline)
+      const seeing = await this.#causes.delivering(commandToken, async () => {
+        const checked = this.#navigationChecks
+        const seeing = await this.#actSeeing(acting, document, deadline)
+        if ('target' in seeing && seeing.target.ok && seeing.target.kind === 'ready'
+          && checked === this.#navigationChecks
+          && await pageSetOff(this.#world, { document, token: guardOf(seeing.target).token }, deadline)) {
+          await this.#awaitNavigationCheck(checked, deadline)
+        }
+        return seeing
+      })
       if (!('target' in seeing)) return index === 0 ? undefined : selectionLeft(typed)
       const { target, verdict } = seeing
       if (!target.ok) return index === 0 ? target : { ok: false, failure: selectionCut(typed, target.failure) }
@@ -822,6 +832,30 @@ export class WebKitPage implements WebSession, ElementIdentity {
       heard.push(verdict?.kind === 'seen' ? verdict.selection : undefined)
     }
     return this.#awaitSelection({ locator, intent, document, heard: lastHeard(heard) }, deadline)
+  }
+
+  // The document can report that an input began a navigation before the browser process reports its policy.
+  // Keep that input's cause until the matching policy signal arrives, within the command's existing budget.
+  async #awaitNavigationCheck(checked: number, deadline: Deadline): Promise<void> {
+    if (checked !== this.#navigationChecks) return
+    const command = { method: 'Page.willCheckNavigationPolicy', sessionId: undefined }
+    const changed = Promise.withResolvers<void>()
+    const abort = (): void => changed.reject(new CdpAbortedError(command, { written: true }))
+    const lost = (reason: string): void => changed.reject(new CdpDisconnectedError(command, { reason, written: true }))
+    const stopListening = this.#navigationStarts.add(() => changed.resolve())
+    const stopLosses = this.#losses.add(({ reason }) => lost(reason))
+    const timer = setTimeout(() => changed.reject(new CdpTimeoutError(command, { timeoutMs: deadline.budgetMs, written: true })), deadline.commandTimeoutMs)
+    deadline.signal?.addEventListener('abort', abort, { once: true })
+    if (deadline.signal?.aborted === true) abort()
+    if (this.#lostReason !== undefined) lost(this.#lostReason)
+    try {
+      await changed.promise
+    } finally {
+      clearTimeout(timer)
+      stopListening()
+      stopLosses()
+      deadline.signal?.removeEventListener('abort', abort)
+    }
   }
 
   async #awaitSelection({ locator, intent, document, heard }: AwaitedSelection, deadline: Deadline): Promise<CommandResult> {
@@ -1160,6 +1194,7 @@ export class WebKitPage implements WebSession, ElementIdentity {
   #navigationChecked(params: unknown): void {
     const { frameId } = readProtocol(frameSchema, params, { method: 'Page.willCheckNavigationPolicy' })
     if (frameId !== this.#mainFrameId) return
+    this.#navigationChecks += 1
     if (this.#ownNavigationDue) this.#ownNavigationDue = false
     else this.#causes.requested(pageRequested)
     this.#pendingNavigation ??= { url: 'another document' }

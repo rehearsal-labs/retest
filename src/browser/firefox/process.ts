@@ -17,7 +17,7 @@ import { defaultTimeouts } from '../../protocol/timeouts.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { s, parse } from '../../protocol/schema.ts'
 import { describeExit } from '../../shared/process-exit.ts'
-import { OwnedProcessGroup } from '../../shared/process-ownership.ts'
+import { OwnedProcessGroup, unverifiedMembersProblem } from '../../shared/process-ownership.ts'
 import { closeGraceMs, LaunchError } from '../contract.ts'
 import { writeRedactedLog } from '../redacted-log.ts'
 import { ownerIdentityAsync, writeOwnerRecord } from './profile.ts'
@@ -271,7 +271,10 @@ export class FirefoxProcess {
     } else problems.push(`The Firefox folder ${this.folder} was kept, since the launch could not be confirmed ended.`)
     const remains = await this.#ownership.remainsAsync(deadline)
     if (!remains) process.off('exit', this.#lastResort)
-    return [...new Set([...problems, ...this.#ownership.readProblems])]
+    // An unrecorded orphan is never signalled. Once the parent exited and the whole group is freshly absent,
+    // its earlier refusal is settled; failed readings and failed signals still report a cleanup failure.
+    const settled = this.#mainGone && !remains ? problems.filter((problem) => problem !== unverifiedMembersProblem(this.pid)) : problems
+    return [...new Set([...settled, ...this.#ownership.readProblems])]
   }
 
   // The main process's exit is awaited, not polled; then the helpers it leaves are looked for without holding the

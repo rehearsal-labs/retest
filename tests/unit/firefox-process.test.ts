@@ -144,6 +144,28 @@ test('a crash whose stopped-state reading fails resumes its verified Firefox wit
   assert.equal(current?.state, 'S')
 })
 
+test('a Firefox helper first seen after its parent exited is left alone and its refusal settles once the whole group is confirmed absent', async () => {
+  const { ChildProcess } = await import('node:child_process')
+  const child = new ChildProcess()
+  Object.defineProperty(child, 'pid', { value: firefoxPid })
+  let entries: OwnedProcessIdentity[] = [firefoxEntry]
+  const signals: number[] = []
+  const ownership = new OwnedProcessGroup(firefoxPid, 1, {
+    read: () => entries,
+    readAsync: async () => entries,
+    signal: (pid) => { signals.push(pid) },
+  })
+  assert.deepEqual(ownership.capture(), [])
+  const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-orphan-ended-'))
+  const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'spawn', folder, profile: join(folder, 'profile'), ownership, child, output: Promise.resolve([]) })
+  entries = [{ ...firefoxEntry, pid: firefoxPid + 1, parentPid: 1, command: 'unrecorded Firefox helper' }]
+  child.emit('exit', null, 'SIGKILL')
+  await firefox.recordDescendants()
+  entries = []
+  assert.deepEqual(await firefox.stop(0), [], 'a fresh empty group settles the earlier unverified-member refusal')
+  assert.deepEqual(signals, [], 'no signal was sent to the helper whose launch could not be traced')
+})
+
 /** A machine whose Firefox is alive until `end()`, counting how often each kind of reading was taken. */
 function machine() {
   let alive = true

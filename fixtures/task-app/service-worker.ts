@@ -6,7 +6,7 @@ export const WORKER_ANSWERS_KEY = 'service-worker-answers'
  * can tell whether a document came from the worker.
  */
 export const SERVICE_WORKER: string = `
-const page = '<!doctype html><title>Worker</title><p data-testid="worker-answer">Answered by the service worker</p>' +
+const page = '<!doctype html><title>Worker</title><link rel="icon" href="data:,"><p data-testid="worker-answer">Answered by the service worker</p>' +
   '<script>localStorage.setItem("${WORKER_ANSWERS_KEY}", String(Number(localStorage.getItem("${WORKER_ANSWERS_KEY}") ?? "0") + 1))</script>'
 self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()))

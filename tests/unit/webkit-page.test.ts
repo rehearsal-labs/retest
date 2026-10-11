@@ -4,6 +4,9 @@ import type { ScriptedBuild } from './webkit-scripted-inspector.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { disarmFunction, pageFactsFunction, prepareFunction, registrationFunction, selectionFunction, setOffFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { listPlanFunction } from '../../src/browser/webkit/select.ts'
 import { WebKitPage, outlast, waitedWholeBudget } from '../../src/browser/webkit/page.ts'
 import { defaultScreen } from '../../src/browser/webkit/screen.ts'
 import { monotonicClock } from '../../src/protocol/deadline.ts'
@@ -208,4 +211,65 @@ test('a disposed page hears nothing more of its page proxy, even when its contex
   listening()
   listening()
   assert.equal(build.connection.listenedPages, 0, 'a page goes with its last listener, and a second stop does nothing more')
+})
+
+const policyEndings = [
+  { kind: 'navigation', name: 'a select whose document signals navigation before WebKit reports its policy keeps that navigation with the input command' },
+  { kind: 'stop', name: 'a select waiting for a signalled navigation policy stops with its input still reported as sent when the caller stops' },
+  { kind: 'loss', name: 'a select waiting for a signalled navigation policy ends with an unknown action outcome when its page is lost' },
+] as const
+
+for (const ending of policyEndings) test(ending.name, { timeout: 10_000 }, async (t) => {
+  const { build, page } = openPage(t)
+  let facts = { href: 'http://app.test/', title: 'Pick' }
+  const setOff = Promise.withResolvers<void>()
+  const chosen = Promise.withResolvers<PageNavigation>()
+  page.onNavigation(navigation => { if (navigation.url === 'http://app.test/chosen') chosen.resolve(navigation) })
+  const answer = (value: object | boolean) => ({ result: { type: typeof value === 'boolean' ? 'boolean' : 'object', value } })
+  build.serve(command => {
+    if (command.method === 'Page.getResourceTree') return { frameTree: { frame: { id: 'frame-1', url: facts.href, loaderId: 'L0', securityOrigin: 'http://app.test', mimeType: 'text/html' }, resources: [] } }
+    if (command.method === 'Runtime.evaluate') return command.params['expression'] === 'globalThis' ? { result: { type: 'object', objectId: 'global' } } : answer(true)
+    if (command.method !== 'Runtime.callFunctionOn') return {}
+    const source = command.params['functionDeclaration']
+    if (source === prepareFunction) {
+      const args: readonly unknown[] = Array.isArray(command.params['arguments']) ? command.params['arguments'] : []
+      const first = args[0]
+      const typing = isRecord(first) && isRecord(first['value']) && first['value']['typing'] === true
+      return answer({ status: 'ready', point: null, token: typing ? 1 : null, via: null, scale: 1, page: facts, plan: typing ? null : { quietMs: 0, keys: [{ key: 't', toggle: false }] } })
+    }
+    if (source === listPlanFunction) return answer({ status: 'single' })
+    if (source === registrationFunction || source === disarmFunction) return answer(true)
+    if (source === setOffFunction) { setOff.resolve(); return answer(true) }
+    if (source === selectionFunction) return answer({ status: 'selected', selected: ['Team'], page: facts })
+    if (source === verdictFunction) return answer({ reached: ['keydown', 'keyup'], intercepted: null, landed: '<select>', leaving: null, selection: { status: 'selected', selected: ['Team'], page: facts } })
+    if (source === pageFactsFunction) return answer(facts)
+    return new Error('unexpected page call')
+  })
+  build.proxyEvent('7', 'Target.targetCreated', { targetInfo: { targetId: 'page-8', type: 'page', isPaused: true } })
+  await page.ready
+  build.targetEvent('7', 'page-8', 'Runtime.executionContextCreated', { context: { id: 1, type: 'user', name: 'retest', frameId: 'frame-1' } })
+  const controller = new AbortController()
+  const selection = page.execute({ kind: 'select', locator: { by: 'testId', value: 'plan' }, choices: [{ label: 'Team' }] }, 1000, controller.signal, 7)
+  // Release the policy through the document's signal; answering before it loses the command's cause.
+  await Promise.race([selection.then(() => undefined), setOff.promise])
+  if (ending.kind !== 'navigation') {
+    await build.connection.send('Playwright.testBarrier', {}, { timeoutMs: 1000 })
+    if (ending.kind === 'stop') controller.abort('the caller stopped')
+    else page.markClosed('the browser ended')
+    const result = await selection
+    assert.equal(result.ok, false)
+    if (result.ok) assert.fail('an interrupted input is never reported as confirmed')
+    assert.equal(result.failure.class, ending.kind === 'stop' ? 'timeout' : 'outcome_unknown')
+    if (ending.kind === 'stop') assert.equal(result.failure.details?.['inputSent'], true)
+    return
+  }
+  build.targetEvent('7', 'page-8', 'Page.willCheckNavigationPolicy', { frameId: 'frame-1' })
+  build.targetEvent('7', 'page-8', 'Network.requestWillBeSent', { requestId: 'R1', frameId: 'frame-1', loaderId: 'L1', type: 'Document', request: { url: 'http://app.test/chosen' } })
+  facts = { href: 'http://app.test/chosen', title: 'Chosen' }
+  build.targetEvent('7', 'page-8', 'Page.frameNavigated', { frame: { id: 'frame-1', loaderId: 'L1', url: facts.href, securityOrigin: 'http://app.test', mimeType: 'text/html' } })
+  build.targetEvent('7', 'page-8', 'Runtime.executionContextCreated', { context: { id: 2, type: 'user', name: 'retest', frameId: 'frame-1' } })
+  assert.equal((await selection).ok, true)
+  const navigation = await chosen.promise
+  assert.equal(navigation.cause, 'action')
+  assert.equal(navigation.commandToken, 7)
 })
