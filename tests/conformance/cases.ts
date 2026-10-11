@@ -603,8 +603,8 @@ const structure: TestCase[] = [
       {
         test: 'a test that waits past its own budget fails as a timeout',
         outcome: fails('test', 'timeout'),
-        // The run gives every test 20 seconds; this one gives itself 1.5. A timed out test's own time includes ending
-        // its process, so its late bound is a second.
+        // This test overrides the public test budget with 1.5 seconds. Judge the parent's recorded timeout moment,
+        // before browser cleanup, with the same late bound as before.
         facts: [
           { kind: 'detail', key: 'timeoutMs', value: 1500 },
           { kind: 'deadline', ms: 1500, lateMs: 1000 },

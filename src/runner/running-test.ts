@@ -171,6 +171,7 @@ export class RunningTest {
   readonly #evaluating = new Map<number, Evaluating>()
   readonly #finished = Promise.withResolvers<BodyReport>()
   #deadline: Deadline | undefined
+  #startedAt: number | undefined
   #testTimer: NodeJS.Timeout | undefined
   #killTimer: NodeJS.Timeout | undefined
   /** The document each app's page last committed, as far as the parent knows. */
@@ -218,7 +219,8 @@ export class RunningTest {
     this.#stopNavigation = [...pages].map(([app, page]) => page.onNavigation((navigation) => this.#navigated(app, navigation)))
     process.listen((event) => this.#receive(event))
     process.send({ type: 'run', testId, attemptId, timeouts, apps: [...pages.keys()], ...(variant === undefined ? {} : { variant }) })
-    this.#deadline = new Deadline(timeouts.test)
+    this.#startedAt = monotonicClock()
+    this.#deadline = new Deadline(timeouts.test, { startedAt: this.#startedAt })
     this.#armTestTimer()
     return this.#finished.promise
   }
@@ -719,13 +721,14 @@ export class RunningTest {
   }
 
   #runOutOfTime(): void {
-    if (this.#revocation !== undefined || this.#report !== undefined) return
+    const startedAt = this.#startedAt
+    if (startedAt === undefined || this.#revocation !== undefined || this.#report !== undefined) return
     const budget = this.#options.timeouts.test
     const waiting = this.#inFlight.values().next().value
     const detail = waiting === undefined ? '' : ` It was waiting for ${describeCommand(waiting.message.command)}.`
     const reason = failure('timeout', `The test ran longer than its ${budget} ms budget.${detail}`, waiting?.message.location)
     this.#timedOut = true
-    this.revoke({ ...reason, details: { timeoutMs: budget } }, abortGraceMs)
+    this.revoke({ ...reason, details: { timeoutMs: budget, durationMs: elapsedMs(startedAt) } }, abortGraceMs)
   }
 
   #processEnded(exit: ProcessExit): void {

@@ -27,11 +27,11 @@ describe('deadlines', () => {
     const record = await runSupportFiles(['timeouts.retest.ts', 'passing.retest.ts'])
     const timedOut = testNamed(record.result, 'waits for something that never comes')
     assert.equal(timedOut.status, 'failed')
-    assert.deepEqual(timedOut.failure, {
-      class: 'timeout',
-      message: 'The test ran longer than its 300 ms budget.',
-      details: { timeoutMs: 300 },
-    })
+    assert.equal(timedOut.failure?.class, 'timeout')
+    assert.equal(timedOut.failure.message, 'The test ran longer than its 300 ms budget.')
+    assert.equal(timedOut.failure.details?.['timeoutMs'], 300)
+    const stoppedAt = timedOut.failure.details?.['durationMs']
+    assert.ok(typeof stoppedAt === 'number' && stoppedAt >= 300 && stoppedAt < 1000, `body stopped at ${stoppedAt} ms`)
     assert.ok(timedOut.durationMs < 1000, `answered in ${timedOut.durationMs} ms, before the grace period ran out`)
     const skipped = testNamed(record.result, 'runs after a timed out test')
     assert.equal(skipped.status, 'not_run')
@@ -87,7 +87,9 @@ describe('deadlines', () => {
       click?.failure.message,
       "The test ran longer than its 400 ms budget. It was waiting for getByTestId('save-task').click(). getByTestId('save-task').click() was stopped before it sent any input.",
     )
-    assert.deepEqual(click?.failure.details, { timeoutMs: 400, inputSent: false })
+    const { durationMs: stoppedAt, ...details } = click?.failure.details ?? {}
+    assert.deepEqual(details, { timeoutMs: 400, inputSent: false })
+    assert.ok(typeof stoppedAt === 'number' && stoppedAt >= 400 && stoppedAt < 1000, `body stopped at ${stoppedAt} ms`)
     assert.ok((click?.durationMs ?? Infinity) < 1000, `the click was answered after ${click?.durationMs} ms, not at the end of its overrun`)
     const page = record.browsers[0]?.pages[0]
     assert.deepEqual(page?.stopped.map((command) => command.kind), ['click'])
@@ -160,7 +162,6 @@ describe('the browser', () => {
   })
 
   test('lost during an action that does not answer in time: its outcome is unknown, reported once', async () => {
-    const started = performance.now()
     const record = await runSupportFiles(['passing.retest.ts'], {
       fake: { disconnect: { on: 'click', stage: 'no_answer' } },
       timeouts: { action: 3000 },
@@ -171,7 +172,7 @@ describe('the browser', () => {
     const [click] = eventsOfType(record.events, 'action.failed')
     // A timer can fire up to a millisecond before the clock agrees, as Deadline allows.
     assert.ok((click?.durationMs ?? 0) >= 999, `the page had its grace period, and the click was reported after ${click?.durationMs} ms`)
-    assert.ok(performance.now() - started < 3000, 'the run did not wait for the page to answer')
+    assert.ok((click?.durationMs ?? Infinity) < 3000, 'the action was reported unknown before its full budget, independently of process startup and cleanup')
   })
 
   test('that fails to launch: tests do not run, the failure is the run failure and theirs, and the run exits 2', async () => {

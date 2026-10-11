@@ -408,7 +408,7 @@ test('needs the app', async ({ page }) => {
   assert.deepEqual(eventsOf(run.events, 'browser.started'), [], 'nothing was launched in its place')
 })
 
-test("the window's first address is known from the start, and a secret is typed on the origin secretOrigins names", { timeout: 120_000, skip: unverified }, async (t) => {
+test("the window's first address is known before input, and a secret is typed on the origin secretOrigins names", { timeout: 120_000, skip: unverified }, async (t) => {
   assert.ok(existsSync(electronBinary), `No Electron binary at ${electronBinary}. Unpack the darwin-arm64 release of Electron ${electronVersion} into its dist folder with ditto -x -k, or set RETEST_TEST_ELECTRON to an Electron binary, such as the one retest install electron prints.`)
   // A secret is bound to http and https origins, so the fixture serves its pages from loopback for this test.
   const port = await freePort()
@@ -437,11 +437,18 @@ test(${JSON.stringify(name)}, async ({ page }) => {
   assert.equal(typed.status, 'passed')
   const look = eventsOf(run.events, 'assertion.passed').find((event) => event.matcher === 'toHaveURL')
   assert.equal(look?.pageUrl, `${origin}/index.html`, 'the check recorded the window\'s address')
-  assert.deepEqual(eventsOf(run.events, 'navigation'), [], 'the window never navigated, so its address came from the page itself')
   assert.equal(eventsOf(run.events, 'action.completed')[0]?.command, 'fill', 'the first action types the secret before a URL check could wait for an initial load')
   assert.deepEqual(eventsOf(run.events, 'action.completed').filter(event => ['goto', 'reload', 'goBack', 'goForward'].includes(event.command)), [], 'the test never asks the window to navigate')
   const fill = eventsOf(run.events, 'action.completed').find((event) => event.command === 'fill')
   assert.ok(fill !== undefined, 'the secret was typed')
+  // The app owns its initial load, which may commit after Retest attaches to the window. Its address must be known
+  // before secret input; the test itself neither opens an address nor relies on a URL assertion to wait for it.
+  for (const navigation of eventsOf(run.events, 'navigation')) {
+    assert.equal(navigation.url, `${origin}/index.html`, 'the app only loaded its initial page')
+    assert.equal(navigation.cause, 'page', 'the app initiated the load')
+    assert.equal(navigation.document, 'new')
+    assert.ok(navigation.sequence < fill.sequence, 'the initial page committed before secret input')
+  }
   assert.ok(look !== undefined && fill.sequence < look.sequence, 'secret input succeeds before any URL assertion can wait for the app load')
   assert.deepEqual(filesHolding(run.output, password), [], 'and its value reached no file of the run')
   for (const folder of dataFolders(run)) assert.equal(processesNaming(basename(folder)), '', 'no process of the app is left')

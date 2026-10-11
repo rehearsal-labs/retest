@@ -12,6 +12,8 @@ import { FirefoxPage } from '../../src/browser/firefox/page.ts'
 import { WebKitPage } from '../../src/browser/webkit/page.ts'
 import { CaptureSuspension, microsecondsSince, recordSource } from '../../src/media/capture.ts'
 import { mediaArguments, MediaProcess } from '../../src/media/client.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
+import { bounded } from '../../src/runner/bounded.ts'
 import { launch, openApp, scratchFolder } from './browser-harness.ts'
 import { decodeFrames, decodeVideo, even, imageSize, mediaPrerequisites, pausesMs, shownFrameIds, spread, tickerFrames, tickerServer, videoAgainstTicks, watched } from './capture-proof.ts'
 
@@ -167,10 +169,15 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
   captureTest(`${engine}: withholding stops capture requests on the real page and resume captures again`, skip, async (t) => {
     const { page, identity } = await namedPage(t, engine)
     let requests = 0
+    let inFlight = 0
     // Both engines capture with the page's own screenshots, so every capture request is a call of it.
     if (page instanceof FirefoxPage || page instanceof WebKitPage) {
       const original = page.screenshot.bind(page)
-      page.screenshot = (ms) => { requests += 1; return original(ms) }
+      page.screenshot = (ms) => {
+        requests += 1
+        inFlight += 1
+        return original(ms).finally(() => { inFlight -= 1 })
+      }
     }
     assert.ok(page.frameSource !== undefined)
     const source = page.frameSource(identity)
@@ -178,19 +185,28 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
     let delivered = 0
     const gaps: { reason: string }[] = []
     const reasons: string[] = []
+    const heldTicks = Promise.withResolvers<void>()
+    const resumed = Promise.withResolvers<void>()
+    const ended = Promise.withResolvers<void>()
+    let held: { requests: number; delivered: number } | undefined
     assert.equal((await source.start({ fps: 30, clock: microsecondsSince(performance.now()), timeoutMs: 5000,
-      deliver: () => { delivered += 1 }, ended: reason => reasons.push(reason), gap: gap => gaps.push(gap),
-      withheld: () => suspension.suspended, onWithholdingChange: listener => suspension.listen(listener) })).ok, true)
+      deliver: () => { delivered += 1; if (held !== undefined && !suspension.suspended) resumed.resolve() },
+      ended: reason => { reasons.push(reason); ended.resolve() }, gap: gap => gaps.push(gap),
+      withheld: () => {
+        if (suspension.suspended && inFlight === 0) {
+          if (held === undefined) held = { requests, delivered }
+          else heldTicks.resolve()
+        }
+        return suspension.suspended
+      }, onWithholdingChange: listener => suspension.listen(listener) })).ok, true)
     t.after(() => source.stop(5000))
-    await sleep(200)
-    assert.ok(delivered > 0)
+    assert.ok(delivered > 0, 'start answered after the first delivered frame')
     suspension.suspend()
-    await sleep(100)
-    const held = { requests, delivered }
-    await sleep(300) // The ticker continues painting throughout withholding.
-    assert.deepEqual({ requests, delivered }, held)
+    assert.equal((await bounded(heldTicks.promise, defaultTimeouts.assertion, ended.promise)).status, 'done', 'capture reached two withheld ticks with no screenshot in flight')
+    assert.deepEqual({ requests, delivered }, held, 'observed withheld ticks requested and delivered no pixels')
+    assert.ok(held !== undefined)
     suspension.resume()
-    await sleep(300)
+    assert.equal((await bounded(resumed.promise, defaultTimeouts.assertion, ended.promise)).status, 'done', 'a real frame arrived after capture resumed')
     assert.ok(delivered > held.delivered)
     assert.ok(requests > held.requests)
     assert.ok(gaps.some(gap => gap.reason === 'pixels_withheld'))

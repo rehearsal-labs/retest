@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { emulationFor } from '../../src/config/devices.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { browserPath, openApp } from './browser-harness.ts'
 import {
   assertSucceeded,
@@ -95,7 +96,7 @@ test('emulation applies the screen, user agent and touch, tap works, and every r
     'tests/fails.retest.ts': failingTest,
   })
 
-  const run = await runProject(t, root, { files: ['tests/devices.retest.ts'], reporter: 'human', args: ['--no-agent'] })
+  const run = await runProject(t, root, { files: ['tests/devices.retest.ts'], reporter: 'human', args: ['--no-agent'], timeouts: budgets(defaultTimeouts) })
   assert.equal(run.exit.code, 0, `${run.stdout}\n${run.stderr}`)
 
   const browsers = eventsOf(run.events, 'browser.started')
@@ -120,7 +121,7 @@ test('emulation applies the screen, user agent and touch, tap works, and every r
   assert.match(run.stdout, /^ {2}tablet=chromium +Chrome \S+ · emulated/m)
   assert.doesNotMatch(run.stdout, /desktop=chrome \(emulated\)/)
 
-  const failed = await runProject(t, root, { files: ['tests/fails.retest.ts'], reporter: 'agent', timeouts: budgets({ assertion: 500 }) })
+  const failed = await runProject(t, root, { files: ['tests/fails.retest.ts'], reporter: 'agent', timeouts: budgets({ ...defaultTimeouts, assertion: 500 }) })
   assert.equal(failed.exit.code, 1, failed.stderr)
   assert.match(failed.stdout, /phone=chrome \(emulated\)/)
 

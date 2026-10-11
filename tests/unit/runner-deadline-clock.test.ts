@@ -76,11 +76,20 @@ for (const kind of ['command', 'evaluate'] as const) {
   })
 }
 
-test('an early test timer is rearmed until the deadline clock reaches its limit', async t => {
+test('an early test timer is rearmed until its deadline, and the timeout records that moment before process cleanup', async t => {
   const clock = earlyClock(t)
   const aborted = Promise.withResolvers<number>()
   const process = new ScriptedProcess(message => { if (message.type === 'abort') aborted.resolve(clock.now()) })
   const running = new RunningTest({ process, pages: new Map(), testId: 'a.retest.ts > one', attemptId: 'attempt1', timeouts: { ...quickTimeouts, test: 120 }, emit: () => undefined })
-  running.run()
-  try { assert.ok((await clock.run(aborted.promise)) >= 120) } finally { running.close() }
+  const report = running.run()
+  try {
+    const abortedAt = await clock.run(aborted.promise)
+    assert.ok(abortedAt >= 120 && abortedAt < 122, `aborted at ${abortedAt} ms`)
+    clock.spend(5000)
+    await process.kill()
+    const ended = await report
+    assert.equal(ended.failure?.class, 'timeout')
+    assert.deepEqual(ended.failure.details, { timeoutMs: 120, durationMs: Math.round(abortedAt) })
+    assert.equal(ended.timedOut, true)
+  } finally { running.close() }
 })

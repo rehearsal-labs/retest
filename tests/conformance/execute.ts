@@ -779,8 +779,12 @@ function checkFact(fact: Fact, context: FactContext): string[] {
 function deadlineProblems(fact: Extract<Fact, { kind: 'deadline' }>, context: FactContext): string[] {
   const { failing, result } = context
   const lateMs = fact.lateMs ?? lateBoundMs(fact.ms)
-  const timed = failing === undefined ? { durationMs: result.durationMs, timeoutMs: result.failure?.details?.['timeoutMs'] } : { durationMs: failing.durationMs, timeoutMs: failing.timeoutMs }
   if (result.failure === undefined) return [`Nothing failed, so nothing waited ${fact.ms} ms.`]
+  // An attempt's total duration includes browser setup and cleanup. The parent's timeout records when it revoked
+  // the body, before waiting for either the test process or its pages to close.
+  const durationMs = failing?.durationMs ?? result.failure.details?.['durationMs']
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs)) return ['The timeout did not record when the test body was stopped.']
+  const timed = { durationMs, timeoutMs: failing?.timeoutMs ?? result.failure.details?.['timeoutMs'] }
   const problems: string[] = []
   if (timed.durationMs < fact.ms) problems.push(`It gave up after ${timed.durationMs} ms, before its ${fact.ms} ms had passed.`)
   if (timed.durationMs > fact.ms + lateMs) problems.push(`It gave up after ${Math.round(timed.durationMs)} ms, more than ${lateMs} ms past its ${fact.ms} ms.`)
