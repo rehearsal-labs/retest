@@ -35,7 +35,10 @@ beforeEach(() => {
   // The tab's own script runs; every page function after it fails here, so the page reads no facts from a document,
   // which the commands under test need none of.
   endpoint.on('script.callFunction', (params) => {
-    if (!String(params['functionDeclaration']).startsWith('async function retestCall')) return { result: { type: 'success', realm: 'realm', result: { type: 'undefined' } } }
+    if (!String(params['functionDeclaration']).startsWith('async function retestCall')) {
+      if (String(params['functionDeclaration']).startsWith('(changed, documented)')) documented('about:blank')
+      return { result: { type: 'success', realm: 'realm', result: { type: 'undefined' } } }
+    }
     return { result: { type: 'exception', realm: 'realm', exceptionDetails: { text: 'scripted' } } }
   })
 })
@@ -43,9 +46,6 @@ beforeEach(() => {
 async function page(): Promise<FirefoxPage> {
   tabs += 1
   const opened = await FirefoxPage.open({ client, context, userContext: `user-${tabs}`, baseUrl: 'http://127.0.0.1:4173', emulation: undefined, restoredOrigins: [], onListenerError: () => {} }, new Deadline(2000))
-  // The script's run in the document the tab opened with tells of that document, as Firefox's run of it would.
-  documented('about:blank')
-  await settle()
   return opened
 }
 
@@ -64,6 +64,25 @@ async function settle(): Promise<void> {
 }
 
 describe('the Firefox page', () => {
+  test('opening waits for the initial document message before a navigation can begin', async () => {
+    const requested = Promise.withResolvers<void>()
+    endpoint.on('script.callFunction', () => {
+      requested.resolve()
+      return { result: { type: 'success', realm: 'realm', result: { type: 'undefined' } } }
+    })
+    let returned = false
+    const opening = FirefoxPage.open({ client, context, userContext: 'delayed-document', baseUrl: undefined, emulation: undefined, restoredOrigins: [], onListenerError: () => {} }, new Deadline(2000))
+    void opening.then(() => { returned = true })
+    try {
+      await requested.promise
+      await settle()
+      assert.equal(returned, false, 'a protocol reply alone does not acknowledge the initial document')
+    } finally {
+      documented('about:blank')
+      await (await opening).dispose(1000)
+    }
+  })
+
   test('page setup commands consume one deadline instead of restarting it after subscribing', async () => {
     let subscriptions = 0
     endpoint.on('session.subscribe', async () => {

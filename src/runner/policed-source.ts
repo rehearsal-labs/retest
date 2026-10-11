@@ -30,14 +30,16 @@ export type PolicedSourceOptions = {
  * since the source last started. Once its own stretch begins, the source withholds every frame, however late it comes. `withhold`
  * suspends the recording and stops its source as a stretch begins; `resume` reconciles that stop, lets frames
  * through again and starts a new capture from the same session, so frames painted after the stretch are kept. Frames the
- * policy withholds are counted in `withheld` and never handed on; `began` settles once the first capture has started, or
- * failed to.
+ * policy withholds are counted in `withheld` and never handed on; `began` settles once the first permitted frame arrived
+ * and capture has started, or failed to.
  */
 export class PolicedSource implements FrameSource {
   readonly name: CaptureSourceName
   readonly identity: RecordIdentity
   readonly #options: PolicedSourceOptions
   readonly #began = Promise.withResolvers<CaptureStart>()
+  #firstFrameDelivered = false
+  #startAnswer: CaptureStart | undefined
   readonly #stats: CaptureStats[] = []
   readonly #problems: string[] = []
   #current: FrameSource
@@ -62,7 +64,7 @@ export class PolicedSource implements FrameSource {
     return this.#withheld
   }
 
-  /** Settles once the first capture has answered its start. */
+  /** Settles once the first capture has answered its start and delivered a permitted frame, or failed. */
   get began(): Promise<CaptureStart> {
     return this.#began.promise
   }
@@ -78,7 +80,8 @@ export class PolicedSource implements FrameSource {
     this.#options.runSignal?.addEventListener('abort', this.#cancel, { once: true })
     if (this.#options.runSignal?.aborted === true) this.#cancel()
     const started = await this.#startCurrent(capture)
-    this.#began.resolve(started)
+    this.#startAnswer = started
+    if (!started.ok || this.#firstFrameDelivered) this.#began.resolve(started)
     return started
   }
 
@@ -161,6 +164,8 @@ export class PolicedSource implements FrameSource {
         return
       }
       capture.deliver(frame)
+      this.#firstFrameDelivered = true
+      if (this.#startAnswer !== undefined) this.#began.resolve(this.#startAnswer)
     }
     const ended = (reason: string): void => {
       if (source === this.#current && !this.#stopped) capture.ended(reason)

@@ -532,7 +532,7 @@ export class AttemptRecorder implements AttemptRecordings {
     this.#active.set(input.page.app, Object.assign(active, { report }))
   }
 
-  // Waits until the capture runs, or its report came first because it could not begin; then says it began.
+  // Waits for a permitted frame and capture's start reply, or an earlier report that it could not begin.
   async #began(app: string): Promise<void> {
     const active = this.#active.get(app)
     if (active === undefined) return

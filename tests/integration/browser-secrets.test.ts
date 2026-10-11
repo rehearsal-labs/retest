@@ -238,6 +238,7 @@ test('a fill waits for its verdict request to enter the document before input ca
     </script>`,
     '/done': '<!doctype html><p data-testid="done">Done</p>',
   })
+  const releaseVerdict = Promise.withResolvers<void>()
   let verdictHeld = false
   let verdictReleased = false
   let registrationAsked = false
@@ -247,10 +248,13 @@ test('a fill waits for its verdict request to enter the document before input ca
       const source = isRecord(params) ? params['functionDeclaration'] : undefined
       if (method === 'Runtime.callFunctionOn' && source === verdictFunction) {
         verdictHeld = true
-        // Independent of input and navigation: the Runtime handler reaches the browser after this delay.
-        return delay(150).then(() => { verdictReleased = true })
+        // Force the first registration request to overtake the held verdict request.
+        return releaseVerdict.promise.then(() => { verdictReleased = true })
       }
-      if (method === 'Runtime.callFunctionOn' && source === registrationFunction) registrationAsked = true
+      if (method === 'Runtime.callFunctionOn' && source === registrationFunction) {
+        registrationAsked = true
+        releaseVerdict.resolve()
+      }
       if (method === 'Input.insertText') {
         assert.ok(registrationAsked && verdictReleased, 'text cannot overtake the pending verdict request')
         textDispatched = true

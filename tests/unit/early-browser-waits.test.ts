@@ -49,7 +49,10 @@ async function enginePage(t: TestContext, engine: string): Promise<{ page: Owned
     endpoint.accept('session.subscribe', 'session.unsubscribe', 'script.removePreloadScript', 'input.performActions', 'input.releaseActions', 'browsingContext.activate')
     endpoint.on('script.addPreloadScript', () => ({ result: { script: 'preload' } }))
     endpoint.on('browsingContext.getTree', () => ({ result: { contexts: [{ context: 'tab', url: 'about:blank', children: [] }] } }))
-    endpoint.on('script.callFunction', () => ({ result: { type: 'success', realm: 'realm', result: { type: 'undefined' } } }))
+    endpoint.on('script.callFunction', () => {
+      endpoint.emit('script.message', { channel: 'retest-documented-tab', data: { type: 'string', value: 'about:blank' }, source: { realm: 'realm', context: 'tab' } })
+      return { result: { type: 'success', realm: 'realm', result: { type: 'undefined' } } }
+    })
     const page = await FirefoxPage.open({ client, context: 'tab', userContext: 'user', baseUrl: undefined, emulation: undefined, restoredOrigins: [], onListenerError: () => {} }, new Deadline(2000))
     // This pending document is what makes a missing screenshot retryable.
     return { page, client, inputCount: () => endpoint.sent.filter((command) => command.method.startsWith('input.')).length, screenshotReply: async (answer) => {

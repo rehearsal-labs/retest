@@ -467,6 +467,13 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     this.#documents = -1
     const initial = await this.#client.request('script.callFunction', { functionDeclaration: script, arguments: channels, target: { context: this.#context, sandbox: sandboxName }, awaitPromise: false, resultOwnership: 'none' }, callAnswerSchema, send())
     if (initial.type === 'exception') throw new BrowserError({ class: 'setup_failed', message: `Retest's page script failed in the page's first document: ${initial.exceptionDetails?.text ?? 'it threw'}` })
+    // The script's command reply can precede its channel message. Navigation must not overtake that initial message.
+    while (this.#documents < 0 && !deadline.expired && this.#lostReason === undefined) {
+      deadline.signal?.throwIfAborted()
+      await this.#awaitChange({ changes: this.#changes, waitMs: deadline.remainingMs }, deadline)
+    }
+    deadline.signal?.throwIfAborted()
+    if (this.#documents < 0) throw new BrowserError({ class: 'setup_failed', message: "Firefox did not acknowledge Retest's script in the page's first document before the setup deadline." })
   }
 
   async #execute(command: BrowserCommand, { timeoutMs, signal, commandToken, dispatch }: Executing): Promise<CommandResult> {
@@ -1063,7 +1070,10 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   // navigation announced, such as Firefox's error page for an address it refused at once.
   #committed(href: string): void {
     this.#documents += 1
-    if (this.#documents === 0) return
+    if (this.#documents === 0) {
+      this.#changed()
+      return
+    }
     const id = this.#pending?.id ?? `document-${this.#documents}`
     this.#pending = undefined
     this.#started.clear()

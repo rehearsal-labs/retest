@@ -5,13 +5,10 @@ import { eventsOfType } from '../support/run-harness.ts'
 import { decoded, finishRecordingRun, ownershipOf, partialFiles, recordingRun, recordingSkip, saveProof } from './recording-harness.ts'
 
 const source = `import { expect, test } from '@rehearsal-labs/retest'
-const pause = ms => new Promise(resolve => setTimeout(resolve,ms))
 for (const expected of ['Release checklist','Wrong title']) test(expected, async({page})=>{
   await page.goto('/')
-  await pause(250)
   await page.getByTestId('task-title').fill('Release checklist')
   await page.getByTestId('save-task').click()
-  await pause(250)
   await expect(page.getByTestId('saved-task')).toHaveText(expected)
 })`
 
@@ -34,6 +31,7 @@ test('a real passing and failing run records playable video with identity and se
     const end = eventsOfType(events,'recording.finished')[0]
     const finished = eventsOfType(events,'test.finished')[0]
     assert.ok(began && end && finished && end.sequence < finished.sequence)
+    assert.ok(recording.clock && recording.clock.videoZeroUs <= began.startedUs, 'recording startup acknowledges an actual frame before the body begins')
     assert.equal(began.runId,run.result?.runId)
     const execution = eventsOfType(events,'test.started')[0]?.execution
     assert.ok(execution && result.execution)

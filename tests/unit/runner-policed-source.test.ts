@@ -123,3 +123,25 @@ test('capture clock mapping, achieved cadence and latency survive a restarted so
   assert.equal(combined.achievedFps, 4, 'cadence includes the withheld interval on the run clock')
   assert.deepEqual(combined.captureMs, { count: 3, minMs: 2, meanMs: 5.3, maxMs: 8 })
 })
+
+for (const arrivesBeforeReply of [false, true]) test('recording readiness waits for a permitted frame and its start reply: ' + (arrivesBeforeReply ? 'frame first' : 'reply first'), async () => {
+  const answered = Promise.withResolvers<CaptureStart>()
+  const requested = Promise.withResolvers<StartCapture>()
+  let delivered = 0
+  let ready = false
+  const policed = new PolicedSource({ open: () => source(current => { requested.resolve(current); return answered.promise }, async () => stats), suspension: new CaptureSuspension(), clock: capture.clock, stopTimeoutMs: 20 })
+  void policed.began.then(() => { ready = true })
+  const starting = policed.start({ ...capture, deliver: () => { delivered += 1 } })
+  const current = await requested.promise
+  const frame = { identity, timestampUs: 1000, format: 'jpeg' as const, bytes: Uint8Array.of(1) }
+  if (arrivesBeforeReply) current.deliver(frame)
+  else { answered.resolve({ ok: true, mode: 'screencast' }); await starting }
+  await Promise.resolve()
+  assert.equal(ready, false, 'both the first frame and the start reply are required')
+  if (arrivesBeforeReply) answered.resolve({ ok: true, mode: 'screencast' })
+  else current.deliver(frame)
+  assert.deepEqual(await within(policed.began), { ok: true, mode: 'screencast' })
+  assert.equal(delivered, 1)
+  await starting
+  await policed.stop(20)
+})
