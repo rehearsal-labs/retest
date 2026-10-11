@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { TextDecoder } from 'node:util'
 import { Worker } from 'node:worker_threads'
 import { ChromiumProcess } from '../../src/browser/chromium-process.ts'
 import { killRecordedNow, OwnedProcess, systemTools } from '../../src/native/processes.ts'
@@ -15,11 +16,23 @@ import { metadataComplete, metadataSuccess } from '../../src/shared/metadata-pro
 
 test('the native ownership table and immediate async identity both read their real child in UTC0', async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-zone-'))
-  const requests: MetadataProcessRequest[] = []
+  const requests = new Map<ArrayBufferLike, MetadataProcessRequest>()
+  const readings: { readonly args: readonly string[]; readonly text: string }[] = []
   const post = Worker.prototype.postMessage
   t.mock.method(Worker.prototype, 'postMessage', function (this: Worker, request: MetadataProcessRequest) {
-    requests.push(request)
+    requests.set(request.output, request)
     return post.call(this, request)
+  })
+  const decode = TextDecoder.prototype.decode
+  t.mock.method(TextDecoder.prototype, 'decode', function (this: TextDecoder, ...args: Parameters<TextDecoder['decode']>) {
+    const text = decode.call(this, ...args)
+    const input = args[0]
+    const request = input !== undefined && ArrayBuffer.isView(input) ? requests.get(input.buffer) : undefined
+    if (request !== undefined) {
+      const control = new Int32Array(request.control)
+      if (Atomics.load(control, 0) === metadataComplete && Atomics.load(control, 1) === metadataSuccess) readings.push({ args: request.args, text })
+    }
+    return text
   })
   const zone = process.env['TZ']
   let owned: OwnedProcess | undefined
@@ -32,16 +45,15 @@ test('the native ownership table and immediate async identity both read their re
     process.env['TZ'] = 'Etc/GMT-14'
     assert.deepEqual(await owned.stop(0), [])
     const kinds = new Set<string>()
-    for (const request of requests) {
-      if (!request.args.some(argument => argument.includes('lstart'))) continue
-      const control = new Int32Array(request.control)
-      if (Atomics.load(control, 0) !== metadataComplete || Atomics.load(control, 1) !== metadataSuccess) continue
-      const text = new TextDecoder().decode(new Uint8Array(request.output, 0, Atomics.load(control, 2)))
-      const row = text.split('\n').find(line => line.trim().startsWith(`${owned?.pid} `))
+    // The output buffer may serve another query after its answer is consumed. Keep the text at consumption, so the
+    // proof checks each completed reading rather than whatever a later reading left in the same working buffer.
+    for (const reading of readings) {
+      if (!reading.args.some(argument => argument.includes('lstart'))) continue
+      const row = reading.text.split('\n').find(line => line.trim().startsWith(`${owned?.pid} `))
       if (row === undefined) continue
       const fields = row.trim().split(/\s+/)
       assert.equal(fields.slice(4, 9).join(' '), expected)
-      kinds.add(request.args.includes('-p') ? 'individual' : 'table')
+      kinds.add(reading.args.includes('-p') ? 'individual' : 'table')
     }
     assert.deepEqual([...kinds].sort(), ['individual', 'table'])
   } finally {
