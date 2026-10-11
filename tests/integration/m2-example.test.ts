@@ -40,7 +40,13 @@ test('the example project passes against the task app, on two browsers and two e
     env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD, RETEST_CHROMIUM: secondBrowserPath() },
   })
 
-  assert.equal(run.exit.code, 0, run.stderr)
+  const result = run.result
+  assert.equal(run.exit.code, 0, JSON.stringify({
+    stderr: run.stderr,
+    failure: result?.failure,
+    files: result?.files.filter((file) => file.collection === 'failed').map(({ file, failure }) => ({ file, failure })),
+    tests: result?.files.flatMap((file) => file.tests).filter((test) => test.status !== 'passed' || (test.cleanupFailures?.length ?? 0) > 0).map(({ name, variantKey, status, failure, cleanupFailures }) => ({ name, variantKey, status, failure, cleanupFailures })),
+  }, null, 2))
   const tests = resultOf(run).files.flatMap((file) => file.tests)
   assert.deepEqual(
     tests.map((each) => [each.name, each.variantKey, each.status]),

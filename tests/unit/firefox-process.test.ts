@@ -47,9 +47,9 @@ test('a deliberate Firefox crash refuses a reused pid after checking its recorde
   assert.deepEqual(await firefox.stop(0), [])
 })
 
-test('a deliberate Firefox crash ends the verified browser before its recorded content processes', async (t) => {
+test('a deliberate Firefox crash records newly started content before ending the verified browser first', async (t) => {
   const helper = { ...firefoxEntry, pid: firefoxPid + 1, parentPid: firefoxPid, command: 'firefox content process' }
-  const alive = new Map([firefoxEntry, helper].map((entry) => [entry.pid, entry]))
+  const alive = new Map([firefoxEntry].map((entry) => [entry.pid, entry]))
   const signals: number[] = []
   let lastRead: number | undefined
   const entries = (): OwnedProcessIdentity[] => [launchd, ...alive.values()]
@@ -57,6 +57,7 @@ test('a deliberate Firefox crash ends the verified browser before its recorded c
     assert.equal(lastRead, pid, 'each signal immediately follows the recorded pid identity check')
     signals.push(pid)
     alive.delete(pid)
+    if (pid === firefoxPid) alive.set(helper.pid, { ...helper, parentPid: 1 })
     return true
   }
   const ownership = new OwnedProcessGroup(firefoxPid, 1, {
@@ -72,6 +73,7 @@ test('a deliberate Firefox crash ends the verified browser before its recorded c
     assert.equal(sent, 'SIGKILL')
     return signal(pid)
   })
+  alive.set(helper.pid, helper)
   firefox.crash()
   assert.deepEqual(signals, [firefoxPid, helper.pid], 'content cannot answer a lost-input error before the browser is ended')
 })

@@ -164,7 +164,9 @@ export class FirefoxProcess {
     this.expectExit()
     // End the browser first. Ending its content processes first lets the still-live Remote Agent answer an input
     // with a protocol error before the browser connection is lost. Every signal still needs a fresh owned identity.
-    const problems: string[] = []
+    // Record new content processes while their live ancestry still reaches the browser. After it ends, newly
+    // orphaned children cannot be claimed merely because they share its process group.
+    const problems = this.#ownership.capture()
     const browser = this.#ownership.verifiedIdentity()
     if (browser !== undefined) {
       try { process.kill(browser.pid, 'SIGKILL') }

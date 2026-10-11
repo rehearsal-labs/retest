@@ -9,11 +9,14 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
+import { isRecord } from '../../src/browser/cdp/message.ts'
 import { BidiClient } from '../../src/browser/firefox/bidi-client.ts'
 import { BidiProtocolError } from '../../src/browser/firefox/bidi-errors.ts'
 import { FirefoxBrowser } from '../../src/browser/firefox/browser.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { FirefoxPage } from '../../src/browser/firefox/page.ts'
+import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
+import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { sweepOrphanedFirefoxes } from '../../src/browser/firefox/orphans.ts'
 import { firefoxConsoleUnavailable, firefoxScope } from '../../src/diagnostics/firefox-collector.ts'
 import { awaitPosts, byLabel, byRole, byTestId, closeMs, openApp, scratchFolder, servePages, setupMs } from './browser-harness.ts'
@@ -190,8 +193,16 @@ test('a Firefox killed while an action waits for its element fails as a lost ses
   const first = await firefox(t)
   const page = await first.newPage({ baseUrl: waiting.url }, setupMs)
   assert.equal((await page.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  const waitingForElement = Promise.withResolvers<void>()
+  const enter = IsolatedWorld.prototype.enter
+  const looked = t.mock.method(IsolatedWorld.prototype, 'enter', async function (this: IsolatedWorld, ...args: Parameters<IsolatedWorld['enter']>) {
+    const seen = await enter.call(this, ...args)
+    if (args[0] === prepareFunction && isRecord(seen.value) && seen.value['status'] === 'blocked' && seen.value['check'] === 'enabled') waitingForElement.resolve()
+    return seen
+  })
   const clicking = page.dispatch({ kind: 'click', locator: byTestId('far') }, 10_000)
-  await delay(300)
+  await Promise.race([waitingForElement.promise, clicking.then((result) => assert.fail(`The click ended before observing the disabled element: ${JSON.stringify(result)}`))])
+  looked.mock.restore()
   first.crash()
   const lost = await clicking
   assert.ok(!lost.result.ok)
