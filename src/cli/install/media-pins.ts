@@ -4,7 +4,7 @@ export const minimumRust: string = '1.88.0'
 /** Fixed limits for the pinned media binary and each shipped source or notice file. */
 export const maximumMediaBinaryBytes: number = 64 * 1024 * 1024
 export const maximumMediaSourceBytes: number = 1024 * 1024
-export const mediaSourceDigest: string = '8c611cae179a97b0065d59a79b69b805074481deda039b0414812b268bd26ccd'
+export const mediaSourceDigest: string = '05ecad1aa1e0af65833a32c9cd4cdf62afb8409656f9c0314e114886b414d0e0'
 export const mediaSourceFiles: readonly { readonly path: string; readonly sha256: string }[] = [
   { path: 'media/Cargo.toml', sha256: '7d68b73873840d3968ba354b1d010186ef1df4b96ecdcc5a7b6a74e4696efbf4' },
   { path: 'media/Cargo.lock', sha256: 'ded3cee3c32d990f089b0e4fba70222b200d386482869dff46d9987854451ed5' },
@@ -21,7 +21,7 @@ export const mediaSourceFiles: readonly { readonly path: string; readonly sha256
   { path: 'media/src/protocol.rs', sha256: '3060fe05ca5d63d291dec05449a3fa9f79bcd114e4fbd26e487619fe62ab68be' },
   { path: 'media/src/queue.rs', sha256: '8c5993bc5d2fdbdb4e5684cad9236af6c4a03e711e658256fb4ed27e413cc7fa' },
   { path: 'media/src/recording.rs', sha256: '2240e9871bf25ecfab249fb8535677a4498e07b68f574ef4440ee652253891ee' },
-  { path: 'media/src/replies.rs', sha256: 'ac6ffae698916aa3899fc3a364ed28574ec47f96526a564b3cea5db3228c477c' },
+  { path: 'media/src/replies.rs', sha256: 'ccdcb7f3d3b901afa3aae2f628609de479693c7179c6916a6c556af5886adeb8' },
   { path: 'media/src/server.rs', sha256: '74f62bd0c7242125bed264afa3c427431ceb83893f22e80cdae102145fcbb83a' },
   { path: 'media/src/store.rs', sha256: '397544b2f2237ca58b4cdb1378411040fb4d4eabd80179446ceca2b0a86c1c76' },
   { path: 'media/src/timeline.rs', sha256: '48be1f8e08895a35a41c4bea2d99f59384523541fd024826f65acafdb9ac7310' },

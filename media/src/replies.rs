@@ -99,9 +99,19 @@ impl Replies {
     }
 
     pub fn send_with_payload(&self, reply: &Reply, payload: &[u8]) {
+        self.send_with_payload_observing(reply, payload, Instant::now, || {});
+    }
+
+    fn send_with_payload_observing(
+        &self,
+        reply: &Reply,
+        payload: &[u8],
+        now: impl Fn() -> Instant,
+        waiting: impl Fn(),
+    ) {
         let message = encode_reply(reply, payload);
         let mut state = self.inner.lock();
-        let until = Instant::now() + ADMISSION_WAIT;
+        let until = now() + ADMISSION_WAIT;
         // A reply larger than the whole budget still goes once the queue is empty.
         while !state.broken
             && !state.closed
@@ -109,14 +119,16 @@ impl Replies {
                 || (!state.queue.is_empty()
                     && state.queued_bytes + message.len() > self.inner.max_bytes))
         {
-            if state.input_closed || state.dropped > 0 || Instant::now() >= until {
+            if state.input_closed || state.dropped > 0 || now() >= until {
                 state.dropped += 1;
                 return;
             }
+            // Observe the wait before releasing the queue lock, so room cannot appear before the signal.
+            waiting();
             state = match self
                 .inner
                 .room
-                .wait_timeout(state, until.saturating_duration_since(Instant::now()))
+                .wait_timeout(state, until.saturating_duration_since(now()))
             {
                 Ok((guard, _)) => guard,
                 Err(poisoned) => poisoned.into_inner().0,
@@ -506,23 +518,149 @@ mod tests {
         gated.wait_for_write();
         let half = vec![7u8; budget / 2 + 1];
         replies.send_with_payload(&bye(1), &half);
+        let (waiting, waited) = std::sync::mpsc::channel();
+        let (sent, finished) = std::sync::mpsc::channel();
         let sending = {
             let replies = replies.clone();
             let half = half.clone();
-            std::thread::spawn(move || replies.send_with_payload(&bye(2), &half))
+            // Scheduler delays must not spend the admission budget of this backpressure check.
+            let now = Instant::now();
+            thread::spawn(move || {
+                replies.send_with_payload_observing(
+                    &bye(2),
+                    &half,
+                    || now,
+                    || waiting.send(()).expect("admission signal"),
+                );
+                sent.send(()).expect("sender completion");
+            })
         };
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        waited
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the sender reached the admission wait");
+        let state = replies.inner.lock();
+        assert_eq!(state.queue.len(), 1, "the second reply is still queued");
+        assert_eq!(state.dropped, 0, "waiting has not lost a reply");
+        drop(state);
         assert!(
             !sending.is_finished(),
             "a reply past the byte budget was queued while the client read nothing"
         );
+        assert!(
+            gated.written.bytes().is_empty(),
+            "the writer is still blocked"
+        );
         gated.release();
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the sender finished once room was available");
         sending.join().expect("sent");
         // One reply larger than the whole budget is not held back forever.
         replies.send_with_payload(&bye(3), &vec![1u8; budget * 2]);
-        replies.close();
+        assert_eq!(replies.close(), ReplyClose::default());
         let written = gated.written.bytes();
         assert_eq!(types(&written), ["bye0", "bye1", "bye2", "bye3"]);
+        let mut reader = written.as_slice();
+        assert!(
+            read_envelope(&mut reader)
+                .expect("first reply")
+                .payload
+                .is_empty()
+        );
+        assert_eq!(
+            read_envelope(&mut reader).expect("second reply").payload,
+            half
+        );
+        assert_eq!(
+            read_envelope(&mut reader).expect("admitted reply").payload,
+            half
+        );
+        assert_eq!(
+            read_envelope(&mut reader).expect("oversized reply").payload,
+            vec![1u8; budget * 2]
+        );
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn an_expired_admission_counts_the_lost_reply_and_keeps_the_queued_one() {
+        let gated = Gated::default();
+        let budget = 4096;
+        let replies = Replies::holding(Box::new(gated.clone()), budget).expect("starts");
+        replies.send(&bye(0));
+        gated.wait_for_write();
+        let half = vec![7u8; budget / 2 + 1];
+        replies.send_with_payload(&bye(1), &half);
+        let start = Instant::now();
+        let clock = Mutex::new(start);
+        replies.send_with_payload_observing(
+            &bye(2),
+            &half,
+            || *clock.lock().expect("clock"),
+            || {
+                let mut now = clock.lock().expect("clock");
+                assert_eq!(*now, start, "the deadline has not elapsed");
+                *now = start + ADMISSION_WAIT;
+            },
+        );
+        assert_eq!(replies.dropped(), 1, "the expired admission was counted");
+        gated.release();
+        assert_eq!(
+            replies.close(),
+            ReplyClose {
+                replies_dropped: 1,
+                ..ReplyClose::default()
+            }
+        );
+        assert_eq!(types(&gated.written.bytes()), ["bye0", "bye1"]);
+    }
+
+    #[test]
+    fn input_closing_releases_a_sender_waiting_for_room() {
+        let gated = Gated::default();
+        let budget = 4096;
+        let replies = Replies::holding(Box::new(gated.clone()), budget).expect("starts");
+        replies.send(&bye(0));
+        gated.wait_for_write();
+        let half = vec![7u8; budget / 2 + 1];
+        replies.send_with_payload(&bye(1), &half);
+        let (waiting, waited) = std::sync::mpsc::channel();
+        let (sent, finished) = std::sync::mpsc::channel();
+        let sending = {
+            let replies = replies.clone();
+            let now = Instant::now();
+            thread::spawn(move || {
+                replies.send_with_payload_observing(
+                    &bye(2),
+                    &half,
+                    || now,
+                    || waiting.send(()).expect("admission signal"),
+                );
+                sent.send(()).expect("sender completion");
+            })
+        };
+        waited
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the sender reached the admission wait");
+        replies.input_closed();
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the sender finished at EOF without the writer");
+        sending.join().expect("sender ended at EOF");
+        assert_eq!(replies.dropped(), 1, "EOF refused the waiting reply");
+        assert!(
+            gated.written.bytes().is_empty(),
+            "EOF did not need the writer"
+        );
+        gated.release();
+        assert_eq!(
+            replies.close(),
+            ReplyClose {
+                replies_dropped: 1,
+                ..ReplyClose::default()
+            }
+        );
+        assert_eq!(types(&gated.written.bytes()), ["bye0", "bye1"]);
     }
 
     #[test]
