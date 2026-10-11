@@ -6,6 +6,7 @@ import { CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { BidiClient } from '../../src/browser/firefox/bidi-client.ts'
 import { FirefoxPage } from '../../src/browser/firefox/page.ts'
+import { ChromiumPage } from '../../src/browser/page.ts'
 import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { WebKitConnection } from '../../src/browser/webkit/connection.ts'
 import { WebKitPage } from '../../src/browser/webkit/page.ts'
@@ -28,6 +29,7 @@ const unrecognizedParams = { functionDeclaration: privateSource, arguments: [{ v
 let sendPromise: Promise<unknown> = Promise.resolve({ value: privateValue, message: privateValue })
 let dispatchPromise: Promise<DispatchedCommand> = Promise.resolve({ result: { ok: true, kind: 'select', changed: true }, input: 'sent' })
 let insideDispatch = (): void => {}
+const chromiumCalls: Parameters<ChromiumPage['dispatch']>[] = []
 const firefoxCalls: Parameters<FirefoxPage['dispatch']>[] = []
 const webkitCalls: Parameters<WebKitPage['dispatch']>[] = []
 const sharedCalls: Parameters<CdpSession['send']>[] = []
@@ -36,6 +38,12 @@ const browserCalls: Parameters<WebKitConnection['send']>[] = []
 const proxyCalls: Parameters<WebKitConnection['sendToPageProxy']>[] = []
 const targetCalls: Parameters<WebKitConnection['sendToTarget']>[] = []
 
+ChromiumPage.prototype.dispatch = function (this: ChromiumPage, ...args: Parameters<ChromiumPage['dispatch']>): Promise<DispatchedCommand> {
+  assert.equal(this, ChromiumPage.prototype)
+  chromiumCalls.push(args)
+  insideDispatch()
+  return dispatchPromise
+}
 FirefoxPage.prototype.dispatch = function (this: FirefoxPage, ...args: Parameters<FirefoxPage['dispatch']>): Promise<DispatchedCommand> {
   assert.equal(this, FirefoxPage.prototype)
   firefoxCalls.push(args)
@@ -102,7 +110,7 @@ const eventSchema = s.object({
 })
 const recordSchema = s.object({
   version: s.literal(1), hostPid: s.number({ integer: true, min: 1 }),
-  engine: s.enum(['firefox', 'webkit']),
+  engine: s.enum(['chromium', 'firefox', 'webkit']),
   kind: s.enum(['click', 'tap', 'hover', 'fill', 'press', 'select', 'check', 'uncheck', 'scroll']),
   timeoutMs: s.number({ min: 0 }), elapsedMs: s.number({ min: 0 }), remainingMs: s.number({ min: 0 }),
   errorClass: s.literal('timeout'), input: s.optional(s.enum(['not_sent', 'sent', 'unknown'])),
@@ -132,13 +140,15 @@ function reply(input: InputDispatch): DispatchedCommand {
   return { result: { ok: false, failure: { class: 'timeout', message: privateValue } }, input }
 }
 
-async function dispatch(engine: 'firefox' | 'webkit', answer: DispatchedCommand): Promise<void> {
+async function dispatch(engine: 'chromium' | 'firefox' | 'webkit', answer: DispatchedCommand): Promise<void> {
   dispatchPromise = Promise.resolve(answer)
-  const promise = engine === 'firefox'
+  const promise = engine === 'chromium'
+    ? ChromiumPage.prototype.dispatch(command, 1500, signal, commandToken)
+    : engine === 'firefox'
     ? FirefoxPage.prototype.dispatch(command, 1500, signal, commandToken)
     : WebKitPage.prototype.dispatch(command, 1500, signal, commandToken)
   assert.equal(promise, dispatchPromise, 'dispatch returns the original promise')
-  sameArguments(engine === 'firefox' ? firefoxCalls.at(-1) : webkitCalls.at(-1), [command, 1500, signal, commandToken])
+  sameArguments(engine === 'chromium' ? chromiumCalls.at(-1) : engine === 'firefox' ? firefoxCalls.at(-1) : webkitCalls.at(-1), [command, 1500, signal, commandToken])
   assert.equal(await promise, answer, 'the original result keeps its identity')
 }
 
@@ -166,9 +176,9 @@ function records() {
 switch (mode) {
   case 'identity': {
     insideDispatch = exerciseSends
-    for (const engine of ['firefox', 'webkit'] as const) await dispatch(engine, reply('not_sent'))
+    for (const engine of ['chromium', 'firefox', 'webkit'] as const) await dispatch(engine, reply('not_sent'))
     const saved = records()
-    assert.equal(saved.length, 2)
+    assert.equal(saved.length, 3)
     for (const record of saved) {
       assert.equal(record.kind, 'select')
       assert.equal(record.events.length, 10)
@@ -202,7 +212,7 @@ switch (mode) {
       assert.equal(CdpSession.prototype.send('Runtime.callFunctionOn', unrecognizedParams, options), sendPromise)
       assert.equal(CdpSession.prototype.send(privateValue, params, options), sendPromise)
     }
-    for (const engine of ['firefox', 'webkit'] as const) {
+    for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
       for (const input of ['not_sent', 'sent', 'unknown'] as const) await dispatch(engine, reply(input))
     }
     const error = new CdpTimeoutError({ method: privateValue, sessionId: privateValue }, { timeoutMs: 1500, written: true })
@@ -212,6 +222,7 @@ switch (mode) {
     await assert.rejects(promise, (received: unknown) => { assert.equal(received, error); return true })
     const saved = records()
     assert.deepEqual(saved.map((record) => [record.engine, record.input]), [
+      ['chromium', 'not_sent'], ['chromium', 'sent'], ['chromium', 'unknown'],
       ['firefox', 'not_sent'], ['firefox', 'sent'], ['firefox', 'unknown'],
       ['webkit', 'not_sent'], ['webkit', 'sent'], ['webkit', 'unknown'], ['webkit', undefined],
     ])

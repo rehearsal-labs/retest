@@ -296,8 +296,8 @@ function environment(tmp: string, extra: Readonly<Record<string, string>>): Node
 export type RunRequest = {
   files: readonly string[]
   baseUrl?: string
-  /** Such as `action=500,test=3000`. Default: `budgets()`. */
-  timeouts?: string
+  /** Such as `action=500,test=3000`. Default: `budgets()`. `false` preserves the project configuration. */
+  timeouts?: string | false
   /** Default: the test browser. `false` runs from the config in `cwd`, without `--browser`. */
   browser?: string | false
   /** Default: jsonl, so stdout can be read as events. */
@@ -324,8 +324,7 @@ export async function startRun(t: TestContext, request: RunRequest): Promise<Sta
     request.reporter ?? 'jsonl',
     '--output',
     output,
-    '--timeouts',
-    request.timeouts ?? budgets(),
+    ...(request.timeouts === false ? [] : ['--timeouts', request.timeouts ?? budgets()]),
     ...(request.baseUrl === undefined ? [] : ['--base-url', request.baseUrl]),
     ...(request.args ?? []),
   ]

@@ -4,7 +4,7 @@ import { htmlPage } from './html.ts'
 export const MORE_PATH = '/actions/more'
 
 // The terms show how far they are scrolled, and enable Accept once they are scrolled to their end. The feed asks
-// the server for ten more items when the page is scrolled near its end, once at a time. Every wheel event the page
+// the server for ten more items near its end, once per delivered wheel; growing the feed may scroll it again. Every wheel event the page
 // hears is listed, from the earliest listener a page can have, so a test can tell the page heard none.
 const SCRIPT = `
 const show = (testId, value) => { document.querySelector('[data-testid="' + testId + '"]').textContent = value }
@@ -19,10 +19,13 @@ terms.addEventListener('scroll', () => {
 })
 const feed = byTestId('feed')
 let loading = false
+let wheel = 0
+let loadedWheel = 0
 const count = () => show('items-count', String(feed.children.length))
 addEventListener('scroll', () => {
-  if (loading || scrollY + innerHeight < document.documentElement.scrollHeight - 200) return
+  if (loading || loadedWheel === wheel || scrollY + innerHeight < document.documentElement.scrollHeight - 200) return
   loading = true
+  loadedWheel = wheel
   fetch('${MORE_PATH}', { method: 'POST' }).then(() => {
     const start = feed.children.length
     for (let index = 1; index <= 10; index += 1) {
@@ -37,6 +40,7 @@ addEventListener('scroll', () => {
 count()
 const wheels = []
 addEventListener('wheel', (event) => {
+  wheel += 1
   wheels.push(event.target.closest('[data-testid]')?.dataset.testid ?? event.target.localName)
   show('wheels-heard', wheels.join(' '))
 }, { capture: true, passive: true })

@@ -8,6 +8,7 @@ import {
   assertSucceeded,
   compilers,
   filesHolding,
+  onlyEvent,
   repositoryRoot,
   resultOf,
   runProject,
@@ -37,8 +38,13 @@ test('the example project passes against the task app, on two browsers and two e
   // A copy outside the repository, so the run leaves nothing in the example folder.
   const root = await writeProject(t, exampleFiles())
   const run = await runProject(t, root, {
+    timeouts: false,
     env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD, RETEST_CHROMIUM: secondBrowserPath() },
   })
+
+  const options = onlyEvent(run.events, 'run.started').options
+  assert.deepEqual(options.commandLineTimeouts, {}, 'the example runs with its published configuration')
+  assert.deepEqual([options.timeouts.action, options.timeouts.assertion, options.timeouts.test], [5000, 5000, 30_000])
 
   const result = run.result
   assert.equal(run.exit.code, 0, JSON.stringify({

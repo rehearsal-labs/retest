@@ -339,3 +339,58 @@ test('the titles pages lead on as they say, and the echo page writes the title i
   const echoed = await html(app, `/titles/echo?title=${encodeURIComponent('<b>"Bell"</b>\u0007')}`)
   assert.match(echoed, /<title>&lt;b&gt;&quot;Bell&quot;&lt;\/b&gt;\u0007<\/title>/)
 })
+
+
+test('one delivered wheel loads more items once even when growing the feed causes another scroll, and a new wheel can load again', async () => {
+  const script = SCROLL_PAGE.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+  assert.ok(script !== undefined)
+  type Wheel = { target: { closest: (selector: string) => null; localName: string } }
+  const listeners = new Map<string, ((event: Wheel) => void)[]>()
+  const shown = new Map<string, { textContent: string }>()
+  const loaded = Promise.withResolvers<void>()
+  const feed = {
+    children: Array.from({ length: 20 }, () => ({ textContent: '' })),
+    append(item: { textContent: string }) { this.children.push(item) },
+  }
+  const pending: ReturnType<typeof Promise.withResolvers<void>>[] = []
+  const nodes = {
+    '[data-testid="feed"]': feed,
+    '[data-testid="terms"]': { addEventListener: () => {} },
+    '[data-testid="accept"]': { disabled: true },
+    '[data-testid="items-count"]': { set textContent(value: string) { if (value === '30') loaded.resolve() } },
+  }
+  runInNewContext(script, {
+    document: {
+      documentElement: { scrollHeight: 1200 },
+      createElement: () => ({ textContent: '' }),
+      querySelector(selector: string) {
+        if (Object.hasOwn(nodes, selector)) return Reflect.get(nodes, selector)
+        const node = shown.get(selector) ?? { textContent: '' }
+        shown.set(selector, node)
+        return node
+      },
+    },
+    innerHeight: 720, scrollY: 1000,
+    addEventListener(type: string, listener: (event: Wheel) => void) {
+      listeners.set(type, [...(listeners.get(type) ?? []), listener])
+    },
+    fetch() {
+      const request = Promise.withResolvers<void>()
+      pending.push(request)
+      return request.promise
+    },
+  })
+  const emit = (type: string) => {
+    for (const listener of listeners.get(type) ?? []) listener({ target: { closest: () => null, localName: 'body' } })
+  }
+  emit('wheel')
+  emit('scroll')
+  assert.equal(pending.length, 1)
+  pending[0]!.resolve()
+  await loaded.promise
+  emit('scroll')
+  assert.equal(pending.length, 1, 'the same wheel cannot fetch twice after the feed grows')
+  emit('wheel')
+  emit('scroll')
+  assert.equal(pending.length, 2, 'the next wheel can fetch more')
+})

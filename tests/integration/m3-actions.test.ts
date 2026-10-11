@@ -138,12 +138,12 @@ test('the wheel scrolls the page, which loads more items, and the terms, which e
   assert.equal(run.exit.code, 1, run.stderr)
 
   const page = testNamed(run, 'scrolls the page, which loads more items')
-  assert.equal(page.status, 'passed')
+  assert.equal(page.status, 'passed', JSON.stringify(page))
   assert.deepEqual(actionsOf(run, page.name, ['scroll']), [{ command: 'scroll', scroll: { x: 0, y: 5000 } }])
   assert.equal(app.loads(), 1, 'the feed asked for more items once')
 
   const terms = testNamed(run, 'scrolls the terms to their end, which enables Accept')
-  assert.equal(terms.status, 'passed')
+  assert.equal(terms.status, 'passed', JSON.stringify(terms))
   assert.deepEqual(actionsOf(run, terms.name, ['scroll']), [{ command: 'scroll', locator: { by: 'testId', value: 'terms' }, scroll: { x: 0, y: 2000 } }])
 
   const covered = testNamed(run, 'is not scrolled, and the page hears no wheel')

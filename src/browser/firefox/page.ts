@@ -805,12 +805,12 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   async #typeSelection({ locator, intent, plan, document, commandToken }: Typing, deadline: Deadline, dispatch: Dispatch): Promise<CommandResult | undefined> {
     const problem = selectionProblem(plan)
     if (problem !== undefined) return { ok: false, failure: { class: 'unsupported', message: `Could not select ${describeChoices(intent)} in ${describeLocator(locator)}: ${problem} Retest sent no input.`, details: { inputSent: false } } }
-    const quietMs = Math.min(plan.quietMs, deadline.remainingMs)
-    if (quietMs > 0) await sleep(quietMs, undefined, { signal: deadline.signal })
     const commits = this.#commits
+    // Firefox's trusted Escape release resets native incremental search without waiting for its timer.
+    const keys = [{ key: 'Escape', toggle: false }, ...plan.keys]
     const heard: (Selection | undefined)[] = []
-    for (const [index, planned] of plan.keys.entries()) {
-      const typed: KeysTyped = { locator, intent, sent: index, of: plan.keys.length, heard: lastHeard(heard) }
+    for (const [index, planned] of keys.entries()) {
+      const typed: KeysTyped = { locator, intent, sent: index, of: keys.length, heard: lastHeard(heard) }
       if (index > 0 && (this.#pending !== undefined || this.#commits !== commits)) return selectionLeft(typed)
       const key = plannedKey(planned)
       const typing: GuardedIntent = { ...intent, typing: { strokes: pressedStrokes(key) } }

@@ -14,6 +14,7 @@ import {
   BidiPendingLimitError, BidiProtocolError, BidiTimeoutError,
 } from '../../src/browser/firefox/bidi-errors.ts'
 import { FirefoxPage } from '../../src/browser/firefox/page.ts'
+import { ChromiumPage } from '../../src/browser/page.ts'
 import {
   armDocumentFunction, checkedFunction, disarmFunction, observeFunction, pageFactsFunction,
   prepareFunction, registrationFunction, selectionFunction, setOffFunction, verdictFunction,
@@ -22,7 +23,7 @@ import { WebKitConnection } from '../../src/browser/webkit/connection.ts'
 import { WebKitPage } from '../../src/browser/webkit/page.ts'
 import { listPlanFunction } from '../../src/browser/webkit/select.ts'
 
-type Engine = 'firefox' | 'webkit'
+type Engine = 'chromium' | 'firefox' | 'webkit'
 type ActionKind = 'click' | 'tap' | 'hover' | 'fill' | 'press' | 'select' | 'check' | 'uncheck' | 'scroll'
 type Layer = 'shared' | 'bidi' | 'webkit.browser' | 'webkit.proxy' | 'webkit.target'
 type Phase = 'prepare' | 'guard.arm' | 'guard.verdict' | 'guard.registration' | 'guard.disarm' | 'guard.set_off' | 'selection' | 'selection.plan' | 'checked' | 'observe' | 'page_facts'
@@ -72,6 +73,10 @@ const logPath = process.env['RETEST_CI_BROWSER_ACTION_PHASE_LOG']
 if (process.platform === 'darwin' && logPath !== undefined && isAbsolute(logPath)) observeActions(logPath)
 
 function observeActions(path: string): void {
+  const chromiumDispatch = ChromiumPage.prototype.dispatch
+  ChromiumPage.prototype.dispatch = function (this: ChromiumPage, ...args: Parameters<ChromiumPage['dispatch']>): Promise<DispatchedCommand> {
+    return observeAction('chromium', args[0].kind, args[1], () => chromiumDispatch.apply(this, args), path)
+  }
   const firefoxDispatch = FirefoxPage.prototype.dispatch
   FirefoxPage.prototype.dispatch = function (this: FirefoxPage, ...args: Parameters<FirefoxPage['dispatch']>): Promise<DispatchedCommand> {
     return observeAction('firefox', args[0].kind, args[1], () => firefoxDispatch.apply(this, args), path)
