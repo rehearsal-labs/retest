@@ -142,9 +142,8 @@ export class ChromiumBrowser implements WebRuntime {
     return this.#closing
   }
 
-  // A test browser has nothing to save, and Chrome's own shutdown takes about half a second (fact F4 of the speed
-  // plan), so the close is asked for and not waited on: the process group is ended at once, waited for up to
-  // `closeGraceMs`, and the profile removed.
+  // Ask Chrome to close and end its verified owners at once. The caller's cleanup deadline bounds confirmation
+  // of their shutdown and removal of the temporary profile.
   async #close(timeoutMs: number): Promise<void> {
     this.#closeRequested = true
     const deadline = new Deadline(timeoutMs)

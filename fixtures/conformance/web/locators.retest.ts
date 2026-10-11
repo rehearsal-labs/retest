@@ -77,12 +77,12 @@ test.describe('several matches', (test) => {
 
 test('a check that needs one element fails as ambiguous on several matches', async ({ page }) => {
   await page.goto('/lookup/states')
-  await expect(page.getByRole('checkbox')).toBeChecked()
+  await expect(page.getByRole('checkbox')).toBeChecked({ timeout: 1500 })
 })
 
 test('an action on a locator that matches nothing fails as not found when its time runs out', async ({ page }) => {
   await page.goto('/lookup/find')
-  await page.getByTestId('trash').getByRole('button').click()
+  await page.getByTestId('trash').getByRole('button').click({ timeout: 1500 })
 })
 
 test('a CSS selector the page cannot read fails at once', async ({ page }) => {

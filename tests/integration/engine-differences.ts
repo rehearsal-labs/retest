@@ -228,7 +228,7 @@ export const conformanceDifferences: readonly ConformanceDifference[] = [
       status: 'failed',
       class: 'check_failed',
       operation: 'toBeEnabled',
-      at: { holding: 'toBeEnabled()' },
+      at: { holding: 'toBeEnabled(' },
       message: "getByTestId('accept') is disabled. Looked {looks} times in 1500 ms.",
     },
     facts: [{ kind: 'deadline', ms: 1500 }],

@@ -543,7 +543,7 @@ const assertions: TestCase[] = inFile('Assertions', 'web', 'assertions.retest.ts
   },
   {
     test: 'toHaveText fails after looking for its whole time, naming what the page showed',
-    outcome: fails('toHaveText', 'check_failed', { at: { holding: "toHaveText('Saved 4 tasks')" }, message: /^getByTestId\('summary'\) has text "Saved 3 tasks", expected "Saved 4 tasks"\./ }),
+    outcome: fails('toHaveText', 'check_failed', { at: { holding: "toHaveText('Saved 4 tasks'," }, message: /^getByTestId\('summary'\) has text "Saved 3 tasks", expected "Saved 4 tasks"\./ }),
     facts: [{ kind: 'deadline', ms: 1500 }],
   },
   { test: 'a negation fails on what shows the condition true', outcome: fails('not.toContainText', 'check_failed'), facts: [{ kind: 'deadline', ms: 1500 }] },
@@ -1082,7 +1082,7 @@ const workflow: TestCase[] = [
     { test: 'offers to try again after a failed load, and loads on the second try', outcome: passes },
     {
       test: 'a loading line that never goes away fails at the hidden check',
-      outcome: failsAtCheck('toBeHidden', 'the loading line goes once the reports are in', 'toBeHidden()', /^getByTestId\('loading'\) is visible\. Looked \d+ times in 1500 ms\.$/),
+      outcome: failsAtCheck('toBeHidden', 'the loading line goes once the reports are in', 'toBeHidden(', /^getByTestId\('loading'\) is visible\. Looked \d+ times in 1500 ms\.$/),
       facts: [{ kind: 'deadline', ms: 1500, looks: 3 }],
     },
     {

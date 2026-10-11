@@ -37,13 +37,13 @@ test('a loading line that never goes away fails at the hidden check', async ({ p
   await page.goto('/workflow/reports?defect=spinner-stays')
   await expect(page.getByTestId('report-row')).toHaveCount(REPORTS.length)
   await test.step('the loading line goes once the reports are in', async () => {
-    await expect(page.getByTestId('loading')).toBeHidden()
+    await expect(page.getByTestId('loading')).toBeHidden({ timeout: 1500 })
   })
 })
 
 test('reports that never arrive fail at the list check', async ({ page }) => {
   await page.goto('/workflow/reports?defect=never-answers')
   await test.step('the reports arrive', async () => {
-    await expect(page.getByTestId('report-row')).toHaveCount(REPORTS.length)
+    await expect(page.getByTestId('report-row')).toHaveCount(REPORTS.length, { timeout: 1500 })
   })
 })

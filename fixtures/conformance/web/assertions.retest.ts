@@ -51,13 +51,12 @@ test('value assertions compare what the test holds, and poll reads again until i
   expect(['Buy milk', 'Walk the dog']).toContain('Walk the dog')
   expect(await page.url()).toMatch(/\/lookup\/find$/)
   await expect.poll(() => page.title()).toBe('Find')
-  // A value that turns true only after a moment, so the poll must read it more than once before it matches.
-  const asked = performance.now()
-  await expect.poll(() => performance.now() - asked >= 200).toBe(true)
+  let looks = 0
+  await expect.poll(() => ++looks > 1).toBe(true)
 })
 
 test('a check looks again until the page shows what it expects', async ({ page }) => {
-  await page.goto('/lookup/states')
+  await page.goto('/lookup/states-held')
   await expect(page.getByTestId('enabled-later')).toBeEnabled()
 })
 
@@ -70,17 +69,17 @@ test('a soft check that fails lets the test go on, and the test fails at it', as
 
 test('toHaveText fails after looking for its whole time, naming what the page showed', async ({ page }) => {
   await page.goto('/lookup/find')
-  await expect(page.getByTestId('summary')).toHaveText('Saved 4 tasks')
+  await expect(page.getByTestId('summary')).toHaveText('Saved 4 tasks', { timeout: 1500 })
 })
 
 test('a negation fails on what shows the condition true', async ({ page }) => {
   await page.goto('/lookup/states')
-  await expect(page.getByTestId('status')).not.toContainText('3 tasks')
+  await expect(page.getByTestId('status')).not.toContainText('3 tasks', { timeout: 1500 })
 })
 
 test('a negation never passes on a missing element', async ({ page }) => {
   await page.goto('/lookup/states')
-  await expect(page.getByTestId('missing')).not.toBeChecked()
+  await expect(page.getByTestId('missing')).not.toBeChecked({ timeout: 1500 })
 })
 
 test('toBeDisabled fails on an enabled button within its own shorter time', async ({ page }) => {

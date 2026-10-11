@@ -76,7 +76,7 @@ test('the wheel scrolls an element to its end and the page near its end, which e
   await page.goto('/actions/scroll')
   await expect(page.getByTestId('accept')).toBeDisabled()
   await page.getByTestId('terms').scroll({ y: 2000 })
-  await expect(page.getByTestId('accept')).toBeEnabled()
+  await expect(page.getByTestId('accept')).toBeEnabled({ timeout: 1500 })
   await page.getByTestId('accept').click()
   await expect(page.getByTestId('items-count')).toHaveText('20')
   await page.scroll({ y: 5000 })

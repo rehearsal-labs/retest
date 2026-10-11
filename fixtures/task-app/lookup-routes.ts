@@ -1,3 +1,4 @@
+import type { ServerResponse } from 'node:http'
 import type { Route } from './route.ts'
 import { escapeHtml, htmlPage } from './html.ts'
 import { HTML_TYPE, respondWith } from './route.ts'
@@ -47,6 +48,9 @@ setTimeout(() => { later.disabled = false }, 300)
 let laterClicks = 0
 later.addEventListener('click', () => { document.querySelector('[data-testid="later-clicks"]').textContent = String((laterClicks += 1)) })
 `
+
+/** The held page enables its button only after the conformance host has read it disabled. */
+export const HELD_ENABLE_PATH = '/lookup/enable-held'
 
 /** Checkable controls in each state, enabled and disabled elements in each way, and text and a value to compare. */
 export const STATES_PAGE: string = htmlPage(
@@ -156,6 +160,8 @@ export const SHADOW_PAGE: string = htmlPage('Shadow', `<todo-widget data-testid=
  */
 export function lookupRoutes(): Route[] {
   const loads = new Map<string, number>()
+  const held = new Set<ServerResponse>()
+  let released = false
   const counted = (path: string): number => {
     const count = (loads.get(path) ?? 0) + 1
     loads.set(path, count)
@@ -164,6 +170,22 @@ export function lookupRoutes(): Route[] {
   return [
     ['GET /lookup/find', (_request, response) => respondWith(response, 200, HTML_TYPE, FIND_PAGE)],
     ['GET /lookup/states', (_request, response) => respondWith(response, 200, HTML_TYPE, STATES_PAGE)],
+    ['GET /lookup/states-held', (_request, response) => {
+      released = false
+      const page = STATES_PAGE.replace('setTimeout(() => { later.disabled = false }, 300)', `fetch('${HELD_ENABLE_PATH}').then(() => { later.disabled = false })`)
+      respondWith(response, 200, HTML_TYPE, page)
+    }],
+    [`GET ${HELD_ENABLE_PATH}`, (_request, response) => {
+      if (released) { respondWith(response, 200, 'text/plain', 'enabled'); return }
+      held.add(response)
+      response.once('close', () => held.delete(response))
+    }],
+    [`POST ${HELD_ENABLE_PATH}`, (_request, response) => {
+      released = true
+      for (const waiting of held) respondWith(waiting, 200, 'text/plain', 'enabled')
+      held.clear()
+      respondWith(response, 200, 'text/plain', 'released')
+    }],
     ['GET /lookup/hover', (_request, response) => respondWith(response, 200, HTML_TYPE, HOVER_PAGE)],
     ['GET /lookup/shortcuts', (_request, response) => respondWith(response, 200, HTML_TYPE, SHORTCUTS_PAGE)],
     ['GET /lookup/playwright', (_request, response) => respondWith(response, 200, HTML_TYPE, PLAYWRIGHT_PAGE)],

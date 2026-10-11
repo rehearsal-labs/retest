@@ -714,6 +714,11 @@ export const prepareFunction: string = `async function prepare(intent, query, ..
   }
   const before = await boxAfterFrame(element)
   const after = await boxAfterFrame(element)
+  // The page can reorder matches during the frames. Recheck the pin in the same task that arms the input.
+  if (typeof intent.element === 'string') {
+    const current = resolve(query, elements).found
+    if (current.length !== 1 || current[0] !== control || !isKeyed(current[0], intent.element)) return { status: 'moved' }
+  }
   if (!element.isConnected) return blocked('attached')
   if (!isVisible(element)) return blocked('visible')
   if (action !== 'hover' && control.matches(':disabled')) return blocked('enabled')

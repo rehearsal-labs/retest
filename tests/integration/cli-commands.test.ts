@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { failureSchema, sourceLocationSchema } from '../../src/protocol/failures.ts'
 import { s } from '../../src/protocol/schema.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { browserPath, openApp } from './browser-harness.ts'
 import {
   assertReleased,
@@ -97,7 +98,7 @@ test('list reports a file that throws once its tests were collected, keeps its t
 
 test('a failed run prints one card, with a screenshot and an inspect command that reads it back', async (t) => {
   const app = await openApp(t, { mode: 'broken' })
-  const run = await runRetest(t, { files: [exampleFile], baseUrl: app.url, reporter: 'human', timeouts: budgets({ assertion: 500 }) })
+  const run = await runRetest(t, { files: [exampleFile], baseUrl: app.url, reporter: 'human', timeouts: budgets({ ...defaultTimeouts, assertion: 500 }) })
 
   assert.equal(run.exit.code, 1)
   for (const line of [/- Expected +"Release checklist"/, /\+ Received +"Release checklis"/, /Compared +whole text/, /› 7 │/]) {
@@ -116,7 +117,7 @@ test('a failed run prints one card, with a screenshot and an inspect command tha
 test('a coding agent gets the short report, ending in a next: line', async (t) => {
   const app = await openApp(t, { mode: 'broken' })
   const output = join(await scratchFolder(t), 'run')
-  const args = ['run', exampleFile, '--browser', browserPath(), '--base-url', app.url, '--timeouts', budgets({ assertion: 500 }), '--output', output]
+  const args = ['run', exampleFile, '--browser', browserPath(), '--base-url', app.url, '--timeouts', budgets({ ...defaultTimeouts, assertion: 500 }), '--output', output]
   const retest = await RetestProcess.start(t, { args, env: { CLAUDECODE: '1' } })
   const run = await finishRun({ retest, output })
 

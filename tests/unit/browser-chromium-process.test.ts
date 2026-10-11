@@ -61,6 +61,35 @@ test('ordinary browser cleanup uses asynchronous snapshots and one-pid readings,
   }
 })
 
+test('shutdown waits for verified absence within the caller deadline after the old close grace has elapsed', async (t) => {
+  const child = new ChildProcess()
+  Object.defineProperty(child, 'pid', { value: 6402 })
+  const root: OwnedProcessIdentity = { pid: 6402, parentPid: 5001, groupId: 6402, startedAt: 'today', command: '/owned/browser' }
+  let now = 0
+  let signaled = false
+  let afterSignal = 0
+  let running = true
+  t.mock.method(performance, 'now', () => now)
+  const ownership = new OwnedProcessGroup(root.pid, root.parentPid, {
+    read: () => running ? [root] : [],
+    readAsync: async () => {
+      if (signaled) {
+        afterSignal++
+        now = closeGraceMs + afterSignal
+        if (afterSignal > 1) running = false
+      }
+      return running ? [root] : []
+    },
+    readProcessAsync: async () => running ? root : undefined,
+    signal: () => { signaled = true; child.emit('exit', null, 'SIGKILL') },
+  })
+  const browser = new ChromiumProcess(child, undefined, { readable: new PassThrough(), writable: new PassThrough() }, undefined, ownership)
+  assert.deepEqual(await browser.stop(0, new Deadline(5 * closeGraceMs)), [])
+  assert.equal(running, false, 'a fresh process-table reading proved shutdown')
+  assert.ok(afterSignal > 1, 'the first reading after the old grace was still alive')
+  await browser.gone()
+})
+
 test('a browser cleanup whose caller deadline ended reports unconfirmed ownership and retains its profile', async (t) => {
   const profile = await mkdtemp(join(tmpdir(), 'retest-deadline-profile-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
@@ -249,7 +278,7 @@ test('the browser exit hook stays installed while the final asynchronous ownersh
       return [root]
     },
     readProcessAsync: async () => root,
-    signal: () => undefined,
+    signal: () => { child.emit('exit', null, 'SIGKILL') },
   })
   const before = new Set(process.listeners('exit'))
   const browser = new ChromiumProcess(child, undefined, { readable: new PassThrough(), writable: new PassThrough() }, undefined, ownership)
@@ -280,7 +309,7 @@ test('a failed final asynchronous ownership reading is included in the browser c
       return [root]
     },
     readProcessAsync: async () => root,
-    signal: () => undefined,
+    signal: () => { child.emit('exit', null, 'SIGKILL') },
   })
   const before = new Set(process.listeners('exit'))
   const browser = new ChromiumProcess(child, undefined, { readable: new PassThrough(), writable: new PassThrough() }, undefined, ownership)

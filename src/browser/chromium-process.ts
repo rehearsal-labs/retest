@@ -217,9 +217,11 @@ export class ChromiumProcess {
           else problems.push(problem)
         }
         for (const refusal of report.identityRefusals) leftAlone.add(refusal)
-        if (!(await this.#ended(new Deadline(closeGraceMs), deadline))) {
+        // The caller's cleanup deadline bounds reconciliation; the exit and fresh process table prove shutdown.
+        const reconciliationMs = deadline.remainingMs
+        if (!(await this.#ended(deadline, deadline))) {
           problems.push(this.#ownership.readProblems.length === 0
-            ? stillThereMessage(this.pid, procStats)
+            ? stillThereMessage(this.pid, procStats, reconciliationMs)
             : `Could not confirm that process group ${this.pid} ended within the browser's cleanup bound.`)
         }
       }
@@ -265,8 +267,8 @@ export class ChromiumProcess {
  *
  * @example stillThereMessage(4242, procStats)
  */
-export function stillThereMessage(groupId: number, stats: () => readonly string[]): string {
-  const left = `The browser's process group ${groupId} was still there ${closeGraceMs} ms after SIGKILL.`
+export function stillThereMessage(groupId: number, stats: () => readonly string[], timeoutMs: number = closeGraceMs): string {
+  const left = `The browser's process group ${groupId} was still there ${timeoutMs} ms after SIGKILL.`
   if (!onlyUnreaped(groupId, stats)) return left
   return `${left} Its processes have exited, but nothing reaped them. In a container, the first process adopts them and must reap them: start the container with an init, such as docker run --init.`
 }

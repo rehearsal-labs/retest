@@ -112,6 +112,27 @@ describe('the readying look pinned to one node', () => {
     assert.deepEqual(await page.call(prepareFunction, { action: 'press', strokes: 1, element: 'never-a-key' }, oneElement, first), { status: 'moved' })
   })
 
+  test('refuses a pinned node whose locator changes while the readiness frames run', async () => {
+    const page = fakePage()
+    const first = shown(page, 'f-1', '')
+    const second = shown(page, 'f-2', '')
+    const [key] = keyed(page, 100, [taking(0, 1)], first).reads[0]?.keys ?? []
+    let current = first
+    Object.assign(page.document, { querySelectorAll: () => [current] })
+    page.document.atPoint = first
+    const listeners = page.listening('pointerdown')
+    const rectangle = first.getBoundingClientRect.bind(first)
+    Object.assign(first, { getBoundingClientRect: () => {
+      queueMicrotask(() => { current = second })
+      return rectangle()
+    } })
+    const query = { steps: [{ by: 'css', selector: 'input', pick: null }] }
+    assert.deepEqual(await page.call(prepareFunction, { action: 'click', element: key }, query), { status: 'moved' })
+    assert.equal(current, second, 'the locator changed after the initial identity check')
+    assert.equal(page.listening('pointerdown'), listeners, 'no input was armed for the stale node')
+    assert.equal(page.document.activeElement, null)
+  })
+
   test('answers moved for a key read in an earlier document, even on a node that shows the same', async () => {
     const earlier = fakePage()
     const [key] = keyed(earlier, 100, [taking(0, 1)], shown(earlier, 'save', 'Save')).reads[0]?.keys ?? []

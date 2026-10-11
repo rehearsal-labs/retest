@@ -25,6 +25,7 @@ test('a click on a disabled button is refused when its time runs out', async ({ 
 
 test('a click on a hidden element is refused when its time runs out', async ({ page }) => {
   await page.goto('/lookup/hover')
+  await expect(page.getByTestId('tip')).toBeHidden()
   await page.getByTestId('tip').click({ timeout: 500 })
 })
 

@@ -13,10 +13,12 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { conformanceVariables } from '../../fixtures/conformance/config.ts'
+import { HELD_ENABLE_PATH } from '../../fixtures/task-app/lookup-routes.ts'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 import { WORKFLOW_PASSWORD, WORKFLOW_SESSION_COOKIE } from '../../fixtures/task-app/workflow-sign-in-page.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { conformanceDifferences } from '../integration/engine-differences.ts'
 import { conformanceExpectation, conformanceMessageProblems, conformanceProblems, declarationProblems, readProofs } from '../integration/engine-expectations.ts'
 import { assertLooksStayWithTheirSession } from '../integration/participants-harness.ts'
@@ -46,8 +48,8 @@ import { assertNothingLeft, endRun, RunProcess } from './process.ts'
 
 const fixturesRoot = join(repositoryRoot, 'fixtures/conformance')
 
-/** The budgets every CLI run gets unless its group says otherwise. */
-const runBudgets = { collection: 10_000, setup: 20_000, action: 1500, navigation: 5000, assertion: 1500, test: 20_000, cleanup: 5000 }
+/** Behavior cases use the public defaults. Deadline cases specify their shorter budget on the operation itself. */
+const runBudgets = defaultTimeouts
 
 /** How long the runner waits for the moment a group's interruption needs, and for a stopped run to end. */
 const interruptionWaitMs = 30_000
@@ -238,6 +240,14 @@ async function runGroup(t: TestContext, request: GroupRequest): Promise<GroupRun
     const run = await RunProcess.start({ command: groupCommand(group), args: groupArguments(group, output), cwd, env })
     t.after(() => run.endGroup())
     const problems: string[] = []
+    // Release only after the parent's actual disabled observation, so a slow first look cannot skip the retry.
+    const enabledAfterRead = group.name === 'web' ? run.waitForEvent('observation', (event) =>
+      event.testId.includes('a check looks again until the page shows what it expects') &&
+      event.locator.by === 'testId' && event.locator.value === 'enabled-later' && event.observed.enabled === false,
+    ).then(async () => {
+      const response = await fetch(new URL(HELD_ENABLE_PATH, target.baseUrl), { method: 'POST', signal: AbortSignal.timeout(interruptionWaitMs) })
+      if (!response.ok) throw new Error(`The enable signal returned ${response.status}.`)
+    }).catch((error: unknown) => { problems.push(`The held button was not released after its disabled observation: ${messageOf(error)}`) }) : Promise.resolve()
     if (group.interruption !== undefined) {
       try {
         await interrupt(run, group, target.app)
@@ -250,6 +260,7 @@ async function runGroup(t: TestContext, request: GroupRequest): Promise<GroupRun
       problems.push(`The run did not end within ${runLimitMs} ms, so its process group was ended.`)
       run.endGroup()
     }
+    await enabledAfterRead
     const ended = await endRun(run, output)
     if (group.host === undefined) rmSync(join(cwd, '.retest'), { recursive: true, force: true })
     if (!existsSync(output)) problems.push(`The run made no run folder. It exited with ${exitText(ended.exit)} and printed on stderr: ${JSON.stringify(ended.stderr.slice(0, 600))}`)
