@@ -270,15 +270,35 @@ mod tests {
     use crate::protocol::{Bye, read_envelope};
 
     #[derive(Clone, Default)]
-    struct Shared(Arc<Mutex<Vec<u8>>>);
+    struct Shared(Arc<(Mutex<Vec<u8>>, Condvar)>);
 
     impl Write for Shared {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0.lock().expect("lock").extend_from_slice(bytes);
+            let (written, changed) = &*self.0;
+            written.lock().expect("lock").extend_from_slice(bytes);
+            changed.notify_all();
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    impl Shared {
+        fn bytes(&self) -> Vec<u8> {
+            self.0.0.lock().expect("lock").clone()
+        }
+
+        fn wait_for_replies(&self, count: usize) {
+            let (written, changed) = &*self.0;
+            let (written, _) = changed
+                .wait_timeout_while(
+                    written.lock().expect("lock"),
+                    Duration::from_secs(5),
+                    |written| types(written).len() < count,
+                )
+                .expect("wait");
+            assert_eq!(types(&written).len(), count, "the replies were written");
         }
     }
 
@@ -323,7 +343,7 @@ mod tests {
             replies.send(&bye(stopped));
         }
         replies.close();
-        let written = output.0.lock().expect("lock").clone();
+        let written = output.bytes();
         let mut reader = written.as_slice();
         for stopped in 0..50u64 {
             let envelope = read_envelope(&mut reader).expect("a whole reply");
@@ -359,6 +379,12 @@ mod tests {
     }
 
     impl Gated {
+        fn release(&self) {
+            let (open, opened) = &*self.open;
+            *open.lock().expect("lock") = true;
+            opened.notify_all();
+        }
+
         fn wait_for_write(&self) {
             let (writing, started) = &*self.writing;
             let (writing, _) = started
@@ -402,11 +428,27 @@ mod tests {
             "a newer live frame replaces the waiting one"
         );
         replies.send(&bye(1));
-        let (open, opened) = &*gated.open;
-        *open.lock().expect("lock") = true;
-        opened.notify_all();
-        replies.close();
-        let written = gated.written.0.lock().expect("lock").clone();
+        thread::scope(|scope| {
+            let closing = scope.spawn(|| replies.close());
+            // The writer must stay blocked until shutdown has withdrawn the waiting live frame.
+            let (state, _) = replies
+                .inner
+                .changed
+                .wait_timeout_while(replies.inner.lock(), Duration::from_secs(5), |state| {
+                    !state.closed
+                })
+                .expect("wait");
+            assert!(state.closed, "shutdown has begun");
+            assert!(
+                state.live.is_empty(),
+                "shutdown withdrew the waiting live frame"
+            );
+            assert_eq!(state.queue.len(), 1, "the normal reply is still queued");
+            drop(state);
+            gated.release();
+            assert_eq!(closing.join().expect("closed"), ReplyClose::default());
+        });
+        let written = gated.written.bytes();
         assert_eq!(
             types(&written),
             ["bye0", "bye1"],
@@ -423,19 +465,10 @@ mod tests {
         assert!(!replies.offer_live("r", &bye(100), b"old"));
         assert!(replies.offer_live("r", &bye(101), b"new"));
         replies.send(&bye(1));
-        let (open, opened) = &*gated.open;
-        *open.lock().expect("lock") = true;
-        opened.notify_all();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while types(&gated.written.0.lock().expect("lock")).len() < 3 {
-            assert!(
-                Instant::now() < deadline,
-                "the replacement was never written"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        gated.release();
+        gated.written.wait_for_replies(3);
         replies.close();
-        let written = gated.written.0.lock().expect("lock").clone();
+        let written = gated.written.bytes();
         assert_eq!(types(&written), ["bye0", "bye1", "bye101"]);
         let mut reader = written.as_slice();
         let first = read_envelope(&mut reader).expect("first reply");
@@ -455,19 +488,10 @@ mod tests {
         gated.wait_for_write();
         replies.offer_live("r", &bye(100), &[]);
         replies.send(&bye(1));
-        let (open, opened) = &*gated.open;
-        *open.lock().expect("lock") = true;
-        opened.notify_all();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while types(&gated.written.0.lock().expect("lock")).len() < 3 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the live frame was never written"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        gated.release();
+        gated.written.wait_for_replies(3);
         replies.close();
-        let written = gated.written.0.lock().expect("lock").clone();
+        let written = gated.written.bytes();
         assert_eq!(types(&written), ["bye0", "bye1", "bye100"]);
         assert!(!replies.withdraw_live("r"));
     }
@@ -492,14 +516,12 @@ mod tests {
             !sending.is_finished(),
             "a reply past the byte budget was queued while the client read nothing"
         );
-        let (open, opened) = &*gated.open;
-        *open.lock().expect("lock") = true;
-        opened.notify_all();
+        gated.release();
         sending.join().expect("sent");
         // One reply larger than the whole budget is not held back forever.
         replies.send_with_payload(&bye(3), &vec![1u8; budget * 2]);
         replies.close();
-        let written = gated.written.0.lock().expect("lock").clone();
+        let written = gated.written.bytes();
         assert_eq!(types(&written), ["bye0", "bye1", "bye2", "bye3"]);
     }
 

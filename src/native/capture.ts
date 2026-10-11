@@ -120,8 +120,8 @@ export function nativeFrameSource(session: NativeCaptureSession, identity: Recor
       if (answer.status === 'failed') {
         // A window not there yet, as just after launch, may come within the start's budget; a running loop drops the frame.
         const startMayRetry = name === 'window-crop' && (answer.failure.class === 'timeout' || answer.failure.details?.['transient'] === true)
-        // A completed command timeout needs room for the configured ending and reply, without predicting latency.
-        const cleanup = name === 'window-crop' && answer.failure.class === 'timeout'
+        // Only a timed-out image process needs its ending budget; a refused read has launched no image process.
+        const cleanup = name === 'window-crop' && answer.failure.details?.['imageCommandTimedOut'] === true
           ? { retryMinimumMs: windowImageGraceMs + windowImageEndingMs + nativeCaptureReplyMarginMs + 1 }
           : {}
         return { ok: false, problem: answer.failure.message, ...(answer.failure.class === 'session_lost' ? { lost: true as const } : {}), ...(startMayRetry ? { retryAtStart: true as const } : {}), ...cleanup }

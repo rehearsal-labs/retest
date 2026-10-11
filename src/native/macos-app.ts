@@ -508,7 +508,7 @@ class MacosAppDriver implements NativeAppDriver {
     const started = performance.now()
     const shot = await runCommand(this.#tools.screencapture, ['-l', String(window.number), '-o', '-x', '-t', 'png', file], { timeoutMs: deadline.commandTimeoutMs, signal, hiddenVariables: this.#tools.hiddenVariables, graceMs: windowImageGraceMs })
     const durationMs = Math.round(performance.now() - started)
-    if (shot.timedOut) return failedCapture(`macOS gave no image of the app's window in time (${describeCommand('screencapture', shot)}). Retest captured nothing.`, { class: 'timeout' })
+    if (shot.timedOut) return failedCapture(`macOS gave no image of the app's window in time (${describeCommand('screencapture', shot)}). Retest captured nothing.`, { class: 'timeout', imageCommandTimedOut: true })
     if (shot.stopped) return failedCapture('The capture was stopped while macOS drew the window\'s image. Retest captured nothing.')
     if (shot.code !== 0 || shot.cleanupProblems.length > 0) return failedCapture(`macOS gave no image of the app's window (${describeCommand('screencapture', shot)}). The image needs Screen Recording for ${screenRecordingHolder}: ${screenRecordingGrant}. npx retest doctor checks it.`)
     const lateAfter = outOfTime(deadline, 'reading which windows are on screen after the image')
@@ -716,8 +716,9 @@ export function coveringWindows(windows: readonly ScreenWindow[], app: { readonl
 }
 
 // `transient` marks a window that is not there yet, as just after launch, which a capture that is starting may ask again.
-function failedCapture(message: string, kind: { readonly class?: FailureClass; readonly transient?: true } = {}): DriverAnswer<Uint8Array> {
-  return { status: 'failed', input: 'not_sent', failure: { class: kind.class ?? 'not_actionable', message, ...(kind.transient === true ? { details: { transient: true } } : {}) } }
+function failedCapture(message: string, kind: { readonly class?: FailureClass; readonly transient?: true; readonly imageCommandTimedOut?: true } = {}): DriverAnswer<Uint8Array> {
+  const details = { ...(kind.transient === true ? { transient: true } : {}), ...(kind.imageCommandTimedOut === true ? { imageCommandTimedOut: true } : {}) }
+  return { status: 'failed', input: 'not_sent', failure: { class: kind.class ?? 'not_actionable', message, ...(Object.keys(details).length > 0 ? { details } : {}) } }
 }
 
 // A capture whose deadline is reached starts no further command, as each one may run its kill grace past its time.
