@@ -492,9 +492,12 @@ async function until(condition: () => boolean | Promise<boolean>, what: string, 
 test('a window recording that starts before the app\'s window is on screen asks again within its start budget, and a running one drops that frame', darwinOnly, async (t) => {
   const { setup, opened } = await launchedSession(t)
   await opened.session.launch(10_000)
+  const [pid] = opened.session.processIds
+  assert.ok(pid !== undefined)
+  const checkTarget = await fixtureTargetCheck(setup.fake, setup.appPath, pid)
   // The window list lists no window of the app at its first two readings, as just after a launch.
   await setup.fake.configure({ appWindowReadings: [{ absent: true }, { absent: true }] })
-  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const source = nativeFrameSource(opened.session, sessionRecordIdentity(opened.session.identity), async () => { throw new Error('The macOS fixture does not capture a simulator display.') }, checkTarget)
   const frames: CapturedFrame[] = []
   const ended: string[] = []
   assert.deepEqual(await source.start(recordingStart(frames, ended, 20_000)), { ok: true, mode: 'screenshot-loop' })
@@ -520,9 +523,12 @@ async function treeWithoutWindow(root: string, windowless: boolean): Promise<voi
 test('a window recording that starts before the app\'s tree holds its window asks again within its start budget, and a running one drops that frame', darwinOnly, async (t) => {
   const { setup, opened } = await launchedSession(t)
   await opened.session.launch(10_000)
+  const [pid] = opened.session.processIds
+  assert.ok(pid !== undefined)
+  const checkTarget = await fixtureTargetCheck(setup.fake, setup.appPath, pid)
   const trees = (): number => readRequests(setup.fake.root).filter((request) => request.path.endsWith('/source')).length
   await treeWithoutWindow(setup.fake.root, true)
-  const source = opened.session.frameSource(sessionRecordIdentity(opened.session.identity))
+  const source = nativeFrameSource(opened.session, sessionRecordIdentity(opened.session.identity), async () => { throw new Error('The macOS fixture does not capture a simulator display.') }, checkTarget)
   const frames: CapturedFrame[] = []
   const ended: string[] = []
   const read = trees()
@@ -615,7 +621,7 @@ test('a window recording whose window never comes retains its confirmed absence 
   }
 })
 
-// The timeout case keeps app metadata in the fixture; forked stand-ins also pay for process-group cleanup.
+// Window and capture deadline tests read app metadata directly; forked tool stand-ins pay for process-group cleanup.
 // The actual app birth is read afresh, and the production target check still refuses an unowned process.
 async function fixtureTargetCheck(fake: FakeTools, appPath: string, pid: number): Promise<ReturnType<typeof nativeCaptureTargetCheck>> {
   const app = readApps(fake.root)[appPath]
