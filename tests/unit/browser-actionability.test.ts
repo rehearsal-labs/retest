@@ -3,6 +3,7 @@ import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { waitUntilActionable } from '../../src/browser/actionability.ts'
+import { CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { scriptedSession } from './browser-fixtures.ts'
@@ -72,6 +73,56 @@ test('a point with no element at all is named as such, for any action', async ()
     message: "Could not tap getByLabel('Password') within 50 ms: no element is at its centre.",
     details: { check: 'hit-target', covering: null, waitedMs: 50 },
   })
+})
+
+test('an observed cover remains the refusal when the final read times out at the exact deadline', async () => {
+  let now = 0
+  let reads = 0
+  const { session, sent } = scriptedSession((method) => {
+    if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 7 })
+    if (method === 'Runtime.callFunctionOn') {
+      reads += 1
+      now = 300
+      if (reads > 1) return Promise.reject(new CdpTimeoutError({ method, sessionId: 'S1' }, { timeoutMs: 1, written: true }))
+      return Promise.resolve({ result: { value: { status: 'blocked', check: 'hit-target', detail: '<span class="cover" data-testid="cover">' } } })
+    }
+    return Promise.resolve({})
+  })
+  const target = await waitUntilActionable({
+    world: new IsolatedWorld(session, () => 'F1'),
+    locator: { by: 'testId', value: 'covered' },
+    intent: { action: 'check', pointer: 'click', multiline: false },
+    deadline: new Deadline(300, { clock: () => now }),
+    pendingNavigation: settled,
+  })
+  assert.deepEqual(target, {
+    ok: false,
+    failure: {
+      class: 'not_actionable',
+      message: `Could not check getByTestId('covered') within 300 ms: another element, <span class="cover" data-testid="cover">, covers its centre.`,
+      details: { check: 'hit-target', covering: '<span class="cover" data-testid="cover">', waitedMs: 300 },
+    },
+  })
+  assert.equal(reads, 2)
+  assert.equal(sent.some(({ method }) => method.startsWith('Input.')), false)
+})
+
+test('a look that never answers remains a timeout and invents no covering element', async () => {
+  let now = 0
+  const timeout = new CdpTimeoutError({ method: 'Runtime.callFunctionOn', sessionId: 'S1' }, { timeoutMs: 300, written: true })
+  const { session, sent } = scriptedSession((method) => {
+    if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 7 })
+    now = 300
+    return Promise.reject(timeout)
+  })
+  await assert.rejects(waitUntilActionable({
+    world: new IsolatedWorld(session, () => 'F1'),
+    locator: { by: 'testId', value: 'covered' },
+    intent: { action: 'check', pointer: 'click', multiline: false },
+    deadline: new Deadline(300, { clock: () => now }),
+    pendingNavigation: settled,
+  }), (error: unknown) => error === timeout)
+  assert.equal(sent.some(({ method }) => method.startsWith('Input.')), false)
 })
 
 test('a fill bound to origins asks the page to check them, and a page on another origin fails at once, naming it', async () => {

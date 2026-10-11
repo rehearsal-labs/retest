@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import type { Failure } from '../../src/protocol/failures.ts'
 import { BrowserError } from '../../src/browser/browser-error.ts'
-import { signalGroup, signalRecordedProcess } from '../../src/browser/chromium-process.ts'
+import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { closeGraceMs } from '../../src/browser/contract.ts'
 import {
@@ -334,12 +334,19 @@ test('a page whose renderer crashes fails the command waiting on it at once, and
   const page = await openPage(t, browser, site.url)
   assertOk(await goto(page, '/'))
   await awaitPosts(site, '/busy', 1)
+  // Record the fixture's live process tree after its renderer reports readiness, before injecting the crash.
+  const crashOwnership = new OwnedProcessGroup(browser.pid)
+  assert.deepEqual(crashOwnership.capture(), [], 'the fixture browser and its descendants are owned by this test')
   const reading = timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'text' } }, 10_000))
   const renderers = (await processesUsing(await profileOf(browser.pid)))
     .filter((line) => line.includes('--type=renderer'))
     .map((line) => Number(line.trim().split(/\s+/)[0]))
   assert.ok(renderers.length > 0, 'the page has a renderer process')
-  for (const pid of renderers) signalRecordedProcess(browser.pid, pid, 'SIGKILL')
+  for (const pid of renderers) {
+    const renderer = crashOwnership.groupFor(pid)
+    assert.ok(renderer !== undefined, `renderer ${pid} still has verified ancestry beneath the fixture browser`)
+    assert.deepEqual(renderer.signal('SIGKILL'), [])
+  }
 
   const { value, ms } = await reading
   assert.ok(ms < 5000, `the read waiting on the crashed page should fail at once, took ${ms} ms of 10000`)

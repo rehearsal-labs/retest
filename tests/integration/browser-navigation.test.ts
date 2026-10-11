@@ -25,6 +25,7 @@ import {
   timed,
 } from './browser-harness.ts'
 import { engineExpectations } from './engine-expectations.ts'
+import { engineUnderTest } from './engines.ts'
 
 const browser = sharedBrowser()
 
@@ -385,9 +386,11 @@ const countryPage = `<!doctype html><title>Pick</title><select data-testid="coun
   select.addEventListener('change', () => { location.href = '/next?country=' + select.value })
 </script>`
 
+// Firefox first sends Escape to reset its select prefix. It is counted alongside the two choice keys.
+const resetKeys = engineUnderTest().name === 'firefox' ? 1 : 0
 const leftAfterOneKey = {
   class: 'not_actionable',
-  message: `Could not select 'Chile' in getByTestId('country'): the page began to open another document after Retest typed 1 of the 2 keys that choose it, and the select held "Canada" as the last of them arrived. Retest typed no more.`,
+  message: `Could not select 'Chile' in getByTestId('country'): the page began to open another document after Retest typed ${1 + resetKeys} of the ${2 + resetKeys} keys that choose it, and the select held "Canada" as the last of them arrived. Retest typed no more.`,
   details: { check: 'selection', inputSent: true },
 }
 

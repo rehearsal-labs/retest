@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { BrowserError } from '../../src/browser/browser-error.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import {
   assertOk,
   byLabel,
@@ -938,10 +939,12 @@ test('uncheck refuses a radio button at once, and check on another radio button 
 
 test('a covered checkbox is not checked, and no listener of the page hears any part of a click', async (t) => {
   const { page } = await choicesPage(t)
-  assert.deepEqual(failureOf(await check(page, 'covered', 300)), {
+  await observeUntil(page, 'cover', (seen) => seen.visible === true)
+  // The controlled actionability tests check the exact short deadline. This browser check uses the public action budget.
+  assert.deepEqual(failureOf(await check(page, 'covered')), {
     class: 'not_actionable',
-    message: `Could not check getByTestId('covered') within 300 ms: another element, <span class="cover" data-testid="cover">, covers its centre.`,
-    details: { check: 'hit-target', covering: '<span class="cover" data-testid="cover">', waitedMs: 300 },
+    message: `Could not check getByTestId('covered') within ${defaultTimeouts.action} ms: another element, <span class="cover" data-testid="cover">, covers its centre.`,
+    details: { check: 'hit-target', covering: '<span class="cover" data-testid="cover">', waitedMs: defaultTimeouts.action },
   })
   assert.deepEqual(failureOf(await check(page, 'hover-covered')), {
     class: 'not_actionable',
