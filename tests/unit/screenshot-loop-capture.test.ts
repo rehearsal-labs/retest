@@ -4,6 +4,7 @@ import type { RecordIdentity } from '../../src/protocol/identity.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { ScreenshotLoopSource } from '../../src/media/capture.ts'
+import { controlledClock } from '../support/controlled-clock.ts'
 
 const identity: RecordIdentity = { testId: 'tests/phone.retest.ts > saves', attemptId: 'k3v9q0x2mb', app: 'phone', sessionId: 'k3v9q0x2mb:phone' }
 const jpeg = Uint8Array.of(0xff, 0xd8, 0xff, 0xd9)
@@ -78,9 +79,15 @@ async function advance(t: TestContext, capture: Run, milliseconds: number): Prom
   await settle()
 }
 
+// Timers and timeout decisions share the same explicitly advanced monotonic clock.
+function captureTimers(t: TestContext, capture: Run): void {
+  t.mock.method(performance, 'now', () => capture.clock.now / 1000)
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+}
+
 // Starts a loop whose first capture comes back at once with an image.
 async function started(t: TestContext, target: FakeTarget, capture: Run): Promise<ScreenshotLoopSource> {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  captureTimers(t, capture)
   const source = new ScreenshotLoopSource(target.options())
   const starting = source.start(capture.start)
   await settle()
@@ -102,7 +109,7 @@ describe('a screenshot loop is never an empty capture that looks like a working 
   test('start answers only once the first capture came back with an image, which is the first frame, bytes untouched', async (t) => {
     const target = new FakeTarget()
     const capture = run()
-    t.mock.timers.enable({ apis: ['setTimeout'] })
+    captureTimers(t, capture)
     const source = new ScreenshotLoopSource(target.options())
     let answered = false
     const starting = source.start(capture.start).then((answer) => ((answered = true), answer))
@@ -121,7 +128,7 @@ describe('a screenshot loop is never an empty capture that looks like a working 
   test('a first capture that fails starts nothing, reports no stretch, and says why', async (t) => {
     const target = new FakeTarget()
     const capture = run()
-    t.mock.timers.enable({ apis: ['setTimeout'] })
+    captureTimers(t, capture)
     const source = new ScreenshotLoopSource(target.options())
     const starting = source.start(capture.start)
     await settle()
@@ -243,8 +250,8 @@ describe('a screenshot loop counts what failed, and ends when its target goes', 
   })
 
   test('a grab that throws is one failed capture, not the end of the loop', async (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout'] })
     const capture = run(10)
+    captureTimers(t, capture)
     let calls = 0
     const source = new ScreenshotLoopSource({
       ...new FakeTarget().options(),
@@ -312,7 +319,7 @@ describe('a screenshot loop stops on time', () => {
     await advance(t, capture, 100)
     const stopping = source.stop(50)
     await settle()
-    t.mock.timers.tick(50)
+    await advance(t, capture, 50)
     const stats = await stopping
     assert.equal(target.asked[1]?.signal.aborted, true)
     assert.deepEqual(stats.problems, ["A simulator-display capture was still out when the stop's 50 ms were up; it was given up, and nothing it brings back is handed over."])
@@ -333,9 +340,9 @@ describe('a screenshot loop stops on time', () => {
   })
 
   test('a stop while the first capture is out ends the start, which says it was stopped', async (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout'] })
     const target = new FakeTarget()
     const capture = run(10)
+    captureTimers(t, capture)
     const source = new ScreenshotLoopSource(target.options())
     const starting = source.start(capture.start)
     await settle()
@@ -358,18 +365,73 @@ describe('a screenshot loop stops on time', () => {
 })
 
 test('a screenshot grab that ignores its timeout cannot hold the start open or deliver a late image', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const clock = controlledClock(t)
   const target = new FakeTarget()
   const capture = run()
   const source = new ScreenshotLoopSource(target.options())
   const starting = source.start(capture.start)
   await settle()
-  t.mock.timers.tick(1000)
-  await settle()
+  await clock.advance(0, 1000)
+  assert.equal(target.asked[0]?.signal.aborted, false, 'an early timer cannot expire the capture')
+  await clock.advance(999)
+  assert.equal(target.asked[0]?.signal.aborted, false, 'the capture remains pending before its deadline')
+  await clock.advance(1)
   assert.equal((await starting).ok, false)
   assert.equal(target.asked[0]?.signal.aborted, true)
   target.answer()
   await settle()
   assert.equal(capture.frames.length, 0)
   assert.equal((await source.stop(100)).delivered, 0)
+})
+
+test('a reply received after the deadline is refused even when the host timer has not fired', async (t) => {
+  const clock = controlledClock(t)
+  const target = new FakeTarget()
+  const capture = run()
+  const source = new ScreenshotLoopSource(target.options())
+  const starting = source.start(capture.start)
+  await clock.flush()
+  await clock.advance(1001, 0)
+  target.answer()
+  await clock.flush()
+  assert.equal((await starting).ok, false)
+  assert.equal(target.asked[0]?.signal.aborted, true)
+  assert.equal(target.asked.length, 1, 'an unanswered capture is never retried')
+  assert.equal(capture.frames.length, 0, 'late pixels are never delivered')
+  assert.equal((await source.stop(100)).delivered, 0)
+})
+
+test('an exhausted startup budget sends no capture request', async (t) => {
+  const clock = controlledClock(t)
+  const target = new FakeTarget()
+  const capture = run()
+  const source = new ScreenshotLoopSource(target.options())
+  const starting = source.start({ ...capture.start, timeoutMs: 0 })
+  await clock.flush()
+  assert.equal(target.asked.length, 0, 'an exhausted deadline cannot send even the first request')
+  assert.equal((await starting).ok, false)
+  assert.equal(capture.frames.length, 0)
+  await source.stop(100)
+})
+
+
+test('a retry without its required cleanup budget keeps the confirmed failure until the original deadline', async (t) => {
+  const clock = controlledClock(t)
+  const target = new FakeTarget()
+  const capture = run(50)
+  const source = new ScreenshotLoopSource(target.options())
+  let answered = false
+  const starting = source.start({ ...capture.start, timeoutMs: 200 }).then((answer) => { answered = true; return answer })
+  await clock.flush()
+  await clock.advance(120)
+  target.answer({ ok: false, problem: 'The image command was ended.', retryAtStart: true, retryMinimumMs: 100 })
+  await clock.flush()
+  await clock.advance(79)
+  assert.equal(answered, false, 'the remaining budget belongs to the original startup deadline')
+  assert.equal(target.asked.length, 1, 'another request needs its full cleanup allocation')
+  await clock.advance(1)
+  assert.deepEqual(await starting, { ok: false, reason: 'The first simulator-display capture failed: The image command was ended.' })
+  assert.equal(target.asked.length, 1)
+  assert.equal(capture.frames.length, 0)
+  assert.deepEqual((await source.stop(100)).problems, ['The image command was ended.'])
 })

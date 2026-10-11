@@ -45,6 +45,14 @@ Run the integration files your change touches, and name them in your pull reques
 
 For CI debugging, choose `suite=unit` or `suite=integration`, a platform and the exact test paths. [The release guide](docs/releasing.md#run-the-gates-by-hand) has the command. Full CI assigns every file to a shard and runs one file at a time on each machine; focused runs do not establish release coverage.
 
+## Synchronization and deadline tests
+
+Wait for observable completion: a connected driver, an actionable element, the expected application state, or a valid frame. A fixed sleep cannot prove that an operation succeeded. Maximum deadlines bound failures when the expected signal never arrives.
+
+Unit tests that exercise deadlines use `tests/support/controlled-clock.ts`. Advance the monotonic clock explicitly and check that work remains pending before expiration, ends at expiration, and stops issuing requests afterwards. Timers can wake early, so timeout code must recheck its deadline. Exercise that case by advancing timers without advancing the clock.
+
+Keep real browser and process checks for the signals themselves. Record elapsed time for diagnostics; use controlled time to prove exact deadline boundaries. Earlier operation durations cannot decide whether a later operation is ready.
+
 ## Rules every change keeps
 
 - **No new runtime dependencies.** Retest has no third-party runtime npm packages. The AI SDK packages are optional peers. Do not add Playwright, Puppeteer, Selenium, Vitest or another test framework, even as an internal helper.

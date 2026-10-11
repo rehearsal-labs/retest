@@ -10,7 +10,6 @@ import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFi
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
-import { setTimeout as wait } from 'node:timers/promises'
 import { nativeCaptureTargetCheck, nativeCaptureTimeoutMs, nativeFrameSource, sessionRecordIdentity } from '../../src/native/capture.ts'
 import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
 import { appWindow, automationOverlayPids, coveringWindows, MacosDesktop, macosAppProcesses, readWindowsOnScreen, windowsOnScreen } from '../../src/native/macos-app.ts'
@@ -18,6 +17,7 @@ import { isPlainObject } from '../../src/protocol/schema.ts'
 import { decodePng } from '../../src/native/png.ts'
 import { commandOf, listProcesses, ProcessListUnread, recordedIdentity, systemTools, terminationGraceMs } from '../../src/native/processes.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
+import { controlledClock } from '../support/controlled-clock.ts'
 import { alive, readApps, readJsonFile, readRequests } from './native-fake-executor.ts'
 import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, processStart, startedProcesses } from './native-fake-tools.ts'
 
@@ -497,22 +497,28 @@ test('a window recording that starts before the app\'s tree holds its window ask
   assert.equal(stats.problems.length, stats.dropped)
 })
 
-test('a window recording whose window never comes is refused with what its last whole capture found, never as a capture that did not answer', darwinOnly, async (t) => {
+test('a window recording whose window never comes retains its confirmed absence until the startup deadline', darwinOnly, async (t) => {
   const { setup, opened } = await launchedSession(t)
   await opened.session.launch(10_000)
   await setup.fake.configure({ appWindowReadings: Array.from({ length: 400 }, () => ({ absent: true })) })
   const absent = 'No window of the app is on screen where its tree places it (4,3 20x10); a minimised or hidden window, or one on another Space, is not on screen. Retest captured nothing.'
-  const proofStarted = performance.now()
   const absentCapture = await opened.session.capture(nativeCaptureTimeoutMs, { source: 'window-crop' })
-  const captureMs = Math.ceil(performance.now() - proofStarted)
   assert.ok(!absentCapture.ok, 'an actual window capture refuses the absent app window')
   assert.deepEqual(absentCapture.failure, { class: 'not_actionable', message: absent, details: { transient: true } })
   assert.equal((await setup.fake.calls()).some((call) => call.tool === 'screencapture'), false)
   assert.equal(opened.session.processIds.length, 1)
   const [pid] = opened.session.processIds
   assert.ok(pid !== undefined)
-  const checkTarget = await fixtureTargetCheck(setup.fake, setup.appPath, pid)
-  // Stable absence replies take the real capture's measured time, so the start keeps room for its last whole capture.
+  const targetCheck = await fixtureTargetCheck(setup.fake, setup.appPath, pid)
+  const checkTarget: ReturnType<typeof nativeCaptureTargetCheck> = async (bounds) => {
+    const problem = await targetCheck(bounds)
+    assert.equal(problem, undefined, 'the fixture app remains a confirmed owned process')
+    return problem
+  }
+  const clock = controlledClock(t)
+  let nextCapture = Promise.withResolvers<void>()
+  // The real capture above proves the refusal. Subsequent fixture replies are explicit observations, without
+  // predicting whether another command will fit from the duration of a previous command.
   const windowAbsent: NativeCaptureSession = {
     get identity() { return opened.session.identity },
     get ended() { return opened.session.ended },
@@ -521,34 +527,43 @@ test('a window recording whose window never comes is refused with what its last 
     capture: async (timeoutMs, options) => {
       assert.ok(timeoutMs > 0 && timeoutMs <= nativeCaptureTimeoutMs)
       assert.equal(options.source, 'window-crop')
-      const deadline = new Deadline(Math.floor(timeoutMs), { signal: options.signal })
-      const stopped = (): boolean => deadline.reached || options.signal?.aborted === true
-      const late = (): Awaited<ReturnType<NativeCaptureSession['capture']>> => ({ ok: false, failure: { class: 'timeout', message: 'The absent-window fixture was stopped or ran out of time.' } })
-      if (stopped()) return late()
-      assert.ok(captureMs < deadline.remainingMs, `the proved ${captureMs} ms capture fits its ${deadline.remainingMs} ms command budget`)
-      try {
-        await wait(captureMs, undefined, { signal: options.signal })
-      } catch (error) {
-        if (!(error instanceof Error && error.name === 'AbortError')) throw error
-        return late()
-      }
-      return stopped() ? late() : absentCapture
+      nextCapture.resolve()
+      return absentCapture
     },
   }
-  // One budget holds less than a whole capture's time and the other several captures; both end inside the budget.
-  for (const budgetMs of [4500, nativeCaptureTimeoutMs + 3000]) {
-    const source = nativeFrameSource(windowAbsent, sessionRecordIdentity(opened.session.identity), async () => { throw new Error('The macOS fixture does not capture a simulator display.') }, checkTarget)
-    const frames: CapturedFrame[] = []
-    const ended: string[] = []
-    const asked = performance.now()
-    assert.deepEqual(await source.start(recordingStart(frames, ended, budgetMs)), { ok: false, reason: `The first window-crop capture failed: ${absent}` }, `a start of ${budgetMs} ms`)
-    const tookMs = performance.now() - asked
-    const stats = await source.stop(10_000)
-    assert.deepEqual(ended, [])
-    assert.equal(frames.length, 0)
-    assert.ok(tookMs < budgetMs, `the start of ${budgetMs} ms answered after ${tookMs} ms`)
-    assert.ok(stats.problems.every((problem) => problem === absent), stats.problems.join(' | '))
-    assert.ok(stats.problems.length >= (budgetMs > nativeCaptureTimeoutMs ? 2 : 1), `the start of ${budgetMs} ms asked ${stats.problems.length} times`)
+  try {
+    for (const budgetMs of [4500, nativeCaptureTimeoutMs + 3000]) {
+      nextCapture = Promise.withResolvers<void>()
+      const source = nativeFrameSource(windowAbsent, sessionRecordIdentity(opened.session.identity), async () => { throw new Error('The macOS fixture does not capture a simulator display.') }, checkTarget)
+      const frames: CapturedFrame[] = []
+      const ended: string[] = []
+      const asked = clock.now()
+      let answered = false
+      const starting = source.start(recordingStart(frames, ended, budgetMs)).then((answer) => { answered = true; return answer })
+      assert.equal(await Promise.race([nextCapture.promise.then(() => true), starting.then(() => false)]), true, 'startup reaches the checked capture')
+      await clock.flush()
+      for (let elapsed = 100; elapsed < budgetMs; elapsed += 100) {
+        nextCapture = Promise.withResolvers<void>()
+        await clock.advance(100)
+        assert.equal(await Promise.race([nextCapture.promise.then(() => true), starting.then(() => false)]), true, 'startup reaches its next checked capture')
+        await clock.flush()
+        assert.equal(answered, false, 'an absent window does not end startup before its deadline')
+      }
+      await clock.advance(99)
+      assert.equal(answered, false)
+      await clock.advance(1)
+      assert.deepEqual(await starting, { ok: false, reason: `The first window-crop capture failed: ${absent}` }, `a start of ${budgetMs} ms`)
+      const stats = await source.stop(10_000)
+      assert.deepEqual(ended, [])
+      assert.equal(frames.length, 0)
+      assert.equal(clock.now() - asked, budgetMs, 'startup uses its whole deadline')
+      assert.ok(stats.problems.every((problem) => problem === absent), stats.problems.join(' | '))
+      assert.ok(stats.problems.length >= (budgetMs > nativeCaptureTimeoutMs ? 2 : 1), `the start of ${budgetMs} ms asked ${stats.problems.length} times`)
+    }
+    await clock.advance(1000)
+  } finally {
+    // The owned process teardown uses the host clock after the controlled deadline assertions.
+    clock.restore()
   }
 })
 
@@ -613,14 +628,13 @@ test('a window capture given less than a whole capture\'s time keeps the grace b
   const frames: CapturedFrame[] = []
   const ended: string[] = []
   const budgetMs = 4000
-  const asked = performance.now()
   const start = await source.start(recordingStart(frames, ended, budgetMs))
-  const tookMs = performance.now() - asked
   const stats = await source.stop(10_000)
   const late = 'macOS gave no image of the app\'s window in time (screencapture did not finish in time and was ended). Retest captured nothing.'
   assert.deepEqual(start, { ok: false, reason: `The first window-crop capture failed: ${late}` }, 'the start ends on its dropped frame, never on a capture that did not answer')
   assert.deepEqual(ended, [])
-  assert.ok(tookMs < budgetMs, `the start of ${budgetMs} ms answered after ${tookMs} ms`)
+  assert.equal(stats.captureMs?.count, 1, 'only the capture with room for its cleanup was requested')
+  assert.equal(frames.length, 0)
   assert.deepEqual(stats.problems, [late], 'no capture was asked for with too little time left to finish')
 })
 

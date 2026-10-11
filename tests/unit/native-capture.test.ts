@@ -14,6 +14,7 @@ import { describe, test } from 'node:test'
 import { nativeCaptureTargetCheck, nativeFrameSource, sessionFrameSource, sessionRecordIdentity, simulatorDisplayFrameSource } from '../../src/native/capture.ts'
 import { grabSimulatorDisplay } from '../../src/native/capture/simulator-display.ts'
 import { systemTools } from '../../src/native/processes.ts'
+import { controlledClock } from '../support/controlled-clock.ts'
 
 const sessionIdentity: SessionIdentity = {
   sessionId: 'k3v9q0x2mb:phone',
@@ -274,7 +275,8 @@ test('a window capture gives its commands its time less the image\'s grace, its 
   }
 })
 
-test('a recording start asks again within its budget when a process reading could not be taken, on either route', async () => {
+test('a recording start asks again within its budget when a process reading could not be taken, on either route', async (t) => {
+  const clock = controlledClock(t)
   for (const runtime of [sessionIdentity.runtime, deskRuntime]) {
     for (const unreadAt of [1, 2]) {
       const session = new FakeSession({ ...sessionIdentity, runtime })
@@ -283,7 +285,11 @@ test('a recording start asks again within its budget when a process reading coul
       const check = nativeCaptureTargetCheck({ processState: () => { readings += 1; return Promise.resolve(readings === unreadAt ? unread : running) } }, (entry) => entry.pid === 41)
       const source = nativeFrameSource(session, identity, () => { displayed += 1; return Promise.resolve({ status: 'answered', value: png, durationMs: 1 }) }, check)
       const frames: CapturedFrame[] = []
-      assert.deepEqual(await source.start(capture(frames)), { ok: true, mode: 'screenshot-loop' }, `${source.name}, reading ${unreadAt} unread`)
+      const starting = source.start(capture(frames))
+      await clock.flush()
+      assert.equal(frames.length, 0, 'an unconfirmed target hands over no pixels')
+      await clock.advance(20)
+      assert.deepEqual(await starting, { ok: true, mode: 'screenshot-loop' }, `${source.name}, reading ${unreadAt} unread`)
       const stats = await source.stop(1000)
       assert.equal(frames.length, 1)
       assert.equal(frames[0]?.bytes, png)
@@ -297,15 +303,91 @@ test('a recording start asks again within its budget when a process reading coul
     const check = nativeCaptureTargetCheck({ processState: () => { readings += 1; return Promise.resolve(unread) } }, (entry) => entry.pid === 41)
     const source = nativeFrameSource(session, identity, () => { displayed += 1; return Promise.resolve({ status: 'answered', value: png, durationMs: 1 }) }, check)
     const frames: CapturedFrame[] = []
-    const asked = performance.now()
-    assert.deepEqual(await source.start({ ...capture(frames), timeoutMs: 200 }), { ok: false, reason: `The first ${source.name} capture failed: ${unreadProblem}` })
-    assert.ok(performance.now() - asked >= 199, 'the start asks again until its own budget is spent')
+    const asked = clock.now()
+    let answered = false
+    const starting = source.start({ ...capture(frames), timeoutMs: 200 }).then((answer) => { answered = true; return answer })
+    await clock.flush()
+    await clock.advance(180)
+    await clock.advance(19)
+    assert.equal(answered, false, 'the start stays pending before its actual deadline')
+    await clock.advance(1)
+    assert.equal(answered, true, 'the exhausted deadline ends the start')
+    assert.deepEqual(await starting, { ok: false, reason: `The first ${source.name} capture failed: ${unreadProblem}` })
+    assert.equal(clock.now() - asked, 200, 'the start asks again until its own budget is spent')
     assert.ok(readings > 1, `the start asked ${readings} times`)
     assert.equal(displayed + session.asked.length, 0, 'no pixels are asked for while the app is unconfirmed')
     assert.equal(frames.length, 0)
     await source.stop(1000)
+    const finishedReadings = readings
+    await clock.advance(1000)
+    assert.equal(readings, finishedReadings, 'no reading continues after the deadline')
   }
 })
+
+for (const runtime of [sessionIdentity.runtime, deskRuntime]) {
+  test(`a slow failed ${runtime.kind} target reading does not shorten the remaining startup budget`, async (t) => {
+    const clock = controlledClock(t)
+    const session = new FakeSession({ ...sessionIdentity, runtime })
+    const firstReading = Promise.withResolvers<void>()
+    const releaseReading = Promise.withResolvers<void>()
+    let readings = 0
+    const check = nativeCaptureTargetCheck({ processState: async () => {
+      readings += 1
+      if (readings === 1) { firstReading.resolve(); await releaseReading.promise }
+      return unread
+    } }, (entry) => entry.pid === 41)
+    const source = nativeFrameSource(session, identity, async () => { throw new Error('No pixels from an unconfirmed target.') }, check)
+    const frames: CapturedFrame[] = []
+    let answered = false
+    const starting = source.start({ ...capture(frames), timeoutMs: 200 }).then((answer) => { answered = true; return answer })
+    await firstReading.promise
+    await clock.advance(120)
+    releaseReading.resolve()
+    await clock.flush()
+    assert.equal(answered, false, 'the prior reading duration cannot end startup early')
+    await clock.advance(20)
+    assert.ok(readings > 1, 'another target reading is allowed in the remaining budget')
+    await clock.advance(59)
+    assert.equal(answered, false, 'startup still waits for its own deadline')
+    await clock.advance(1)
+    assert.deepEqual(await starting, { ok: false, reason: `The first ${source.name} capture failed: ${unreadProblem}` })
+    assert.equal(frames.length, 0)
+    assert.equal(session.asked.length, 0)
+    await source.stop(1000)
+  })
+}
+
+for (const runtime of [sessionIdentity.runtime, deskRuntime]) {
+  test(`a slow failed ${runtime.kind} reading can be followed by a valid frame before startup expires`, async (t) => {
+    const clock = controlledClock(t)
+    const session = new FakeSession({ ...sessionIdentity, runtime })
+    const firstReading = Promise.withResolvers<void>()
+    const releaseReading = Promise.withResolvers<void>()
+    let readings = 0
+    const check = nativeCaptureTargetCheck({ processState: async () => {
+      readings += 1
+      if (readings === 1) { firstReading.resolve(); await releaseReading.promise; return unread }
+      return running
+    } }, (entry) => entry.pid === 41)
+    const source = nativeFrameSource(session, identity, async () => ({ status: 'answered', value: png, durationMs: 0 }), check)
+    const frames: CapturedFrame[] = []
+    let answered = false
+    const starting = source.start({ ...capture(frames), timeoutMs: 200 }).then((answer) => { answered = true; return answer })
+    await firstReading.promise
+    await clock.advance(120)
+    releaseReading.resolve()
+    await clock.flush()
+    assert.equal(answered, false)
+    await clock.advance(20)
+    assert.equal(answered, true, 'the valid frame ends startup immediately')
+    assert.deepEqual(await starting, { ok: true, mode: 'screenshot-loop' })
+    assert.equal(clock.now(), 140)
+    assert.equal(frames.length, 1)
+    assert.equal(frames[0]?.bytes, png)
+    assert.equal(readings, 3, 'the frame is confirmed before and after its pixels')
+    await source.stop(1000)
+  })
+}
 
 test('a process reading that could not be taken drops that frame and capture goes on, while a reading that the app is gone ends it', async () => {
   const endings: readonly { readonly reading: AppProcessReading; readonly reason: string }[] = [

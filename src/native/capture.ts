@@ -86,9 +86,6 @@ export function nativeFrameSource(session: NativeCaptureSession, identity: Recor
   const generation = session.appStatus.generation
   return new ScreenshotLoopSource({
     name, identity: own, unavailable: () => refused ?? sessionOver(session, generation), grabTimeoutMs: nativeCaptureTimeoutMs,
-    // A window capture cut short would stand in for what the start's last finished capture found, such as a window
-    // not on screen, so the loop is told how much of a capture's time its commands get and asks again only with room.
-    ...(name === 'window-crop' ? { captureCommandMs: windowCommandMs } : {}),
     grab: async (timeoutMs, signal, withheld) => {
       const started = performance.now()
       // No step of the window route starts once its commands' time is spent, so an image that runs over settles as a
@@ -123,7 +120,11 @@ export function nativeFrameSource(session: NativeCaptureSession, identity: Recor
       if (answer.status === 'failed') {
         // A window not there yet, as just after launch, may come within the start's budget; a running loop drops the frame.
         const startMayRetry = name === 'window-crop' && (answer.failure.class === 'timeout' || answer.failure.details?.['transient'] === true)
-        return { ok: false, problem: answer.failure.message, ...(answer.failure.class === 'session_lost' ? { lost: true as const } : {}), ...(startMayRetry ? { retryAtStart: true as const } : {}) }
+        // A completed command timeout needs room for the configured ending and reply, without predicting latency.
+        const cleanup = name === 'window-crop' && answer.failure.class === 'timeout'
+          ? { retryMinimumMs: windowImageGraceMs + windowImageEndingMs + nativeCaptureReplyMarginMs + 1 }
+          : {}
+        return { ok: false, problem: answer.failure.message, ...(answer.failure.class === 'session_lost' ? { lost: true as const } : {}), ...(startMayRetry ? { retryAtStart: true as const } : {}), ...cleanup }
       }
       const lost = (answer.status === 'not_sent' && (answer.reason === 'session_ended' || answer.reason === 'connection_refused')) || (answer.status === 'refused' && answer.error === 'invalid session id') || (answer.status === 'unknown' && answer.reason === 'connection_lost')
       return { ok: false, problem: answer.message, ...(lost ? { lost: true as const } : {}) }

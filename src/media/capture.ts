@@ -1,7 +1,7 @@
 import type { Clock } from '../protocol/deadline.ts'
 import type { CaptureSourceName, RecordIdentity } from '../protocol/identity.ts'
 import type { CaptureGap, Ended, Frame, FrameFormat, FrameOutcome, Recording, RecordingIdentity, StartRecording, Started } from './client.ts'
-import { waitBeforeRead } from '../assertions/wait-before-read.ts'
+import { waitBeforeRead, waitUntilDeadline } from '../assertions/wait-before-read.ts'
 import { Deadline, monotonicClock } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
 import { MAX_FRAME_BYTES, MAX_FRAME_ID_CHARACTERS } from './client.ts'
@@ -154,16 +154,15 @@ export interface FrameSource {
  * says the target is gone, or is no longer the session the source names, which ends capture with `problem` as its
  * reason; any other failure is one capture that failed.
  */
-export type GrabbedImage = { readonly ok: true; readonly format: FrameFormat; readonly bytes: Uint8Array } | { readonly ok: false; readonly problem: string; readonly lost?: true; readonly withheld?: true; readonly retryAtStart?: true }
+export type GrabbedImage = { readonly ok: true; readonly format: FrameFormat; readonly bytes: Uint8Array } | { readonly ok: false; readonly problem: string; readonly lost?: true; readonly withheld?: true; readonly retryAtStart?: true; readonly retryMinimumMs?: number }
 
 /**
  * What a screenshot loop is made of. `unavailable` says at once, sending nothing, why the target cannot be captured now,
  * or undefined when it can. `grab` asks the target for one capture within `timeoutMs`, gives it up when `signal`
  * aborts, and never throws for the target's own problem. A completed read timeout may set `retryAtStart` to let startup
- * ask again within its original budget; a grab that has not settled or a privacy refusal never sets it. `onLost`, when the target
+ * ask again within its original budget; `retryMinimumMs` reserves required command cleanup before another request.
+ * A grab that has not settled or a privacy refusal never sets it. `onLost`, when the target
  * can say it went away, calls its listener once with the reason and returns a function that stops listening. `grabTimeoutMs` bounds each capture.
- * `captureCommandMs`, when given, is how much of a capture's time goes to its commands, and a start asks again only
- * with a whole capture's time or while the next capture's commands would get at least twice the start's longest capture.
  */
 export type ScreenshotLoopOptions = {
   readonly name: CaptureSourceName
@@ -172,7 +171,6 @@ export type ScreenshotLoopOptions = {
   readonly grab: (timeoutMs: number, signal: AbortSignal, withheld: () => boolean) => Promise<GrabbedImage>
   readonly onLost?: (listener: (reason: string) => void) => () => void
   readonly grabTimeoutMs: number
-  readonly captureCommandMs?: (timeoutMs: number) => number
 }
 
 type LoopState = 'idle' | 'starting' | 'running' | 'stopping' | 'ended' | 'stopped'
@@ -187,8 +185,8 @@ type LoopState = 'idle' | 'starting' | 'running' | 'stopping' | 'ended' | 'stopp
  * tick is counted in `withheldTicks`.
  *
  * `start` asks for the first capture and answers `ok` only once it came back with an image, unless pixels are withheld.
- * A completed read timeout marked `retryAtStart` may be read again within the original start budget, as long as
- * `captureCommandMs` allows; once it does not, the start fails with that capture's problem. Its dropped
+ * A completed read timeout marked `retryAtStart` may be read again until the original start deadline. Earlier
+ * capture durations do not predict whether a later capture can succeed. Its dropped
  * observation, problem and failed stretch remain. A grab that has not settled ends the source without another request.
  * A withheld start asks for no pixels and waits on its cadence until the policy resumes. A target that cannot be
  * captured never starts an empty loop that looks like a working one; that first image is the first frame. A capture
@@ -260,15 +258,21 @@ export class ScreenshotLoopSource implements FrameSource {
       this.#schedule()
       return { ok: true, mode: 'screenshot-loop' }
     }
-    let first = await this.#grab(Math.min(capture.timeoutMs, this.#options.grabTimeoutMs))
-    while (this.#state === 'starting' && !first.ok && first.retryAtStart === true && this.#mayAskAgain(deadline)) {
-      try { await waitBeforeRead(deadline, Math.min(100, this.#intervalUs / 1000)) }
+    let first: GrabbedImage = deadline.reached
+      ? { ok: false, problem: `The ${this.name} capture start exhausted its ${capture.timeoutMs} ms deadline before requesting an image.` }
+      : await this.#grab(Math.min(capture.timeoutMs, this.#options.grabTimeoutMs), deadline)
+    while (this.#state === 'starting' && !first.ok && first.retryAtStart === true && !deadline.reached) {
+      try {
+        await waitBeforeRead(deadline, Math.min(100, this.#intervalUs / 1000))
+        // Start no request without its required cleanup budget; the original deadline still governs the failure.
+        if (deadline.remainingMs < (first.retryMinimumMs ?? 1) && !deadline.reached) await waitUntilDeadline(deadline)
+      }
       catch (error) {
         if (!(error instanceof Error && error.name === 'AbortError')) throw error
         break
       }
-      if (this.#state !== 'starting' || !this.#mayAskAgain(deadline)) break
-      first = await this.#grab(Math.min(deadline.remainingMs, this.#options.grabTimeoutMs))
+      if (this.#state !== 'starting' || deadline.reached) break
+      first = await this.#grab(Math.min(deadline.commandTimeoutMs, this.#options.grabTimeoutMs), deadline)
     }
     if (this.#state !== 'starting') return { ok: false, reason: this.#endedEarly ?? 'The capture was stopped before it started.' }
     if (!first.ok && first.withheld !== true) {
@@ -281,15 +285,6 @@ export class ScreenshotLoopSource implements FrameSource {
     this.#state = 'running'
     this.#schedule()
     return { ok: true, mode: 'screenshot-loop' }
-  }
-
-  // Whether a start with `deadline` left asks again. With less than a whole capture's time, its commands must get twice
-  // the start's longest capture, as one macOS window capture took twice another (1.2 and 2.6 s); less may cut it short.
-  #mayAskAgain(deadline: Deadline): boolean {
-    if (deadline.expired) return false
-    const commandMs = this.#options.captureCommandMs
-    const timeoutMs = Math.min(deadline.remainingMs, this.#options.grabTimeoutMs)
-    return commandMs === undefined || timeoutMs >= this.#options.grabTimeoutMs || commandMs(timeoutMs) >= 2 * this.#latency.maxMs
   }
 
   stop(timeoutMs: number): Promise<CaptureStats> {
@@ -343,7 +338,7 @@ export class ScreenshotLoopSource implements FrameSource {
   }
 
   // Asks for one capture and hands over what it brings back while capture runs; the answer says whether it was an image.
-  async #grab(timeoutMs: number): Promise<GrabbedImage> {
+  async #grab(timeoutMs: number, deadline?: Deadline): Promise<GrabbedImage> {
     const capture = this.#capture
     if (capture === undefined) return { ok: false, problem: 'The capture has not started.' }
     const askedUs = capture.clock()
@@ -362,7 +357,7 @@ export class ScreenshotLoopSource implements FrameSource {
     if (this.#giveUp.signal.aborted) onStop()
     try {
       const grabbing = Promise.race([this.#options.grab(timeoutMs, AbortSignal.any([this.#giveUp.signal, gaveUp.signal]), withheld), cancelled.promise])
-      const answer = await within(grabbing, timeoutMs)
+      const answer = await within(grabbing, timeoutMs, deadline)
       if (answer === undefined) {
         gaveUp.abort()
         image = { ok: false, problem: `The ${this.name} capture did not answer within ${timeoutMs} ms; no further capture is requested.`, lost: true }
@@ -1092,13 +1087,20 @@ async function settledWithin(promise: Promise<unknown>, timeoutMs: number): Prom
 }
 
 // Settles with the promise's value, or with undefined once `timeoutMs` passes first.
-async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+async function within<T>(promise: Promise<T>, timeoutMs: number, deadline?: Deadline): Promise<T | undefined> {
+  const budget = new Deadline(timeoutMs)
   let timer: NodeJS.Timeout | undefined
   const late = new Promise<undefined>((resolve) => {
-    timer = setTimeout(resolve, timeoutMs, undefined)
+    const check = (): void => {
+      if (budget.reached || deadline?.reached === true) resolve(undefined)
+      else timer = setTimeout(check, Math.min(budget.waitToEndMs, deadline?.waitToEndMs ?? budget.waitToEndMs))
+    }
+    check()
   })
   try {
-    return await Promise.race([promise, late])
+    // A delayed host timer cannot let a reply received after the deadline count as timely completion.
+    const answered = promise.then((value) => budget.reached || deadline?.reached === true ? undefined : value)
+    return await Promise.race([answered, late])
   } finally {
     clearTimeout(timer)
   }

@@ -15,6 +15,7 @@ import { bounded } from '../../src/runner/bounded.ts'
 import { PageNavigations } from '../../src/runner/page-navigations.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { SecretFiller } from '../../src/runner/secrets.ts'
+import { controlledClock } from '../support/controlled-clock.ts'
 import { runProject, tempProject } from '../support/project.ts'
 import { eventsOfType, runSupportFiles, supportFile } from '../support/run-harness.ts'
 import { scriptedApp, scriptedTest } from '../support/scripted-process.ts'
@@ -98,7 +99,9 @@ describe('navigations', () => {
   })
 
   for (const titleDelayMs of [0, 700, 60_000]) {
-    test(`a navigation timeout does not wait further for a title delayed ${titleDelayMs} ms`, async () => {
+    test(`a navigation timeout does not wait further for a title delayed ${titleDelayMs} ms`, async (t) => {
+      const clock = controlledClock(t)
+      const dispatched = Promise.withResolvers<void>()
       const answered = Promise.withResolvers<void>()
       let run: ScriptedTest
       run = await scriptedTest({
@@ -107,7 +110,10 @@ describe('navigations', () => {
           titleDelayMs,
           titles: { '/hang': 'Loading' },
           onCommand: (command) => {
-            if (command.kind === 'goto') run.page.navigate('/hang', 'goto')
+            if (command.kind === 'goto') {
+              run.page.navigate('/hang', 'goto')
+              dispatched.resolve()
+            }
           },
           holdAnswer: async (command) => {
             if (command.kind !== 'goto') return
@@ -116,17 +122,23 @@ describe('navigations', () => {
         },
         timeouts: { navigation: 200, test: 5000 },
       })
-      const responding = run.command(1, { kind: 'goto', url: '/hang' })
+      let responded = false
+      const responding = run.command(1, { kind: 'goto', url: '/hang' }).then((answer) => { responded = true; return answer })
+      await dispatched.promise
+      await clock.advance(199)
+      assert.equal(responded, false, 'the command stays pending before the browser answers')
+      assert.equal(bodies(run, 'action.failed').length, 0)
+      await clock.advance(1)
       await answered.promise
-      const response = await bounded(responding, 250)
-      assert.ok(response.status === 'done', 'the browser answered, so optional titles cannot hold the command')
-      const answer = response.value
+      assert.equal(responded, true, 'the browser answered, so optional titles cannot hold the command')
+      const answer = await responding
       assert.deepEqual(answer.ok ? undefined : [answer.failure.class, answer.failure.message], ['timeout', 'goto took longer than 200 ms.'])
       const [navigation] = bodies(run, 'navigation')
       const [action] = bodies(run, 'action.failed')
       assert.deepEqual([navigation?.url, navigation?.title], [`${origin}/hang`, titleDelayMs === 0 ? 'Loading' : undefined])
       assert.deepEqual(run.events.map(({ body }) => body.type), ['navigation', 'action.failed'])
       assert.ok(action !== undefined && action.durationMs >= 200, `reported after ${action?.durationMs} ms`)
+      assert.equal(action.durationMs, clock.now(), 'the event uses the same monotonic clock as the command')
       assert.equal(run.process.sent.filter((message) => message.type === 'command-result').length, 1)
       // A later read settles the old title, but its navigation and command already have their sole records.
       await run.page.execute({ kind: 'observe', locator: saveTask }, 1000)
