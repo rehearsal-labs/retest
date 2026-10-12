@@ -3,7 +3,8 @@ export const WORKER_ANSWERS_KEY = 'service-worker-answers'
 
 /**
  * A service worker that answers every navigation itself, with a page whose script counts the answer, so a test
- * can tell whether a document came from the worker.
+ * can tell whether a document came from the worker. Chrome fetches this script again, with `Service-Worker: script`,
+ * about a second after a page it answered goes quiet or is left, to check it for an update.
  */
 export const SERVICE_WORKER: string = `
 const page = '<!doctype html><title>Worker</title><link rel="icon" href="data:,"><p data-testid="worker-answer">Answered by the service worker</p>' +

@@ -1,9 +1,12 @@
 import type { TestContext } from 'node:test'
 import type { OwnedPage } from '../../src/browser/contract.ts'
 import type { StorageState } from '../../src/protocol/storage-state.ts'
+import type { ReceivedRequest } from '../../fixtures/task-app/received-requests.ts'
 import type { TaskApp } from '../../fixtures/task-app/server.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
+import { isDeepStrictEqual } from 'node:util'
 import { WORKER_ANSWERS_KEY } from '../../fixtures/task-app/service-worker.ts'
 import { REMEMBER_COOKIE, SESSION_COOKIE, STORED_USER_KEY, TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 import { BrowserError } from '../../src/browser/browser-error.ts'
@@ -30,6 +33,35 @@ async function signedInState(t: TestContext, app: TaskApp, user = 'alice'): Prom
   const page = await openPage(t, browser(), app.url)
   await signIn(page, user)
   return page.captureState(setupMs)
+}
+
+type Purpose = Pick<ReceivedRequest, 'method' | 'path' | 'serviceWorker' | 'fetchDest' | 'fetchMode'>
+
+/** Chrome's own check of the service worker's script for an update. */
+const updateCheck: Purpose = { method: 'GET', path: '/service-worker.js', serviceWorker: 'script', fetchDest: 'serviceworker', fetchMode: 'same-origin' }
+
+/**
+ * How long an origin must stay quiet after a capture. Chrome checks a worker's script about a second after a page the
+ * worker answered goes quiet or is left, so a check the capture itself set off would arrive within this.
+ */
+const quietMs = 1500
+
+/**
+ * Waits up to `timeoutMs` until a request the app received after the first `since` matches `arrived`, as the page cannot
+ * say when the browser sends one, and says whether one came.
+ */
+async function receivedWithin(app: TaskApp, since: number, arrived: (request: ReceivedRequest) => boolean, timeoutMs: number): Promise<boolean> {
+  const end = performance.now() + timeoutMs
+  for (;;) {
+    if (app.received().slice(since).some(arrived)) return true
+    if (performance.now() > end) return false
+    await delay(25)
+  }
+}
+
+/** What a request was for, without the parts that differ from run to run. */
+function purpose({ method, path, serviceWorker, fetchDest, fetchMode }: ReceivedRequest): Purpose {
+  return { method, path, serviceWorker, fetchDest, fetchMode }
 }
 
 test('capture saves the session cookies and the localStorage the sign-in wrote', async (t) => {
@@ -107,13 +139,24 @@ test('a service worker of an origin the page left does not answer the document R
   const page = await openPage(t, browser(), site.url)
   assertOk(await goto(page, '/service-worker'))
   await observeUntil(page, 'worker', (seen) => seen.text === 'Ready')
+  const registered = site.received().length
   assertOk(await goto(page, '/account'))
   await observeUntil(page, 'worker-answer', (seen) => seen.count === 1)
   assertOk(await goto(page, `${elsewhere.url}/`))
+  // Chrome checks the worker's script for an update on its own after a page the worker answered went quiet or was left.
+  // That request is the browser's, for the page this test opened, so the capture waits for it and goes on either way.
+  const checked = await receivedWithin(site, registered, (request) => isDeepStrictEqual(purpose(request), updateCheck), setupMs)
+  t.diagnostic(checked ? 'Chrome checked the worker script for an update before the capture' : `Chrome sent no update check of the worker script within ${setupMs} ms`)
+  const seen = site.received().length
   const requests = site.requests()
   const state = await page.captureState(setupMs)
   assert.deepEqual(state.origins, [{ origin: site.url, localStorage: [{ name: WORKER_ANSWERS_KEY, value: '1' }] }])
-  assert.equal(site.requests(), requests)
+  assert.equal(site.requests(), requests, 'reading the storage of the origin the page left reached its server')
+  await delay(quietMs)
+  assert.deepEqual(site.received().slice(seen).map(purpose), [], 'the site received nothing during the capture or after it')
+  for (const request of site.received().slice(registered, seen)) {
+    assert.deepEqual(purpose(request), updateCheck, 'before the capture, the site received only the update check of its worker script')
+  }
 })
 
 test('state restored and captured again comes back the same', async (t) => {

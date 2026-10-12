@@ -21,6 +21,10 @@ const pausedSchema = s.object({ requestId: s.string(), resourceType: s.string() 
  * runs `work` in Retest's world there. No request reaches the site and none of its code runs: every request the
  * tab makes is answered or refused by Retest, and service workers are bypassed. Closes the tab afterwards.
  *
+ * The browser still sends requests of its own that no tab makes. About a second after a page a site's service worker
+ * answered goes quiet or is left, Chrome fetches the worker's script to check it for an update, with
+ * `Service-Worker: script`. That request belongs to the page the test opened, and it can arrive while this runs.
+ *
  * @example await inOriginDocuments({ connection, browserContextId }, origins, (world) => world.call(readStorageFunction, [], schema, deadline), deadline)
  */
 export async function inOriginDocuments<T>(
