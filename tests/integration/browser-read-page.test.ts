@@ -98,15 +98,23 @@ test('reading sends no input, and moves nothing', async (t) => {
   assert.equal((await observe(page, 'heard')).text, '')
 })
 
+// A dialog nothing waited for is answered at once, so only one the page handed over, and nobody answered yet, holds it.
 test('a page a dialog holds cannot be read, and the error says why', async (t) => {
   const { page } = await sitePage(t, {
     '/': `<!doctype html><button data-testid="warn" onclick="alert('Careful')">Warn</button>`,
   })
-  await click(page, 'warn', 2000)
+  assert.ok(page.armDialog !== undefined && page.answerDialog !== undefined)
+  const arming = page.armDialog(2000)
+  assert.ok(arming.ok)
+  const clicked = click(page, 'warn', 2000)
+  const opened = await arming.opened
+  assert.ok(opened.ok)
   await assert.rejects(
     page.readPage([query('Warn')], 1000),
-    (error) => error instanceof BrowserError && error.failure.class === 'unsupported' && /read the page/.test(error.failure.message),
+    (error) => error instanceof BrowserError && error.failure.class === 'not_actionable' && /read the page/.test(error.failure.message),
   )
+  assert.deepEqual(await page.answerDialog(opened.dialog.id, { accept: true }, 1000), { ok: true })
+  assertOk(await clicked)
 })
 
 // Only Retest's own function reads the page. A document with no body, such as an XML or SVG one, has no visible

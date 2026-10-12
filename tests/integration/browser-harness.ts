@@ -273,6 +273,19 @@ export async function observe(page: OwnedPage, target: Target): Promise<Observat
   return result.observation
 }
 
+/**
+ * Waits, within the setup budget, until a page that has just loaded answers a look that finds `target` once. Chrome
+ * styles and lays out a new document, and builds its accessibility tree, on the first look that needs them, while the
+ * page draws its first frame. On a loaded host that first rendering outlasted the two seconds `observe` gives one look,
+ * so a test whose looks are timed waits for it here.
+ *
+ * @example assertOk(await goto(page, '/locators')); await awaitFirstLook(page, byRole('heading', 'Locators'))
+ */
+export async function awaitFirstLook(page: OwnedPage, target: Target): Promise<void> {
+  const result = await page.execute({ kind: 'observe', locator: locatorOf(target) }, setupMs)
+  assert.ok(result.ok && result.kind === 'observe' && result.observation.count === 1, `the page did not show ${describeLocator(locatorOf(target))} once within ${setupMs} ms: ${JSON.stringify(result)}`)
+}
+
 /** Looks again, as an assertion would, until the observation satisfies `expected` or the time runs out. */
 export async function observeUntil(
   page: OwnedPage,

@@ -125,11 +125,10 @@ test('a dialog that opens while a secret is typed names the secret by its label'
     </script>`,
   )
   const failure = hidden(await fillSecret(page, 'field', value, 5000))
-  assert.equal(failure.class, 'unsupported')
-  assert.equal(
-    failure.message,
-    "The page opened an alert dialog while Retest tried to fill getByTestId('field') with {{password}}. Retest does not answer dialogs yet, and the dialog blocks the page.",
-  )
+  engineCase.assertOutcome(t, { class: failure.class, message: failure.message }, {
+    class: 'not_actionable',
+    message: "The page opened an alert dialog while Retest tried to fill getByTestId('field') with {{password}}. Retest dismissed it. To answer it, wrap the action in page.dialog().",
+  })
 })
 
 function fillBound(page: OwnedPage, allowedOrigins: readonly string[], timeoutMs = 2000): Promise<CommandResult> {
