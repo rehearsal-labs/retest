@@ -6,25 +6,47 @@ runs:
     - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
       with:
         node-version: 24.12.0
+        cache: npm
     - run: npm ci --no-audit --no-fund
       shell: bash
     - run: npm run build
       shell: bash
+    # The Rust version and the archive cache key come from the product's own pins. The key names every archive's address,
+    # size and SHA-256, so a changed pin starts a new cache, and an archive is reused only when its size and SHA-256
+    # match the pin. The archive cache is saved as soon as it is made, so a shard whose tests fail still leaves it;
+    # setup-node saves npm's cache only when the job succeeds.
+    - name: Read the pinned versions and the archive cache key
+      id: pins
+      shell: bash
+      run: node scripts/ci/macos-cache-keys.ts
     - name: Install recording tools
       shell: bash
       env:
         HOMEBREW_NO_AUTO_UPDATE: '1'
+        RETEST_CI_RUST: ${{ steps.pins.outputs.rust }}
       run: |
         set -euo pipefail
         brew install ffmpeg
-        rustup toolchain install 1.88.0 --profile minimal
-        rust_tools="$(dirname "$(rustup which --toolchain 1.88.0 cargo)")"
+        rustup toolchain install "$RETEST_CI_RUST" --profile minimal
+        rust_tools="$(dirname "$(rustup which --toolchain "$RETEST_CI_RUST" cargo)")"
         echo "$rust_tools" >> "$GITHUB_PATH"
         "$rust_tools/rustc" --version
         "$rust_tools/cargo" --version
+    - name: Restore the pinned browser archives
+      id: archive-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/retest-archive-cache
+        key: ${{ steps.pins.outputs.archives-key }}
     - name: Prepare pinned integration archives and paths
       shell: bash
-      run: node scripts/ci/prepare-macos-integration.ts "$RUNNER_TEMP/retest-integration"
+      run: node scripts/ci/prepare-macos-integration.ts "$RUNNER_TEMP/retest-integration" "$RUNNER_TEMP/retest-archive-cache"
+    - name: Save the pinned browser archives
+      if: ${{ steps.archive-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/retest-archive-cache
+        key: ${{ steps.archive-cache.outputs.cache-primary-key }}
     - name: Install pinned browsers and build media
       shell: bash
       run: node dist/cli/main.js install chromium firefox webkit electron media

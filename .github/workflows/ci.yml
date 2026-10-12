@@ -1,8 +1,10 @@
 name: CI
 run-name: ${{ inputs.commit && 'Release gates' || inputs.suite || 'all' }} on ${{ inputs.commit || inputs.ref }}
 
-# Manual debugging can choose a suite, platform and exact files. Promotion calls this with only a commit,
-# which always plans the full matrix. No push, tag or schedule starts this workflow.
+# Manual debugging can choose a suite, platform and exact files. The fast suite runs build, types and unit files on
+# the selected platforms and, when macOS is selected, its short integration files, to find what fails before the full
+# matrix. Promotion calls
+# this with only a commit, which always plans the full matrix. No push, tag or schedule starts this workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -12,9 +14,9 @@ on:
         type: string
         default: main
       suite:
-        description: Full release coverage or a focused check.
+        description: Full release coverage, a fast first look, or a focused check.
         type: choice
-        options: [all, checks, unit, integration]
+        options: [all, fast, checks, unit, integration]
         default: all
       platform:
         description: Platforms to check.
@@ -52,6 +54,7 @@ jobs:
       unit: ${{ steps.plan.outputs.unit }}
       linux: ${{ steps.plan.outputs.linux }}
       macos: ${{ steps.plan.outputs.macos }}
+      requested: ${{ steps.plan.outputs.requested }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -130,16 +133,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Integration waits for build and types, not for the unit shards; the result job still refuses a failed unit shard.
   linux:
     name: Integration ${{ matrix.platform }} ${{ matrix.shard }}/${{ matrix.total }}
-    needs: [commit, checks, unit]
-    if: ${{ always() && needs.commit.result == 'success' && needs.checks.result == 'success' && (needs.unit.result == 'success' || needs.unit.result == 'skipped') && needs.commit.outputs.linux != '[]' }}
+    needs: [commit, checks]
+    if: ${{ needs.commit.outputs.linux != '[]' }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.commit.outputs.linux) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -161,14 +165,14 @@ jobs:
 
   macos:
     name: Integration macOS ${{ matrix.lane }} ${{ matrix.shard }}/${{ matrix.total }}
-    needs: [commit, checks, unit]
-    if: ${{ always() && needs.commit.result == 'success' && needs.checks.result == 'success' && (needs.unit.result == 'success' || needs.unit.result == 'skipped') && needs.commit.outputs.macos != '[]' }}
+    needs: [commit, checks]
+    if: ${{ needs.commit.outputs.macos != '[]' }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.commit.outputs.macos) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.lane == 'native' && 75 || 60 }}
+    timeout-minutes: ${{ matrix.lane == 'native' && 75 || 20 }}
     env:
       RETEST_TEST_BROWSER: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
     steps:
@@ -224,19 +228,27 @@ jobs:
     if: ${{ always() && needs.commit.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # The plan's job counts and each lane's result, never the file lists: those grow with every shard.
     env:
-      RETEST_CI_RESULTS: ${{ toJSON(needs) }}
+      RETEST_CI_REQUESTED: ${{ needs.commit.outputs.requested }}
+      RETEST_CI_FULL: ${{ needs.commit.outputs.full }}
+      RETEST_CI_CHECKS: ${{ needs.checks.result }}
+      RETEST_CI_UNIT: ${{ needs.unit.result }}
+      RETEST_CI_LINUX: ${{ needs.linux.result }}
+      RETEST_CI_MACOS: ${{ needs.macos.result }}
     steps:
       - name: Refuse failed, cancelled or missing requested jobs
         run: |
           node --input-type=module <<'JS'
           import { appendFileSync } from 'node:fs'
-          const results = JSON.parse(process.env.RETEST_CI_RESULTS)
-          for (const name of ['checks', 'unit', 'linux', 'macos']) {
-            const requested = JSON.parse(results.commit.outputs[name]).length > 0
-            const expected = requested ? 'success' : 'skipped'
-            if (results[name].result !== expected) throw new Error(`${name}: expected ${expected}, got ${results[name].result}`)
+          const requested = JSON.parse(process.env.RETEST_CI_REQUESTED)
+          const results = { checks: process.env.RETEST_CI_CHECKS, unit: process.env.RETEST_CI_UNIT, linux: process.env.RETEST_CI_LINUX, macos: process.env.RETEST_CI_MACOS }
+          for (const [name, result] of Object.entries(results)) {
+            const count = requested[name]
+            if (!Number.isInteger(count) || count < 0) throw new Error(`${name}: the plan gave no job count`)
+            const expected = count > 0 ? 'success' : 'skipped'
+            if (result !== expected) throw new Error(`${name}: expected ${expected}, got ${result}`)
           }
-          const full = results.commit.outputs.full === 'true'
+          const full = process.env.RETEST_CI_FULL === 'true'
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, full ? 'Every job in the full release matrix succeeded.\n' : 'The requested focused checks succeeded. Full release coverage was not run.\n')
           JS
