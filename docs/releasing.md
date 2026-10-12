@@ -60,14 +60,16 @@ gh workflow run ci.yml --ref main -f ref=<branch, tag or full SHA>
 
 The first job turns the ref into one commit, inventories the unit and integration test files, and assigns each file exactly once per platform. Every job checks that commit. A promotion always requests the full matrix.
 
-- Build, TypeScript and consumer type checks report independently on Linux x64, Linux arm64 and macOS arm64. Unit files run in four shards per platform, with one file at a time on each separate machine.
-- Linux integration runs in four shards per architecture through `docker/linux/run.sh`, with Chrome's sandbox on. The image holds Google Chrome, Debian's Chromium, Rust 1.88.0, a linker, ffmpeg and ffprobe. On x64 it fetches the locked media dependencies, builds the release binary offline and runs the media reply tests. The packed-source installer and recording tests retain these prerequisites. Native files remain assigned on Linux, including their portable controls and explicit platform skips. Linux arm64 still has no verified media target.
+- Build, TypeScript and consumer type checks report independently on Linux x64, Linux arm64 and macOS arm64. Unit files run in shards of about 150 seconds of tests per platform, one file at a time on each machine.
+- Linux integration runs in shards of about 300 seconds of tests per architecture through `docker/linux/run.sh`, with Chrome's sandbox on. The image holds Google Chrome, Debian's Chromium, Rust 1.88.0, a linker, ffmpeg and ffprobe. On x64 it fetches the locked media dependencies, builds the release binary offline and runs the media reply tests. The packed-source installer and recording tests retain these prerequisites. Native files remain assigned on Linux, including their portable controls and explicit platform skips. Linux arm64 still has no verified media target.
 - On the standard `macos-26` arm64 runner it uses Node.js 24.12.0, the oldest version `package.json` allows. The media reply tests use locked Rust dependencies and run offline. Integration uses the runner's Google Chrome, Chrome for Testing 153.0.8010.12, Firefox 133.0.3, WebKit build 2359 and Electron 44.5.1. The WebKit executable and framework require macOS 26.5 or later. Setup checks that minimum; [GitHub lists macOS 26 as a standard public runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories).
-- `scripts/ci/prepare-macos-integration.ts` downloads the archives through Retest's downloader and checks the sizes and SHA-256 pins in `src/browser/builds.ts`. It keeps copies for the installer tests and seeds the product installer's download cache. The built `retest install chromium firefox webkit electron media` command installs those copies, verifies their files and notices, and builds retest-media 0.1.0 from the checked commit's pinned source with `cargo build --release --locked`. No browser archive is downloaded twice.
-- Each macOS integration shard installs Rust 1.88.0 through rustup and ffmpeg with ffprobe through Homebrew. It exports the installed browser paths, the WebKit build folder and both the test and product media paths. Firefox uses the `spawn` route. Setup prints the OS, architecture, default Xcode, exported paths and tool versions, and verifies the installed files before integration tests.
-- macOS browser integration uses four shards. The files that use the desktop or simulator use two separate native shards. Every shard runs one file at a time on its own machine, preserving test assertions, deadlines and shared-resource isolation. All integration files remain assigned. Native tests retain their exact Xcode checks and existing skips; the workflow leaves the default Xcode selected and installs no native executor.
-- The assignment uses historical local macOS file durations in `scripts/ci/test-durations.json`, recorded on 11 October 2026. These are balancing weights, not promised CI timings. New files are included automatically with a default weight. Each shard writes file results and actual elapsed times to a seven-day metadata artifact. TAP prints failure details immediately. Native screenshots and recordings are not included in these metadata artifacts.
-- Job limits are 15 minutes for build/types, 20 for unit shards, 45 for Linux integration, 60 for macOS browser integration and 75 for macOS native integration. A final job refuses a missing, failed or cancelled requested job. The full matrix remains required for promotion.
+- `scripts/ci/prepare-macos-integration.ts` downloads the archives through Retest's downloader and checks the sizes and SHA-256 pins in `src/browser/builds.ts`. It keeps copies for the installer tests and seeds the product installer's download cache. The built `retest install chromium firefox webkit electron media` command installs those copies, verifies their files and notices, and builds retest-media 0.1.0 from the checked commit's pinned source with `cargo build --release --locked`. No browser archive is downloaded twice in a shard.
+- Each macOS integration shard installs Rust 1.88.0, the oldest version the media crate supports, through rustup and ffmpeg with ffprobe through Homebrew. It exports the installed browser paths, the WebKit build folder and both the test and product media paths. Firefox uses the `spawn` route. Setup prints the OS, architecture, default Xcode, exported paths and tool versions, and verifies the installed files before integration tests.
+- Setup restores two caches: npm's downloads and the four browser archives. npm checks each package against the lock file's integrity hash. `scripts/ci/macos-cache-keys.ts` reads the archive cache key and the Rust version from the product's pins; the key names each archive's address, size and SHA-256, so a changed pin starts a new cache. A cached archive is used only when its size and SHA-256 match the pin; anything else is downloaded again. A miss makes everything as before. The archive cache is saved as soon as it is made, so a shard whose tests fail still leaves it; setup-node saves npm's cache only when the job succeeds. The Rust toolchain and the media builds are made fresh in every shard.
+- macOS browser integration runs in shards of about 360 seconds of tests. The files that use the desktop or simulator run in their own native shards, also of 360 seconds. Every shard runs one file at a time on its own machine, preserving test assertions, deadlines and shared-resource isolation. All integration files remain assigned. Native tests retain their exact Xcode checks and existing skips; the workflow leaves the default Xcode selected and installs no native executor.
+- The assignment uses `scripts/ci/test-durations.json`: for each file, its slowest passing time on each platform in CI run 38176885689 of 11 October 2026, rounded up to whole seconds. Each platform plans a file by its own time there. A file with no time on a platform counts the largest time another platform has; a file no passing run has timed counts 20 seconds for integration and 1 for unit. Three files failed on macOS in that run, so their macOS plan uses their Linux time. The three conformance files, split from one file after that run, each count a third of its time on each platform until a run times them. These are balancing weights, not promised CI timings. A new file is included automatically. Each shard writes file results and actual elapsed times to a seven-day metadata artifact. TAP prints failure details immediately. Native screenshots and recordings are not included in these metadata artifacts.
+- Integration jobs start once build and types pass on every platform. They do not wait for the unit shards, and a failed unit shard still fails the final job.
+- Job limits are 15 minutes for build/types, 20 for unit shards, 20 for Linux integration, 20 for macOS browser integration and 75 for macOS native integration. A final job refuses a missing, failed or cancelled requested job. The full matrix remains required for promotion.
 
 For a failed file, choose its suite and platform instead of repeating the full matrix:
 
@@ -79,7 +81,55 @@ gh workflow run ci.yml --ref main -f ref=<full SHA> \
 
 Multiple file paths can be passed as one quoted, space-separated value. Unknown paths, duplicates and files from the wrong suite are refused before any test job starts. `suite=checks` runs build and type checks only. A focused run is labelled as focused and cannot replace the full promotion gates. A new manual run cancels an older manual run from the same workflow branch, suite and platform; promotion calls are never cancelled by that rule.
 
+`suite=fast` is a quick first look at what fails. It runs build, types and unit files on the selected platforms. When macOS is selected, it also runs the integration files that took under 60 seconds on macOS or that no run has timed yet; it runs no integration on Linux. With every platform selected, the current durations give 8 macOS browser shards and 1 native shard: about 104 macOS minutes, so at least 21 minutes at 5 macOS jobs at a time. Like a focused run, it says that it does not establish release coverage.
+
 Every third-party action is pinned by its full commit SHA, with the version in a comment. To update an action, change both.
+
+## How long a full run takes
+
+Each lane on each platform gets as many shards as its recorded time there needs: the lane's total divided by its target, rounded up. The targets are 360 seconds of tests for a macOS browser or native shard, 300 for a Linux shard and 150 for a unit shard. Files go largest first into the emptiest shard, so no shard ends more than its largest file past its target. With the current durations the full matrix has these shards:
+
+| Lane | macOS arm64 | Linux x64 | Linux arm64 |
+| --- | --- | --- | --- |
+| Build and types | 1 | 1 | 1 |
+| Unit | 8 | 6 | 6 |
+| Browser integration | 15 | 7 | 6 |
+| Native integration | 1 | | |
+
+The organization is on GitHub's free plan. At most 20 jobs run at once, Linux and macOS together, and at most 5 of them on macOS, so macOS sets the pace. In run 38176885689 a macOS integration shard spent about 4 minutes on setup before its first test, from 3.3 to 4.4. A unit shard spent about half a minute, and build and types took 71 seconds. By the planner's estimates, which round each file up to a whole second, the full matrix holds about 177 macOS job-minutes:
+
+| Part | macOS minutes |
+| --- | --- |
+| Browser tests | 89 |
+| Setup of 15 browser shards | 59 |
+| 8 unit shards | 23 |
+| Native shard | 4 |
+| Build and types | 1 |
+
+At 5 jobs at a time, a full run cannot end sooner than about 35 minutes after its first job. Run 38176885689 had 4 browser shards: 128 macOS minutes, a floor of 26 minutes. It took 35 minutes. Integration waited 5 minutes for the unit shards, and each browser shard ran 20 to 28 minutes.
+
+More shards do not shorten the run, because each one pays its setup again. They make each job short: a browser shard takes about 10 minutes with its setup. A failed shard reruns in 10 minutes rather than 28, and the 20-minute limit stops a stuck one. Shorter setup is what shortens the run. Each minute saved in setup saves about 3 minutes of the run: 16 macOS integration shards, 5 at a time.
+
+The caches save little of the 4 minutes. In the two shards of run 38176885689 whose logs were read, the four archive downloads took 5 to 9 seconds, and the archive cache mostly spares each shard four downloads from four publishers. The largest setup steps were building retest-media, 48 to 71 seconds, and its reply tests, 46 to 60 seconds. Installing Firefox took 36 to 39 seconds.
+
+That floor holds only while Linux leaves 5 of the 20 job slots free for macOS. Linux has 27 jobs: 2 for build and types, 12 unit shards of about 2.5 minutes and 13 integration shards of 6 to 7 minutes, about 119 job-minutes. Linux wants more than 15 slots only in the first minutes, while its unit shards and its integration shards overlap. Then it runs within 15 slots, and its last shard ends about 10 minutes in, well before macOS. A plan that gives Linux more shards takes slots macOS needs.
+
+## Refresh the durations
+
+After a full run whose files took notably longer or shorter, rewrite the durations from its artifacts, from the repository root:
+
+```sh
+gh run download <run id> --repo rehearsal-labs/retest --dir /tmp/retest-run-<run id>
+node scripts/ci/refresh-durations.ts /tmp/retest-run-<run id>
+```
+
+Each file gets, on each platform, its slowest passing time there, rounded up to whole seconds. The platform is read from the artifact's name. A file that failed, was killed or was cut off gives no time. The command changes nothing when some file has no passing time on some platform, and it names those files; such a file either had a time before or ran in that run. Pass `--partial` to write the times it has and keep the earlier times for the rest:
+
+```sh
+node scripts/ci/refresh-durations.ts --partial /tmp/retest-run-<run id>
+```
+
+A file the repository no longer holds is dropped, and the command prints which. A renamed or split file is new to the durations: give it a value by hand before the refresh, on each platform, as the three conformance files got a third of the file they replaced. Otherwise it counts the 20-second default until a run times it. Commit the new `scripts/ci/test-durations.json`. GitHub keeps the artifacts for 7 days.
 
 ## The first release
 
