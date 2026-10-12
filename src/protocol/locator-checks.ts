@@ -1,9 +1,12 @@
 import type { Observation, PageLookPart, PageObservation } from './commands.ts'
+import type { LayoutCheckRecord } from './layout-checks.ts'
 import type { TextPattern } from './locator.ts'
 import { observedItemLimit } from './commands.ts'
+import { layoutCheckRecordSchema, layoutMatchers } from './layout-checks.ts'
 import { describeTextMatch, patternMatches, patternProblem, textPatternSchema } from './locator.ts'
 import { titleReadLimit } from './page-facts.ts'
 import { s, type Schema } from './schema.ts'
+import { screenshotCheckProblem, screenshotCheckRecordSchema, type ScreenshotCheckRecord } from './screenshot.ts'
 import { normalizeText, quoteText, textComparison } from './text.ts'
 
 /** What a locator assertion looks for in each observation. */
@@ -52,8 +55,11 @@ export type PageCheckRecord = Negation &
     | { matcher: 'toHaveTitle'; pattern: TextPattern }
   )
 
-/** Any check an assertion that rests on a look carries: one about a locator's elements, or one about the page. */
-export type CheckRecord = LocatorCheckRecord | PageCheckRecord
+/**
+ * Any check an assertion that rests on a look carries: one about a locator's elements, one about the page, or one that
+ * measures the page's layout.
+ */
+export type CheckRecord = LocatorCheckRecord | PageCheckRecord | LayoutCheckRecord | ScreenshotCheckRecord
 
 const not = s.optional(s.literal(true))
 const expectedText = s.union([s.string(), textPatternSchema])
@@ -77,7 +83,7 @@ export const pageCheckRecordSchema: Schema<PageCheckRecord> = s.union([
   s.object({ matcher: s.literal('toHaveTitle'), pattern: textPatternSchema, not }),
 ])
 
-export const checkRecordSchema: Schema<CheckRecord> = s.union([locatorCheckRecordSchema, pageCheckRecordSchema])
+export const checkRecordSchema: Schema<CheckRecord> = s.union([locatorCheckRecordSchema, pageCheckRecordSchema, layoutCheckRecordSchema, screenshotCheckRecordSchema])
 
 /**
  * Whether a check is about the page rather than a locator's elements.
@@ -86,6 +92,24 @@ export const checkRecordSchema: Schema<CheckRecord> = s.union([locatorCheckRecor
  */
 export function isPageCheck(record: CheckRecord): record is PageCheckRecord {
   return record.matcher === 'toHaveURL' || record.matcher === 'toHaveTitle'
+}
+
+/**
+ * Whether a check measures the page's layout rather than reading a locator's elements or the page's address and title.
+ *
+ * @example isLayoutCheck({ matcher: 'toScrollHorizontally', not: true }) // true
+ */
+export function isLayoutCheck(record: CheckRecord): record is LayoutCheckRecord {
+  return layoutMatchers.some((matcher) => matcher === record.matcher)
+}
+
+/**
+ * Whether a check compares a picture of the page or of an element with a baseline.
+ *
+ * @example isScreenshotCheck({ matcher: 'toHaveScreenshot', name: 'dashboard' }) // true
+ */
+export function isScreenshotCheck(record: CheckRecord): record is ScreenshotCheckRecord {
+  return record.matcher === 'toHaveScreenshot'
 }
 
 const lookMatchers: ReadonlySet<string> = new Set([
@@ -101,6 +125,8 @@ const lookMatchers: ReadonlySet<string> = new Set([
   'toHaveValue',
   'toHaveURL',
   'toHaveTitle',
+  ...layoutMatchers,
+  'toHaveScreenshot',
 ])
 
 /**
@@ -120,6 +146,7 @@ export function decidedByLook(matcher: string): boolean {
  * @example checkRecordProblem({ matcher: 'toHaveText', pattern: { pattern: '(', flags: '' } }) // 'Invalid regular expression: …'
  */
 export function checkRecordProblem(record: CheckRecord): string | undefined {
+  if (isScreenshotCheck(record)) return screenshotCheckProblem(record)
   const patterns = 'pattern' in record ? [record.pattern] : 'texts' in record ? record.texts.filter((text) => typeof text !== 'string') : []
   for (const pattern of patterns) {
     const problem = patternProblem(pattern)

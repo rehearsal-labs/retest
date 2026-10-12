@@ -181,6 +181,9 @@ export type NetworkResponseRecord = DiagnosticIdentity & NativeNetworkProvenance
   serviceWorker?: boolean
   protocol?: string
   redirectedTo?: string
+  /** The response was the test's own: a route of the page gave it in the network's place. `route` is its pattern. */
+  mocked?: true
+  route?: string
 }
 
 /**
@@ -210,6 +213,13 @@ export type NetworkFailedRecord = DiagnosticIdentity & NativeNetworkProvenance &
   reason: string
   canceled?: true
   blocked?: string
+  /**
+   * The failure was the test's own: a route of the page refused the request. `route` is its pattern, and
+   * `routeRefused` Chrome's reason when Chrome refused the route's answer, so Retest failed the request in its place.
+   */
+  mocked?: true
+  route?: string
+  routeRefused?: string
 }
 
 /**
@@ -465,6 +475,8 @@ const responseShape = {
   serviceWorker: s.optional(s.boolean()),
   protocol: s.optional(s.string()),
   redirectedTo: s.optional(s.string()),
+  mocked: s.optional(s.literal(true)),
+  route: s.optional(s.string()),
 }
 const finishedShape = {
   ...nativeNetworkProvenance,
@@ -485,6 +497,9 @@ const failedShape = {
   reason: s.string(),
   canceled: s.optional(s.literal(true)),
   blocked: s.optional(s.string()),
+  mocked: s.optional(s.literal(true)),
+  route: s.optional(s.string()),
+  routeRefused: s.optional(s.string()),
 }
 const pendingShape = {
   ...identity,

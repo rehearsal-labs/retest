@@ -1,7 +1,12 @@
 import { commandResultSchema, pageCommandSchema, type CommandResult, type PageCommand } from './commands.ts'
+import { dialogAnswerSchema, dialogRequestSchema, type DialogAnswer, type DialogRequest } from './dialogs.ts'
 import { evaluationAnswerSchema, evaluationCallSchema, type EvaluationAnswer, type EvaluationCall } from './evaluation.ts'
 import { childEventSchema, type ChildEvent } from './events.ts'
 import { failureSchema, sourceLocationSchema, type Failure, type SourceLocation } from './failures.ts'
+import { filesAnswerSchema, filesRequestSchema, type FilesAnswer, type FilesRequest } from './files.ts'
+import { inboxAnswerSchema, inboxRequestSchema, type InboxAnswer, type InboxRequest } from './inbox.ts'
+import { popupAnswerSchema, popupRequestSchema, type PopupAnswer, type PopupRequest } from './popups.ts'
+import { routeReplySchema, routeRequestSchema, type RouteReply, type RouteRequest } from './routes.ts'
 import { s, type Schema } from './schema.ts'
 import { timeoutsSchema, type Timeouts } from './timeouts.ts'
 import { variantSchema, type Variant } from './variant.ts'
@@ -46,6 +51,11 @@ export type ParentMessage =
   | { type: 'run'; testId: string; attemptId: string; timeouts: Timeouts; apps: string[]; variant?: Variant }
   | { type: 'command-result'; id: number; result: CommandResult }
   | { type: 'evaluation-result'; id: number; answer: EvaluationAnswer }
+  | { type: 'inbox-result'; id: number; answer: InboxAnswer }
+  | { type: 'dialog-result'; id: number; answer: DialogAnswer }
+  | { type: 'popup-result'; id: number; answer: PopupAnswer }
+  | { type: 'files-result'; id: number; answer: FilesAnswer }
+  | { type: 'route-result'; id: number; answer: RouteReply }
   | { type: 'abort'; reason: string }
   | { type: 'close' }
 
@@ -74,6 +84,28 @@ export type ChildMessage =
   | { type: 'event'; event: ChildEvent }
   /** `test.evaluate`: the check the parent runs and judges itself, never the evidence or a verdict. */
   | { type: 'evaluate'; testId: string; attemptId: string; id: number; call: EvaluationCall; location?: SourceLocation; stepId?: string }
+  /** A read of an inbox: the parent reads the mailbox itself, and answers with the message, its codes and links hidden. */
+  | { type: 'inbox'; testId: string; attemptId: string; id: number; request: InboxRequest; timeoutMs: number; location?: SourceLocation; stepId?: string }
+  /**
+   * A wait for the next JavaScript dialog an app's page opens, a stop of that wait, or an answer to a dialog the test was
+   * given. The parent arms the page, answers once the dialog opens or once `timeoutMs` runs out, and answers the dialog.
+   */
+  | { type: 'dialog'; testId: string; attemptId: string; id: number; app: string; request: DialogRequest; timeoutMs: number; location?: SourceLocation; stepId?: string }
+  /**
+   * A wait for the next page an app's page opens, or a stop of that wait. The parent arms the page, and answers with the
+   * app name the new page's commands go to once it has opened, or once `timeoutMs` runs out.
+   */
+  | { type: 'popup'; testId: string; attemptId: string; id: number; app: string; request: PopupRequest; timeoutMs: number; location?: SourceLocation; stepId?: string }
+  /**
+   * A file picker or a download to wait for, or a download to wait for until it is saved: the parent arms the page and
+   * answers once it happens, or once `timeoutMs` runs out. A `release` lets go of an arm, and is not answered.
+   */
+  | { type: 'files'; testId: string; attemptId: string; id: number; request: FilesRequest; timeoutMs: number; location?: SourceLocation; stepId?: string }
+  /**
+   * A change to an app's routes: a route to add, or a pattern whose routes to remove. The parent answers once the page
+   * holds the change, so the next command to the page meets it, or once `timeoutMs` runs out.
+   */
+  | { type: 'route'; testId: string; attemptId: string; id: number; app: string; request: RouteRequest; timeoutMs: number; location?: SourceLocation; stepId?: string }
   | {
       type: 'test-finished'
       testId: string
@@ -116,6 +148,11 @@ export const parentMessageSchema: Schema<ParentMessage> = s.discriminatedUnion('
   }),
   s.object({ type: s.literal('command-result'), id: count, result: commandResultSchema }),
   s.object({ type: s.literal('evaluation-result'), id: count, answer: evaluationAnswerSchema }),
+  s.object({ type: s.literal('inbox-result'), id: count, answer: inboxAnswerSchema }),
+  s.object({ type: s.literal('dialog-result'), id: count, answer: dialogAnswerSchema }),
+  s.object({ type: s.literal('popup-result'), id: count, answer: popupAnswerSchema }),
+  s.object({ type: s.literal('files-result'), id: count, answer: filesAnswerSchema }),
+  s.object({ type: s.literal('route-result'), id: count, answer: routeReplySchema }),
   s.object({ type: s.literal('abort'), reason: s.string() }),
   s.object({ type: s.literal('close') }),
 ])
@@ -137,6 +174,59 @@ export const childMessageSchema: Schema<ChildMessage> = s.discriminatedUnion('ty
   }),
   s.object({ type: s.literal('event'), event: childEventSchema }),
   s.object({ type: s.literal('evaluate'), testId: s.string(), attemptId: s.string(), id: count, call: evaluationCallSchema, location: s.optional(sourceLocationSchema), stepId: s.optional(s.string()) }),
+  s.object({
+    type: s.literal('inbox'),
+    testId: s.string(),
+    attemptId: s.string(),
+    id: count,
+    request: inboxRequestSchema,
+    timeoutMs: s.number({ integer: true, min: 1 }),
+    location: s.optional(sourceLocationSchema),
+    stepId: s.optional(s.string()),
+  }),
+  s.object({
+    type: s.literal('dialog'),
+    testId: s.string(),
+    attemptId: s.string(),
+    id: count,
+    app: s.string(),
+    request: dialogRequestSchema,
+    timeoutMs: s.number({ integer: true, min: 1 }),
+    location: s.optional(sourceLocationSchema),
+    stepId: s.optional(s.string()),
+  }),
+  s.object({
+    type: s.literal('popup'),
+    testId: s.string(),
+    attemptId: s.string(),
+    id: count,
+    app: s.string(),
+    request: popupRequestSchema,
+    timeoutMs: s.number({ integer: true, min: 1 }),
+    location: s.optional(sourceLocationSchema),
+    stepId: s.optional(s.string()),
+  }),
+  s.object({
+    type: s.literal('files'),
+    testId: s.string(),
+    attemptId: s.string(),
+    id: count,
+    request: filesRequestSchema,
+    timeoutMs: s.number({ integer: true, min: 1 }),
+    location: s.optional(sourceLocationSchema),
+    stepId: s.optional(s.string()),
+  }),
+  s.object({
+    type: s.literal('route'),
+    testId: s.string(),
+    attemptId: s.string(),
+    id: count,
+    app: s.string(),
+    request: routeRequestSchema,
+    timeoutMs: s.number({ integer: true, min: 1 }),
+    location: s.optional(sourceLocationSchema),
+    stepId: s.optional(s.string()),
+  }),
   s.object({
     type: s.literal('test-finished'),
     testId: s.string(),

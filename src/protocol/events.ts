@@ -11,6 +11,8 @@ import {
   type DiagnosticsPolicyRecord,
   type DiagnosticsSummary,
 } from './diagnostics.ts'
+import { dialogTypeSchema, type DialogType } from './dialogs.ts'
+import { dragRecordSchema, type DragRecord } from './drag.ts'
 import { emulationSchema, type Emulation } from './emulation.ts'
 import { evaluationRecordSchema, hostEvaluationRecordSchema, type EvaluationRecord, type HostEvaluationRecord } from './evaluation.ts'
 import {
@@ -36,6 +38,7 @@ import {
   type SourceLocation,
   type TruncatedText,
 } from './failures.ts'
+import { fileRecordSchema, type FileRecord } from './files.ts'
 import {
   hostCheckActualSchema,
   hostCheckRecordSchema,
@@ -43,6 +46,7 @@ import {
   type HostCheckRecord,
 } from './host-check.ts'
 import { captureSourceNameSchema, type CaptureSourceName } from './identity.ts'
+import { layoutRecordSchema, type LayoutRecord } from './layout-checks.ts'
 import { checkRecordSchema, type CheckRecord } from './locator-checks.ts'
 import { locatorRecipeSchema, type LocatorRecipe } from './locator.ts'
 import { observedRecordSchema, type ObservedRecord } from './observation-record.ts'
@@ -60,7 +64,9 @@ import {
   type RecordingRecord,
   type RunEvidenceStatus,
 } from './recording.ts'
+import { routeAnswerSummarySchema, type RouteAnswerSummary } from './routes.ts'
 import { s, type Schema } from './schema.ts'
+import { attachmentSchema, screenshotRecordSchema, type Attachment, type ScreenshotRecord } from './screenshot.ts'
 import { partialTimeoutsSchema, timeoutsSchema, type Timeouts } from './timeouts.ts'
 import { variantSchema, type Variant } from './variant.ts'
 
@@ -175,9 +181,14 @@ type ActionFields = StepScope & {
   pageTitle?: string
   durationMs: number
   location?: SourceLocation
-  /** The length of the text a `fill` typed. A secret fill names its secret instead. */
+  /**
+   * The length of the text a `fill` typed. A secret fill names its secret instead, and a fill of an inbox's code names
+   * `code`; a `goto` to an inbox's link names the link, `link` or `link:2`, as it prints.
+   */
   valueLength?: number
   secret?: string
+  /** The inbox a `fill` took its code from, or a `goto` its link. */
+  inbox?: string
   /** The key a `press` sent, as the test wrote it. */
   key?: string
   /** The options a `select` chose, as the test named them. */
@@ -200,6 +211,15 @@ type ActionFields = StepScope & {
   operation?: 'wait' | 'dismiss' | 'dismissFirstRunCard' | 'accept'
   /** The label of the button a native alert call pressed, as the test wrote it. */
   button?: string
+  /** The files a `setInputFiles` or a file picker's `setFiles` gave the input, as its `change` carried them. */
+  files?: FileRecord[]
+  /**
+   * A `dragTo`'s target, the positions the test asked for when it did, and, once it dropped, whether it reached the page
+   * through mouse events alone or through the browser's drag events.
+   */
+  drag?: DragRecord
+  /** What the input held once the page's own listeners ran, when that differs from `files`, as when a page clears it. */
+  kept?: FileRecord[]
   /**
    * For a call that gave itself `{ timeout }`: in `callTimeoutMs` what it asked for, and in `timeoutMs` the time the
    * parent gave the command, the smallest of that, the action or navigation budget and the test's time left. Both
@@ -240,6 +260,18 @@ type AssertionFields = TestScope & {
    * names no look, the session of the app it judged it on. A value assertion has none.
    */
   sessionId?: string
+  /**
+   * What the look a layout assertion rested on measured, as the parent judged it, with the viewport's size. Absent on
+   * every other assertion.
+   */
+  layout?: LayoutRecord
+  /**
+   * What the picture a screenshot assertion rested on showed against its baseline, as the parent judged it. Absent on
+   * every other assertion.
+   */
+  screenshot?: ScreenshotRecord
+  /** Files the parent left in the run folder for the assertion, such as a failed screenshot comparison's pictures. */
+  attachments?: Attachment[]
   /** From `expect.soft`: the test went on after it failed. */
   soft?: true
 }
@@ -586,6 +618,123 @@ export type EventBody =
         | (AttemptScope & { type: 'diagnostics.finished'; sessionId: string; diagnostics: DiagnosticsSummary })
         /** An AI check the parent ran, from the test's `test.evaluate` or the host's checks, once it ended. Always the parent's. */
         | (StepScope & { type: 'evaluation.finished'; evaluation: EvaluationRecord })
+        /**
+         * A screenshot's baseline a run with `--update-screenshots` wrote, from the picture an assertion settled on. Always
+         * the parent's. `path` is the baseline's, POSIX and relative to the project's root; `replaced` says a baseline was
+         * there before. `observationId` names the look whose picture it is, and `session` the app whose page it shows.
+         */
+        | (StepScope & {
+            type: 'baseline.written'
+            sessionId: string
+            observationId: string
+            name: string
+            path: string
+            width: number
+            height: number
+            scale?: number
+            replaced: boolean
+            location?: SourceLocation
+          })
+        /**
+         * A test's read of an inbox, once it ended. Always the parent's. `messages` is how many the mailbox held on the last
+         * look, `looks` how many times Retest asked it, none for a read refused before it asked, and `waitedMs` how long the
+         * read took. `wanted` is the subject the
+         * test asked for, a `RegExp` written `/source/flags`. A read that found a message records its `subject`, when it
+         * arrived and how many codes and links it holds, each code and each link that carries a token in the subject
+         * replaced by its placeholder; a read that found none records why in `failure`.
+         */
+        | (StepScope & {
+            type: 'inbox.read'
+            inbox: string
+            messages: number
+            looks: number
+            waitedMs: number
+            wanted?: string
+            subject?: string
+            receivedAt?: string
+            codes?: number
+            links?: number
+            location?: SourceLocation
+            failure?: Failure
+          })
+        /**
+         * A JavaScript dialog an app's page opened, once it closed. Always the parent's. `dialog` is its kind and `message`
+         * its text, with every value the run hides replaced, cut to 300 code units. `answer` says whether it was accepted or
+         * dismissed, and `by` who answered it: the test, through `dialog.accept()` or `dialog.dismiss()`, or Retest, which
+         * answers a dialog nothing waited for and one the test left open when it ended. `typed` is how many characters a
+         * prompt was given. `location` names the call that answered it.
+         */
+        | (StepScope & {
+            type: 'dialog'
+            sessionId: string
+            dialog: DialogType
+            message: string
+            answer: 'accepted' | 'dismissed'
+            by: 'test' | 'retest'
+            typed?: number
+            location?: SourceLocation
+          })
+        /**
+         * A page an app's page opened, once a `page.popup()` was given it. Always the parent's. `session` and `sessionId` name
+         * the page that opened it; `popup` is the app name its own commands and events go by, and `popupSessionId` its
+         * session. `url` is the first address it opened, its origin and path, and `title` that page's title. `location`
+         * names the `page.popup()` call.
+         */
+        | (StepScope & {
+            type: 'popup.opened'
+            sessionId: string
+            popup: string
+            popupSessionId: string
+            url: string
+            title?: string
+            location?: SourceLocation
+          })
+        /** A page a test was given by `page.popup()` that closed while the test ran, without the test closing it. `session` names it. */
+        | (StepScope & { type: 'popup.closed'; sessionId: string })
+        /**
+         * A download its app's browser context made, once it ended or its test did. Always the parent's. `suggestedFilename`
+         * is the name the browser suggested and `url` the address it came from, its origin and path, each with every secret
+         * replaced. `startedIn` says where it began when that was not the app's page or a frame inside it: `popup`, a page
+         * it opened, or `other`, another page of its context. A `completed` download names its file in the run folder in
+         * `path`, with its size in bytes in `size`; a `withheld` one held the value of a secret, so its file was removed,
+         * and `failure` says so; a `canceled` one says how many bytes arrived of how many, and why in `failure`; an
+         * `unfinished` one was still on its way when its test ended. `awaited` marks one a `page.download()` waited for,
+         * and `location` names that call.
+         */
+        | (StepScope & {
+            type: 'download'
+            sessionId: string
+            suggestedFilename: string
+            url: string
+            startedIn?: 'popup' | 'other'
+            state: 'completed' | 'withheld' | 'canceled' | 'unfinished'
+            path?: string
+            size?: number
+            receivedBytes?: number
+            totalBytes?: number
+            awaited?: true
+            location?: SourceLocation
+            failure?: Failure
+          })
+        /**
+         * A change to an app's routes, once its page held it or refused it, or an answer of a route that Chrome refused.
+         * Always the parent's. `operation` is `add`, `remove` or `answer`, and `pattern` the route's pattern as the test
+         * wrote it, with every secret replaced, then cut to the message limit. An added route records its `answer`: its
+         * status, content type, header names and body size, or the error it refuses requests with. A removal records how
+         * many routes went in `removed`. An `answer` names the request in `url`, its origin and path, which Retest failed
+         * in its place. `failure` says why nothing changed or what Chrome refused, and `location` names the call.
+         */
+        | (StepScope & {
+            type: 'route'
+            sessionId: string
+            operation: 'add' | 'remove' | 'answer'
+            pattern: string
+            url?: string
+            answer?: RouteAnswerSummary
+            removed?: number
+            location?: SourceLocation
+            failure?: Failure
+          })
         | (AttemptScope & {
             type: 'test.finished'
             status: TestStatus
@@ -706,6 +855,7 @@ const actionFields = {
   location: s.optional(sourceLocationSchema),
   valueLength: s.optional(count),
   secret: s.optional(s.string()),
+  inbox: s.optional(s.string()),
   key: s.optional(s.string()),
   choices: s.optional(s.array(optionChoiceRecordSchema)),
   multiple: s.optional(s.literal(true)),
@@ -717,6 +867,9 @@ const actionFields = {
   direction: s.optional(s.enum(['up', 'down', 'left', 'right'])),
   operation: s.optional(s.enum(['wait', 'dismiss', 'dismissFirstRunCard', 'accept'])),
   button: s.optional(s.string()),
+  files: s.optional(s.array(fileRecordSchema)),
+  drag: s.optional(dragRecordSchema),
+  kept: s.optional(s.array(fileRecordSchema)),
   timeoutMs: s.optional(count),
   callTimeoutMs: s.optional(s.number({ integer: true, min: 1 })),
 }
@@ -736,6 +889,9 @@ const assertionFields = {
   pageTitle: s.optional(s.string()),
   observationId: s.optional(s.string()),
   sessionId: s.optional(s.string()),
+  layout: s.optional(layoutRecordSchema),
+  screenshot: s.optional(screenshotRecordSchema),
+  attachments: s.optional(s.array(attachmentSchema)),
   soft: s.optional(s.literal(true)),
 }
 const sentAssertionFields = { ...assertionFields, check: s.optional(checkRecordSchema) }
@@ -1015,6 +1171,90 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
   }),
   s.object({ ...envelope, type: s.literal('diagnostics.finished'), ...attemptScope, sessionId: s.string(), diagnostics: diagnosticsSummarySchema }),
   s.object({ ...envelope, type: s.literal('evaluation.finished'), ...stepScope, evaluation: evaluationRecordSchema }),
+  s.object({
+    ...envelope,
+    type: s.literal('baseline.written'),
+    ...stepScope,
+    sessionId: s.string(),
+    observationId: s.string(),
+    name: s.string(),
+    path: s.string(),
+    width: s.number({ integer: true, min: 1 }),
+    height: s.number({ integer: true, min: 1 }),
+    scale: s.optional(s.number({ min: 0 })),
+    replaced: s.boolean(),
+    location: s.optional(sourceLocationSchema),
+  }),
+  s.object({
+    ...envelope,
+    type: s.literal('inbox.read'),
+    ...stepScope,
+    inbox: s.string(),
+    messages: count,
+    looks: count,
+    waitedMs: duration,
+    wanted: s.optional(s.string()),
+    subject: s.optional(s.string()),
+    receivedAt: s.optional(s.string()),
+    codes: s.optional(count),
+    links: s.optional(count),
+    location: s.optional(sourceLocationSchema),
+    failure: s.optional(failureSchema),
+  }),
+  s.object({
+    ...envelope,
+    type: s.literal('dialog'),
+    ...stepScope,
+    sessionId: s.string(),
+    dialog: dialogTypeSchema,
+    message: s.string(),
+    answer: s.enum(['accepted', 'dismissed']),
+    by: s.enum(['test', 'retest']),
+    typed: s.optional(count),
+    location: s.optional(sourceLocationSchema),
+  }),
+  s.object({
+    ...envelope,
+    type: s.literal('popup.opened'),
+    ...stepScope,
+    sessionId: s.string(),
+    popup: s.string(),
+    popupSessionId: s.string(),
+    url: s.string(),
+    title: s.optional(s.string()),
+    location: s.optional(sourceLocationSchema),
+  }),
+  s.object({ ...envelope, type: s.literal('popup.closed'), ...stepScope, sessionId: s.string() }),
+  s.object({
+    ...envelope,
+    type: s.literal('download'),
+    ...stepScope,
+    sessionId: s.string(),
+    suggestedFilename: s.string(),
+    url: s.string(),
+    startedIn: s.optional(s.enum(['popup', 'other'])),
+    state: s.enum(['completed', 'withheld', 'canceled', 'unfinished']),
+    path: s.optional(s.string()),
+    size: s.optional(count),
+    receivedBytes: s.optional(count),
+    totalBytes: s.optional(count),
+    awaited: s.optional(s.literal(true)),
+    location: s.optional(sourceLocationSchema),
+    failure: s.optional(failureSchema),
+  }),
+  s.object({
+    ...envelope,
+    type: s.literal('route'),
+    ...stepScope,
+    sessionId: s.string(),
+    operation: s.enum(['add', 'remove', 'answer']),
+    pattern: s.string(),
+    url: s.optional(s.string()),
+    answer: s.optional(routeAnswerSummarySchema),
+    removed: s.optional(count),
+    location: s.optional(sourceLocationSchema),
+    failure: s.optional(failureSchema),
+  }),
   s.object({
     ...envelope,
     type: s.literal('test.finished'),

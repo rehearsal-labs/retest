@@ -1,7 +1,7 @@
 export { ariaRoles } from './aria-role.ts'
 export type { AriaRole } from './aria-role.ts'
 export { commandResultSchema, describeCommand, observationSchema, observedItemLimit, pageCommandSchema } from './commands.ts'
-export type { ActionKind, CommandResult, FillValue, Observation, ObservedItem, PageCommand } from './commands.ts'
+export type { ActionKind, CommandResult, FillValue, GotoTarget, Observation, ObservedItem, PageCommand } from './commands.ts'
 export { defaultDiagnosticLimits, diagnosticLineSchema, diagnosticRecordSchema, diagnosticsSummarySchema } from './diagnostics.ts'
 export type {
   CacheSource,
@@ -96,6 +96,9 @@ export type { CaptureSourceName, RecordIdentity as SessionRecordIdentity } from 
 export { failureSchema, sourceLocationSchema, truncatedTextSchema } from './failures.ts'
 export type { Failure, FailureClass, FailureDetail, SourceLocation, TruncatedText } from './failures.ts'
 export type { HostCheckActual, HostCheckRecord, HostCheckResult, HostCheckStatus } from './host-check.ts'
+export type { InboxCodeRef, InboxLinkRef } from './inbox.ts'
+export type { LayoutRecord } from './layout-checks.ts'
+export type { Attachment, BaselineComparison, PictureSize, ScreenshotCheckRecord, ScreenshotRecord } from './screenshot.ts'
 export { eventSchemaUrl, resultSchemaUrl } from './json-schemas.ts'
 export { describeLocator, locatorRecipeSchema } from './locator.ts'
 export type { LocatorRecipe } from './locator.ts'
