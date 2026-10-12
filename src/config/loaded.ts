@@ -7,7 +7,7 @@ import type { Variant } from '../protocol/variant.ts'
 import type { DeviceName } from './devices.ts'
 import type { LoadedEvaluation } from './read-evaluation.ts'
 import type { RecordingSettings } from './read-recording.ts'
-import type { Channel, SecretContext } from './types.ts'
+import type { Channel, InboxContext, SecretContext } from './types.ts'
 
 // A config as the runner reads it: validated, with defaults filled in and paths absolute. Maps keep the
 // config's order and cannot confuse a name such as "constructor" with an inherited property.
@@ -95,7 +95,14 @@ export type LoadedSecretSource = { readonly env: string } | { readonly read: (co
 export type LoadedSecret = { readonly source: LoadedSecretSource; readonly origins: readonly string[] }
 
 /**
- * `file` is the config's absolute path. `defaultApp` is absent when several apps leave it unnamed. `tags`,
+ * An inbox: its function, which the parent calls on each look and whose answer it checks itself, and the origins
+ * beyond its test's apps' base URLs where its links open and its codes are typed.
+ */
+export type LoadedInbox = { readonly read: (context: InboxContext) => Promise<unknown>; readonly origins: readonly string[] }
+
+/**
+ * `file` is the config's absolute path. `defaultApp` is absent when several apps leave it unnamed. `inboxes` is absent
+ * when the config declares none. `tags`,
  * `states` and `locks` are absent when the config does not list them. `testIds` only feeds the type check, so it is
  * not kept. `evaluation` is absent when the config declares no judges, and `diagnostics` when it sets no diagnostics.
  * `recording` is absent when the config has no `recording` block, and `pixels` when it states no app's pixel rules.
@@ -106,6 +113,7 @@ export type LoadedConfig = {
   readonly defaultApp?: string
   readonly runs: readonly Readonly<Variant>[]
   readonly secrets: ReadonlyMap<string, LoadedSecret>
+  readonly inboxes?: ReadonlyMap<string, LoadedInbox>
   readonly tags?: readonly string[]
   readonly states?: readonly string[]
   readonly locks?: readonly string[]

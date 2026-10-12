@@ -125,7 +125,7 @@ export class SecretFiller {
     const declared = this.#declared.get(name)?.origins ?? []
     const electron = context.target === 'electron'
     const allowedOrigins = electron ? [...new Set(declared.filter(isWebOrigin))] : [...new Set([...context.appOrigins, ...declared])]
-    const located = await locate(context)
+    const located = await locateFill(context)
     if (located.kind === 'stopped') return { ok: false, failure: stoppedFill(name, context.signal.reason, 'waiting for the page to open an address for') }
     const { pageUrl } = located
     const origin = originOf(pageUrl)
@@ -194,11 +194,14 @@ function stoppedFill(name: string, reason: unknown, doing: string): Failure {
   return { class: cause.class, message, details: { ...cause.details, inputSent: false } }
 }
 
-type Located = { readonly kind: 'located'; readonly pageUrl: string | undefined; readonly context: FillContext } | { readonly kind: 'stopped' }
+/** The address a fill is checked against, with the time it has left, or that it was stopped while it waited for one. */
+export type Located = { readonly kind: 'located'; readonly pageUrl: string | undefined; readonly context: FillContext } | { readonly kind: 'stopped' }
 
-// The address the fill is checked against: the page's as it stands, or, for a page on no address yet that can be read
-// again, the first it opens within the fill's time, which leaves the rest of that time to reading the value.
-async function locate(context: FillContext): Promise<Located> {
+/**
+ * The address a fill is checked against: the page's as it stands, or, for a page on no address yet that can be read
+ * again, the first it opens within the fill's time, which leaves the rest of that time to reading the value.
+ */
+export async function locateFill(context: FillContext): Promise<Located> {
   const { currentUrl, signal } = context
   if (currentUrl === undefined || !openedNothing(context.pageUrl)) return { kind: 'located', pageUrl: context.pageUrl, context }
   const deadline = new Deadline(context.timeoutMs, { signal })

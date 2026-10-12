@@ -370,6 +370,7 @@ export class NativePageAdapter implements OwnedPage {
       if (command.kind === 'fill' && command.secret !== undefined && command.allowedOrigins?.includes(this.bundleId) !== true) return unsupported(`Retest typed no secret into ${this.bundleId}: a secret reaches a native app only after Retest has checked that secretOrigins names its bundle id.`)
       return (await this.native.dispatch(command, timeoutMs, signal)).result
     }
+    if (command.kind === 'observeLayout') return unsupported('Layout matchers measure a web page, and a native app has no page layout to measure, so Retest measured nothing.')
     return unsupported(`${command.kind} is a web capability and is not available on a native app.`)
   }
   capture(timeoutMs: number): Promise<{ readonly ok: true; readonly capture: NativeCapture } | { readonly ok: false; readonly failure: Failure }> { return this.native.capture(timeoutMs) }

@@ -65,6 +65,7 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
     counts: countTests(files),
     failure: missingResult(finished, record.outcome),
     ...narrowed,
+    ...baselinesWritten(events),
     ...(finished?.evidenceStatus !== undefined ? { evidenceStatus: finished.evidenceStatus } : files.some(file => file.tests.some(test => test.recordings !== undefined)) ? { evidenceStatus: runEvidence(files.flatMap(file => file.tests), [], false) } : {}),
     files,
   }
@@ -93,6 +94,12 @@ export function rebuildRecordedResult(events: readonly RetestEvent[]): RunResult
     ...(finished.resultFacts.namedApps === true ? { browsers: browsers ?? [] } : {}),
     ...(settled.failure === undefined ? {} : { failure: settled.failure }),
   }
+}
+
+// A run that updates screenshot baselines writes each once, and says so in an event, as its result counts them.
+function baselinesWritten(events: readonly RetestEvent[]): { baselinesWritten?: number } {
+  const written = events.filter((event) => event.type === 'baseline.written').length
+  return written === 0 ? {} : { baselinesWritten: written }
 }
 
 function missingResult(finished: EventOfType<'run.finished'> | undefined, outcome: EventOfType<'run.outcome'> | undefined): Failure {

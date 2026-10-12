@@ -11,7 +11,7 @@ export interface RetestTypeError<Message extends string> {
 
 /**
  * Where a project registers its config, once, in `retest.config.ts`, so every test file's types see its apps,
- * secrets, test ids, tags and states.
+ * secrets, inboxes, test ids, tags and states.
  *
  * @example declare module '@rehearsal-labs/retest' { interface Register { config: typeof config } }
  */
@@ -61,6 +61,13 @@ export type LockName = IsRegistered extends true
 export type SecretName = IsRegistered extends true
   ? Config extends { readonly secrets: infer Secrets extends object }
     ? keyof Secrets & string
+    : never
+  : string
+
+/** The config's inbox names, or never when it declares none; any string before a config is registered. */
+export type InboxName = IsRegistered extends true
+  ? Config extends { readonly inboxes: infer Inboxes extends object }
+    ? keyof Inboxes & string
     : never
   : string
 

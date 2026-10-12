@@ -136,6 +136,11 @@ export type RunResult = {
   narrowed?: Narrowed
   /** The run's evidence over every attempt. Absent in a run that records nothing, and in runs recorded before it. */
   evidenceStatus?: RunEvidenceStatus
+  /**
+   * How many screenshot baselines a run with `--update-screenshots` wrote, so such a run never reads as an ordinary
+   * pass. Absent in a run that wrote none.
+   */
+  baselinesWritten?: number
   files: FileResult[]
 }
 
@@ -209,6 +214,7 @@ export const runResultSchema: Schema<RunResult> = s.object({
     s.object({ only: s.array(sourceLocationSchema), kept: s.number({ integer: true, min: 0 }), collected: s.number({ integer: true, min: 0 }) }),
   ),
   evidenceStatus: s.optional(runEvidenceStatusSchema),
+  baselinesWritten: s.optional(s.number({ integer: true, min: 1 })),
   files: s.array(
     s.object({
       file: s.string(),

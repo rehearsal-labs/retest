@@ -29,7 +29,8 @@ export type {
   WebRuntimeIdentity,
   WebSession,
 } from '../browser/contract.ts'
-export type { LoadedConfig } from '../config/loaded.ts'
+export type { LoadedConfig, LoadedInbox } from '../config/loaded.ts'
+export type { InboxContext, InboxMessage, InboxMessageLink, InboxReader, InboxSource } from '../config/types.ts'
 export { defaultTimeouts, mergeTimeouts } from '../protocol/timeouts.ts'
 export type { Timeouts } from '../protocol/timeouts.ts'
 export { validateConfig } from '../config/validate.ts'

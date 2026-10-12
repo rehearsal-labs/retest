@@ -39,15 +39,15 @@ export function appPixelRules(input: AppPixelRulesInput | undefined): AppPixelRu
   return Object.freeze({ screenshots: input?.screenshots ?? 'allowed', recordings: input?.recordings ?? 'allowed' })
 }
 
-/** A single capture: when a test failed, for an AI check's judge, or an agent session's frame. */
-export type ScreenshotUse = 'failure' | 'evaluation' | 'agent'
+/** A single capture: when a test failed, for an AI check's judge, an agent session's frame, or a screenshot comparison. */
+export type ScreenshotUse = 'failure' | 'evaluation' | 'agent' | 'comparison'
 
 /** A frame of a capture that runs: for a saved recording, or sent live to a viewer. */
 export type FrameUse = 'recording' | 'live'
 
 export type PixelUse = ScreenshotUse | FrameUse
 
-const screenshotUses: ReadonlySet<PixelUse> = new Set<PixelUse>(['failure', 'evaluation', 'agent'])
+const screenshotUses: ReadonlySet<PixelUse> = new Set<PixelUse>(['failure', 'evaluation', 'agent', 'comparison'])
 
 // Masking -----------------------------------------------------------------------------------------------------------
 

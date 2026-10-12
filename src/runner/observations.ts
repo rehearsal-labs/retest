@@ -1,15 +1,20 @@
 import type { Observation, PageObservation } from '../protocol/commands.ts'
 import type { ChildEvent, EventBody } from '../protocol/events.ts'
 import type { Failure, FailureDetail } from '../protocol/failures.ts'
+import type { LayoutLook } from '../protocol/layout.ts'
+import type { LayoutCheckRecord, LayoutRequest } from '../protocol/layout-checks.ts'
 import type { CheckRecord, LocatorCheckRecord, PageCheckRecord, PageLook } from '../protocol/locator-checks.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
+import type { ScreenshotCheckRecord, ScreenshotLook, ScreenshotRequest } from '../protocol/screenshot.ts'
 import type { Redactor } from './redactor.ts'
 import { isDeepStrictEqual } from 'node:util'
 import { failure, truncateText } from '../protocol/failures.ts'
-import { checkRecordProblem, decidedByLook, isPageCheck, locatorCheck, mapLocatorCheckText, mapPageCheckText, pageCheck } from '../protocol/locator-checks.ts'
+import { layoutCheck, layoutRequest } from '../protocol/layout-checks.ts'
+import { checkRecordProblem, decidedByLook, isLayoutCheck, isPageCheck, isScreenshotCheck, locatorCheck, mapLocatorCheckText, mapPageCheckText, pageCheck } from '../protocol/locator-checks.ts'
 import { describeEmptyStep, describeLocator } from '../protocol/locator.ts'
 import { formatObservationId } from '../protocol/observation-record.ts'
 import { cleanTitle, recordedTitle } from '../protocol/page-facts.ts'
+import { screenshotCheck, screenshotRequest } from '../protocol/screenshot.ts'
 import { quoteText } from '../protocol/text.ts'
 
 /** A page as an event records it: its origin and path, and its title when it has one. */
@@ -18,11 +23,13 @@ export type PageFields = { pageUrl?: string; pageTitle?: string }
 /**
  * A look the parent served: the app and locator it read, the session that served it, the observation as sent,
  * redacted and whole, and the page it read, as the look itself read it. A look at the page itself holds what it saw
- * of the page, as sent, and the app's base URL.
+ * of the page, as sent, and the app's base URL. A layout look holds what it was asked to measure and what it measured.
  */
 export type ServedObservation =
   | (PageFields & { app: string; sessionId: string; locator: LocatorRecipe; observation: Observation })
   | { app: string; sessionId: string; page: PageLook }
+  | (PageFields & { app: string; sessionId: string; request: LayoutRequest; layout: LayoutLook })
+  | (PageFields & { app: string; sessionId: string; picture: ScreenshotRequest; screenshot: ScreenshotLook })
 
 /**
  * Where an assertion looked, as the parent knows it: its app, the session of that app's page in this attempt, and the
@@ -74,10 +81,12 @@ export class ServedObservations {
    * @example observations.judge(event, { app: 'web', pageUrl: 'http://127.0.0.1:4173/' })
    */
   judge(assertion: SentAssertion, page: AssertionPage): Judged {
-    const { check, observationId, sessionId, pageUrl: _claimedPage, pageTitle: _claimedTitle, ...claimed } = assertion
+    const { check, observationId, sessionId, pageUrl: _claimedPage, pageTitle: _claimedTitle, layout: _claimedLayout, ...claimed } = assertion
     const { locator } = assertion
     const problem = check === undefined ? undefined : checkRecordProblem(check)
     if (problem !== undefined) return refused(`sent ${assertion.type} with a check Retest cannot read: ${problem}`)
+    if (check !== undefined && isScreenshotCheck(check)) return this.#judgeScreenshot(assertion, check, page)
+    if (check !== undefined && isLayoutCheck(check)) return this.#judgeLayout(assertion, check, page)
     if (check !== undefined && isPageCheck(check)) {
       if (locator !== undefined) return refused(`sent ${assertion.type} for ${describeLocator(locator)} with ${check.matcher}, a check of the page`)
       return this.#judgePage(assertion, check, page)
@@ -103,8 +112,7 @@ export class ServedObservations {
     const served = this.#served.get(observationId)
     if (served === undefined) return refused(`named the look ${quoteText(observationId)}, which Retest did not serve to this test`)
     if (!('locator' in served) || served.app !== page.app || !sameLocator(served.locator, locator)) {
-      const look = 'locator' in served ? `a look at ${describeLocator(served.locator)} on ${served.app}` : `a look at the page of ${served.app}`
-      return refused(`named ${observationId}, ${look}, for an assertion on ${describeLocator(locator)} on ${page.app ?? 'no app'}`)
+      return refused(`named ${observationId}, ${describeServed(served)}, for an assertion on ${describeLocator(locator)} on ${page.app ?? 'no app'}`)
     }
     if (sessionId !== served.sessionId) {
       return refused(`named ${observationId} of the session ${quoteText(sessionId)}, but the session ${quoteText(served.sessionId)} served this test's ${observationId}`)
@@ -135,8 +143,7 @@ export class ServedObservations {
     const served = this.#served.get(observationId)
     if (served === undefined) return refused(`named the look ${quoteText(observationId)}, which Retest did not serve to this test`)
     if (!('page' in served) || served.app !== page.app) {
-      const look = 'page' in served ? `a look at the page of ${served.app}` : `a look at ${describeLocator(served.locator)} on ${served.app}`
-      return refused(`named ${observationId}, ${look}, for an assertion on the page of ${page.app ?? 'no app'}`)
+      return refused(`named ${observationId}, ${describeServed(served)}, for an assertion on the page of ${page.app ?? 'no app'}`)
     }
     if (sessionId !== served.sessionId) {
       return refused(`named ${observationId} of the session ${quoteText(sessionId)}, but the session ${quoteText(served.sessionId)} served this test's ${observationId}`)
@@ -152,6 +159,70 @@ export class ServedObservations {
     return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
   }
 
+  // A layout assertion is judged on a layout look of its own app that measured what its check needs: the element it was
+  // called on, the other element `toOverlap` compares it with, and the words `toHaveClippedText` reads. The event
+  // records what that look measured, never what the test process says it measured.
+  #judgeLayout(assertion: SentAssertion, check: LayoutCheckRecord, page: AssertionPage): Judged {
+    const { check: _check, observationId, sessionId, pageUrl: _claimedPage, pageTitle: _claimedTitle, layout: _claimedLayout, ...claimed } = assertion
+    const { matcher: _matcher, expected: _expected, actual: _actual, comparison: _comparison, ...kept } = claimed
+    const { locator } = assertion
+    const rule = layoutCheck(check)
+    const subject = `expect(${locator === undefined ? 'page' : describeLocator(locator)}).${rule.matcher}()`
+    const onPage = check.matcher === 'toScrollHorizontally'
+    if (onPage && locator !== undefined) return refused(`sent ${assertion.type} for ${describeLocator(locator)} with ${rule.matcher}, a check of the page`)
+    if (!onPage && locator === undefined) return refused(`sent ${assertion.type} with ${rule.matcher} without the locator it measures`)
+    const judged = { matcher: rule.matcher, expected: truncateText(this.#redactText(rule.expected)), comparison: rule.comparison }
+    if (observationId === undefined) {
+      if (sessionId !== undefined) return refused(`sent the session ${quoteText(sessionId)} of a look without the look's id`)
+      if (kept.type === 'assertion.passed') return refused(`sent assertion.passed for ${subject} without naming the look it rested on`)
+      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle), ...sessionOf(page) } }
+    }
+    if (sessionId === undefined) return refused(`named the look ${quoteText(observationId)} without the session that served it`)
+    const served = this.#served.get(observationId)
+    if (served === undefined) return refused(`named the look ${quoteText(observationId)}, which Retest did not serve to this test`)
+    if (!('layout' in served) || served.app !== page.app || !isDeepStrictEqual(served.request, layoutRequest(check, locator))) {
+      return refused(`named ${observationId}, ${describeServed(served)}, for ${subject} on ${page.app ?? 'no app'}, which measures something else`)
+    }
+    if (sessionId !== served.sessionId) {
+      return refused(`named ${observationId} of the session ${quoteText(sessionId)}, but the session ${quoteText(served.sessionId)} served this test's ${observationId}`)
+    }
+    const look = served.layout
+    if (kept.type === 'assertion.passed' && !rule.passes(look)) return refused(`sent assertion.passed for ${subject}, which fails on ${observationId}, the look it named`)
+    const actual = rule.actual(look)
+    const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle), sessionId: served.sessionId, layout: rule.measured(look) }
+    return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
+  }
+
+  // A screenshot assertion is judged on a picture look of its own app, taken for its element, its name and its
+  // threshold. The event records how that picture stood against its baseline, never what the test process says it saw.
+  #judgeScreenshot(assertion: SentAssertion, check: ScreenshotCheckRecord, page: AssertionPage): Judged {
+    const { check: _check, observationId, sessionId, pageUrl: _claimedPage, pageTitle: _claimedTitle, layout: _claimedLayout, ...claimed } = assertion
+    const { matcher: _matcher, expected: _expected, actual: _actual, comparison: _comparison, ...kept } = claimed
+    const { locator } = assertion
+    const rule = screenshotCheck(check)
+    const subject = `expect(${locator === undefined ? 'page' : describeLocator(locator)}).toHaveScreenshot()`
+    const judged = { matcher: rule.matcher, expected: truncateText(this.#redactText(rule.expected)), comparison: rule.comparison }
+    if (observationId === undefined) {
+      if (sessionId !== undefined) return refused(`sent the session ${quoteText(sessionId)} of a look without the look's id`)
+      if (kept.type === 'assertion.passed') return refused(`sent assertion.passed for ${subject} without naming the look it rested on`)
+      return { ok: true, event: { ...kept, ...judged, actual: null, ...pageFields(page.pageUrl, page.pageTitle), ...sessionOf(page) } }
+    }
+    if (sessionId === undefined) return refused(`named the look ${quoteText(observationId)} without the session that served it`)
+    const served = this.#served.get(observationId)
+    if (served === undefined) return refused(`named the look ${quoteText(observationId)}, which Retest did not serve to this test`)
+    if (!('screenshot' in served) || served.app !== page.app || !isDeepStrictEqual(served.picture, screenshotRequest(check, locator))) {
+      return refused(`named ${observationId}, ${describeServed(served)}, for ${subject} on ${page.app ?? 'no app'}, which pictures something else`)
+    }
+    if (sessionId !== served.sessionId) {
+      return refused(`named ${observationId} of the session ${quoteText(sessionId)}, but the session ${quoteText(served.sessionId)} served this test's ${observationId}`)
+    }
+    const look = served.screenshot
+    if (kept.type === 'assertion.passed' && !rule.passes(look)) return refused(`sent assertion.passed for ${subject}, which fails on ${observationId}, the look it named`)
+    const actual = rule.actual(look)
+    const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle), sessionId: served.sessionId, screenshot: rule.measured(look) }
+    return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
+  }
+
   /**
    * The parent's own failure for a check on a look it served, when the check fails there, classed as the test process's
    * poller classes a check its time ran out on: `not_found` when a check about one element saw none, `ambiguous` when it
@@ -164,6 +235,20 @@ export class ServedObservations {
   lookFailure(observationId: string, check: CheckRecord): Failure | undefined {
     const served = this.#served.get(observationId)
     if (served === undefined) return undefined
+    if (isScreenshotCheck(check)) {
+      if (!('screenshot' in served)) return undefined
+      const rule = screenshotCheck(check)
+      if (rule.passes(served.screenshot)) return undefined
+      const reason = rule.unmet(served.screenshot, served.picture.locator)
+      return { ...failure(reason.class, this.#redactText(reason.message)), details: judgedDetails(this.#redactText(rule.expected), rule.actual(served.screenshot), rule.comparison) }
+    }
+    if (isLayoutCheck(check)) {
+      if (!('layout' in served)) return undefined
+      const rule = layoutCheck(check)
+      if (rule.passes(served.layout)) return undefined
+      const reason = rule.unmet(served.layout, served.request.locator)
+      return { ...failure(reason.class, this.#redactText(reason.message)), details: judgedDetails(this.#redactText(rule.expected), rule.actual(served.layout), rule.comparison) }
+    }
     if (isPageCheck(check)) {
       if (!('page' in served) || pageCheck(check).passes(served.page)) return undefined
       const recorded = pageCheck(this.#redactor === undefined ? check : mapPageCheckText(check, (text) => this.#redactText(text)))
@@ -195,6 +280,12 @@ export class ServedObservations {
 
 function refused(problem: string): Judged {
   return { ok: false, problem }
+}
+
+function describeServed(served: ServedObservation): string {
+  if ('locator' in served) return `a look at ${describeLocator(served.locator)} on ${served.app}`
+  if ('screenshot' in served) return `a picture of ${served.picture.locator === undefined ? 'the page' : describeLocator(served.picture.locator)} on ${served.app}`
+  return 'page' in served ? `a look at the page of ${served.app}` : `a layout look on ${served.app}`
 }
 
 // The expected and received values of a check the parent judged, as a poller's failure details name them.

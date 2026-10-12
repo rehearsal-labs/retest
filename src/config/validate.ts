@@ -14,12 +14,13 @@ import { variantKey } from '../protocol/variant.ts'
 import { configKey, Problems } from './problems.ts'
 import { readApps } from './read-apps.ts'
 import { readEvaluation } from './read-evaluation.ts'
+import { readInboxes } from './read-inboxes.ts'
 import { readPixels, readRecording } from './read-recording.ts'
 import { readSecrets } from './read-secrets.ts'
 
 export type ConfigResult = { ok: true; config: LoadedConfig } | { ok: false; failure: Failure }
 
-const configKeys = new Set(['apps', 'defaultApp', 'runs', 'secrets', 'secretOrigins', 'testIds', 'tags', 'states', 'locks', 'timeouts', 'evaluation', 'diagnostics', 'recording', 'pixels'])
+const configKeys = new Set(['apps', 'defaultApp', 'runs', 'secrets', 'secretOrigins', 'inboxes', 'testIds', 'tags', 'states', 'locks', 'timeouts', 'evaluation', 'diagnostics', 'recording', 'pixels'])
 const namesSchema = s.array(s.string())
 const runsSchema = s.array(s.record(s.string()))
 const testIdsSchema = s.union([s.record(s.string()), s.array(s.string())])
@@ -52,6 +53,7 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
   const defaultApp = readDefaultApp(value['defaultApp'], declaredApps, problems)
   const runs = readRuns(value['runs'], { declaredApps, apps, problems })
   const secrets = readSecrets(value['secrets'], value['secretOrigins'], problems, secretDestinations(apps))
+  const inboxes = readInboxes(value['inboxes'], problems)
   if (value['testIds'] !== undefined) problems.check(testIdsSchema, value['testIds'], ['testIds'])
   const tags = readNames(value['tags'], ['tags'], problems)
   for (const [index, tag] of (tags ?? []).entries()) {
@@ -70,6 +72,7 @@ function readConfig(value: unknown, file: string, problems: Problems): LoadedCon
     ...(defaultApp === undefined ? {} : { defaultApp }),
     runs,
     secrets,
+    ...(inboxes === undefined || inboxes.size === 0 ? {} : { inboxes }),
     ...(tags === undefined ? {} : { tags }),
     ...(states === undefined ? {} : { states }),
     ...(locks === undefined ? {} : { locks }),

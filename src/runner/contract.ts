@@ -117,6 +117,11 @@ export type RunOptions = {
    */
   forbidOnly?: string
   /**
+   * Writes every screenshot baseline the run's checks compare against, from the picture each settled on, in place of
+   * any there, and passes those checks. The result counts what it wrote. Absent: each check compares with its baseline.
+   */
+  updateScreenshots?: true
+  /**
    * The files are Playwright test files. Their imports of `@playwright/test` resolve to Retest's own
    * `/playwright` subpath, relative imports may leave out their extension, and the run says so in `run.started`.
    */

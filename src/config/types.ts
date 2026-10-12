@@ -196,6 +196,36 @@ export type SecretContext = { readonly signal: GlobalAbortSignal }
  */
 export type SecretSource = EnvSecret | ((context: SecretContext) => string | Promise<string>)
 
+/** What an inbox's function is called with. `signal` is aborted once Retest stops waiting for the messages. */
+export type InboxContext = { readonly signal: GlobalAbortSignal }
+
+/** A link in a message: its address, and the text it was shown under. */
+export type InboxMessageLink = { readonly url: string; readonly text: string }
+
+/**
+ * One message in a test mailbox, as an inbox's function gives it. Retest reads no HTML: `text` is the message's plain
+ * text, and `codes` and `links` are the one-time codes and the links the host found in it. `receivedAt` is when the
+ * mailbox received it, a `Date`, an ISO time or milliseconds since 1970, by a clock that agrees with the machine Retest
+ * runs on.
+ */
+export type InboxMessage = {
+  readonly subject: string
+  readonly from: string
+  readonly text: string
+  readonly codes: readonly string[]
+  readonly links: readonly InboxMessageLink[]
+  readonly receivedAt: Date | string | number
+}
+
+/** Reads a test mailbox: its messages, newest first. */
+export type InboxReader = (context: InboxContext) => readonly InboxMessage[] | Promise<readonly InboxMessage[]>
+
+/**
+ * Where an inbox's messages come from: a function the parent calls each time a test looks, or that function as
+ * `messages` beside `origins`, more origins where the inbox's links may open and its codes be typed.
+ */
+export type InboxSource = InboxReader | { readonly messages: InboxReader; readonly origins?: readonly string[] | undefined }
+
 /**
  * A judge for AI checks. `adapter` makes it: a module path relative to the config, such as './judges/visual.ts', a
  * package such as '@rehearsal-labs/retest/evaluation/ai-sdk', or a function. Retest's own process loads it, the first
@@ -291,6 +321,8 @@ export type PixelsConfig = Readonly<Record<string, { readonly screenshots?: 'all
  * - `runs`: app to target name, one entry per combination a test with several multi-target apps runs.
  * - `secrets` and `secretOrigins`: a secret may be typed only on the origins of the test's apps' base URLs,
  *   and on the origins `secretOrigins` lists for it.
+ * - `inboxes`: test mailboxes by name, each read by a function in Retest's own process. A code is typed, and a link
+ *   opens, only on the origins of the test's apps' base URLs and the inbox's own `origins`.
  * - `testIds`, `tags` and `states` name what tests may use; each is optional, and without it any name type-checks.
  * - `locks` names the shared state tests may hold with `locks`. Without it, a test may hold none.
  * - `evaluation` declares the judges `test.evaluate` uses. Without it, a run has no AI checks.
@@ -305,6 +337,7 @@ export type RetestConfig = {
   readonly runs?: readonly Readonly<Record<string, string>>[] | undefined
   readonly secrets?: Readonly<Record<string, SecretSource>> | undefined
   readonly secretOrigins?: Readonly<Record<string, readonly string[]>> | undefined
+  readonly inboxes?: Readonly<Record<string, InboxSource>> | undefined
   readonly testIds?: Readonly<Record<string, string>> | readonly string[] | undefined
   readonly tags?: readonly string[] | undefined
   readonly states?: readonly string[] | undefined
