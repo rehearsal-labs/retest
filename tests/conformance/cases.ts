@@ -4,7 +4,7 @@ import type { NavigationCause, NavigationDocument } from '../../src/protocol/pag
 import type { Timeouts } from '../../src/protocol/timeouts.ts'
 
 // The fixed list of conformance cases for the first release's browser scope, run on Chrome, Firefox and WebKit by
-// `tests/conformance/run.ts` and checked by `tests/integration/conformance.test.ts`. Each case is a test in a
+// `tests/conformance/run.ts` and checked by `tests/integration/conformance-<engine>.test.ts`. Each case is a test in a
 // `.retest.ts` file under `fixtures/conformance/` with the outcome it must end with, or a fact about a whole run.
 // The workflow cases are the forty of docs/compatibility/workflow-cases.md, families 1 to 10, each with the facts
 // its Chromium integration file checks, so a case means the same on every engine. A declared outcome is the

@@ -1,17 +1,24 @@
+import type { Engine } from './engines.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { conformanceCases } from '../conformance/cases.ts'
-import { engineNames, engines, engineSetup } from '../conformance/engines.ts'
-import { runEngine } from '../conformance/execute.ts'
+import { conformanceCases } from './cases.ts'
+import { engineNames, engineSetup } from './engines.ts'
+import { runEngine } from './execute.ts'
 
-// The fixed conformance cases of tests/conformance/cases.ts on Chrome, Firefox and WebKit. Each case and each run must
-// end exactly as declared; a declared outcome is never edited to make an engine pass. An engine that does not run
-// fails, unless RETEST_CONFORMANCE_OPT_OUT names it or 0.1.0 does not support it on this platform: it is then skipped
-// as not verified, by name, never passed. A run that refuses every test because no driver runs the engine is not
-// "not available": every case differs. tests/conformance/run.ts runs the same cases and writes
+// The test each tests/integration/conformance-<engine>.test.ts file registers for its one engine: the fixed cases of
+// cases.ts, where each case and each run must end exactly as declared; a declared outcome is never edited to make an
+// engine pass. An engine that does not run fails, unless RETEST_CONFORMANCE_OPT_OUT names it or 0.1.0 does not support
+// it on this platform: it is then skipped as not verified, by name, never passed. A run that refuses every test because
+// no driver runs the engine is not "not available": every case differs. One file per engine keeps each CI shard short
+// and lets a failed engine be run again alone. tests/conformance/run.ts runs the same cases on every engine and writes
 // docs/compatibility/conformance.md. RETEST_CONFORMANCE_KEEP names a folder to keep each run folder in.
 
-for (const engine of engines) {
+/**
+ * Registers the test that runs every conformance case on `engine` and holds each case and each run to its declared end.
+ *
+ * @example conformanceEngineTest('firefox') // in tests/integration/conformance-firefox.test.ts
+ */
+export function conformanceEngineTest(engine: Engine): void {
   test(`every conformance case ends as declared on ${engineNames[engine]}`, async (t) => {
     const setup = engineSetup(engine)
     if (!setup.available) {
