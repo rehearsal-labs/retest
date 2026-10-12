@@ -3,12 +3,36 @@ import { join, relative, resolve } from 'node:path'
 import recordedDurations from './test-durations.json' with { type: 'json' }
 
 export type Platform = 'linux-x64' | 'linux-arm64' | 'macos-arm64'
-export type Scope = 'all' | 'checks' | 'unit' | 'integration'
+/** A file's recorded seconds on each platform a passing run has timed it on. */
+export type PlatformSeconds = Readonly<Partial<Record<Platform, number>>>
+export type Durations = Readonly<Record<string, PlatformSeconds>>
+export type Scope = 'all' | 'fast' | 'checks' | 'unit' | 'integration'
 export type Inventory = { unit: readonly string[]; integration: readonly string[] }
 export type CheckJob = { platform: Platform; runner: string }
-export type TestJob = CheckJob & { lane: 'unit' | 'web' | 'native'; shard: number; total: number; files: string[]; estimatedSeconds: number }
+export type TestJob = CheckJob & { lane: 'unit' | 'web' | 'native'; shard: number; total: number; files: string[]; estimatedSeconds: number; targetSeconds: number }
 export type TestPlan = { full: boolean; checks: CheckJob[]; unit: TestJob[]; linux: TestJob[]; macos: TestJob[] }
-export type PlanOptions = { inventory: Inventory; scope: Scope; platform: Platform | 'all'; files: readonly string[]; durations?: Readonly<Record<string, number>> }
+
+/**
+ * Seconds of tests, by the recorded durations, that each shard of a lane is packed to. A lane gets as many shards as
+ * its files' total needs at this target, so a slower suite gets more machines rather than longer jobs.
+ */
+export type ShardTargets = { readonly unit: number; readonly linuxWeb: number; readonly macosWeb: number; readonly macosNative: number }
+export type PlanOptions = {
+  inventory: Inventory
+  scope: Scope
+  platform: Platform | 'all'
+  files: readonly string[]
+  durations?: Durations
+  targets?: Partial<ShardTargets>
+}
+
+export const defaultShardTargets: ShardTargets = { unit: 150, linuxWeb: 300, macosWeb: 360, macosNative: 360 }
+
+/** The fast suite runs only the integration files whose recorded duration is under this many seconds, on macOS. */
+export const fastFileLimitSeconds = 60
+
+/** Every platform CI runs on, in the order test-durations.json lists them. */
+export const platformNames: readonly Platform[] = ['macos-arm64', 'linux-x64', 'linux-arm64']
 
 const platforms: readonly CheckJob[] = [
   { platform: 'linux-x64', runner: 'ubuntu-24.04' },
@@ -37,7 +61,7 @@ export const nativeIntegrationFiles: readonly string[] = [
   'tests/integration/reference-flow.test.ts',
 ]
 const nativeFiles: ReadonlySet<string> = new Set(nativeIntegrationFiles)
-const durations: Readonly<Record<string, number>> = recordedDurations
+const durations: Durations = recordedDurations
 
 function ordered(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
@@ -60,13 +84,28 @@ export function assertCoverage(expected: readonly string[], actual: readonly str
   if (expected.length !== actual.length || expected.some((file) => !actualSet.has(file))) throw new Error('The test plan omits or adds a test file.')
 }
 
-function split(files: readonly string[], platform: CheckJob, lane: TestJob['lane'], count: number, weights: Readonly<Record<string, number>>): TestJob[] {
-  const jobs: TestJob[] = Array.from({ length: Math.min(count, files.length) }, (_, index) => ({ ...platform, lane, shard: index + 1, total: Math.min(count, files.length), files: [], estimatedSeconds: 0 }))
-  const seconds = (file: string): number => {
-    // Native files still run on Linux, including their portable controls and explicit platform skips.
-    if (platform.platform !== 'macos-arm64' && lane !== 'unit' && nativeFiles.has(file)) return 1
-    return weights[file] ?? (lane === 'unit' ? 1 : 20)
-  }
+/**
+ * The seconds a file is planned at on a platform: that platform's own recorded time, or else the largest any platform
+ * has recorded, or else the default for a file no passing run has timed yet.
+ */
+function plannedSeconds(file: string, platform: Platform, lane: TestJob['lane'], weights: Durations): number {
+  const recorded = weights[file]
+  const own = recorded?.[platform]
+  if (own !== undefined) return own
+  // Native files run on Linux only for their portable controls and explicit platform skips.
+  if (platform !== 'macos-arm64' && lane !== 'unit' && nativeFiles.has(file)) return 1
+  const elsewhere = recorded === undefined ? [] : Object.values(recorded)
+  return elsewhere.length > 0 ? Math.max(...elsewhere) : lane === 'unit' ? 1 : 20
+}
+
+// The shard count is the lane's total over its target, rounded up, and files go largest first into the emptiest shard.
+// The emptiest shard never holds more than the total over the count, which is at most the target, so the file added
+// to it leaves no shard more than the lane's largest file past its target.
+function split(files: readonly string[], platform: CheckJob, lane: TestJob['lane'], targetSeconds: number, weights: Durations): TestJob[] {
+  const seconds = (file: string): number => plannedSeconds(file, platform.platform, lane, weights)
+  const totalSeconds = files.reduce((sum, file) => sum + seconds(file), 0)
+  const count = Math.min(files.length, Math.max(1, Math.ceil(totalSeconds / targetSeconds)))
+  const jobs: TestJob[] = Array.from({ length: count }, (_, index) => ({ ...platform, lane, shard: index + 1, total: count, files: [], estimatedSeconds: 0, targetSeconds }))
   for (const file of [...files].sort((left, right) => seconds(right) - seconds(left) || ordered(left, right))) {
     const job = jobs.reduce((lowest, next) => next.estimatedSeconds < lowest.estimatedSeconds ? next : lowest)
     job.files.push(file)
@@ -91,19 +130,24 @@ export function makeTestPlan(options: PlanOptions): TestPlan {
   const checks = platforms.filter((job) => platform === 'all' || job.platform === platform)
   if (checks.length === 0) throw new Error('Unknown CI platform.')
   const weights = options.durations ?? durations
-  if (Object.values(weights).some((value) => !Number.isFinite(value) || value <= 0)) throw new Error('Test durations must be positive finite seconds.')
-  const unit = scope === 'all' || scope === 'unit' ? inventory.unit.filter((file) => selected.has(file)) : []
-  const integration = scope === 'all' || scope === 'integration' ? inventory.integration.filter((file) => selected.has(file)) : []
+  if (Object.values(weights).some((entry) => Object.values(entry).some((value) => !Number.isFinite(value) || value <= 0))) throw new Error('Test durations must be positive finite seconds.')
+  const targets: ShardTargets = { ...defaultShardTargets, ...options.targets }
+  if (Object.values(targets).some((value) => !Number.isFinite(value) || value <= 0)) throw new Error('Shard targets must be positive finite seconds.')
+  const fast = scope === 'fast'
+  const unit = scope === 'all' || fast || scope === 'unit' ? inventory.unit.filter((file) => selected.has(file)) : []
+  const integration = scope === 'all' || fast || scope === 'integration' ? inventory.integration.filter((file) => selected.has(file)) : []
   const plan: TestPlan = { full: scope === 'all' && platform === 'all' && files.length === 0, checks: [...checks], unit: [], linux: [], macos: [] }
   for (const job of checks) {
-    plan.unit.push(...split(unit, job, 'unit', 4, weights))
+    plan.unit.push(...split(unit, job, 'unit', targets.unit, weights))
     if (job.platform === 'macos-arm64') {
-      const browserJobs = split(integration.filter((file) => !nativeFiles.has(file)), job, 'web', 4, weights)
-      const nativeJobs = split(integration.filter((file) => nativeFiles.has(file)), job, 'native', 2, weights)
-      assertCoverage(integration, [...browserJobs, ...nativeJobs].flatMap((part) => part.files))
+      // The fast suite finds what is broken before the full matrix runs: the short files, on the slowest platform.
+      const macosFiles = fast ? integration.filter((file) => plannedSeconds(file, 'macos-arm64', 'web', weights) < fastFileLimitSeconds) : integration
+      const browserJobs = split(macosFiles.filter((file) => !nativeFiles.has(file)), job, 'web', targets.macosWeb, weights)
+      const nativeJobs = split(macosFiles.filter((file) => nativeFiles.has(file)), job, 'native', targets.macosNative, weights)
+      assertCoverage(macosFiles, [...browserJobs, ...nativeJobs].flatMap((part) => part.files))
       plan.macos.push(...browserJobs, ...nativeJobs)
-    } else {
-      plan.linux.push(...split(integration, job, 'web', 4, weights))
+    } else if (!fast) {
+      plan.linux.push(...split(integration, job, 'web', targets.linuxWeb, weights))
     }
   }
   return plan
