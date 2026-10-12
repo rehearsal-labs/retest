@@ -36,6 +36,16 @@ export type ProcessSignalReport = {
   readonly identityRefusals: readonly string[]
 }
 
+/**
+ * A whole-table reading taken without holding the thread, which every caller that asks while it runs waits for. It
+ * carries the deadline of the caller that started it and its place in the order readings began.
+ */
+type TableReading = {
+  readonly processes: Promise<readonly OwnedProcessIdentity[]>
+  readonly deadline: Deadline | undefined
+  readonly sequence: number
+}
+
 const host: ProcessOwnershipSystem = {
   read: readProcessTable,
   readProcess: readOneProcess,
@@ -60,7 +70,14 @@ export class OwnedProcessGroup {
   #initialProcessAbsent = false
   // Keep one launch birth after pruning its pid, to distinguish a later group reusing that numeric id.
   #launchIdentity: OwnedProcessIdentity | undefined
-  #revision = 0
+  // Each reading, and each change made from a single process's own reading, takes the next number as it begins.
+  // `#newest` is the number of the newest one applied: a reading that began before it is stale.
+  #sequence = 0
+  #newest = 0
+  // Cleanup runs several waits on one group at once: its end, its output and the stop itself. Each starting a `ps` of
+  // its own, with each applied snapshot discarding the others' as stale, multiplied the readings on a loaded host until
+  // none was confirmed within the cleanup bound. They share the reading in flight instead.
+  #tableReading: TableReading | undefined
 
   constructor(pid: number, parentPid: number = process.pid, system: ProcessOwnershipSystem = host) {
     if (!Number.isSafeInteger(pid) || pid < 2 || !Number.isSafeInteger(parentPid) || parentPid < 1) throw new TypeError('A launched process needs a valid pid and parent pid.')
@@ -77,6 +94,11 @@ export class OwnedProcessGroup {
   /** Failed metadata readings remain visible even when a later reading proves the launch ended. */
   get readProblems(): readonly string[] {
     return [...this.#readProblems]
+  }
+
+  /** Whether the launch has been read once, whatever the reading found or however it failed. */
+  get captured(): boolean {
+    return this.#initialized
   }
 
   #failedRead(error: unknown): string {
@@ -97,7 +119,7 @@ export class OwnedProcessGroup {
       this.#initialized = true
       return [this.#failedRead(error)]
     }
-    return this.#captureFrom(processes)
+    return this.#captureFrom(processes, this.#next())
   }
 
   /**
@@ -105,27 +127,28 @@ export class OwnedProcessGroup {
    * The reading is a moment old when it is applied, which only adds records with their start times; every signal still
    * reads its pid fresh. A reading that fails records nothing and is not kept as a read problem, since it decides
    * nothing and the next `capture` reads again. With a cleanup deadline, failures are retained. A newer applied
-   * snapshot wins over an outstanding background reading. Before the first `capture`, or on a system without
-   * `readAsync`, it is `capture` itself.
+   * snapshot wins over an outstanding background reading. It reads the host as it is when asked: a reading begun
+   * before, which cannot hold a process born since, is never taken, though later callers may share this one. Before
+   * the first `capture`, or on a system without `readAsync`, it is `capture` itself.
    */
   async captureAsync(deadline?: Deadline): Promise<string[]> {
     if (this.#retired) return []
-    const readAsync = this.#system.readAsync
-    if (!this.#initialized || readAsync === undefined) return this.capture(deadline)
-    const revision = this.#revision
-    let processes: readonly OwnedProcessIdentity[]
+    if (!this.#initialized || this.#system.readAsync === undefined) return this.capture(deadline)
+    const asked = this.#sequence
+    let read: { readonly processes: readonly OwnedProcessIdentity[]; readonly reading: TableReading }
     try {
       checkDeadline(deadline)
-      processes = await readAsync.call(this.#system, deadline)
+      read = await this.#sharedTable(deadline, asked)
       checkDeadline(deadline)
     } catch (error) {
       return deadline === undefined ? [] : [this.#failedRead(error)]
     }
-    return this.#retired || revision !== this.#revision ? [] : this.#captureFrom(processes)
+    if (this.#retired || !this.#fresh(read.reading)) return []
+    return this.#captureFrom(read.processes, read.reading.sequence)
   }
 
-  #captureFrom(processes: readonly OwnedProcessIdentity[]): string[] {
-    this.#revision += 1
+  #captureFrom(processes: readonly OwnedProcessIdentity[], sequence: number): string[] {
+    this.#newest = Math.max(this.#newest, sequence)
     const initial = !this.#initialized
     this.#initialized = true
     const root = processes.find((entry) => entry.pid === this.#pid)
@@ -183,7 +206,7 @@ export class OwnedProcessGroup {
       if (current === undefined || !running(current)) {
         this.#records.delete(pid)
         this.#unowned.delete(pid)
-        this.#revision += 1
+        this.#newest = this.#next()
         return undefined
       }
       if (!this.#sameRecorded(record, current)) return undefined
@@ -236,7 +259,7 @@ export class OwnedProcessGroup {
       this.#initialized = true
       return { problems: [this.#failedRead(error)], identityRefusals: [] }
     }
-    const problems = this.#captureFrom(processes)
+    const problems = this.#captureFrom(processes, this.#next())
     const identityRefusals: string[] = []
     for (const record of [...this.#records.values()].reverse()) {
       let current: OwnedProcessIdentity | undefined
@@ -254,20 +277,24 @@ export class OwnedProcessGroup {
     return { problems, identityRefusals }
   }
 
-  /** Ordinary cleanup uses asynchronous readings; each signal still immediately follows its own fresh identity. */
+  /**
+   * Ordinary cleanup uses asynchronous readings; each signal still immediately follows its own fresh identity. The
+   * table it records descendants from is begun after it was asked, so a helper born just before is recorded and ended.
+   */
   async signalReportAsync(signal: NodeJS.Signals, deadline?: Deadline): Promise<ProcessSignalReport> {
     if (this.#retired) return { problems: [], identityRefusals: [] }
-    let processes: readonly OwnedProcessIdentity[]
+    const asked = this.#sequence
+    let read: { readonly processes: readonly OwnedProcessIdentity[]; readonly reading: TableReading } | undefined
     try {
       checkDeadline(deadline)
-      processes = await this.#readFreshTableAsync(deadline)
+      read = await this.#readFreshTableAsync(deadline, asked)
       checkDeadline(deadline)
     } catch (error) {
       this.#initialized = true
       return { problems: [this.#failedRead(error)], identityRefusals: [] }
     }
-    if (this.#retired) return { problems: [], identityRefusals: [] }
-    const problems = this.#captureFrom(processes)
+    if (this.#retired || read === undefined) return { problems: [], identityRefusals: [] }
+    const problems = this.#captureFrom(read.processes, read.reading.sequence)
     const identityRefusals: string[] = []
     for (const record of [...this.#records.values()].reverse()) {
       let current: OwnedProcessIdentity | undefined
@@ -293,7 +320,7 @@ export class OwnedProcessGroup {
     if (current === undefined || !running(current)) {
       this.#records.delete(record.pid)
       this.#unowned.delete(record.pid)
-      this.#revision += 1
+      this.#newest = this.#next()
       return
     }
     if (!this.#sameRecorded(record, current)) {
@@ -335,17 +362,56 @@ export class OwnedProcessGroup {
     return this.#system.read(deadline).find((entry) => entry.pid === pid)
   }
 
-  #readTableAsync(deadline?: Deadline): Promise<readonly OwnedProcessIdentity[]> {
-    return this.#system.readAsync === undefined ? Promise.resolve(this.#system.read(deadline)) : this.#system.readAsync(deadline)
+  async #readTableAsync(deadline?: Deadline): Promise<readonly OwnedProcessIdentity[]> {
+    return this.#system.readAsync === undefined ? this.#system.read(deadline) : this.#system.readAsync(deadline)
   }
 
-  async #readFreshTableAsync(deadline?: Deadline): Promise<readonly OwnedProcessIdentity[]> {
+  #next(): number {
+    this.#sequence += 1
+    return this.#sequence
+  }
+
+  // The reading running now while nothing newer was applied since it began, which a caller waits for rather than start
+  // another `ps`; otherwise a new one under this caller's deadline. A caller that gives `asked`, the number current when
+  // it asked, takes only a reading begun after it.
+  #tableReadingFor(deadline: Deadline | undefined, asked: number | undefined): TableReading {
+    const running = this.#tableReading
+    if (running !== undefined && this.#fresh(running) && (asked === undefined || running.sequence > asked)) return running
+    const reading: TableReading = { processes: this.#readTableAsync(deadline), deadline, sequence: this.#next() }
+    this.#tableReading = reading
+    const finished = (): void => { if (this.#tableReading === reading) this.#tableReading = undefined }
+    reading.processes.then(finished, finished)
+    return reading
+  }
+
+  // One completed table reading. A caller waits for a reading another caller started only within its own deadline. When
+  // that reading fails, as one the other caller's shorter deadline ended does, it moves to a fresh one within its own.
+  async #sharedTable(deadline: Deadline | undefined, asked?: number): Promise<{ readonly processes: readonly OwnedProcessIdentity[]; readonly reading: TableReading }> {
     for (;;) {
       checkDeadline(deadline)
-      const revision = this.#revision
-      const processes = await this.#readTableAsync(deadline)
+      const reading = this.#tableReadingFor(deadline, asked)
+      if (reading.deadline === deadline) return { processes: await reading.processes, reading }
+      try {
+        return { processes: await withinDeadline(reading.processes, deadline), reading }
+      } catch {
+        checkDeadline(deadline)
+      }
+    }
+  }
+
+  // A snapshot may be applied while nothing newer was. Its own callers apply it after one another, which ages nothing.
+  #fresh(reading: TableReading): boolean {
+    return reading.sequence >= this.#newest
+  }
+
+  // Undefined once the group has been shown gone, which no later reading can change.
+  async #readFreshTableAsync(deadline?: Deadline, asked?: number): Promise<{ readonly processes: readonly OwnedProcessIdentity[]; readonly reading: TableReading } | undefined> {
+    for (;;) {
+      if (this.#retired) return undefined
+      const read = await this.#sharedTable(deadline, asked)
       checkDeadline(deadline)
-      if (revision === this.#revision) return processes
+      if (this.#retired) return undefined
+      if (this.#fresh(read.reading)) return read
     }
   }
 
@@ -369,23 +435,29 @@ export class OwnedProcessGroup {
       processes = this.#system.read(deadline)
       checkDeadline(deadline)
     } catch (error) { this.#failedRead(error); return true }
-    return this.#remainsFrom(processes)
+    return this.#remainsFrom(processes, this.#next())
   }
 
-  /** A failed or deadline-limited reading retains the resource, just as the synchronous exit-hook reading does. */
+  /**
+   * A failed or deadline-limited reading retains the resource, just as the synchronous exit-hook reading does. It may
+   * take a reading begun before it was asked: a group with no process left when the table was read has none left to
+   * start another. Callers asking at once share one reading, and once one of them sees the group gone the others stop
+   * reading.
+   */
   async remainsAsync(deadline?: Deadline): Promise<boolean> {
     if (this.#retired) return false
-    let processes: readonly OwnedProcessIdentity[]
+    let read: { readonly processes: readonly OwnedProcessIdentity[]; readonly reading: TableReading } | undefined
     try {
       checkDeadline(deadline)
-      processes = await this.#readFreshTableAsync(deadline)
+      read = await this.#readFreshTableAsync(deadline)
       checkDeadline(deadline)
     } catch (error) { this.#failedRead(error); return true }
-    return this.#retired ? false : this.#remainsFrom(processes)
+    if (this.#retired || read === undefined) return false
+    return this.#remainsFrom(read.processes, read.reading.sequence)
   }
 
-  #remainsFrom(processes: readonly OwnedProcessIdentity[]): boolean {
-    this.#revision += 1
+  #remainsFrom(processes: readonly OwnedProcessIdentity[], sequence: number): boolean {
+    this.#newest = Math.max(this.#newest, sequence)
     // A failed first reading never grants signal authority, and an empty ledger is no proof that the launched
     // child ended. Until its pid and group are absent, that unresolved launch continues to hold its resource.
     if (this.#launchIdentity === undefined && processes.some((entry) => running(entry) && (entry.pid === this.#pid || entry.groupId === this.#pid))) return true
@@ -515,6 +587,29 @@ async function readOneProcessAsync(pid: number, deadline?: Deadline): Promise<Ow
 
 function checkDeadline(deadline: Deadline | undefined): void {
   if (deadline?.signal?.aborted === true || deadline?.reached === true) throw new Error('The ownership reading was not confirmed before its deadline ended or was cancelled.')
+}
+
+// Waits for a reading another caller started until this caller's deadline ends or is cancelled, and leaves the reading
+// running for whoever else waits on it. Its timer holds no process open; the reading itself does while it runs.
+function withinDeadline<T>(work: Promise<T>, deadline: Deadline | undefined): Promise<T> {
+  if (deadline === undefined) return work
+  const { signal } = deadline
+  if (signal?.aborted === true) return Promise.reject(new Error('The ownership reading was not confirmed before its deadline ended or was cancelled.'))
+  return new Promise((resolve, reject) => {
+    let timer: NodeJS.Timeout | undefined
+    const settle = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', ended)
+    }
+    function ended(): void {
+      settle()
+      reject(new Error('The ownership reading was not confirmed before its deadline ended or was cancelled.'))
+    }
+    timer = setTimeout(ended, deadline.waitToEndMs)
+    timer.unref()
+    signal?.addEventListener('abort', ended, { once: true })
+    work.then((value) => { settle(); resolve(value) }, (error: unknown) => { settle(); reject(error) })
+  })
 }
 
 function parseProcessTable(text: string): readonly OwnedProcessIdentity[] {

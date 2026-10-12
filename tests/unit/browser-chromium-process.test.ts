@@ -139,10 +139,11 @@ test('Chromium close forwards one caller deadline through descendant capture and
   try {
     await browser.close(5000)
     await browser.gone
-    const deadline = snapshots[0]
+    assert.deepEqual(snapshots, [], 'the pre-close capture does not hold the thread')
+    const deadline = asynchronousSnapshots[0]
     assert.ok(deadline instanceof Deadline)
     assert.equal(deadline.budgetMs, 5000, 'the pre-close capture uses the caller budget')
-    assert.equal(asynchronousSnapshots[0], deadline, 'process cleanup keeps the existing caller deadline')
+    assert.equal(asynchronousSnapshots[1], deadline, 'process cleanup keeps the existing caller deadline')
     assert.deepEqual(processReadings.map((reading) => reading.pid), [root.pid])
     assert.equal(processReadings[0]?.deadline, deadline, 'the immediate pre-signal identity read keeps that deadline')
     assert.deepEqual(signals, [{ pid: root.pid, signal: 'SIGKILL' }])
@@ -182,10 +183,11 @@ test('Chromium close with a 1 ms protocol budget still verifies and ends its pro
   try {
     await browser.close(1)
     await browser.gone
-    const deadline = snapshots[0]
+    assert.deepEqual(snapshots, [], 'the pre-close capture does not hold the thread')
+    const deadline = asynchronousSnapshots[0]
     assert.ok(deadline instanceof Deadline)
     assert.equal(deadline.budgetMs, 2 * closeGraceMs, 'a tiny protocol budget retains the existing stop ownership allowance')
-    assert.equal(asynchronousSnapshots[0], deadline, 'capture and stop share one ownership deadline')
+    assert.equal(asynchronousSnapshots[1], deadline, 'capture and stop share one ownership deadline')
     assert.deepEqual(processReadings.map((reading) => reading.pid), [root.pid])
     assert.equal(processReadings[0]?.deadline, deadline, 'a fresh pre-signal identity check keeps that deadline')
     assert.deepEqual(signals, [{ pid: root.pid, signal: 'SIGKILL' }])
@@ -213,11 +215,13 @@ test('Chromium close whose ownership allowance expires refuses signals and retai
   let exhausted = false
   const signals: number[] = []
   const ownership = new OwnedProcessGroup(root.pid, root.parentPid, {
-    read: (deadline) => {
-      if (closing && cleanupDeadline === undefined) cleanupDeadline = deadline
-      return running ? [root] : []
-    },
+    read: () => running ? [root] : [],
     readAsync: async (deadline) => {
+      // The pre-close capture is the first reading of the close; the next one under its deadline exhausts the allowance.
+      if (closing && cleanupDeadline === undefined) {
+        cleanupDeadline = deadline
+        return running ? [root] : []
+      }
       if (closing && deadline === cleanupDeadline && !exhausted) {
         assert.ok(deadline instanceof Deadline)
         assert.equal(deadline.budgetMs, 2 * closeGraceMs)

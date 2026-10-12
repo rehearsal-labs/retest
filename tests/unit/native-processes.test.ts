@@ -92,7 +92,7 @@ const withGrandchild = (pidFile: string): string[] => ['-c', `sleep 600 & echo $
 function cancellationIdentities(pid?: number): OwnedProcessIdentity[] {
   const columns = 'pid=,ppid=,pgid=,stat=,lstart=,args='
   const args = pid === undefined ? ['-ww', '-axo', columns] : ['-ww', '-o', columns, '-p', `${pid},${process.pid}`]
-  const text = execFileSync('/bin/ps', args, { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC0' } })
+  const text = execFileSync('/bin/ps', args, { encoding: 'utf8', maxBuffer: processTableOutputLimit, env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC0' } })
   const lines = text.split('\n').filter(line => line.trim() !== '')
   assert.ok(lines.length > 0, 'an empty reading cannot establish absence')
   return lines.map(line => {

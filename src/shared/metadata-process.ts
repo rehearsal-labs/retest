@@ -41,6 +41,8 @@ export const metadataPending: number = 0
 export const metadataRunning: number = 1
 export const metadataComplete: number = 2
 export const metadataAbandoned: number = 3
+/** The worker was ended for another query before it answered this one, which is asked again of a fresh worker. */
+export const metadataWorkerEnded: number = 4
 export const metadataSuccess: number = 0
 export const metadataFailure: number = 1
 
@@ -49,6 +51,9 @@ const workerAllowanceMs = 1000
 // One spare of each production capacity. Only a completed query can return its buffer: an abandoned worker may
 // still be writing, and a concurrent query must hold a different buffer until its completion signal is consumed.
 const spareOutputs = new Map<number, SharedArrayBuffer>()
+// Queries posted and not yet settled. A worker ended for one query fails the others it holds at once, rather than
+// leaving each to wait out its whole bound for an answer that cannot come.
+const inFlight = new Set<Query>()
 let bridge: Worker | undefined
 let workerModule: URL = new URL(import.meta.url.endsWith('.ts') ? './metadata-process-worker.ts' : './metadata-process-worker.js', import.meta.url)
 
@@ -56,15 +61,21 @@ let workerModule: URL = new URL(import.meta.url.endsWith('.ts') ? './metadata-pr
  * A synchronous bridge for fresh ownership readings, including exit hooks. The worker uses an asynchronous child
  * and bounds its output and time itself, so Node's synchronous-child timeout never kills an unrecorded process.
  * A query the worker failed to answer fails alone: that worker is ended and the next query starts a fresh one, so one
- * stall under load never leaves a long-lived host without readings, and so without the right to signal anything.
+ * stall under load never leaves a long-lived host without readings, and so without the right to signal anything. A
+ * query the ended worker still held is asked again of the fresh one, within its own caller's deadline.
  */
 export function readMetadataProcess(options: MetadataProcessOptions): string {
-  const query = submit(options)
+  let query = submit(options)
   try {
     for (;;) {
       checkCaller(query, options.deadline)
       const state = Atomics.load(query.control, 0)
       if (state === metadataComplete) return answer(query)
+      if (state === metadataWorkerEnded) {
+        settle(query)
+        query = submit(options)
+        continue
+      }
       const remaining = query.deadline - performance.now()
       if (remaining <= 0) {
         if (abandoned(query)) throw new Error('The metadata worker did not answer the query.')
@@ -73,7 +84,7 @@ export function readMetadataProcess(options: MetadataProcessOptions): string {
       Atomics.wait(query.control, 0, state, remaining)
     }
   } finally {
-    releaseOutput(query)
+    settle(query)
   }
 }
 
@@ -85,7 +96,7 @@ export function readMetadataProcess(options: MetadataProcessOptions): string {
  * @example const text = await readMetadataProcessAsync({ command: '/bin/ps', args: ['-axo', 'pid='], environment: { PATH: '/usr/bin:/bin' } })
  */
 export async function readMetadataProcessAsync(options: MetadataProcessOptions): Promise<string> {
-  const query = submit(options)
+  let query = submit(options)
   const wake = (): void => { Atomics.notify(query.control, 0) }
   // Neither the unreferenced worker nor an Atomics wait keeps Node alive. Keep this bounded query awaited even when
   // it is the host's last work, including when a failed worker can no longer notify it.
@@ -96,6 +107,11 @@ export async function readMetadataProcessAsync(options: MetadataProcessOptions):
       checkCaller(query, options.deadline)
       const state = Atomics.load(query.control, 0)
       if (state === metadataComplete) return answer(query)
+      if (state === metadataWorkerEnded) {
+        settle(query)
+        query = submit(options)
+        continue
+      }
       const remaining = query.deadline - performance.now()
       if (remaining <= 0) {
         if (abandoned(query)) throw new Error('The metadata worker did not answer the query.')
@@ -105,7 +121,7 @@ export async function readMetadataProcessAsync(options: MetadataProcessOptions):
       if (waiting.async) await waiting.value
     }
   } finally {
-    releaseOutput(query)
+    settle(query)
     clearInterval(pending)
     options.deadline?.signal?.removeEventListener('abort', wake)
   }
@@ -142,7 +158,25 @@ function submit(options: MetadataProcessOptions): Query {
     discardWorker(worker)
     throw new Error('The metadata worker could not receive the query.')
   }
-  return { worker, control, output, deadline: Math.min(performance.now() + timeoutMs + workerAllowanceMs, request.deadline === undefined ? Infinity : request.deadline - performance.timeOrigin) }
+  const query = { worker, control, output, deadline: Math.min(performance.now() + timeoutMs + workerAllowanceMs, request.deadline === undefined ? Infinity : request.deadline - performance.timeOrigin) }
+  inFlight.add(query)
+  return query
+}
+
+function settle(query: Query): void {
+  inFlight.delete(query)
+  releaseOutput(query)
+}
+
+// Fails a query its worker can no longer answer, unless the answer came first, and wakes whoever waits on it.
+function endedWorker(query: Query): void {
+  for (;;) {
+    const latest = Atomics.load(query.control, 0)
+    if (latest === metadataComplete || latest === metadataAbandoned || latest === metadataWorkerEnded) return
+    if (Atomics.compareExchange(query.control, 0, latest, metadataWorkerEnded) !== latest) continue
+    Atomics.notify(query.control, 0)
+    return
+  }
 }
 
 // A reply completing at the deadline may be consumed; an abandoned queued request must never start later. True once the
@@ -205,15 +239,19 @@ function metadataWorker(): Worker {
     throw new Error('The metadata worker could not start.')
   }
   worker.on('error', () => { discardWorker(worker) })
-  worker.on('exit', () => { if (bridge === worker) bridge = undefined })
+  worker.on('exit', () => {
+    if (bridge === worker) bridge = undefined
+    for (const query of inFlight) if (query.worker === worker) endedWorker(query)
+  })
   worker.unref()
   bridge = worker
   return worker
 }
 
-// The query that met the failure reports it; the next one starts a fresh worker.
+// The query that met the failure reports it; the next one starts a fresh worker, and the others it held are asked again.
 function discardWorker(worker: Worker): void {
   if (bridge === worker) bridge = undefined
+  for (const query of inFlight) if (query.worker === worker) endedWorker(query)
   // Ending a failed worker thread closes its pipes; its detached child is never sent a process signal.
   void worker.terminate().catch(() => {})
 }

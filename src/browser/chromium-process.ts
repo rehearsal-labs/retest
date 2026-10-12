@@ -127,7 +127,9 @@ export class ChromiumProcess {
         resolve(this.#exit)
       })
     })
-    this.recordDescendants()
+    // A launch hands over the owner it has just read. Reading it again at once found nothing new, and on a loaded host
+    // that second reading outlasted its second and failed the browser's close however cleanly it later ended.
+    if (!this.#ownership.captured) this.recordDescendants()
     this.#lastResort = () => killAtExit(this.#ownership, profile)
     process.on('exit', this.#lastResort)
   }
@@ -159,11 +161,21 @@ export class ChromiumProcess {
   }
 
   /**
-   * Reads descendants while their launched parent is still present: when the connection drops and before asking the
-   * parent to quit. A helper recorded early is still owned after its parent dies.
+   * Reads descendants while their launched parent is still present, holding the thread, as a process made from a
+   * child no owner has read yet does. A helper recorded early is still owned after its parent dies.
    */
   recordDescendants(deadline: Deadline = new Deadline(closeGraceMs)): void {
     this.#keep(this.#ownership.capture(deadline))
+  }
+
+  /**
+   * `recordDescendants` from a reading begun now that does not hold the thread, within `deadline`, as a close reads
+   * before it asks the browser to quit. A reading that fails is kept, as one that holds the thread is.
+   *
+   * @example await chromium.recordDescendantsNow(new Deadline(5000))
+   */
+  async recordDescendantsNow(deadline: Deadline): Promise<void> {
+    this.#keep(await this.#ownership.captureAsync(deadline))
   }
 
   /**
@@ -432,7 +444,8 @@ async function openLog(logFile: string) {
   }
 }
 
-// A fresh reading is taken before the deadline is asked, so a group that ended while the host was busy reads as ended.
+// Each look reads the group, or waits for a reading already under way, before the deadline is asked, so a group that
+// ended while the host was busy reads as ended.
 async function groupEnds(ownership: OwnedProcessGroup, grace: Deadline, { ref = true, deadline = grace }: { ref?: boolean; deadline?: Deadline } = {}): Promise<boolean> {
   while (await ownership.remainsAsync(deadline)) {
     if (grace.expired || deadline.reached || deadline.signal?.aborted === true) return false
