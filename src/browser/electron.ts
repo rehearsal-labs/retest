@@ -1,11 +1,14 @@
 import type { FrameSource } from '../media/capture.ts'
 import type { RecordIdentity } from '../protocol/identity.ts'
-import type { SessionIdentity } from './contract.ts'
+import type { RequestResult, SessionIdentity } from './contract.ts'
+import type { DialogArming, DialogReply, UnwaitedDialog } from './dialogs.ts'
+import type { PopupArming } from './popups.ts'
 import type { CdpSession } from './cdp/session.ts'
 import type { PipeStreams, Transport } from './cdp/transport.ts'
 import type {
   BrowserCommand,
   DispatchedCommand,
+  FilesCapability,
   NewPageOptions,
   OwnedBrowser,
   OutputRedactor,
@@ -41,9 +44,12 @@ import { readProtocol, request, sendOptions } from './cdp-results.ts'
 import { ChromiumProcess } from './chromium-process.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { worldName } from './isolated-world.ts'
+import { ElectronWindowWatch } from './electron-window-watch.ts'
 import { describeDiagnostic, handshake, launchOutput, logLength, logWriter } from './launch.ts'
 import { Listeners } from './listeners.ts'
+import { browserCommandLocators, framesUnreached } from './frames.ts'
 import { ChromiumPage } from './page.ts'
+import { routesRefused, type RouteRemoval } from './routes.ts'
 import { changeScript } from './page-scripts.ts'
 import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
 import { explainStartFailure } from './start-failure.ts'
@@ -191,8 +197,10 @@ export async function launchElectron(
     // Every command Retest sends names its own timeout; the launch budget bounds any that would not.
     connection = new CdpConnection(transport(child.pipe), { timeoutMs, onDiagnostic: (diagnostic) => log(describeDiagnostic(diagnostic)) })
     const windows = new AppWindows(connection, startedAt, log)
-    const version = await handshake(connection, deadline)
-    // Checked before any window is reached, so a browser given in place of Electron is refused at once.
+    // The watch's request goes first, so the first window's dialogs are heard from its first document on.
+    const watch = new ElectronWindowWatch(connection)
+    const [, version] = await Promise.all([watch.start(deadline), handshake(connection, deadline)])
+    // Checked before any window is set up as a page, so a browser given in place of Electron is refused at once.
     const electron = await readElectronVersion(executable, version.userAgent)
     if (electron === undefined) throw new NotElectronError(executable)
     // The windows open before discovery begins are told in the browser's own order, so they are marked as such.
@@ -200,10 +208,13 @@ export async function launchElectron(
     windows.alreadyOpen(targetInfos.map((target) => target.targetId))
     await request(connection, 'Target.setDiscoverTargets', { discover: true }, s.object({}), sendOptions(deadline))
     const first = await windows.first(deadline)
-    const session = await connection.attach(first.targetId, sendOptions(deadline))
+    const attached = await watch.first(deadline)
+    if (attached === undefined) throw new NoWindowError(deadline.budgetMs)
+    const { session } = attached
     const onListenerError = (error: unknown) => log(`a listener failed: ${errorMessage(error)}`)
-    const pageOptions = { connection, session, browserContextId: first.browserContextId, onListenerError }
-    const page = await ChromiumPage.open({ ...pageOptions, baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined }, deadline)
+    const pageOptions = { connection, session, browserContextId: attached.browserContextId === '' ? first.browserContextId : attached.browserContextId, onListenerError }
+    const answeredDialogs = () => watch.handOver()
+    const page = await ChromiumPage.open({ ...pageOptions, baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, answeredDialogs }, deadline)
     await observeChanges(session, deadline, (note) => {
       windows.note(note)
       log(note)
@@ -459,12 +470,14 @@ class ElectronApp implements ElectronRuntime {
 
   async #close(timeoutMs: number): Promise<void> {
     this.#closeRequested = true
-    this.#process.recordDescendants()
+    const graceMs = Math.max(0, Math.min(closeGraceMs, timeoutMs - closeGraceMs))
+    // The app's helpers are read before its pipe closes, without holding the thread, within the allowance `stop` has.
+    const ownershipDeadline = new Deadline(graceMs + 2 * closeGraceMs)
+    await this.#process.recordDescendantsNow(ownershipDeadline)
     const problems: string[] = []
     try { this.#connection.close() }
     catch (error) { problems.push(`Could not close the Electron app's debugging pipe: ${errorMessage(error)}`) }
-    const graceMs = Math.max(0, Math.min(closeGraceMs, timeoutMs - closeGraceMs))
-    problems.push(...await this.#process.stop(graceMs), ...this.#cleanupProblems)
+    problems.push(...await this.#process.stop(graceMs, ownershipDeadline), ...this.#cleanupProblems)
     const { app, target, launch, windowsFile } = this.#named
     const notes = this.#windows.notes
     const record: WindowsRecord = { app, target, launch, pid: this.pid, windows: this.#windows.records, ...(notes.length === 0 ? {} : { notes }) }
@@ -528,6 +541,11 @@ export class ElectronWindowSession implements WebSession {
     return this.#window.url
   }
 
+  /** The window's file pickers, caught as a browser's page catches them. The app saves its downloads its own way. */
+  get files(): FilesCapability | undefined {
+    return this.#window.files
+  }
+
   async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult> {
     return (await this.dispatch(command, timeoutMs, signal, commandToken)).result
   }
@@ -543,6 +561,9 @@ export class ElectronWindowSession implements WebSession {
 
   async dispatch(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand> {
     if (command.kind === 'goto') return { result: { ok: false, failure: this.#noAddress() }, input: 'not_sent' }
+    // No test has looked inside a frame of an Electron window yet, so a frame there is refused by name.
+    const unreached = framesUnreached(browserCommandLocators(command), `the window of the Electron app ${this.#app}`)
+    if (unreached !== undefined) return { result: { ok: false, failure: unreached }, input: 'not_sent' }
     const answer = await this.#window.dispatch(command, timeoutMs, signal, commandToken)
     if (answer.result.ok || !this.#firstClosed()) return answer
     const { failure } = answer.result
@@ -564,6 +585,33 @@ export class ElectronWindowSession implements WebSession {
 
   onNavigation(listener: (navigation: PageNavigation) => void): () => void {
     return this.#window.onNavigation(listener)
+  }
+
+  // A dialog in the app's first window is handed over and answered as on a browser's page.
+  armDialog(timeoutMs: number, signal?: AbortSignal): DialogArming {
+    return this.#window.armDialog?.(timeoutMs, signal) ?? { ok: false, failure: { class: 'unsupported', message: `The window of the Electron app ${this.#app} cannot hand its dialogs to a test.` } }
+  }
+
+  answerDialog(id: string, reply: DialogReply, timeoutMs: number): Promise<RequestResult> {
+    return this.#window.answerDialog?.(id, reply, timeoutMs) ?? Promise.resolve({ ok: false, failure: { class: 'unsupported', message: `The window of the Electron app ${this.#app} cannot answer a dialog for a test.` } })
+  }
+
+  onUnwaitedDialog(listener: (dialog: UnwaitedDialog) => void): () => void {
+    return this.#window.onUnwaitedDialog?.(listener) ?? (() => undefined)
+  }
+
+  // A test reaches only the app's first window, so a window the app opens is out of its reach.
+  async armPopup(): Promise<PopupArming> {
+    return { ok: false, failure: { class: 'unsupported', message: `A test reaches only the first window of the Electron app ${this.#app}, so page.popup() is for a browser's page.` } }
+  }
+
+  // The app's window holds no route: Retest has not checked how an app's own requests meet the window's Fetch domain.
+  async addRoute(): Promise<RequestResult> {
+    return { ok: false, failure: routesRefused('in an Electron app') }
+  }
+
+  async removeRoute(): Promise<RouteRemoval> {
+    return { ok: false, failure: routesRefused('in an Electron app') }
   }
 
   // The app opens its window as it starts, before any test asks for it, while a browser's page is still blank by then. A
