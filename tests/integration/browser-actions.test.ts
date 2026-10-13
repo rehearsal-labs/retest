@@ -528,7 +528,9 @@ test('page scripts cannot replace the functions Retest uses to find and check el
   await observeUntil(page, 'status', (seen) => seen.text === 'clicked')
 })
 
-test('a click that opens an alert fails at once as unsupported, and later commands fail at once while it is open', async (t) => {
+// Chrome's page answers an alert nothing waited for at once, so the click fails naming it and the page goes on; an engine
+// that does not hand dialogs to a test declares that the alert holds its page instead.
+test('a click that opens an alert nothing waited for fails at once, and the next command and a screenshot do not wait on it', async (t) => {
   const { page } = await customPage(
     t,
     `<button data-testid="warn">Warn</button><script>
@@ -536,17 +538,24 @@ test('a click that opens an alert fails at once as unsupported, and later comman
     </script>`,
   )
   const { value: result, ms: clickMs } = await timed(click(page, 'warn', 5000))
-  assert.ok(clickMs < 1500, `the click waiting on the dialog should fail at once, took ${clickMs} ms of its 5000`)
+  assert.ok(clickMs < 1500, `the click that opened the dialog should fail at once, took ${clickMs} ms of its 5000`)
   const clicked = failureOf(result)
-  assert.deepEqual([clicked.class, clicked.details], ['unsupported', { dialog: 'alert', inputSent: true }])
-  assert.equal(
-    clicked.message,
-    "The page opened an alert dialog while Retest tried to click getByTestId('warn'). Retest does not answer dialogs yet, and the dialog blocks the page.",
-  )
   const { value, ms } = await timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'warn' } }, 1000))
-  assert.deepEqual(failureOf(value).details, { dialog: 'alert', inputSent: false })
-  assert.ok(ms < 500, `a blocked page should fail at once, took ${ms} ms`)
-  await assert.rejects(page.screenshot(1000), (error) => error instanceof BrowserError && error.failure.class === 'unsupported')
+  assert.ok(ms < 500, `the next command should not wait on the dialog, took ${ms} ms`)
+  const screenshot = await page.screenshot(1000).then(
+    () => 'taken',
+    (error: unknown) => (error instanceof BrowserError ? error.failure.class : 'thrown'),
+  )
+  const observed = { click: { class: clicked.class, message: clicked.message, details: clicked.details ?? null }, next: value.ok ? 'answered' : (failureOf(value).details ?? null), screenshot }
+  engineCase.assertOutcome(t, observed, {
+    click: {
+      class: 'not_actionable',
+      message: "The page opened an alert dialog while Retest tried to click getByTestId('warn'). Retest dismissed it. To answer it, wrap the action in page.dialog().",
+      details: { dialog: 'alert', dialogMessage: 'Careful', answered: 'dismissed', command: "click getByTestId('warn')", inputSent: true },
+    },
+    next: 'answered',
+    screenshot: 'taken',
+  })
 })
 
 async function actionsPage(t: TestContext) {

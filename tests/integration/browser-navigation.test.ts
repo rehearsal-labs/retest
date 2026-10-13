@@ -180,15 +180,20 @@ test('addresses other than http and https are refused before anything loads', as
   }
 })
 
-test('a page that opens a dialog while loading fails at once as unsupported rather than as slow', async (t) => {
+// Chrome's page answers a dialog nothing waited for at once, so the goto fails naming it; an engine that does not hand
+// dialogs to a test declares that the dialog holds its page instead. Either way the goto ends at once, not as slow.
+test('a page that opens a dialog while loading fails its goto at once, naming the dialog, rather than as slow', async (t) => {
   const site = await servePages(t, { '/': '<!doctype html><p>Before</p><script>confirm("Leave?")</script><p>After</p>' })
   const page = await openPage(t, browser(), site.url)
   const { value, ms } = await timed(goto(page, '/', 5000))
   assert.ok(ms < 1500, `waiting for a load the dialog holds should end at once, took ${ms} ms of 5000`)
   const failure = failureOf(value)
-  assert.equal(failure.class, 'unsupported')
-  assert.deepEqual(failure.details, { dialog: 'confirm', inputSent: true })
-  assert.match(failure.message, /^The page opened a confirm dialog while Retest tried to open http:\/\/127\.0\.0\.1:\d+\/\. /)
+  const observed = { class: failure.class, message: failure.message, details: failure.details ?? null }
+  engineCase.assertOutcome(t, observed, {
+    class: 'not_actionable',
+    message: `The page opened a confirm dialog while Retest tried to open ${site.url}/. Retest dismissed it. To answer it, wrap the action in page.dialog().`,
+    details: { dialog: 'confirm', dialogMessage: 'Leave?', answered: 'dismissed', command: `open ${site.url}/`, inputSent: true },
+  }, { origin: site.url })
 })
 
 test('a screenshot is a PNG of the page', async (t) => {
