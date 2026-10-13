@@ -19,6 +19,7 @@ import { RunFolderReadError } from './rebuild-result.ts'
 //   artifacts/<attempt>/<app>/thumbnail-screenshot-<purpose>-<n>.png|jpg, thumbnail-recording-<n>.png|jpg
 //   artifacts/<attempt>/<app>/recording-<n>.mp4|webm   (recording-<n>.mp4.partial while the media process writes it)
 //   artifacts/<attempt>/<app>/frames-<n>/<index>.png|jpg
+//   artifacts/<attempt>/<app>/downloads/<name>   (a download, by the name the page suggested, made safe)
 //   diagnostics/<attempt>.<app>.jsonl
 //   report.html
 
@@ -47,6 +48,7 @@ export type ArtifactSpec =
   | { readonly kind: 'recording'; readonly identity: RecordIdentity; readonly sequence: number; readonly container: RecordingContainer }
   | { readonly kind: 'frames'; readonly identity: RecordIdentity; readonly sequence: number; readonly index: number; readonly format: ImageFormat }
   | { readonly kind: 'diagnostics'; readonly identity: RecordIdentity }
+  | { readonly kind: 'download'; readonly identity: RecordIdentity; readonly name: string }
   | { readonly kind: 'report' }
 
 /** The folder every session's media goes in, one folder for each attempt and one for each app inside it. */
@@ -88,7 +90,40 @@ export function artifactPath(spec: ArtifactSpec): string {
       return `${folder}/recording-${sequence(spec.sequence)}.${spec.container}`
     case 'frames':
       return `${folder}/frames-${sequence(spec.sequence)}/${frameIndex(spec.index)}.${extension(spec.format)}`
+    case 'download':
+      return `${folder}/downloads/${downloadName(spec.name)}`
   }
+}
+
+/**
+ * The folder a session's downloads are saved in, relative to the run folder: the browser writes each one there by its
+ * own id, and Retest renames it to the name `downloadFileName` makes of the name the page suggested.
+ *
+ * @example downloadsFolder(identity) // 'artifacts/k3v9q0x2mb/web-<hash>/downloads'
+ */
+export function downloadsFolder(identity: RecordIdentity): string {
+  const owner = ownerSegments(identity)
+  return `${artifactsFolder}/${owner.attempt}/${owner.app}/downloads`
+}
+
+const downloadNameLength = 120
+
+/**
+ * A name a reference may hold, made of the name a page suggested for a download: every run of other characters than
+ * letters, digits, `.`, `_` and `-` becomes one `-`, a leading `.` or `-` goes, and a long name keeps its end, where
+ * its extension is. A name with nothing left is `download`.
+ *
+ * @example downloadFileName('Tasks (May).csv') // 'Tasks-May-.csv'
+ */
+export function downloadFileName(suggested: string): string {
+  const safe = suggested.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.-]+/, '')
+  const cut = safe.length <= downloadNameLength ? safe : safe.slice(safe.length - downloadNameLength).replace(/^[.-]+/, '')
+  return cut === '' ? 'download' : cut
+}
+
+function downloadName(name: string): string {
+  if (name !== downloadFileName(name)) throw new RangeError(`A download's file name is one downloadFileName gives, received ${JSON.stringify(name)}.`)
+  return name
 }
 
 /**
@@ -513,7 +548,8 @@ export function readArtifactFile(runFolder: string, reference: string, limits: R
  */
 export type ArtifactReference = {
   readonly path: string
-  readonly kind: ArtifactKind
+  /** What the file is; `download` is a file a page downloaded, which retention never removes. */
+  readonly kind: ArtifactKind | 'download'
   readonly namedBy: string
   readonly testId?: string
   readonly attemptId?: string
@@ -532,7 +568,8 @@ export function recordingArtifactReferences(recording: RecordingRecord, namedBy:
 
 /**
  * The artifacts the events of a run name: failure screenshots (`evidence.captured`), diagnostics artifacts
- * (`diagnostics.finished`) and the screenshots AI checks sent their judges (`evaluation.finished`). Event types this
+ * (`diagnostics.finished`), the screenshots AI checks sent their judges (`evaluation.finished`) and the pictures a failed
+ * screenshot comparison left (`assertion.failed` with `attachments`). Event types this
  * reader does not know name nothing here, so an event type added later must be added to this function. Recordings name
  * videos and partial files; retention removes references unless a later removal failure preserves the file.
  *
@@ -552,6 +589,11 @@ export function eventArtifactReferences(events: readonly RetestEvent[]): Artifac
       references.push({ path: event.diagnostics.path, kind: 'diagnostics', namedBy: event.type, ...owner({ testId: event.testId, attemptId: event.attemptId, app: event.session, sessionId: event.sessionId }) })
     } else if (event.type === 'recording.finished') {
       references.push(...recordingArtifactReferences(event.recording, event.type))
+    } else if (event.type === 'download' && event.path !== undefined) {
+      references.push({ path: event.path, kind: 'download', namedBy: event.type, ...owner({ testId: event.testId, attemptId: event.attemptId, app: event.session, sessionId: event.sessionId }) })
+    } else if (event.type === 'assertion.failed' && event.attachments !== undefined) {
+      // A failed screenshot comparison names the pictures it left: the baseline, the actual picture and their difference.
+      for (const attachment of event.attachments) references.push({ path: attachment.path, kind: 'screenshot', namedBy: event.type, ...owner({ testId: event.testId, attemptId: event.attemptId, app: event.session, sessionId: event.sessionId }) })
     } else if (event.type === 'evaluation.finished') {
       for (const record of event.evaluation.evidence) {
         references.push(...evaluationArtifactReferences(record, event.type, record.testId ?? event.testId))
