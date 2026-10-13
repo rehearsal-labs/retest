@@ -10,6 +10,7 @@ import type {
 } from '../../src/browser/contract.ts'
 import type { ObserveAfter, CommandResult, Observation } from '../../src/protocol/commands.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
+import type { LayoutLook } from '../../src/protocol/layout.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { OptionChoiceRecord } from '../../src/protocol/option-choices.ts'
 import type { NavigationCause, PageFacts } from '../../src/protocol/page-facts.ts'
@@ -78,6 +79,8 @@ export type FakeOptions = {
    * answers, as it answers after `load`. Absent, every title settles at once.
    */
   titleDelayMs?: number
+  /** What a layout look measures on the page, from the command that asks; absent, a layout look is refused. */
+  layout?: (command: Extract<BrowserCommand, { kind: 'observeLayout' }>) => LayoutLook
 }
 
 type Element = { text: string; visible: boolean }
@@ -256,10 +259,18 @@ export class FakePage implements OwnedPage {
         const base = this.baseUrl === undefined ? {} : { baseUrl: this.baseUrl }
         return { ok: true, kind: 'observePage', observation, changes: this.changes, ...base, ...this.#facts() }
       }
+      case 'observeLayout': {
+        if (options.layout === undefined) return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${describeCommand(command)}.` } }
+        return { ok: true, kind: 'observeLayout', observation: options.layout(command), changes: this.changes, ...this.#facts() }
+      }
       case 'reload':
       case 'goBack':
       case 'goForward':
       case 'hover':
+      case 'close':
+      case 'setInputFiles':
+      case 'setChooserFiles':
+      case 'dragTo':
         return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${describeCommand(command)}.` } }
     }
     const testId = command.locator.by === 'testId' ? command.locator.value : undefined

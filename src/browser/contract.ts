@@ -11,6 +11,11 @@ import type { TextQuery } from '../protocol/host-check.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { NavigationCause, NavigationDocument, PageFacts } from '../protocol/page-facts.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
+import type { PictureRequest, TakenPicture } from './screenshot.ts'
+import type { DialogArming, DialogReply, UnwaitedDialog } from './dialogs.ts'
+import type { PopupArming, PopupWaitOptions } from './popups.ts'
+import type { RouteRefusal, RouteRemoval } from './routes.ts'
+import type { RouteAnswerRecord, RoutePattern } from '../protocol/routes.ts'
 
 export type { Emulation } from '../protocol/emulation.ts'
 export type { TextQuery } from '../protocol/host-check.ts'
@@ -136,9 +141,10 @@ export type ProxyOptions = { server: string; bypass: readonly string[] }
  * anything; without its `userAgent` the page keeps the browser's own. `storageState` is restored before the
  * test's first command: its cookies in the new context, and each origin's `localStorage` before that origin's
  * own scripts run. `proxy` is a setting of the page's new browser context, so every request of the page goes
- * through it.
+ * through it. `downloads` is the absolute folder the context saves the page's downloads in; without it, the browser
+ * refuses every download.
  */
-export type NewPageOptions = { baseUrl?: string; emulation?: Emulation; storageState?: StorageState; proxy?: ProxyOptions }
+export type NewPageOptions = { baseUrl?: string; emulation?: Emulation; storageState?: StorageState; proxy?: ProxyOptions; downloads?: string }
 
 /**
  * What `readPage` saw. `url` is the main frame's origin and path as of its latest commit, and `title` the
@@ -180,10 +186,29 @@ export type PageNavigation = {
 export type ResolvedFill = { kind: 'fill'; locator: LocatorRecipe; value: string; secret?: string; allowedOrigins?: readonly string[] }
 
 /**
- * A page command as the page runs it: every `fill` carries the text to type, and every other command, `select`,
- * `check`, `uncheck` and `scroll` among them, is as the test sent it.
+ * A `goto` whose target is an address. The parent reads a link from an inbox, and checks its origin may open it,
+ * before the page sees the command, so the page never holds a link reference.
  */
-export type BrowserCommand = Exclude<PageCommand, { kind: 'fill' | 'swipe' | 'nativeKeyboard' | 'nativeAlert' }> | ResolvedFill
+export type ResolvedGoto = { kind: 'goto'; url: string }
+
+/**
+ * A `setInputFiles`, or a file picker's `setFiles`, whose files are absolute paths on this machine: the parent checks
+ * each path the test gave, and writes a file given by content to a folder of its own, before the page sees the
+ * command. `mimeTypes` holds, by each file's place, the type the test named for a file by content, or null; the page
+ * checks it against the type the browser gives the file. `chooser` is the id the page gave a picker it caught.
+ */
+export type ResolvedInputFiles = Extract<PageCommand, { kind: 'setInputFiles' | 'setChooserFiles' }> & { paths: readonly string[]; mimeTypes: readonly (string | null)[] }
+
+/**
+ * A page command as the page runs it: every `fill` carries the text to type, every `goto` an address and every
+ * command that gives an input files their paths, and every other command, `select`, `check`, `uncheck` and `scroll`
+ * among them, is as the test sent it.
+ */
+export type BrowserCommand =
+  | Exclude<PageCommand, { kind: 'fill' | 'goto' | 'swipe' | 'nativeKeyboard' | 'nativeAlert' | 'setInputFiles' | 'setChooserFiles' | 'observeScreenshot' }>
+  | ResolvedFill
+  | ResolvedGoto
+  | ResolvedInputFiles
 
 /**
  * How long `close` waits for a browser's process group to go once it has been killed. A killed process takes a
@@ -310,6 +335,12 @@ export interface OwnedPage extends NavigationCapability, StorageStateCapability 
    */
   execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult>
   screenshot(timeoutMs: number): Promise<Uint8Array>
+  /**
+   * A picture for a screenshot comparison, a capability of Chromium pages: the viewport, or the one shown element
+   * `request.locator` finds, clipped to its box, with the device scale factor it was taken at, within `timeoutMs`. Sends
+   * no input. Absent on a driver that has only `screenshot`, whose comparisons take the viewport alone.
+   */
+  takePicture?(request: PictureRequest, timeoutMs: number, signal?: AbortSignal): Promise<TakenPicture>
   /** Disposes the page's browser context. */
   dispose(timeoutMs: number): Promise<void>
   /**
@@ -320,6 +351,76 @@ export interface OwnedPage extends NavigationCapability, StorageStateCapability 
    * on a driver that collects nothing, whose results then say so.
    */
   collectDiagnostics?(sink: DiagnosticSink, timeoutMs: number): Promise<DiagnosticCollection>
+  /**
+   * Dialogs, a capability of web pages: arms the page, at once, for its next JavaScript dialog, which it then hands to
+   * the test instead of answering it. The wait lasts `timeoutMs`, and `signal` stops it. A page that cannot hand a dialog
+   * over answers `unsupported`, naming its engine; a page without the method has no dialogs to give.
+   */
+  armDialog?(timeoutMs: number, signal?: AbortSignal): DialogArming
+  /** Answers, within `timeoutMs`, a dialog the page handed to the test: accepted, with a prompt's text, or dismissed. */
+  answerDialog?(id: string, reply: DialogReply, timeoutMs: number): Promise<RequestResult>
+  /** Hears each dialog the page answered itself because nothing waited for it. Returns a function that stops listening. */
+  onUnwaitedDialog?(listener: (dialog: UnwaitedDialog) => void): () => void
+  /**
+   * Popups, a capability of Chromium pages: arms the page for the next page it opens, which it hands to the test as a
+   * page of its own, held before its first document. A page that cannot answers `unsupported`, naming its engine.
+   */
+  armPopup?(options: PopupWaitOptions): Promise<PopupArming>
+  /** File pickers and downloads, a capability of Chromium pages. Absent on a driver that has neither. */
+  readonly files?: FilesCapability | undefined
+  /**
+   * Mocked responses, a capability of Chromium pages: adds a route, which answers every request of the page whose
+   * address `pattern` matches with `answer` from then on, before every route added earlier, within `timeoutMs`. A popup
+   * shares the routes of the page that opened it. A page that cannot answers `unsupported`, naming where it runs.
+   */
+  addRoute?(pattern: RoutePattern, answer: RouteAnswerRecord, timeoutMs: number): Promise<RequestResult>
+  /** Removes every route added with `pattern`, within `timeoutMs`, and says how many went. */
+  removeRoute?(pattern: RoutePattern, timeoutMs: number): Promise<RouteRemoval>
+  /** Tells of each request a route matched whose answer Chrome refused, which the page failed in its place. */
+  onRouteRefused?(listener: (refusal: RouteRefusal) => void): () => void
+}
+
+/** A file picker a page caught for a test: the id the page gave it, and whether its input takes several files. */
+export type CaughtChooser = { readonly id: string; readonly multiple: boolean }
+
+/**
+ * A page armed for the next file picker it opens. `opened` settles once one opens. `release` lets go of the arm when
+ * no picker is wanted any more; a picker that opens after it is one nobody expected.
+ */
+export type ChooserArm = { readonly opened: Promise<CaughtChooser>; release(): void }
+
+/** How a download ended, as the browser said: the file it saved, or that it stopped, with how many bytes had arrived of how many. */
+export type DownloadEnd =
+  | { readonly state: 'completed'; readonly filePath: string; readonly receivedBytes: number; readonly totalBytes: number }
+  | { readonly state: 'canceled'; readonly receivedBytes: number; readonly totalBytes: number }
+
+/** Where a download began, when not in the page itself or a frame inside it: a page it opened, or another page. */
+export type DownloadStart = 'popup' | 'other'
+
+/**
+ * A download a page began, as the browser told it: its id, the address it comes from, the name the browser suggests
+ * for it, where it began when that was not the page itself or a frame inside it, and its end once the browser says it
+ * completed or stopped. `progress` is how many bytes had arrived of how many when the browser last said; a total of 0
+ * means the server gave none.
+ */
+export type PageDownload = {
+  readonly guid: string
+  readonly url: string
+  readonly suggestedFilename: string
+  readonly startedIn?: DownloadStart
+  readonly ended: Promise<DownloadEnd>
+  progress(): { readonly receivedBytes: number; readonly totalBytes: number }
+}
+
+/**
+ * File pickers and downloads on a page. Every file picker the page opens is caught, and never shown: the one a test
+ * armed for goes to it, and any other fails the action that opened it and is cancelled, as a person closing it would.
+ * `onDownload` tells of every download its browser context makes, from the moment it is added, and returns a function
+ * that removes the listener; it is absent on a page whose browser context refuses downloads.
+ */
+export interface FilesCapability {
+  armFileChooser(): ChooserArm
+  onDownload?(listener: (download: PageDownload) => void): () => void
 }
 
 /**

@@ -16,7 +16,11 @@ const empty = s.object({})
 export async function applyEmulation(session: CdpSession, emulation: Emulation, deadline: Deadline): Promise<void> {
   const { viewport, deviceScaleFactor, isMobile, touch, userAgent } = emulation
   const metrics = { width: viewport.width, height: viewport.height, deviceScaleFactor, mobile: isMobile }
-  await request(session, 'Emulation.setDeviceMetricsOverride', metrics, empty, sendOptions(deadline))
-  if (touch) await request(session, 'Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 }, empty, sendOptions(deadline))
-  if (userAgent !== undefined) await request(session, 'Emulation.setUserAgentOverride', { userAgent }, empty, sendOptions(deadline))
+  // Each command goes out at once, in order, which the session keeps: a page held before its first document in a new
+  // renderer, as a popup is, answers none of them until it runs, so none may wait for the one before it.
+  await Promise.all([
+    request(session, 'Emulation.setDeviceMetricsOverride', metrics, empty, sendOptions(deadline)),
+    ...(touch ? [request(session, 'Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 }, empty, sendOptions(deadline))] : []),
+    ...(userAgent === undefined ? [] : [request(session, 'Emulation.setUserAgentOverride', { userAgent }, empty, sendOptions(deadline))]),
+  ])
 }

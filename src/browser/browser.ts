@@ -11,8 +11,10 @@ import { BrowserError } from './browser-error.ts'
 import { CdpClosedError, CdpDisconnectedError } from './cdp/errors.ts'
 import { request, sendOptions } from './cdp-results.ts'
 import { closeGraceMs, webRuntimeIdentity } from './contract.ts'
+import { BrowserDownloads } from './downloads.ts'
 import { Listeners } from './listeners.ts'
 import { ChromiumPage } from './page.ts'
+import { PopupWatch } from './popups.ts'
 import { restoreState } from './storage-state.ts'
 
 /** What `Browser.getVersion` said, split into a product name and its version, with the source revision when it gave one. */
@@ -45,6 +47,8 @@ export class ChromiumBrowser implements WebRuntime {
   readonly #connection: CdpConnection
   readonly #onListenerError: (error: unknown) => void
   readonly #disconnects: Listeners<string>
+  readonly #popups: PopupWatch
+  readonly #downloads: BrowserDownloads
   readonly #cleanupProblems: string[] = []
   #disconnectReason: string | undefined
   #closeRequested = false
@@ -63,9 +67,12 @@ export class ChromiumBrowser implements WebRuntime {
     this.#connection = options.connection
     this.#onListenerError = options.onListenerError
     this.#disconnects = new Listeners(options.onListenerError)
+    this.#popups = new PopupWatch(options.connection)
+    this.#downloads = new BrowserDownloads(options.connection, options.onListenerError)
     this.#connection.onDisconnect((reason) => {
       // A pipe that closes is often a browser beginning to exit; its helpers are recorded while it may still be their parent.
-      this.#process.recordDescendants()
+      // The reading does not hold the thread: on a loaded host one held to a second failed the close of a browser that ended cleanly.
+      this.#process.recordDescendantsSoon()
       this.#disconnected(reason)
     })
     if (this.#connection.closeReason !== undefined) this.#disconnected(this.#connection.closeReason)
@@ -100,8 +107,9 @@ export class ChromiumBrowser implements WebRuntime {
     const deadline = new Deadline(timeoutMs)
     const { browserContextId } = await this.#request('Target.createBrowserContext', browserContextOptions(options.proxy), contextSchema, deadline)
     try {
-      // A download would otherwise land in the person's own Downloads folder, whatever the profile.
-      await this.#request('Browser.setDownloadBehavior', { behavior: 'deny', browserContextId }, s.object({}), deadline)
+      // A download goes to the folder the runner gave the page, and otherwise is refused: it would land in the person's
+      // own Downloads folder, whatever the profile.
+      await this.#downloads.configure(browserContextId, options.downloads, deadline)
       const { storageState } = options
       const context = { connection: this.#connection, browserContextId }
       const restoredOrigins = storageState === undefined ? [] : await restoreState(context, storageState, deadline)
@@ -117,6 +125,8 @@ export class ChromiumBrowser implements WebRuntime {
         // A failed navigation names the proxy, so the page holds its address without a user name or password.
         proxyServer: options.proxy === undefined ? undefined : withoutCredentials(options.proxy.server),
         onListenerError: this.#onListenerError,
+        popups: { watch: this.#popups, targetId: target.targetId },
+        downloads: options.downloads === undefined ? undefined : this.#downloads,
       }
       return await ChromiumPage.open(pageOptions, deadline)
     } catch (error) {
@@ -149,7 +159,8 @@ export class ChromiumBrowser implements WebRuntime {
     const deadline = new Deadline(timeoutMs)
     // A short protocol budget retains stop(0)'s established ownership cleanup allowance.
     const ownershipDeadline = deadline.budgetMs < 2 * closeGraceMs ? new Deadline(2 * closeGraceMs) : deadline
-    this.#process.recordDescendants(ownershipDeadline)
+    // Helpers are read before Chrome is asked to quit, from a reading that does not hold the thread.
+    await this.#process.recordDescendantsNow(ownershipDeadline)
     if (this.connected) {
       this.#connection.send('Browser.close', undefined, sendOptions(deadline)).catch(() => {
         // Chrome often closes the pipe instead of answering, and `stop` ends the process group either way.

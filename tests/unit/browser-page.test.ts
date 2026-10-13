@@ -140,8 +140,10 @@ test('once the new document commits, the reading is of that document', async () 
 
 test('a page a dialog holds, or one that does not answer in time, cannot be read, and the error says which', async () => {
   const held = pageAnswering(() => value({ found: [true], title: '', body: true }))
-  held.emit('Page.javascriptDialogOpening', { type: 'confirm' })
-  await assert.rejects(held.page.readPage([], 1000), (error) => error instanceof BrowserError && error.failure.class === 'unsupported')
+  // Only a dialog the page handed to the test holds it until the test answers; one nothing waited for is answered at once.
+  assert.equal(held.page.armDialog(1000).ok, true)
+  held.emit('Page.javascriptDialogOpening', { type: 'confirm', message: 'Leave?' })
+  await assert.rejects(held.page.readPage([], 1000), (error) => error instanceof BrowserError && error.failure.class === 'not_actionable' && /^Retest could not read the page: the confirm dialog/.test(error.failure.message))
   assert.deepEqual(held.sent, [])
   const silentPage = pageAnswering(() => never())
   await assert.rejects(

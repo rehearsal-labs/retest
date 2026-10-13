@@ -1,11 +1,16 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { CdpSession } from './cdp/session.ts'
 import type { ChromiumCaptureOptions } from './capture.ts'
-import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, SessionIdentity, SessionOwner, TextQuery, WebSession } from './contract.ts'
+import type { BrowserCommand, DispatchedCommand, ElementIdentity, FilesCapability, KeyedReading, PageDownload, PageNavigation, PageReading, RequestResult, SessionIdentity, SessionOwner, TextQuery, WebSession } from './contract.ts'
 import type { ActionTarget, PendingNavigation, ReadyTarget } from './actionability.ts'
+import type { DialogArming, DialogReply, UnwaitedDialog } from './dialogs.ts'
+import type { BrowserDownloads, PageDownloads } from './downloads.ts'
 import type { ActionIntent, PlannedKey, Pointer, SelectPlan, Selection } from './element-queries.ts'
 import type { Guard, GuardedIntent, GuardVerdict } from './input-guard.ts'
+import type { PageWorld } from './isolated-world.ts'
 import type { NavigationContext, Traversal } from './navigation.ts'
+import type { PopupArming, PopupHome, PopupWaitOptions } from './popups.ts'
+import type { PictureRequest, TakenPicture } from './screenshot.ts'
 import type { DiagnosticCollection, DiagnosticSink } from '../diagnostics/observations.ts'
 import type { ObserveAfter, CommandResult, PageObservation } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
@@ -14,6 +19,7 @@ import type { RecordIdentity } from '../protocol/identity.ts'
 import type { Key, ModifierName } from '../protocol/keys.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
+import type { RouteAnswerRecord, RoutePattern } from '../protocol/routes.ts'
 import type { StorageState, StoredOrigin } from '../protocol/storage-state.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { waitBeforeRead } from '../assertions/wait-before-read.ts'
@@ -35,11 +41,16 @@ import { ChromiumFrameSource } from './capture.ts'
 import { CdpClosedError, CdpDisconnectedError, CdpInvalidResponseError, CdpProtocolError, CdpTimeoutError } from './cdp/errors.ts'
 import { readProtocol, request, sendOptions } from './cdp-results.ts'
 import { awaitCheckedState } from './checked-state.ts'
-import { commandStopped, connectionEnded, dialogOpened, failureFromError } from './command-failures.ts'
+import { commandStopped, connectionEnded, failureFromError } from './command-failures.ts'
+import { heldByDialog, keptByBeforeunload, PageDialogs, unwaitedDialogFailure, withKeptPage, withUnwaitedDialog } from './dialogs.ts'
 import { Dispatch } from './dispatch.ts'
+import { dragListenerScript, dragTo } from './drag.ts'
 import { documentFactsSchema, pageFactsOf, pageTitleOf } from './document-facts.ts'
 import { describeAction, describeChoices, dispatchPinned, observe, observeKeyed, pageSetOff, readSelection } from './element-queries.ts'
+import { FileChoosers, setInputFiles } from './file-chooser.ts'
+import { FrameError, framesApart, FrameWorld, inFrame, notInFrames, PageFrames } from './frames.ts'
 import { worldName } from './isolated-world.ts'
+import { readLayout } from './layout.ts'
 import { applyEmulation } from './emulation.ts'
 import { clickAt, moveTo, pressKey, replaceSelection, tapAt, wheelAt, type Point } from './input.ts'
 import { disarmGuard, guardFailure, guardInput } from './input-guard.ts'
@@ -50,6 +61,9 @@ import { NavigationCauses } from './navigation-causes.ts'
 import { NavigationTitles } from './navigation-titles.ts'
 import { changeScript, guardScript, pageFactsFunction, pageLookFunction, readPageFunction } from './page-scripts.ts'
 import { originAndPath } from './page-url.ts'
+import { closePage, disposeTarget, keepFocus, PagePopups } from './popups.ts'
+import { PageRoutes, RouteTable, type RouteRefusal, type RouteRemoval } from './routes.ts'
+import { takeChromiumPicture } from './screenshot.ts'
 import { readCookies, readLocalStorage, readOriginStorage } from './storage-state.ts'
 
 export type PageOptions = {
@@ -65,6 +79,22 @@ export type PageOptions = {
   proxyServer: string | undefined
   /** Receives errors thrown by navigation listeners. */
   onListenerError: (error: unknown) => void
+  /**
+   * Where the page's popups are watched for, and the target the page is. Absent where Retest cannot reach the pages a
+   * page opens, as in an Electron app's window.
+   */
+  popups?: PopupHome | undefined
+  /** Marks a popup, which shares its opener's browser context: disposing it closes its own target and leaves the context. */
+  popup?: true | undefined
+  /** The browser's downloads, when the page's context saves them; without it, the context refuses every download. */
+  downloads?: BrowserDownloads | undefined
+  /** The routes the page shares with the page that opened it; a page of its own context starts with none. */
+  routes?: RouteTable | undefined
+  /**
+   * Takes the dialogs Retest answered on the page before it was set up, as on an Electron app's first window, and stops
+   * that answering: the page answers and tells every dialog from then on, those first.
+   */
+  answeredDialogs?: (() => readonly UnwaitedDialog[]) | undefined
 }
 
 type PointerAction = Extract<BrowserCommand, { kind: 'click' | 'tap' }>
@@ -112,7 +142,6 @@ const frameSchema = s.object({ frameId: s.string() })
 const readingSchema = s.object({ found: s.array(s.boolean()), title: s.string(), body: s.boolean() })
 const pageLookSchema = s.object({ url: s.string(), title: s.string(), cut: s.array(s.enum(['url', 'title'])) })
 const screenshotSchema = s.object({ data: s.string() })
-const dialogSchema = s.object({ type: s.string() })
 
 // Navigations that keep the document. Any other replaces it when it commits.
 const withinDocument: ReadonlySet<string> = new Set(['sameDocument', 'historySameDocument'])
@@ -124,11 +153,16 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   readonly #browserContextId: string
   readonly #baseUrl: string | undefined
   readonly #world: IsolatedWorld
+  // The frames the page's locators look inside, each found again from the page for every call.
+  readonly #frames: PageFrames
   readonly #navigations: Listeners<PageNavigation>
   readonly #navigationStarts: Listeners<string>
   readonly #touch: boolean
   readonly #proxyServer: string | undefined
   readonly #causes = new NavigationCauses()
+  readonly #choosers: FileChoosers
+  readonly #downloads: PageDownloads | undefined
+  readonly #routes: PageRoutes
   // Every look waiting for the document to change, each woken by the next change, its own timer or the page's end.
   readonly #changeWaiters = new Set<() => void>()
   // How many times the document changed, as its observer told, counting each new document.
@@ -142,7 +176,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   #commits = 0
   #pendingNavigation: PendingNavigation | undefined
   #lostReason: string | undefined
-  #dialog: string | undefined
+  readonly #dialogs: PageDialogs
+  readonly #popups: PagePopups | undefined
+  // The target a popup closes when it is disposed; a page that opened its own context disposes that instead.
+  readonly #popupTarget: string | undefined
   #disposing: Promise<void> | undefined
   // The session this page is, once the runner has named it: who holds it, and the identity its captures are recorded
   // as. Both are frozen copies, so neither what the caller holds nor a source the page hands out can change them.
@@ -162,6 +199,9 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const { frameTree } = await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))
     const page = new ChromiumPage(options, frameTree.frame)
     await request(session, 'Page.enable', undefined, s.object({}), sendOptions(deadline))
+    if (options.popups !== undefined) await keepFocus(session, deadline)
+    // The browser holds every new page from here on, so each popup this page opens is attached, waited for or not.
+    if (options.popups !== undefined) await options.popups.watch.start(deadline)
     // A commit told while the frame is read again is at least as new as the read, so the read is kept only without one.
     const commits = page.#commits
     const current = await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))
@@ -173,6 +213,37 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     await request(session, 'Runtime.addBinding', { name: changeBinding, executionContextName: worldName }, s.object({}), sendOptions(deadline))
     await page.#world.addScript(guardScript, deadline)
     await page.#world.addScript(changeScript, deadline)
+    await page.#world.addScript(dragListenerScript, deadline)
+    await page.#choosers.intercept(deadline)
+    return page
+  }
+
+  /**
+   * Opens a page the browser holds before its first document, as a popup is held: a page held in a new renderer answers
+   * nothing until it runs, so every command that sets it up goes out at once, in order, and the one that lets it run goes
+   * last. Its main frame is the target itself, with no document yet. `ready` is given the page before anything is sent,
+   * so its caller hears every navigation and dialog from the first.
+   */
+  static async openHeld(options: PageOptions, targetId: string, deadline: Deadline, ready: (page: ChromiumPage) => void): Promise<ChromiumPage> {
+    const { session, emulation } = options
+    const page = new ChromiumPage(options, { id: targetId, url: '' })
+    ready(page)
+    const sent = sendOptions(deadline)
+    const setUp = [
+      emulation === undefined ? Promise.resolve() : applyEmulation(session, emulation, deadline),
+      request(session, 'Page.enable', undefined, s.object({}), sent),
+      keepFocus(session, deadline),
+      page.#choosers.intercept(deadline),
+      request(session, 'Page.setLifecycleEventsEnabled', { enabled: true }, s.object({}), sent),
+      request(session, 'Runtime.enable', undefined, s.object({}), sent),
+      request(session, 'Runtime.addBinding', { name: changeBinding, executionContextName: worldName }, s.object({}), sent),
+      page.#world.addScript(guardScript, deadline),
+      page.#world.addScript(changeScript, deadline),
+      page.#world.addScript(dragListenerScript, deadline),
+      page.#routes.follow(deadline),
+      request(session, 'Runtime.runIfWaitingForDebugger', undefined, s.object({}), sent),
+    ]
+    await Promise.all(setUp)
     return page
   }
 
@@ -189,10 +260,34 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     this.#navigations = new Listeners(options.onListenerError)
     this.#navigationStarts = new Listeners(options.onListenerError)
     this.#world = new IsolatedWorld(this.#session, () => this.#mainFrameId)
+    this.#frames = new PageFrames({
+      connection: options.connection,
+      session: this.#session,
+      world: this.#world,
+      mainFrameId: () => this.#mainFrameId,
+      onChange: () => this.#changed(),
+      follow: (session, sent) => this.#choosers.follow(session, sent),
+    })
+    this.#dialogs = new PageDialogs(this.#session, options.onListenerError)
+    // Taken before the page listens for dialogs, in the same turn, so no dialog is answered twice or not at all.
+    this.#dialogs.answeredBefore(options.answeredDialogs?.() ?? [])
+    this.#popupTarget = options.popup === true ? options.popups?.targetId : undefined
+    // A popup's page is opened as this page was, in this page's context, and watches for the pages it opens in turn.
+    const { popups } = options
+    this.#popups = popups === undefined ? undefined : new PagePopups({
+      connection: options.connection,
+      home: popups,
+      open: (session, home, deadline, ready) => ChromiumPage.openHeld({ ...options, session, restoredOrigins: [], popups: home, popup: true, routes: this.#routes.table }, home.targetId, deadline, ready),
+      onListenerError: options.onListenerError,
+      forward: (dialog) => this.#dialogs.forward(dialog),
+    })
+    this.#choosers = new FileChoosers(this.#session, () => this.#mainFrameId)
+    this.#routes = new PageRoutes(this.#session, options.routes ?? new RouteTable(), options.onListenerError)
+    this.#downloads = options.downloads?.page({ session: this.#session, mainFrame: () => this.#mainFrameId, browserContextId: options.browserContextId, popup: options.popup === true })
     // A title is read from the document the page holds, which answers only while no other document is on its way,
     // and while the page is neither lost nor held by a dialog.
     this.#titles = new NavigationTitles({
-      readable: () => this.#pendingNavigation === undefined && this.#lostReason === undefined && this.#dialog === undefined,
+      readable: () => this.#pendingNavigation === undefined && this.#lostReason === undefined && this.#dialogs.open === undefined,
       read: async (deadline) => pageTitleOf((await this.#world.call(pageFactsFunction, [], documentFactsSchema, deadline)).title),
     })
     this.#session.on('Page.frameNavigated', (params) => this.#frameNavigated(params))
@@ -205,24 +300,22 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       const { name } = readProtocol(bindingCalledSchema, params, { method: 'Runtime.bindingCalled', sessionId: this.#session.id })
       if (name === changeBinding) this.#changed()
     })
-    // A crashed page and one a dialog holds answer nothing, so commands waiting on them fail at once.
+    // A crashed page answers nothing, so commands waiting on it fail at once.
     this.#session.on('Inspector.targetCrashed', () => {
       this.#lostReason ??= 'the page crashed'
       this.#session.block('the page crashed')
+      this.#dialogs.lost('the page crashed')
+      this.#popups?.lost('the page crashed')
       this.#titles.dispose()
       this.#wake()
     })
-    this.#session.on('Page.javascriptDialogOpening', (params) => {
-      const { type } = readProtocol(dialogSchema, params, { method: 'Page.javascriptDialogOpening', sessionId: this.#session.id })
-      this.#dialog = type
-      this.#session.block(`a JavaScript ${type} dialog holds the page`)
-    })
-    this.#session.on('Page.javascriptDialogClosed', () => {
-      this.#dialog = undefined
-      if (this.#lostReason === undefined) this.#session.unblock()
-    })
+    // A dialog holds the page until it is answered, and the command whose input opened it waits until then.
+    this.#session.on('Page.javascriptDialogOpening', (params) => this.#dialogs.opened(params))
+    this.#session.on('Page.javascriptDialogClosed', (params) => this.#dialogs.closed(params))
     this.#session.onDetach((reason) => {
       this.#lostReason ??= reason
+      this.#dialogs.lost(reason)
+      this.#popups?.lost(reason)
       this.#titles.dispose()
       this.#wake()
     })
@@ -232,6 +325,14 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     return this.#address()
   }
 
+  /** The page's file pickers, when the browser lets Retest catch them, and its downloads, when its context saves them. */
+  get files(): FilesCapability | undefined {
+    if (!this.#choosers.enabled) return undefined
+    const downloads = this.#downloads
+    const saving = downloads === undefined ? {} : { onDownload: (listener: (download: PageDownload) => void) => downloads.onDownload(listener) }
+    return { armFileChooser: () => this.#choosers.armFileChooser(), ...saving }
+  }
+
   async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult> {
     return (await this.dispatch(command, timeoutMs, signal, commandToken)).result
   }
@@ -239,7 +340,20 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // The answer is read from the dispatch once the command has settled, so it says how far the input got by then.
   async dispatch(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand> {
     const dispatch = new Dispatch()
-    const result = await this.#execute(command, { timeoutMs, signal, commandToken, dispatch })
+    const dialogs = this.#dialogs.commandStarted()
+    const acting = !command.kind.startsWith('observe')
+    const result = await this.#choosers.around(acting, () => this.#describe(command), () => this.#execute(command, { timeoutMs, signal, commandToken, dispatch }))
+    // The command's own outcome comes first. A dialog nothing waited for fails a command that passed, and follows the
+    // failure of one that failed of its own accord; a dismissed beforeunload is the failure of a navigation it stopped.
+    const during = dialogs()
+    if (during.unwaited !== undefined) {
+      const failure = result.ok ? unwaitedDialogFailure(this.#describe(command), during.unwaited, dispatch.sent) : withUnwaitedDialog(result.failure, during.unwaited)
+      return { result: { ok: false, failure }, input: dispatch.input }
+    }
+    if (!result.ok && during.kept) {
+      const failure = result.failure.class === 'not_actionable' ? keptByBeforeunload(this.#describe(command), dispatch.sent) : withKeptPage(result.failure)
+      return { result: { ok: false, failure }, input: dispatch.input }
+    }
     return { result, input: dispatch.input }
   }
 
@@ -257,7 +371,9 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       signal?.throwIfAborted()
       const blocked = this.#blocked(described, false)
       if (blocked !== undefined) return { ok: false, failure: blocked }
-      const read = await observeKeyed(this.#world, locators, deadline)
+      const apart = framesApart(locators, described)
+      if (apart !== undefined) return { ok: false, failure: apart }
+      const read = await observeKeyed(this.#worldOf(locators[0]), locators, deadline)
       if ('reads' in read) return { ok: true, reads: read.reads, page: read.page }
       const named = locators[read.locator]
       if (named === undefined) throw new Error("Retest's keyed look named a locator it was not given")
@@ -265,6 +381,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     } catch (error) {
       if (error instanceof CdpTimeoutError) await outlast(startedAt + timeoutMs, signal)
       if (signal?.aborted === true) return { ok: false, failure: commandStopped(described, false, signal.reason) }
+      if (error instanceof FrameError) return { ok: false, failure: this.#blocked(described, false) ?? error.failure(described, false) }
       return { ok: false, failure: this.#blocked(described, false) ?? failureFromError(error, { command: described, timeoutMs, inputSent: false }) }
     }
   }
@@ -305,6 +422,36 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       } catch (error) {
         if (!(error instanceof CdpTimeoutError) && !isBetweenDocuments(error) || finalRead) throw this.#operationError(screenshotCommand, error, timeoutMs)
         await waitBeforeRead(deadline, retryPauseMs)
+      }
+    }
+  }
+
+  /**
+   * A picture for a screenshot comparison: the viewport, or the one shown element `request.locator` finds, clipped to
+   * its box, as `takeChromiumPicture` takes it. A page between a failed navigation and its error page is pictured once
+   * the error page is there, within the time. Sends no input; a page that is lost or held by a dialog answers as a look.
+   */
+  async takePicture(request: PictureRequest, timeoutMs: number, signal?: AbortSignal): Promise<TakenPicture> {
+    const startedAt = monotonicClock()
+    const deadline = new Deadline(timeoutMs, { signal, startedAt })
+    const described = request.locator === undefined ? screenshotCommand : `take a picture of ${describeLocator(request.locator)}`
+    if (inFrame(request.locator)) return { ok: false, failure: notInFrames(described) }
+    for (;;) {
+      const finalRead = deadline.reached
+      try {
+        await this.#titles.settle(deadline)
+        signal?.throwIfAborted()
+        const blocked = this.#blocked(described, false)
+        if (blocked !== undefined) return { ok: false, failure: blocked }
+        return await takeChromiumPicture({ session: this.#session, world: this.#world }, request, deadline)
+      } catch (error) {
+        if (signal?.aborted === true) return { ok: false, failure: commandStopped(described, false, signal.reason) }
+        if (isBetweenDocuments(error) && !finalRead) {
+          await waitBeforeRead(deadline, retryPauseMs)
+          continue
+        }
+        if (error instanceof CdpTimeoutError) await outlast(startedAt + timeoutMs, signal)
+        return { ok: false, failure: this.#blocked(described, false) ?? failureFromError(error, { command: described, timeoutMs, inputSent: false }) }
       }
     }
   }
@@ -370,13 +517,70 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   }
 
   /**
+   * Arms the page for its next JavaScript dialog, which it then hands over instead of answering it. Armed at once, so
+   * the action sent after this call cannot open a dialog Retest would answer itself.
+   */
+  armDialog(timeoutMs: number, signal?: AbortSignal): DialogArming {
+    return this.#dialogs.arm(timeoutMs, signal)
+  }
+
+  /** Answers the dialog the page handed over, within `timeoutMs`. */
+  answerDialog(id: string, reply: DialogReply, timeoutMs: number): Promise<RequestResult> {
+    return this.#dialogs.answer(id, reply, timeoutMs)
+  }
+
+  /**
+   * Adds a route to the page's routes, which its popups share, in place once Chrome holds the requests it matches. Sends
+   * no input; a page that is lost or held by a dialog answers as a look does.
+   */
+  async addRoute(pattern: RoutePattern, answer: RouteAnswerRecord, timeoutMs: number): Promise<RequestResult> {
+    return this.#changeRoutes(timeoutMs, (deadline) => this.#routes.add(pattern, answer, deadline))
+  }
+
+  /** Removes every route of the page's routes added with `pattern`, and says how many went. */
+  async removeRoute(pattern: RoutePattern, timeoutMs: number): Promise<RouteRemoval> {
+    return this.#changeRoutes(timeoutMs, (deadline) => this.#routes.remove(pattern, deadline))
+  }
+
+  /** Tells of each request a route matched whose answer Chrome refused, which the page failed in its place. */
+  onRouteRefused(listener: (refusal: RouteRefusal) => void): () => void {
+    return this.#routes.onRefused(listener)
+  }
+
+  async #changeRoutes<T extends RequestResult | RouteRemoval>(timeoutMs: number, change: (deadline: Deadline) => Promise<T>): Promise<T | { ok: false; failure: Failure }> {
+    const command = 'change the routes'
+    const blocked = this.#blocked(command, false)
+    if (blocked !== undefined) return { ok: false, failure: blocked }
+    try {
+      return await change(new Deadline(timeoutMs))
+    } catch (error) {
+      return { ok: false, failure: this.#blocked(command, false) ?? failureFromError(error, { command, timeoutMs, inputSent: false }) }
+    }
+  }
+
+  onUnwaitedDialog(listener: (dialog: UnwaitedDialog) => void): () => void {
+    return this.#dialogs.onUnwaited(listener)
+  }
+
+  /**
+   * Arms the page for the next page it opens, which it hands over set up as a page of its own and held before its first
+   * document. A page whose popups Retest cannot reach refuses.
+   */
+  async armPopup(options: PopupWaitOptions): Promise<PopupArming> {
+    if (this.#popups === undefined) return { ok: false, failure: { class: 'unsupported', message: 'Retest cannot reach the pages this window opens, so page.popup() has nothing to wait for.' } }
+    const blocked = this.#blocked('wait for a popup', false)
+    if (blocked !== undefined) return { ok: false, failure: blocked }
+    return this.#popups.arm(options)
+  }
+
+  /**
    * Collects the page's console messages, runtime errors and network metadata from its own session. The collector's
    * listeners are added before its domains are enabled, so nothing after this call is missed. Sends no input.
    */
   async collectDiagnostics(sink: DiagnosticSink, timeoutMs: number): Promise<DiagnosticCollection> {
     const blocked = this.#blocked(collectCommand, false)
     if (blocked !== undefined) throw new BrowserError(blocked)
-    const collector = new ChromiumCollector({ session: this.#session, mainFrameId: () => this.#mainFrameId, sink })
+    const collector = new ChromiumCollector({ session: this.#session, mainFrameId: () => this.#mainFrameId, sink, answeredBy: (requestId, url) => this.#routes.answeredBy(requestId, url) })
     try {
       await collector.start(timeoutMs)
     } catch (error) {
@@ -451,6 +655,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     } catch (error) {
       if (error instanceof CdpTimeoutError) await outlast(startedAt + timeoutMs, signal)
       if (signal?.aborted === true) return { ok: false, failure: commandStopped(described, dispatch.sent, signal.reason) }
+      if (error instanceof FrameError) return { ok: false, failure: this.#blocked(described, dispatch.sent) ?? error.failure(described, dispatch.sent) }
       const failure = this.#blocked(described, dispatch.sent) ?? failureFromError(error, { command: described, timeoutMs, inputSent: dispatch.sent })
       return { ok: false, failure }
     }
@@ -468,13 +673,17 @@ export class ChromiumPage implements WebSession, ElementIdentity {
         const waitedMs = command.after === undefined ? 0 : await this.#awaitChange(command.after, deadline)
         // Counted before the read, so a change during it is seen by the next look.
         const changes = this.#changes
-        const observed = await observe(this.#world, command.locator, deadline)
+        const observed = await observe(this.#worldOf(command.locator), command.locator, deadline)
         if ('invalid' in observed) return { ok: false, failure: invalidSelector(observed.invalid, command.locator, undefined) }
         if ('shadow' in observed) return { ok: false, failure: shadowRefused(observed.shadow, command.locator, undefined) }
         return { ok: true, kind: 'observe', observation: observed.observation, page: observed.page, changes, ...(waitedMs > 0 ? { waitedMs } : {}) }
       }
       case 'observePage':
         return this.#observePage(command.after, deadline)
+      case 'observeLayout':
+        return this.#observeLayout(command, deadline)
+      case 'close':
+        return closePage({ session: this.#session, dialogs: this.#dialogs, deadline, dispatch })
       case 'press':
         return this.#pressKey(command, deadline, dispatch, commandToken)
       case 'tap':
@@ -504,6 +713,15 @@ export class ChromiumPage implements WebSession, ElementIdentity {
         return this.#check(command, deadline, dispatch, commandToken)
       case 'scroll':
         return this.#scroll(command, deadline, dispatch, commandToken)
+      case 'setInputFiles':
+        if (inFrame(command.locator)) return { ok: false, failure: notInFrames(this.#describe(command)) }
+        return setInputFiles({ world: this.#world, session: this.#session, pendingNavigation: () => this.#pendingNavigation }, command, deadline, dispatch)
+      case 'setChooserFiles':
+        return this.#choosers.setFiles(command, this.#world, deadline, dispatch)
+      case 'dragTo': {
+        const page = { session: this.#session, world: this.#world, touch: this.#touch, pendingNavigation: () => this.#pendingNavigation }
+        return dragTo({ ...page, delivering: (work) => this.#causes.delivering(commandToken, work) }, command, deadline, dispatch)
+      }
     }
   }
 
@@ -551,6 +769,20 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const title = observation.title === null ? undefined : pageTitleOf(observation.title)
     const page = url === undefined ? {} : { page: title === undefined ? { url } : { url, title } }
     return { ok: true, kind: 'observePage', observation, ...baseUrl, changes, ...(waitedMs > 0 ? { waitedMs } : {}), ...page }
+  }
+
+  // A layout look measures the page as it stands, and the elements the command names, in one call of Retest's world.
+  async #observeLayout(command: Extract<BrowserCommand, { kind: 'observeLayout' }>, deadline: Deadline): Promise<CommandResult> {
+    const waitedMs = command.after === undefined ? 0 : await this.#awaitChange(command.after, deadline)
+    // Counted before the read, so a change during it is seen by the next look.
+    const changes = this.#changes
+    const measured = [command.locator, command.other].filter((locator) => locator !== undefined)
+    const apart = framesApart(measured, this.#describe(command))
+    if (apart !== undefined) return { ok: false, failure: apart }
+    const read = await readLayout(this.#worldOf(command.locator), command, deadline)
+    if ('invalid' in read) return { ok: false, failure: invalidSelector(read.invalid, read.locator, undefined) }
+    if ('shadow' in read) return { ok: false, failure: shadowRefused(read.shadow, read.locator, undefined) }
+    return { ok: true, kind: 'observeLayout', observation: read.look, page: read.page, changes, ...(waitedMs > 0 ? { waitedMs } : {}) }
   }
 
   // The page's whole address and title, as the page has them, for `toHaveURL` and `toHaveTitle`; the page facts keep
@@ -608,7 +840,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const acted = await this.#act({ locator, intent, input, commandToken }, deadline)
     if (!acted.ok) return acted
     if (acted.kind === 'unchanged') return { ok: true, kind, changed: false, page: acted.page }
-    const failure = await awaitCheckedState({ world: this.#world, locator, intent, via: acted.via, deadline })
+    const failure = await awaitCheckedState({ world: this.#worldOf(locator), locator, intent, via: acted.via, deadline })
     if (failure !== undefined) return { ok: false, failure }
     return { ok: true, kind, changed: true, ...(acted.via === undefined ? {} : { via: acted.via }), page: acted.page }
   }
@@ -633,7 +865,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const { locator } = command
     const intent = selectIntent(command)
     for (;;) {
-      const target = await waitUntilActionable({ world: this.#world, locator, intent, deadline, pendingNavigation: () => this.#pendingNavigation })
+      const target = await waitUntilActionable({ world: this.#worldOf(locator), locator, intent, deadline, pendingNavigation: () => this.#pendingNavigation })
       if (!target.ok) return target
       if (target.kind === 'unchanged') return { ok: true, kind: 'select', changed: false, page: target.page }
       if (this.#pendingNavigation !== undefined) continue
@@ -660,7 +892,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const heard: (Selection | undefined)[] = []
     for (const [index, planned] of plan.keys.entries()) {
       const typed: KeysTyped = { locator, intent, sent: index, of: plan.keys.length, heard: lastHeard(heard) }
-      if (token !== null && (await pageSetOff(this.#world, { document, token }, deadline))) return selectionLeft(typed)
+      if (token !== null && (await pageSetOff(this.#worldOf(locator), { document, token }, deadline))) return selectionLeft(typed)
       const key = plannedKey(planned)
       const at = startedAt === undefined ? undefined : startedAt + sent / 1000
       sent += 2 * keyStrokes(key)
@@ -686,7 +918,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       const finalRead = deadline.reached
       let read: Selection | undefined
       try {
-        read = await readSelection(this.#world, { locator, choices: intent.choices, document }, deadline)
+        read = await readSelection(this.#worldOf(locator), { locator, choices: intent.choices, document }, deadline)
       } catch (error) {
         // The time ran out during a read, so the previous read is the latest there is.
         if (!(error instanceof CdpTimeoutError)) throw error
@@ -718,7 +950,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // As `#act`, with what the guard saw of input that went. Bound to `document`, it sends nothing once the page holds
   // another document, however well the element there matches, and says the page moved on.
   async #actSeeing({ locator, intent, input, commandToken }: Acting, document: number | undefined, deadline: Deadline): Promise<Seeing | MovedOn> {
-    const wait = { world: this.#world, locator, intent, deadline, pendingNavigation: () => this.#pendingNavigation }
+    const world = this.#worldOf(locator)
+    // A frame on the element's path that is opening another document would take the input there, as the page would.
+    const pendingNavigation = () => this.#pendingNavigation ?? (world instanceof FrameWorld ? world.pendingNavigation() : undefined)
+    const wait = { world, locator, intent, deadline, pendingNavigation }
     for (;;) {
       const target = await waitUntilActionable(wait)
       if (!target.ok) return { target, verdict: undefined }
@@ -726,14 +961,14 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       if (target.kind === 'unchanged') return elsewhere ? { movedOn: true } : { target, verdict: undefined }
       const guard = guardOf(target)
       if (elsewhere) {
-        await disarmGuard(this.#world, guard, deadline)
+        await disarmGuard(world, guard, deadline)
         return { movedOn: true }
       }
-      if (this.#pendingNavigation !== undefined) {
-        await disarmGuard(this.#world, guard, deadline)
+      if (pendingNavigation() !== undefined) {
+        await disarmGuard(world, guard, deadline)
         continue
       }
-      const verdict = await this.#causes.delivering(commandToken, () => guardInput(this.#world, guard, deadline, () => input(target)))
+      const verdict = await this.#causes.delivering(commandToken, () => guardInput(world, guard, deadline, () => input(target)))
       const failure = guardFailure(verdict, intent, locator)
       return { target: failure === undefined ? target : { ok: false, failure }, verdict }
     }
@@ -742,6 +977,11 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // A page that emulates a touch screen taps wherever a person would click.
   #pointerInput(): Pointer {
     return this.#touch ? 'tap' : 'click'
+  }
+
+  // The world a locator's elements are found in: the frame its frame path names, or the page's own document.
+  #worldOf(locator: LocatorRecipe | undefined): PageWorld {
+    return inFrame(locator) ? this.#frames.world(locator) : this.#world
   }
 
   #address(): string | undefined {
@@ -758,7 +998,8 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // A page that crashed, closed or is held by a dialog stops answering, which says nothing about how fast it is.
   #blocked(command: string, inputSent: boolean): Failure | undefined {
     if (this.#lostReason !== undefined) return connectionEnded(command, inputSent, this.#lostReason)
-    if (this.#dialog !== undefined) return dialogOpened(command, this.#dialog, inputSent)
+    const held = this.#dialogs.held
+    if (held !== undefined) return heldByDialog(command, held.type, inputSent)
     return undefined
   }
 
@@ -778,6 +1019,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
         return `read ${describeLocator(command.locator)}`
       case 'observePage':
         return readCommand
+      case 'observeLayout':
+        return command.locator === undefined ? "measure the page's layout" : `measure ${describeLocator(command.locator)}`
+      case 'close':
+        return 'close the page'
       case 'hover':
         return `hover ${describeLocator(command.locator)}`
       case 'click':
@@ -796,6 +1041,12 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       case 'uncheck':
       case 'scroll':
         return describeAction({ action: command.kind, pointer: this.#pointerInput(), multiline: false }, command.locator)
+      case 'setInputFiles':
+        return `set the files of ${describeLocator(command.locator)}`
+      case 'setChooserFiles':
+        return 'give the file picker files'
+      case 'dragTo':
+        return `drag ${describeLocator(command.locator)} to ${describeLocator(command.target)}`
     }
   }
 
@@ -830,9 +1081,18 @@ export class ChromiumPage implements WebSession, ElementIdentity {
 
   async #dispose(deadline: Deadline): Promise<void> {
     this.#lostReason ??= 'the page was closed'
+    this.#downloads?.close()
+    this.#routes.dispose()
+    this.#dialogs.lost('the page was closed')
+    this.#popups?.lost('the page was closed')
     this.#titles.dispose()
     this.#wake()
     if (this.#connection.closeReason !== undefined) return
+    // A popup shares its opener's context: the pages it opened while nothing waited close first, then its own target.
+    if (this.#popupTarget !== undefined) {
+      await this.#popups?.disposeUnwaited(deadline)
+      return disposeTarget(this.#connection, this.#session, this.#popupTarget, deadline)
+    }
     try {
       const params = { browserContextId: this.#browserContextId }
       await this.#connection.send('Target.disposeBrowserContext', params, sendOptions(deadline))
@@ -947,9 +1207,9 @@ function passed(kind: 'click' | 'tap' | 'fill' | 'hover' | 'press' | 'scroll', a
 }
 
 // Every input arms the guard for its element before it goes; a select's look sends none, and its keys arm their own.
-function guardOf({ context, token }: ReadyTarget): Guard {
+function guardOf({ context, token, around }: ReadyTarget): Guard {
   if (token === null) throw new Error("Retest's page script readied an action without arming its guard")
-  return { context, token }
+  return around === undefined ? { context, token } : { context, token, around }
 }
 
 /** A select's plan as it types: its keys, and the command they belong to. */

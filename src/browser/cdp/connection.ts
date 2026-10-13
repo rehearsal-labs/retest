@@ -113,6 +113,15 @@ export class CdpConnection {
     )
   }
 
+  /**
+   * Takes on a flat session the browser attached by itself, as `Target.setAutoAttach` does, named in its
+   * `Target.attachedToTarget` event. Call it while that event is handled, so no event of the session's arrives first.
+   * @example const session = connection.adopt(sessionId)
+   */
+  adopt(sessionId: string): CdpSession {
+    return this.#openSession({ sessionId })
+  }
+
   /** Ends the connection. Every waiting command rejects with a `CdpDisconnectedError`. */
   close(): void {
     this.#transport.close()
