@@ -1,6 +1,8 @@
 import type { BrowserCommand, DispatchedCommand, InputDispatch, OwnedBrowser, OwnedPage, SessionIdentity, WebEngine, WebRuntimeIdentity, WebSession } from '../browser/contract.ts'
+import type { UnwaitedDialog } from '../browser/dialogs.ts'
 import type { FrameSource } from '../media/capture.ts'
 import type { CommandResult, Observation, PageCommand } from '../protocol/commands.ts'
+import type { DialogAnswered, DialogType } from '../protocol/dialogs.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { HostCheck, HostCheckRecord } from '../protocol/host-check.ts'
 import type { RecordIdentity } from '../protocol/identity.ts'
@@ -17,11 +19,13 @@ import type { SessionLease } from '../runner/sessions.ts'
 import type { CheckIdentity, CheckOutcome } from './checks.ts'
 import type { ElementIdentity, KeyedRead } from './identity.ts'
 import type { ElementRef, ServedLook } from './looks.ts'
+import { withPickerAdvice } from '../browser/file-chooser.ts'
 import { Deadline, smallestBudget } from '../protocol/deadline.ts'
 import { describeCommand, pageCommandSchema } from '../protocol/commands.ts'
+import { unwaitedDialogMessage, withDialogWords } from '../protocol/dialogs.ts'
 import { errorMessage, failure, failureSchema } from '../protocol/failures.ts'
 import { parseKey } from '../protocol/keys.ts'
-import { describeLocator, locatorProblem, locatorSteps } from '../protocol/locator.ts'
+import { describeLocator, everyStep, locatorProblem } from '../protocol/locator.ts'
 import { selectCommandProblem } from '../protocol/option-choices.ts'
 import { isPlainObject, parse } from '../protocol/schema.ts'
 import { scrollProblem } from '../protocol/scroll-delta.ts'
@@ -64,7 +68,14 @@ export type AgentCommand =
  * How an action went: the page's answer, redacted; how far its input got, as the driver counted it (`not_sent` for an
  * action refused before the page was asked); and the recipe it went to, when it acted on an element.
  */
-export type AgentAction = { readonly result: CommandResult; readonly input: InputDispatch; readonly locator?: LocatorRecipe }
+export type AgentAction = { readonly result: CommandResult; readonly input: InputDispatch; readonly locator?: LocatorRecipe; readonly dialogs?: readonly AgentDialog[] }
+
+/**
+ * A JavaScript dialog the page showed that Retest answered, since an agent session takes no dialog: its kind, its text,
+ * redacted, how Retest answered it, and `words`, a sentence for the agent. One that showed between calls is named in the
+ * answer of the next action or look, under `dialogs`; one that showed during an action is named in its failure.
+ */
+export type AgentDialog = { readonly type: DialogType; readonly message: string; readonly answered: DialogAnswered; readonly words: string }
 
 /** An element a look listed: its reference, and its text and visibility as the look saw them, redacted. */
 export type LookedElement = { readonly ref: ElementRef; readonly text: string; readonly visible: boolean }
@@ -83,12 +94,12 @@ export type AgentLook = {
 }
 
 /** A look's answer: the look, or why there is none. */
-export type AgentObserved = { readonly ok: true; readonly look: AgentLook } | { readonly ok: false; readonly failure: Failure }
+export type AgentObserved = ({ readonly ok: true; readonly look: AgentLook } | { readonly ok: false; readonly failure: Failure }) & { readonly dialogs?: readonly AgentDialog[] }
 
 /** A look at the page itself: its id and session, and the page's address and title, redacted. It lists no element. */
 export type AgentPageLook = { readonly sessionId: string; readonly observationId: string; readonly url: string | null; readonly title: string | null }
 
-export type AgentObservedPage = { readonly ok: true; readonly page: AgentPageLook } | { readonly ok: false; readonly failure: Failure }
+export type AgentObservedPage = ({ readonly ok: true; readonly page: AgentPageLook } | { readonly ok: false; readonly failure: Failure }) & { readonly dialogs?: readonly AgentDialog[] }
 
 /** A durable recipe made from a reference, or why a read could not prove it finds the referenced element. */
 export type AgentRecipe = { readonly ok: true; readonly locator: LocatorRecipe; readonly described: string } | { readonly ok: false; readonly failure: Failure }
@@ -225,6 +236,11 @@ export class AgentSession {
   readonly #running = new Set<Running>()
   readonly #sources = new Set<FrameSource>()
   readonly #listeners: (() => void)[] = []
+  // Every dialog Retest answered on the session's page, and those not named in an answer yet.
+  readonly #answeredDialogs: AgentDialog[] = []
+  #dialogsSince: AgentDialog[] = []
+  // The command on the page now, as a dialog that shows meanwhile names it.
+  #onPage: string | undefined
   readonly #ended = Promise.withResolvers<AgentEnded>()
   #holdTimer: NodeJS.Timeout | undefined
   #leaseTimer: NodeJS.Timeout | undefined
@@ -254,12 +270,18 @@ export class AgentSession {
         if (navigation.document === 'new') this.#looks.nextDocument()
       }),
       parts.browser.onDisconnect((reason) => void this.#finish({ kind: 'lost', reason: failure('session_lost', `The browser of session ${parts.identity.sessionId} was lost: ${reason}`) })),
+      parts.page.onUnwaitedDialog?.((dialog) => this.#heardDialog(dialog)) ?? (() => undefined),
     )
     this.#holdTimer = setTimeout(() => {
       const reason = failure('timeout', `Session ${parts.identity.sessionId} held its browser for its whole ${parts.holdMs} ms hold, so Retest ended it.`)
       void this.#finish({ kind: 'held_too_long', reason: { ...reason, details: { holdMs: parts.holdMs } } })
     }, timerMs(parts.holdMs))
     this.#renewLease()
+  }
+
+  /** Every JavaScript dialog the session's page showed, which Retest answered, in order. */
+  get answeredDialogs(): readonly AgentDialog[] {
+    return [...this.#answeredDialogs]
   }
 
   /** The session's id, which every look, reference and frame it serves carries. */
@@ -321,13 +343,13 @@ export class AgentSession {
       const timeoutMs = this.#budget(this.#host.timeouts.action, options)
       const startedOn = this.#looks.generation
       const read = await this.#readOne(locator, timeoutMs, signal)
-      if (!read.ok) return read
+      if (!read.ok) return { ...read, ...this.#dialogsNamed() }
       // The look keeps a copy of the locator, so a caller that changes its own object later cannot move a reference.
       const look = this.#looks.serve(structuredClone(locator), read.observation, startedOn, read.keys)
       const observation = this.#host.redactor.redactObservation(look.observation)
       const elements = observation.items.map((item, element) => ({ ref: { sessionId: this.sessionId, observationId: look.observationId, element }, text: item.text, visible: item.visible }))
       const page = read.page === undefined ? {} : { page: this.#redactedPage(read.page) }
-      return { ok: true, look: { sessionId: this.sessionId, observationId: look.observationId, locator: structuredClone(look.locator), observation, elements, ...page } }
+      return { ok: true, look: { sessionId: this.sessionId, observationId: look.observationId, locator: structuredClone(look.locator), observation, elements, ...page }, ...this.#dialogsNamed() }
     })
   }
 
@@ -335,10 +357,10 @@ export class AgentSession {
   observePage(options: CallOptions = {}): Promise<AgentObservedPage> {
     return this.#inLane<AgentObservedPage>('look', (problem) => ({ ok: false, failure: problem }), async (signal) => {
       const answer = await this.#call({ kind: 'observePage' }, this.#budget(this.#host.timeouts.action, options), signal)
-      if (!answer.result.ok) return { ok: false, failure: this.#host.redactor.redactFailure(answer.result.failure) }
+      if (!answer.result.ok) return { ok: false, failure: this.#agentFailure(answer.result.failure), ...this.#dialogsNamed() }
       if (answer.result.kind !== 'observePage') return { ok: false, failure: failure('test_error', 'The page answered a look at the page with another kind of answer.') }
       const { url, title } = this.#host.redactor.redactPageLook(answer.result.observation)
-      return { ok: true, page: { sessionId: this.sessionId, observationId: this.#looks.servePage(), url, title } }
+      return { ok: true, page: { sessionId: this.sessionId, observationId: this.#looks.servePage(), url, title }, ...this.#dialogsNamed() }
     })
   }
 
@@ -369,7 +391,10 @@ export class AgentSession {
       const browserCommand = await this.#browserCommand(pageCommand, deadline, signal)
       if (!browserCommand.ok) return { ...notSent(browserCommand.failure), ...located }
       const answer = pin === undefined ? await this.#call(browserCommand.command, deadline.commandTimeoutMs, signal) : await this.#callPinned(browserCommand.command, pin, deadline.commandTimeoutMs, signal)
-      return { result: this.#host.redactor.redactCommandResult(answer.result), input: answer.input, ...located }
+      // A picker nobody waited for is answered by what an agent session can do, which gives no page files.
+      const advised = withPickerAdvice(answer.result, 'This agent session cannot give a page files.')
+      const result = advised.ok ? this.#host.redactor.redactCommandResult(advised) : { ok: false as const, failure: this.#agentFailure(advised.failure) }
+      return { result, input: answer.input, ...located, ...this.#dialogsNamed() }
     })
   }
 
@@ -561,7 +586,7 @@ export class AgentSession {
   // same matches, with the same text and visibility, in the same order. Returns what it read.
   async #freshLook(ref: ElementRef, look: ServedLook, deadline: Deadline, signal: AbortSignal): Promise<{ ok: true; observation: Observation } | { ok: false; failure: Failure }> {
     const answer = await this.#call({ kind: 'observe', locator: look.locator }, deadline.commandTimeoutMs, signal)
-    if (!answer.result.ok) return { ok: false, failure: this.#host.redactor.redactFailure(answer.result.failure) }
+    if (!answer.result.ok) return { ok: false, failure: this.#agentFailure(answer.result.failure) }
     if (answer.result.kind !== 'observe') return { ok: false, failure: failure('test_error', 'The page answered a look with another kind of answer.') }
     if (this.#looks.generation !== look.generation) return { ok: false, failure: newDocument(ref) }
     if (!sameMatches(look.observation, answer.result.observation)) return { ok: false, failure: this.#changed(ref, look, answer.result.observation) }
@@ -616,7 +641,7 @@ export class AgentSession {
       return { ok: true, observation: only.observation, keys: only.keys, ...(read.page === undefined ? {} : { page: read.page }) }
     }
     const answer = await this.#call({ kind: 'observe', locator }, timeoutMs, signal)
-    if (!answer.result.ok) return { ok: false, failure: this.#host.redactor.redactFailure(answer.result.failure) }
+    if (!answer.result.ok) return { ok: false, failure: this.#agentFailure(answer.result.failure) }
     if (answer.result.kind !== 'observe') return { ok: false, failure: failure('test_error', 'The page answered a look with another kind of answer.') }
     return { ok: true, observation: answer.result.observation, ...(answer.result.page === undefined ? {} : { page: answer.result.page }) }
   }
@@ -642,9 +667,20 @@ export class AgentSession {
     if (command.kind === 'swipe' || command.kind === 'nativeKeyboard' || command.kind === 'nativeAlert' || command.kind === 'tap' || command.kind === 'observe' || command.kind === 'observePage') {
       return { ok: false, failure: failure('unsupported', `An agent session does not send ${describeCommand(command)}.`) }
     }
+    // A file input takes files only from a test, whose run keeps what it gives; an agent session keeps none.
+    if (command.kind === 'setInputFiles' || command.kind === 'setChooserFiles') return { ok: false, failure: failure('unsupported', `An agent session does not send ${describeCommand(command)}.`) }
+    // An agent's action is pinned to the one element it read, and a drag acts on two.
+    if (command.kind === 'dragTo') return { ok: false, failure: failure('unsupported', `An agent session does not send ${describeCommand(command)}.`) }
+    // An agent session holds the page it opened for its whole lease, so it never closes it.
+    if (command.kind === 'close') return { ok: false, failure: failure('unsupported', `An agent session does not send ${describeCommand(command)}: its page stays open for its lease.`) }
+    // A screenshot comparison's picture belongs to a test's check, which keeps its baseline; an agent session keeps none.
+    if (command.kind === 'observeScreenshot') return { ok: false, failure: failure('unsupported', `An agent session does not send ${describeCommand(command)}.`) }
+    // An agent session holds no inbox, so it has no message whose code or link a command could name.
+    if (command.kind === 'goto') return typeof command.url === 'string' ? { ok: true, command: { kind: 'goto', url: command.url } } : { ok: false, failure: failure('unsupported', 'An agent session holds no inbox, so Retest opened no link from one.') }
     if (command.kind !== 'fill') return { ok: true, command }
     const { locator, value } = command
     if (typeof value === 'string') return { ok: true, command: { kind: 'fill', locator, value } }
+    if (!('secret' in value)) return { ok: false, failure: failure('unsupported', 'An agent session holds no inbox, so Retest typed no code from one.') }
     const secrets = this.#host.secrets
     if (secrets === undefined) return { ok: false, failure: failure('usage', `secret(${JSON.stringify(value.secret)}) needs a host that holds secrets. This agent host holds none.`) }
     const allowed = this.#secrets
@@ -662,6 +698,7 @@ export class AgentSession {
     const page = this.#page
     this.#tokens += 1
     const token = this.#tokens
+    this.#onPage = describeCommand(command)
     try {
       if (hasDispatch(page)) return await page.dispatch(command, timeoutMs, signal, token)
       const result = await page.execute(command, timeoutMs, signal, token)
@@ -670,7 +707,33 @@ export class AgentSession {
       const looking = command.kind === 'observe' || command.kind === 'observePage'
       const message = `The browser call for ${describeCommand(command)} failed: ${errorMessage(error)}`
       return { result: { ok: false, failure: failure(looking ? 'session_lost' : 'outcome_unknown', message) }, input: looking ? 'not_sent' : 'unknown' }
+    } finally {
+      this.#onPage = undefined
     }
+  }
+
+  // A failure the page gave, redacted, with a dialog Retest answered meanwhile named in words for an agent, which can
+  // wrap nothing in page.dialog(): the dialog's text is redacted before it is quoted.
+  #agentFailure(problem: Failure): Failure {
+    return this.#host.redactor.redactFailure(withDialogWords(problem, (text) => this.#host.redactor.redact(text), 'agent'))
+  }
+
+  // A dialog the page showed is kept for the session's record, and one that showed between calls waits to be named in
+  // the next answer; one that showed during an action is named in that action's own failure.
+  #heardDialog(dialog: UnwaitedDialog): void {
+    const message = this.#host.redactor.redact(dialog.message)
+    const parts = { type: dialog.type, text: message, answered: dialog.answered, popup: dialog.popup === true, reader: 'agent' as const }
+    const words = unwaitedDialogMessage(dialog.during ? { ...parts, command: this.#host.redactor.redact(this.#onPage ?? 'act on the page') } : parts)
+    const told: AgentDialog = { type: dialog.type, message, answered: dialog.answered, words }
+    this.#answeredDialogs.push(told)
+    if (!dialog.during) this.#dialogsSince.push(told)
+  }
+
+  // The dialogs not named in an answer yet, for the answer being given, and none from then on.
+  #dialogsNamed(): { dialogs?: readonly AgentDialog[] } {
+    const named = this.#dialogsSince
+    this.#dialogsSince = []
+    return named.length === 0 ? {} : { dialogs: named }
   }
 
   // The driver's pinned call, with a throw read as the page's answer as for any other call.
@@ -678,10 +741,13 @@ export class AgentSession {
     const identity = this.#identity
     if (identity === undefined) return { result: { ok: false, failure: failure('unsupported', `The ${this.engine} driver cannot pin an element.`) }, input: 'not_sent' }
     this.#tokens += 1
+    this.#onPage = describeCommand(command)
     try {
       return await identity.dispatchTo(command, key, timeoutMs, signal, this.#tokens)
     } catch (error) {
       return { result: { ok: false, failure: failure('outcome_unknown', `The browser call for ${describeCommand(command)} failed: ${errorMessage(error)}`) }, input: 'unknown' }
+    } finally {
+      this.#onPage = undefined
     }
   }
 
@@ -808,9 +874,10 @@ function commandProblem(command: PageCommand): Failure | undefined {
 
 type MatchedText = { text: string; exact: boolean; named: 'text' | 'name' | 'pattern' | 'selector' }
 
-// What each step of a locator matches against the page, as the runner reads it for the same guard.
+// What each step of a locator matches against the page, the steps of its frames included, as the runner reads it for
+// the same guard.
 function matchedTexts(locator: LocatorRecipe): MatchedText[] {
-  return locatorSteps(locator).flatMap((step: LocatorStep): MatchedText[] => {
+  return everyStep(locator).flatMap((step: LocatorStep): MatchedText[] => {
     switch (step.by) {
       case 'testId':
         return []

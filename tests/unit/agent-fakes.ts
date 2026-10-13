@@ -137,6 +137,8 @@ export class AgentFakePage implements OwnedPage {
       case 'reload':
       case 'goBack':
       case 'goForward':
+      case 'observeLayout':
+      case 'dragTo':
         return { ok: false, failure: { class: 'unsupported', message: `The fake page cannot ${command.kind}.` } }
       default:
         break

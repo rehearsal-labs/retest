@@ -273,6 +273,14 @@ describe('secrets', () => {
     assert.deepEqual(page.commands, [])
   })
 
+  test('a locator whose frame is found by a secret never reaches the page either', async (t) => {
+    const { session, page } = await openSession(t, { host: { secrets } })
+    const look = await session.observe({ by: 'testId', value: 'pay', frame: [{ by: 'css', selector: 'iframe[title="correct horse battery staple"]' }] })
+    assert.ok(!look.ok)
+    assert.match(look.failure.message, /holds the value of a secret/)
+    assert.deepEqual(page.commands, [])
+  })
+
   test('a session without secrets refuses a secret fill by name', async (t) => {
     const { session } = await openSession(t)
     const action = await session.act({ kind: 'fill', locator: { by: 'testId', value: 'password' }, value: { secret: 'password' } })
