@@ -2,6 +2,7 @@ import type { LocatorTarget, PageTarget } from '../api/app-page.ts'
 import type { Scope } from '../api/context.ts'
 import type { ElectronPage, Locator, NativeLocator, Page } from '../api/page.ts'
 import type { RetestTypeError } from '../config/register.ts'
+import type { LayoutCheckRecord } from '../protocol/layout-checks.ts'
 import type { ExpectedText, LocatorCheckRecord, PageCheckRecord } from '../protocol/locator-checks.ts'
 import type { ValueCheck } from './value-checks.ts'
 import { locatorTarget, pageTarget } from '../api/app-page.ts'
@@ -12,9 +13,11 @@ import { isThenable } from '../api/operation.ts'
 import { Secret } from '../api/secret.ts'
 import { describeLocator, textPatternOf } from '../protocol/locator.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
+import { pollLayout } from './poll-layout.ts'
 import { pollLocator } from './poll-locator.ts'
 import { pollPage } from './poll-page.ts'
 import { pollValue } from './poll-value.ts'
+import { pollScreenshot, readScreenshotCall } from './screenshot.ts'
 import { assertValue } from './value.ts'
 import { containCheck, equalCheck, matchCheck, sameCheck } from './value-checks.ts'
 
@@ -36,6 +39,14 @@ const misplaced = {
   toHaveValue: 'toHaveValue is for locators. Use toBe on a value.',
   toHaveURL: 'toHaveURL is for a page. Use toBe on a value.',
   toHaveTitle: 'toHaveTitle is for a page. Use toBe on a value.',
+  toOverlap: 'toOverlap is for locators. Use toBe on a value.',
+  toOverflowViewport: 'toOverflowViewport is for locators. Use toBe on a value.',
+  toHaveClippedText: 'toHaveClippedText is for locators. Use toBe on a value.',
+  toScrollHorizontally: 'toScrollHorizontally is for a page. Use toBe on a value.',
+  layout: 'Layout matchers measure a web page. A native app has no page layout to measure.',
+  toHaveScreenshot: 'toHaveScreenshot is for locators and pages. Use toEqual on a value.',
+  screenshotNot: 'toHaveScreenshot has no .not. Save a baseline of the picture you expect instead.',
+  screenshotNative: 'toHaveScreenshot compares web pages. Retest compares no picture of a native app yet.',
   not: '.not is for locator and page matchers. Write the value matcher that says what you expect.',
   twice: '.not is written once.',
 } as const
@@ -47,6 +58,19 @@ type Misplaced = typeof misplaced
  * lengthens it.
  */
 export type AssertionOptions = { readonly timeout?: number | undefined }
+
+/**
+ * `toHaveScreenshot`'s options. `threshold` is the colour distance, from 0 to 1, above which a pixel counts as
+ * different: 0.2 when left out. `maxDiffPixels` is how many pixels may differ, and `maxDiffPixelRatio` what part of
+ * them, from 0 to 1; with both, each must hold, and with neither, no pixel may differ. `timeout` shortens the assertion
+ * budget for the call, in milliseconds, and never lengthens it.
+ */
+export type ScreenshotOptions = {
+  readonly threshold?: number | undefined
+  readonly maxDiffPixels?: number | undefined
+  readonly maxDiffPixelRatio?: number | undefined
+  readonly timeout?: number | undefined
+}
 
 /** A locator's matchers, as they are and after `.not`. Each looks at the page again until it passes or time runs out. */
 export interface LocatorMatchers {
@@ -117,8 +141,39 @@ export interface LocatorMatchers {
   readonly toMatch: RetestTypeError<Misplaced['toMatch']>
 }
 
+/**
+ * A locator's layout matchers, as they are and after `.not`. Each names a layout problem and passes while the page
+ * shows it, so `.not` passes once it is gone. Each measures the page again until it passes or time runs out, needs
+ * exactly one element for each locator, and passes neither way while an element is not shown.
+ */
+export interface LayoutMatchers {
+  /**
+   * Waits until exactly one element matches each locator and their visible boxes share more than 4 pixels both across
+   * and down. A control inside a field never overlaps it, and an element never overlaps one it holds. Negated, it
+   * passes once they share no more than that.
+   *
+   * @example await expect(page.getByRole('button', { name: 'Save' })).not.toOverlap(page.getByRole('link', { name: 'Help' }))
+   */
+  toOverlap(other: Locator, options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until exactly one element matches and the visible part of it ends more than 1 pixel past the right edge of
+   * the viewport, its width without the scrollbar. Negated, it passes once the element ends no further than that.
+   *
+   * @example await expect(page.getByTestId('price')).not.toOverflowViewport()
+   */
+  toOverflowViewport(options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until exactly one element matches and a container that hides its overflow cuts off more than 4 pixels of
+   * its words or the words of an element inside it. Text shortened on purpose, with an ellipsis or a line clamp, is
+   * not cut off. Negated, it passes once no more than that is cut off.
+   *
+   * @example await expect(page.getByRole('heading')).not.toHaveClippedText()
+   */
+  toHaveClippedText(options?: AssertionOptions): Promise<void>
+}
+
 /** Matchers for a locator. They look at the page again until they pass or time runs out, so await them. */
-export interface LocatorAssertions extends LocatorMatchers {
+export interface LocatorAssertions extends LocatorMatchers, LayoutMatchers {
   /**
    * The same matchers, each passing only on a look that shows the opposite. A missing element passes only
    * `.not.toBeVisible()`, `.not.toHaveCount()` and `.not.toHaveText([...])`.
@@ -126,20 +181,38 @@ export interface LocatorAssertions extends LocatorMatchers {
    * @example await expect(page.getByRole('dialog')).not.toBeVisible()
    */
   readonly not: NegatedLocatorAssertions
+  /**
+   * Takes pictures of the one element that matches, clipped to its box, at growing waits from 100 ms, until two in a
+   * row are the same and the last matches the baseline `name` beside the test file, pixel by pixel, or time runs out.
+   * The element must be shown and inside the viewport. No pixel may differ unless the options allow it. A missing
+   * baseline fails the check; run with `--update-screenshots` to write it.
+   *
+   * @example await expect(page.getByTestId('chart')).toHaveScreenshot('chart', { maxDiffPixels: 50 })
+   */
+  toHaveScreenshot(name: string, options?: ScreenshotOptions): Promise<void>
 }
 
 /** A locator's matchers after `.not`. */
 export interface NativeLocatorAssertions extends LocatorMatchers {
   toBeSelected(options?: AssertionOptions): Promise<void>
+  readonly toOverlap: RetestTypeError<Misplaced['layout']>
+  readonly toOverflowViewport: RetestTypeError<Misplaced['layout']>
+  readonly toHaveClippedText: RetestTypeError<Misplaced['layout']>
   readonly not: NativeNegatedLocatorAssertions
+  readonly toHaveScreenshot: RetestTypeError<Misplaced['screenshotNative']>
 }
 export interface NativeNegatedLocatorAssertions extends LocatorMatchers {
   toBeSelected(options?: AssertionOptions): Promise<void>
+  readonly toOverlap: RetestTypeError<Misplaced['layout']>
+  readonly toOverflowViewport: RetestTypeError<Misplaced['layout']>
+  readonly toHaveClippedText: RetestTypeError<Misplaced['layout']>
   readonly not: RetestTypeError<Misplaced['twice']>
+  readonly toHaveScreenshot: RetestTypeError<Misplaced['screenshotNative']>
 }
 
-export interface NegatedLocatorAssertions extends LocatorMatchers {
+export interface NegatedLocatorAssertions extends LocatorMatchers, LayoutMatchers {
   readonly not: RetestTypeError<Misplaced['twice']>
+  readonly toHaveScreenshot: RetestTypeError<Misplaced['screenshotNot']>
 }
 
 /** A page's matchers, as they are and after `.not`. Each looks at the page again until it passes or time runs out. */
@@ -158,6 +231,13 @@ export interface PageMatchers {
    * @example await expect(page).toHaveTitle('Tasks')
    */
   toHaveTitle(title: string | RegExp, options?: AssertionOptions): Promise<void>
+  /**
+   * Waits until the page scrolls sideways: the document is more than 1 pixel wider than the viewport without its
+   * scrollbar, and the page does not hide what runs past it. Negated, it passes once the page does not.
+   *
+   * @example await expect(page).not.toScrollHorizontally()
+   */
+  toScrollHorizontally(options?: AssertionOptions): Promise<void>
   readonly toBe: RetestTypeError<Misplaced['toBe']>
   readonly toEqual: RetestTypeError<Misplaced['toEqual']>
 }
@@ -170,11 +250,20 @@ export interface PageAssertions extends PageMatchers {
    * @example await expect(page).not.toHaveURL('/login')
    */
   readonly not: NegatedPageAssertions
+  /**
+   * Takes pictures of the page's viewport, at growing waits from 100 ms, until two in a row are the same and the last
+   * matches the baseline `name` beside the test file, pixel by pixel, or time runs out. No pixel may differ unless the
+   * options allow it. A missing baseline fails the check; run with `--update-screenshots` to write it.
+   *
+   * @example await expect(page).toHaveScreenshot('dashboard')
+   */
+  toHaveScreenshot(name: string, options?: ScreenshotOptions): Promise<void>
 }
 
 /** A page's matchers after `.not`. */
 export interface NegatedPageAssertions extends PageMatchers {
   readonly not: RetestTypeError<Misplaced['twice']>
+  readonly toHaveScreenshot: RetestTypeError<Misplaced['screenshotNot']>
 }
 
 /** Matchers that compare a value. `Result` is `void` for `expect`, and a promise for `expect.poll`. */
@@ -224,6 +313,11 @@ export interface ValueAssertions<Actual> extends ValueMatchers<Actual, void> {
   readonly toHaveValue: RetestTypeError<Misplaced['toHaveValue']>
   readonly toHaveURL: RetestTypeError<Misplaced['toHaveURL']>
   readonly toHaveTitle: RetestTypeError<Misplaced['toHaveTitle']>
+  readonly toOverlap: RetestTypeError<Misplaced['toOverlap']>
+  readonly toOverflowViewport: RetestTypeError<Misplaced['toOverflowViewport']>
+  readonly toHaveClippedText: RetestTypeError<Misplaced['toHaveClippedText']>
+  readonly toScrollHorizontally: RetestTypeError<Misplaced['toScrollHorizontally']>
+  readonly toHaveScreenshot: RetestTypeError<Misplaced['toHaveScreenshot']>
   readonly not: RetestTypeError<Misplaced['not']>
 }
 
@@ -390,6 +484,39 @@ class LocatorExpectation {
     throw misuse(`toHaveValue() takes the expected value as a string or a RegExp, received ${formatValue(value)}.`, this.#scope.run)
   }
 
+  toOverlap(other: unknown, options?: unknown): Promise<void> {
+    const { run } = this.#scope
+    const found = locatorTarget(other)
+    if (found === undefined) throw misuse(`toOverlap() takes the other element's locator, such as page.getByTestId('help'), received ${formatValue(other)}.`, run)
+    if (found.run !== run) throw misuse('The other locator belongs to another test. Find it again with its page.', run)
+    if (found.app !== this.#target.app) {
+      const own = describeLocator(this.#target.recipe)
+      throw misuse(`toOverlap() compares two elements of one page: ${own} is on ${this.#target.app} and ${describeLocator(found.recipe)} on ${found.app}.`, run)
+    }
+    return this.#measure({ matcher: 'toOverlap', other: found.recipe }, options)
+  }
+
+  toOverflowViewport(options?: unknown): Promise<void> {
+    return this.#measure({ matcher: 'toOverflowViewport' }, options)
+  }
+
+  toHaveClippedText(options?: unknown): Promise<void> {
+    return this.#measure({ matcher: 'toHaveClippedText' }, options)
+  }
+
+  toHaveScreenshot(name: unknown, options?: unknown): Promise<void> {
+    const { run, stepId } = this.#scope
+    const { app, recipe } = this.#target
+    const { soft, negated } = this.#sense
+    const location = run.location()
+    if (negated) throw misuse(misplaced.screenshotNot, run)
+    if (this.#target.run !== run) throw misuse('This locator belongs to another test. Find it again with its page.', run)
+    const call = readScreenshotCall(name, options)
+    if (typeof call === 'string') throw misuse(call, run)
+    const label = `${soft ? 'expect.soft' : 'expect'}(${describeLocator(recipe)}).toHaveScreenshot()`
+    return run.assertion(label, location, () => pollScreenshot({ run, stepId, app, recipe, record: call.record, location, soft, timeoutMs: call.timeoutMs }), app)
+  }
+
   toBe(): never {
     throw misuse(misplaced.toBe, this.#scope.run)
   }
@@ -416,6 +543,18 @@ class LocatorExpectation {
     const record: LocatorCheckRecord = negated ? { ...matched, not: true } : matched
     const label = `${soft ? 'expect.soft' : 'expect'}(${describeLocator(recipe)})${negated ? '.not' : ''}.${matched.matcher}()`
     return run.assertion(label, location, () => pollLocator({ run, stepId, app, recipe, record, location, soft, timeoutMs }), app)
+  }
+
+  #measure(matched: LayoutCheckRecord, options: unknown): Promise<void> {
+    const { run, stepId } = this.#scope
+    const { app, recipe } = this.#target
+    const { soft, negated } = this.#sense
+    const location = run.location()
+    if (this.#target.run !== run) throw misuse('This locator belongs to another test. Find it again with its page.', run)
+    const timeoutMs = readAssertionOptions(matched.matcher, options, this.#scope)
+    const record: LayoutCheckRecord = negated ? { ...matched, not: true } : matched
+    const label = `${soft ? 'expect.soft' : 'expect'}(${describeLocator(recipe)})${negated ? '.not' : ''}.${matched.matcher}()`
+    return run.assertion(label, location, () => pollLayout({ run, stepId, app, recipe, record, location, soft, timeoutMs }), app)
   }
 }
 
@@ -447,6 +586,31 @@ class PageExpectation {
     if (typeof title === 'string') return this.#assert({ matcher: 'toHaveTitle', title }, options)
     if (title instanceof RegExp) return this.#assert({ matcher: 'toHaveTitle', pattern: textPatternOf(title) }, options)
     throw misuse(`toHaveTitle() takes the title as a string or a RegExp, received ${formatValue(title)}.`, this.#scope.run)
+  }
+
+  toScrollHorizontally(options?: unknown): Promise<void> {
+    const { run, stepId } = this.#scope
+    const { app } = this.#target
+    const { soft, negated } = this.#sense
+    const location = run.location()
+    if (this.#target.run !== run) throw misuse('This page belongs to another test. Use the page this test was given.', run)
+    const timeoutMs = readAssertionOptions('toScrollHorizontally', options, this.#scope)
+    const record: LayoutCheckRecord = negated ? { matcher: 'toScrollHorizontally', not: true } : { matcher: 'toScrollHorizontally' }
+    const label = `${soft ? 'expect.soft' : 'expect'}(page)${negated ? '.not' : ''}.toScrollHorizontally()`
+    return run.assertion(label, location, () => pollLayout({ run, stepId, app, recipe: undefined, record, location, soft, timeoutMs }), app)
+  }
+
+  toHaveScreenshot(name: unknown, options?: unknown): Promise<void> {
+    const { run, stepId } = this.#scope
+    const { app } = this.#target
+    const { soft, negated } = this.#sense
+    const location = run.location()
+    if (negated) throw misuse(misplaced.screenshotNot, run)
+    if (this.#target.run !== run) throw misuse('This page belongs to another test. Use the page this test was given.', run)
+    const call = readScreenshotCall(name, options)
+    if (typeof call === 'string') throw misuse(call, run)
+    const label = `${soft ? 'expect.soft' : 'expect'}(page).toHaveScreenshot()`
+    return run.assertion(label, location, () => pollScreenshot({ run, stepId, app, recipe: undefined, record: call.record, location, soft, timeoutMs: call.timeoutMs }), app)
   }
 
   toBe(): never {
@@ -550,6 +714,26 @@ class ValueExpectation {
 
   toHaveTitle(): never {
     throw misuse(misplaced.toHaveTitle, this.#scope.run)
+  }
+
+  toOverlap(): never {
+    throw misuse(misplaced.toOverlap, this.#scope.run)
+  }
+
+  toOverflowViewport(): never {
+    throw misuse(misplaced.toOverflowViewport, this.#scope.run)
+  }
+
+  toHaveClippedText(): never {
+    throw misuse(misplaced.toHaveClippedText, this.#scope.run)
+  }
+
+  toScrollHorizontally(): never {
+    throw misuse(misplaced.toScrollHorizontally, this.#scope.run)
+  }
+
+  toHaveScreenshot(): never {
+    throw misuse(misplaced.toHaveScreenshot, this.#scope.run)
   }
 
   get not(): never {

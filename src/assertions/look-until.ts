@@ -21,6 +21,11 @@ export type LookOptions<Observed> = {
   /** What a passed answer saw, or undefined for an answer of another kind. */
   read(result: Extract<CommandResult, { ok: true }>): Look<Observed> | undefined
   passes(observation: Observed): boolean
+  /**
+   * The waits before each look in milliseconds, counting from 0 for the first, the last repeating, for a check whose
+   * looks must be spaced, such as a screenshot's. Absent: `pollDelay`'s.
+   */
+  delays?: readonly number[]
 }
 
 /** How the looks went: the last, how many, when they began, and the failure that stopped them, if one did. */
@@ -57,7 +62,7 @@ export async function lookUntil<Observed>(options: LookOptions<Observed>): Promi
   for (;;) {
     // Rounded up, so a wait cut to the deadline ends at it; a timer that fires early leaves time, and the loop waits again.
     const waitToEndMs = deadline.waitToEndMs
-    const delay = smallestBudget(pollDelay(attempts), waitToEndMs)
+    const delay = smallestBudget(options.delays === undefined ? pollDelay(attempts) : (options.delays[Math.min(attempts, options.delays.length - 1)] ?? 0), waitToEndMs)
     let after: ObserveAfter | undefined
     const changes = last?.changes
     if (changes === undefined) {

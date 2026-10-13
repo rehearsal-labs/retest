@@ -64,6 +64,7 @@ const options = {
   }),
   playwright: flag('Run Playwright test files: @playwright/test resolves to Retest,\nas far as its compatibility goes. With no files, every .spec file under this folder'),
   'allow-only': flag('Run the tests marked only even when CI is set, which otherwise refuses them'),
+  'update-screenshots': flag('Write every screenshot baseline the run compares against\nfrom the picture it took, and pass those checks'),
   headed: flag('Show every browser window'),
   agent: flag('Print the short report for coding agents'),
   'no-agent': flag('Print the report for people, even when a coding agent is detected'),
@@ -156,6 +157,7 @@ async function planRun(parsed: Parsed, dependencies: CliDependencies): Promise<R
     ...(browsers === undefined ? {} : { browsers }),
     ...(playwright ? { playwright: true as const } : {}),
     ...(forbidOnly === undefined ? {} : { forbidOnly }),
+    ...(parsed.flag('update-screenshots') ? { updateScreenshots: true as const } : {}),
     signal: dependencies.signal,
   }
   return { options: runOptions, reporter, runFolder }
