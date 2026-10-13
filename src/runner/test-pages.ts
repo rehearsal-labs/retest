@@ -19,9 +19,10 @@ import { timerMs } from './timer.ts'
 
 /**
  * One app's page in a test, the browser it belongs to, whether it emulates a touch screen, and the session it is:
- * its id, the run, test, attempt and app that hold it, and the browser it runs on.
+ * its id, the run, test, attempt and app that hold it, and the browser it runs on. `popup` marks a page another page
+ * opened, which `page.popup()` gave the test.
  */
-export type AppPage = { app: string; page: OwnedPage; browser: OwnedBrowser; touch: boolean; session: SessionIdentity }
+export type AppPage = { app: string; page: OwnedPage; browser: OwnedBrowser; touch: boolean; session: SessionIdentity; popup?: true }
 
 /** What the pages of a test need from the run. */
 export type PagesContext = {
@@ -132,7 +133,7 @@ export async function disposePages(context: PagesContext, pages: readonly AppPag
 
 // The screenshot's event and its entry in the result name the session that took it, what took it, and when it came
 // back, as an ISO time and on the run's clock.
-async function screenshot(context: PagesContext, { app, page, browser, session }: AppPage): Promise<Evidence[]> {
+async function screenshot(context: PagesContext, { app, page, browser, session, popup }: AppPage): Promise<Evidence[]> {
   if (context.interruption() !== undefined) return []
   const { testId, attemptId, named } = context
   const { sessionId } = session
@@ -162,7 +163,8 @@ async function screenshot(context: PagesContext, { app, page, browser, session }
   if (after !== undefined) return withheld(after)
   const capturedAt = nativeCapture?.ok === true ? nativeCapture.capture.capturedAt : new Date().toISOString()
   const capturedElapsedMs = context.store.elapsedMs()
-  const path = named ? failureScreenshotFile(testId, attemptId, app) : failureScreenshotFile(testId, attemptId)
+  // A popup's screenshot always names its app, so it never takes the place of its opener's.
+  const path = named || popup === true ? failureScreenshotFile(testId, attemptId, app) : failureScreenshotFile(testId, attemptId)
   try {
     context.store.writeArtifact(path, shot.value)
   } catch (error) {
@@ -172,7 +174,7 @@ async function screenshot(context: PagesContext, { app, page, browser, session }
   const captureReference = nativeCapture?.ok === true ? { captureReference: { instance: nativeCapture.capture.reference.instance, generation: nativeCapture.capture.reference.generation, observationId: nativeCapture.capture.reference.observationId } } : {}
   const reference: EvidenceReference = { kind: 'screenshot', path, app, sessionId, testId, attemptId, capturedAt, ...clock, ...captureReference, ...(source === undefined ? {} : { source }) }
   context.emit(capturedEvent(reference))
-  return [resultEvidence(reference, named)]
+  return [resultEvidence(reference, named || popup === true)]
 }
 
 // The policy's refusal of a failure screenshot, or undefined when it may be taken; none when the run has no policy. A
