@@ -151,6 +151,16 @@ export class AttemptDiagnostics {
     }
   }
 
+  /**
+   * Notes a session whose diagnostics Retest does not capture, such as a page a test's page opened: unavailable with
+   * `reason`, or disabled when the run captures none, so its summary never reads as complete. Before `finish` only.
+   */
+  notCaptured(app: string, session: SessionIdentity, reason: string): void {
+    if (this.#finished !== undefined || this.#sessions.some((entry) => entry.app === app)) return
+    const identity: DiagnosticIdentity = { testId: this.#options.testId, attemptId: this.#options.attemptId, app, sessionId: session.sessionId }
+    this.#sessions.push({ app, identity, ...(this.#options.policy.capture ? { unavailable: reason } : {}) })
+  }
+
   /** A read-only, identity-preserving view for an evaluation; collection continues after the view is taken. */
   snapshot(app: string): (CaptureSnapshot & DiagnosticIdentity) | undefined {
     const entry = this.#sessions.find((session) => session.app === app)

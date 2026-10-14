@@ -18,10 +18,11 @@ type Known = { value: string; placeholder: string }
 
 // The text a page or a person can write a secret into: failure messages and details, what an assertion expected
 // and saw, what a look observed, every address, since a page puts what it was given into its path or query, what a
-// host writes into a check, and the text a locator matches, under `writtenKeys`. Page titles are free text too,
-// under `titleKeys`. Identifiers Retest makes itself (ids, names, test ids, variants, file paths) are never rewritten.
-// A config's lock names are written by a person too, and travel with every attempt that holds them.
-const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls', 'locks'])
+// host writes into a check, and the text a locator matches, under `writtenKeys`. A message's subject, and the subject
+// a test asked an inbox for, are free text. Page titles are free text too, under `titleKeys`. Identifiers Retest makes
+// itself (ids, names, test ids, variants, file paths) are never rewritten. A config's lock names are written by a
+// person too, and travel with every attempt that holds them.
+const freeText: ReadonlySet<string> = new Set(['message', 'details', 'expected', 'actual', 'observed', 'url', 'pageUrl', 'ready', 'baseUrl', 'baseUrls', 'locks', 'subject', 'wanted'])
 
 // A host writes a check's text, name and path itself, and holds the run's secrets, so each is free text wherever
 // a check is recorded. The page is still asked for the text, and the path still matched, as written. A locator's
@@ -266,7 +267,9 @@ const fragmentSet = new Set([...' "<>`'])
 /**
  * Every way a value is written once a page puts it in a URL: the value itself, then as `encodeURIComponent`,
  * `encodeURI`, a form submission and the URL standard's path, query and fragment write it, each also with
- * lowercase hex. A form that equals the value is left out, so a value of unreserved characters has one form.
+ * lowercase hex. A form that equals the value is left out, so a value of unreserved characters has one form. A value a
+ * test writes inside a regular expression, as a route's pattern, is written with its special characters escaped, and
+ * its slashes too in a literal's source, so those forms are kept as well.
  *
  * @example writtenForms('a b') // ['a b', 'a%20b', 'a+b']
  */
@@ -280,7 +283,8 @@ function writtenForms(value: string): string[] {
     percentEncode(value, fragmentSet),
   ]
   const lowered = encoded.map((form) => form.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase()))
-  return [...new Set([value, ...encoded, ...lowered])]
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return [...new Set([value, ...encoded, ...lowered, escaped, escaped.replaceAll('/', '\\/')])]
 }
 
 function percentEncode(value: string, set: ReadonlySet<string>): string {

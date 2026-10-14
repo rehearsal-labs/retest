@@ -162,10 +162,18 @@ function requestRow(row: RequestRow, clock: TimelineClock): Markup {
     ...(failed === undefined ? [] : [failed.blocked === undefined ? failed.reason : `${failed.reason}, blocked: ${failed.blocked}`]),
     ...(pending === undefined ? [] : [describePending(pending)]),
     ...(response?.serviceWorker === true ? ['answered by a service worker'] : []),
+    ...mockedBy(response?.route ?? failed?.route, failed?.routeRefused),
   ]
   const during = elapsed === undefined ? undefined : clock.during(elapsed)
   const under = [...endings, ...(during === undefined ? [] : [`during ${during}`])].map((line) => html`<div class="muted small words">${line}</div>`)
   return html`<tr><td class="time">${elapsed === undefined ? '?' : formatDuration(elapsed)}</td><td class="muted">${request.requestId}</td><td>${request.method}</td><td>${status}</td><td class="number">${durationMs === undefined ? '' : formatMilliseconds(durationMs)}</td><td><span class="words">${request.url}</span>${under}</td></tr>`
+}
+
+// A hop one of the page's routes answered or refused is the test's own, and says which route, and why Chrome refused
+// the route's answer when it did.
+function mockedBy(route: string | undefined, refused: string | undefined): string[] {
+  if (route === undefined) return []
+  return [`mocked by page.route(${route})${refused === undefined ? '' : `, whose answer Chrome refused: ${refused}`}`]
 }
 
 // A hop handed outside the scope is not pending: its end is reported where Retest does not listen.

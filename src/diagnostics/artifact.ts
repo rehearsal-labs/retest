@@ -77,13 +77,21 @@ export function mapRecordText(record: DiagnosticRecord, rewrite: (text: string) 
     case 'network.request':
       return { ...record, url: rewrite(record.url) }
     case 'network.response':
-      return record.statusText === undefined ? record : { ...record, statusText: rewrite(record.statusText) }
+      return withRoute(record.statusText === undefined ? record : { ...record, statusText: rewrite(record.statusText) }, rewrite)
     case 'network.failed':
-      return { ...record, reason: rewrite(record.reason) }
+      return withRoute({ ...record, reason: rewrite(record.reason) }, rewrite)
     case 'network.finished':
     case 'network.pending':
       return record
   }
+}
+
+// A route's pattern, and Chrome's reason for refusing its answer, are rewritten with the rest of a record's text.
+function withRoute<T extends { route?: string; routeRefused?: string }>(record: T, rewrite: (text: string) => string): T {
+  if (record.route === undefined && record.routeRefused === undefined) return record
+  const route = record.route === undefined ? {} : { route: rewrite(record.route) }
+  const refused = record.routeRefused === undefined ? {} : { routeRefused: rewrite(record.routeRefused) }
+  return { ...record, ...route, ...refused }
 }
 
 // The markers hold only what Retest wrote; each record's page text is rewritten.

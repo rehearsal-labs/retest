@@ -20,6 +20,11 @@ export type ChromiumCollectorOptions = {
   sink: DiagnosticSink
   /** Bounds in-flight request metadata even when the sink has already filled its artifact budget. */
   maxTrackedRequests?: number
+  /**
+   * What one of the page's routes did to the hop of a request, by its network id and the hop's address: its pattern as a
+   * test writes it, and Chrome's reason when Chrome refused the route's answer.
+   */
+  answeredBy?: (requestId: string, url: string) => { readonly route: string; readonly refused?: string } | undefined
 }
 
 /**
@@ -117,7 +122,7 @@ const failedSchema = s.object({
 
 type Context = { frameId: string | undefined; isDefault: boolean }
 /** One request id's current hop: its key, when it started on the engine's monotonic clock, and that clock's offset to the epoch. */
-type Hop = { key: string; number: number; frameId: string | undefined; startSeconds: number; wallOffsetSeconds: number; servedFromCache: boolean }
+type Hop = { key: string; number: number; url: string; frameId: string | undefined; startSeconds: number; wallOffsetSeconds: number; servedFromCache: boolean }
 
 // The console types whose severity is not information.
 const consoleLevels: Readonly<Record<string, 'debug' | 'warning' | 'error'>> = { debug: 'debug', warning: 'warning', error: 'error', assert: 'error' }
@@ -138,14 +143,16 @@ export class ChromiumCollector implements DiagnosticCollection {
   readonly #contexts = new Map<number, Context>()
   readonly #hops = new Map<string, Hop>()
   readonly #maxTrackedRequests: number
+  readonly #answeredBy: NonNullable<ChromiumCollectorOptions['answeredBy']>
   #stopped = false
 
-  constructor({ session, mainFrameId, sink, maxTrackedRequests = 1000 }: ChromiumCollectorOptions) {
+  constructor({ session, mainFrameId, sink, maxTrackedRequests = 1000, answeredBy = () => undefined }: ChromiumCollectorOptions) {
     if (!Number.isSafeInteger(maxTrackedRequests) || maxTrackedRequests < 1) throw new RangeError('The collector request limit must be a positive safe integer.')
     this.#session = session
     this.#mainFrameId = mainFrameId
     this.#sink = sink
     this.#maxTrackedRequests = maxTrackedRequests
+    this.#answeredBy = answeredBy
     this.#listen('Runtime.consoleAPICalled', consoleCalledSchema, (params) => this.#console(params))
     this.#listen('Runtime.exceptionThrown', exceptionSchema, (params) => this.#exception(params))
     this.#listen('Runtime.exceptionRevoked', revokedSchema, ({ exceptionId }) => this.#observe({ kind: 'revoked', key: String(exceptionId) }))
@@ -298,10 +305,10 @@ export class ChromiumCollector implements DiagnosticCollection {
       return
     }
     const number = previous === undefined ? 1 : previous.number + 1
-    const hop: Hop = { key: `${requestId}#${number}`, number, frameId: params.frameId, startSeconds: timestamp, wallOffsetSeconds: wallTime - timestamp, servedFromCache: false }
+    const hop: Hop = { key: `${requestId}#${number}`, number, url: params.request.url, frameId: params.frameId, startSeconds: timestamp, wallOffsetSeconds: wallTime - timestamp, servedFromCache: false }
     if (previous !== undefined && redirectResponse !== undefined) {
       const time = redirectResponse.responseTime ?? wallMs(previous, timestamp)
-      this.#observe({ kind: 'response', ...responseFields(redirectResponse, false), key: previous.key, time, redirectedTo: hop.key })
+      this.#observe({ kind: 'response', ...responseFields(redirectResponse, false), key: previous.key, time, redirectedTo: hop.key, ...this.#route(requestId, previous.url) })
       const transferred = redirectResponse.encodedDataLength === undefined ? {} : { transferredBytes: Math.round(redirectResponse.encodedDataLength) }
       this.#observe({ kind: 'finished', key: previous.key, time, ...durationOf(previous, timestamp), ...transferred })
     }
@@ -338,7 +345,7 @@ export class ChromiumCollector implements DiagnosticCollection {
     const hop = this.#hops.get(requestId)
     if (hop === undefined) return
     const time = response.responseTime ?? wallMs(hop, timestamp)
-    this.#observe({ kind: 'response', ...responseFields(response, hop.servedFromCache), key: hop.key, time })
+    this.#observe({ kind: 'response', ...responseFields(response, hop.servedFromCache), key: hop.key, time, ...this.#route(requestId, hop.url) })
   }
 
   #finished({ requestId, timestamp, encodedDataLength }: Finished): void {
@@ -361,7 +368,22 @@ export class ChromiumCollector implements DiagnosticCollection {
       reason: errorText,
       ...(canceled === true ? { canceled: true } : {}),
       ...(blockedReason === undefined ? {} : { blocked: blockedReason }),
+      ...this.#route(requestId, hop.url),
+      ...this.#refusedAnswer(requestId, hop.url),
     })
+  }
+
+  // A response or a refusal one of the page's routes gave in the network's place, for the hop it gave it to: each hop of a
+  // redirect has the request's id, and its own address.
+  #route(requestId: string, url: string): { route?: string } {
+    const mark = this.#answeredBy(requestId, url)
+    return mark === undefined ? {} : { route: mark.route }
+  }
+
+  // Chrome's reason when it refused the answer a route gave the hop, which Retest then failed.
+  #refusedAnswer(requestId: string, url: string): { routeRefused?: string } {
+    const refused = this.#answeredBy(requestId, url)?.refused
+    return refused === undefined ? {} : { routeRefused: refused }
   }
 
   #frameOf(frameId: string | undefined): { frame?: FrameRole } {

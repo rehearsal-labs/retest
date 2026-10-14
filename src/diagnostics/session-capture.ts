@@ -90,6 +90,7 @@ const contentTypeLength = 128
 const protocolLength = 32
 const reasonLength = 256
 const blockedLength = 64
+const routeLength = 256
 const methodLength = 32
 const resourceTypeLength = 32
 // The most a hop's later records add beyond their identity: a response, then a failure, a finish or a pending mark. A
@@ -360,6 +361,7 @@ export class SessionCapture implements DiagnosticSink {
       ...(observation.serviceWorker === undefined ? {} : { serviceWorker: observation.serviceWorker }),
       ...(observation.protocol === undefined ? {} : { protocol: this.#short(observation.protocol, protocolLength) }),
       ...(redirectedTo === undefined ? {} : { redirectedTo }),
+      ...this.#mocked(observation.route),
     }
     hop.state = 'responded'
     hop.status = observation.status
@@ -395,6 +397,8 @@ export class SessionCapture implements DiagnosticSink {
       reason: this.#short(observation.reason, reasonLength),
       ...(observation.canceled === true ? { canceled: true as const } : {}),
       ...(observation.blocked === undefined ? {} : { blocked: this.#short(observation.blocked, blockedLength) }),
+      ...this.#mocked(observation.route),
+      ...(observation.routeRefused === undefined ? {} : { routeRefused: this.#short(observation.routeRefused, reasonLength) }),
     }
   }
 
@@ -456,6 +460,11 @@ export class SessionCapture implements DiagnosticSink {
   // An address is redacted whole, in every form a URL gives a secret, before it is cleaned and cut.
   #url(address: string): TruncatedText {
     return truncateText(sanitizeUrl(this.#redactor.redact(address)), this.#budget.limits.textLength)
+  }
+
+  // A route's pattern is the test's own text, redacted and with any address in it cleaned as an address is.
+  #mocked(route: string | undefined): { mocked?: true; route?: string } {
+    return route === undefined ? {} : { mocked: true, route: truncateText(sanitizeText(this.#redactor.redact(route)), routeLength).text }
   }
 
   #short(text: string, limit: number): string {

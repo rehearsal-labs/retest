@@ -60,6 +60,8 @@ export type ResponseObservation = {
   serviceWorker?: boolean
   protocol?: string
   redirectedTo?: string
+  /** The pattern of the page's route that gave this response in the network's place, as a test writes it. */
+  route?: string
 }
 
 /** The body of a response began to arrive. */
@@ -67,7 +69,11 @@ export type DataObservation = { kind: 'data'; key: string }
 
 export type FinishedObservation = { kind: 'finished'; key: string; time: number; durationMs?: number; transferredBytes?: number }
 
-export type FailedObservation = { kind: 'failed'; key: string; time: number; durationMs?: number; reason: string; canceled?: true; blocked?: string }
+/**
+ * A hop that failed; `route` is the pattern of the page's route that refused it, as a test writes it, and `routeRefused`
+ * Chrome's reason when it was the route's answer Chrome refused, so Retest failed the hop in its place.
+ */
+export type FailedObservation = { kind: 'failed'; key: string; time: number; durationMs?: number; reason: string; canceled?: true; blocked?: string; route?: string; routeRefused?: string }
 
 /** A rejection the page handled after the engine reported it. */
 export type RevokedObservation = { kind: 'revoked'; key: string }
