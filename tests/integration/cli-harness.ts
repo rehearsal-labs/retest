@@ -384,13 +384,28 @@ export async function readFinishedRun({ retest, output }: StartedRun): Promise<F
 /**
  * Checks who judged each passed assertion. A locator assertion is judged by the parent, on the look it names: an
  * `observation` the parent wrote earlier in the same attempt, for the same app and locator. A page assertion is judged
- * by the parent on a look at the page, which has no event of its own, so it names a look and records the page. A value
- * assertion's pass is the test process's claim, and names no look.
+ * by the parent on a look at the page, which has no event of its own, so it names a look and records the page. A layout
+ * assertion is judged by the parent on a layout look, which has no event of its own either, so it names that look and
+ * records what it measured. A screenshot assertion is judged by the parent on a picture it took, which has no event
+ * of its own either, so it names that look and records the picture. A value assertion's pass is the test process's
+ * claim, and names no look.
  */
 export function assertJudged(events: readonly RetestEvent[]): void {
   for (const [index, event] of events.entries()) {
     if (event.type !== 'assertion.passed') continue
     const passed = `assertion.passed ${event.matcher} at sequence ${event.sequence}`
+    if (/^(not\.)?(toOverlap|toOverflowViewport|toHaveClippedText|toScrollHorizontally)$/.test(event.matcher)) {
+      assert.equal(event.judgedBy, 'parent', `${passed} was judged by the parent`)
+      assert.match(event.observationId ?? '', /^o\d+$/, `${passed} names the layout look it rested on`)
+      assert.ok(event.layout !== undefined, `${passed} records what that look measured`)
+      continue
+    }
+    if (event.matcher === 'toHaveScreenshot') {
+      assert.equal(event.judgedBy, 'parent', `${passed} was judged by the parent`)
+      assert.match(event.observationId ?? '', /^o\d+$/, `${passed} names the picture it rested on`)
+      assert.equal(event.screenshot?.settled, true, `${passed} records a picture that settled`)
+      continue
+    }
     if (event.locator === undefined && /^(not\.)?toHave(URL|Title)$/.test(event.matcher)) {
       assert.equal(event.judgedBy, 'parent', `${passed} was judged by the parent`)
       assert.match(event.observationId ?? '', /^o\d+$/, `${passed} names the look it rested on`)

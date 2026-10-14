@@ -7,17 +7,26 @@ import { CHOICES_PAGE, TOGGLE_PATH } from './choices-page.ts'
 import { CODE_PAGE, CODE_SIGN_IN_PAGE, CodeSignIns, renderRefusal } from './code-sign-in.ts'
 import { diagnosticsRoutes } from './diagnostics-routes.ts'
 import { renderDevicePage } from './device-page.ts'
+import { dialogRoutes } from './dialogs-page.ts'
+import { dragRoutes } from './drag-page.ts'
+import { filesRoutes } from './files-page.ts'
+import { framesRoutes } from './frames-page.ts'
 import { holderRoutes } from './holders.ts'
 import { KEY_DOWN_PATH, KEYS_PAGE } from './keys-page.ts'
 import { LOCATORS_PAGE } from './locators-page.ts'
 import { lookupRoutes } from './lookup-routes.ts'
 import { MODES, type Mode, type TaskAppMode } from './modes.ts'
 import { renderPage } from './page.ts'
+import { popupRoutes } from './popups-page.ts'
 import { PROXY_CHECK_FRAME, PROXY_CHECK_PAGE, PROXY_CHECK_PATH, PROXY_CHECK_WORKER } from './proxy-page.ts'
+import { receivedRequest, type ReceivedRequest } from './received-requests.ts'
 import { MORE_PATH, SCROLL_PAGE } from './scroll-page.ts'
 import { sharedRecords, type SharedRecord } from './shared-records.ts'
 import { SERVICE_WORKER, SERVICE_WORKER_PAGE } from './service-worker.ts'
+import { shadowRoutes } from './shadow-page.ts'
+import { routesRoutes } from './routes-page.ts'
 import { renderAccountPage, Sessions, SIGN_IN_PAGE } from './sign-in.ts'
+import { STABLE_PAGE } from './stable-page.ts'
 import { GREETING_PAGE, NEXT_TITLE_PAGE, REDIRECTING_PAGE, renderTitledPage, TITLES_PAGE } from './titles-page.ts'
 import { workflowRoutes } from './workflow-routes.ts'
 
@@ -38,6 +47,8 @@ export type TaskApp = {
   submissions(): number
   /** How many requests of any kind the server has received. */
   requests(): number
+  /** Every request the server has received, oldest first, with the headers that say what sent it. */
+  received(): readonly ReceivedRequest[]
   /** How many requests the server refused for lacking the required header. */
   refused(): number
   /** How many searches the actions page submitted. */
@@ -77,6 +88,7 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
   // Saves by the title received, so a test can count its own while other tests save theirs.
   const submissionsByTitle = new Map<string, number>()
   let requests = 0
+  const received: ReceivedRequest[] = []
   let refused = 0
   let searches = 0
   let clicks = 0
@@ -153,6 +165,7 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
       },
     ],
     ['GET /locators', (_request, response) => respond(response, 200, HTML, LOCATORS_PAGE)],
+    ['GET /stable', (_request, response) => respond(response, 200, HTML, STABLE_PAGE)],
     [
       'GET /device',
       (request, response) => {
@@ -265,10 +278,18 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     ...lookupRoutes(),
     ...workflowRoutes(),
     ...diagnosticsRoutes(),
+    ...dialogRoutes(),
+    ...popupRoutes(),
+    ...filesRoutes(),
+    ...dragRoutes(),
+    ...routesRoutes(),
+    ...framesRoutes(),
+    ...shadowRoutes(),
   ])
 
   const server = createServer((request, response) => {
     requests += 1
+    received.push(receivedRequest(request))
     if (options.requireHeader !== undefined && request.headers[options.requireHeader.toLowerCase()] === undefined) {
       refused += 1
       respond(response, 403, 'text/plain; charset=utf-8', `Refused: the request has no ${options.requireHeader} header.`)
@@ -297,6 +318,7 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     url: `http://127.0.0.1:${address.port}`,
     submissions: () => submissions,
     requests: () => requests,
+    received: () => [...received],
     refused: () => refused,
     searches: () => searches,
     clicks: () => clicks,
