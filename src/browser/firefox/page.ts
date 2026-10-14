@@ -39,6 +39,7 @@ import { documentFactsSchema, pageFactsOf, pageTitleOf } from '../document-facts
 import { describeAction, describeChoices, dispatchPinned, observe, observeKeyed, readSelection } from '../element-queries.ts'
 import { disarmGuard, guardFailure, guardInput } from '../input-guard.ts'
 import { originRefusal } from '../origin-refusal.ts'
+import { awaitFirstFrame } from '../first-frame.ts'
 import { isGoneContext, IsolatedWorld } from '../isolated-world.ts'
 import { dragRefused } from '../drag.ts'
 import { routesRefused, type RouteRemoval } from '../routes.ts'
@@ -638,9 +639,12 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     }
   }
 
+  // A page that has loaded may not be drawn yet, and nothing that waits for a frame answers until it is, so the
+  // navigation waits for its first frame within its own budget. A document already being replaced is not waited for.
   async #withLoadedPage(result: CommandResult, deadline: Deadline): Promise<CommandResult> {
     if (!result.ok || !isNavigationKind(result.kind) || !('url' in result)) return result
-    return { ...result, page: await this.#loadedPage(result.url, deadline) }
+    const drawn = this.#pending === undefined ? await awaitFirstFrame(this.#world, deadline) : undefined
+    return { ...result, page: await this.#loadedPage(result.url, deadline), ...(drawn === false ? { firstFrame: false } : {}) }
   }
 
   async #observePage(after: ObserveAfter | undefined, deadline: Deadline): Promise<CommandResult> {
@@ -830,6 +834,9 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     if (problem !== undefined) return { ok: false, failure: problem }
     const { locator } = command
     const intent = selectIntent(command)
+    // Several options of a native list are chosen only by toggling, so such a request is refused before the list is
+    // looked for: a label lookup alone is many round trips on Firefox.
+    if (command.choices.length > 1) return toggleRefused(locator, intent)
     return this.#bridge.resolving(locator, async () => {
       for (;;) {
         const target = await waitUntilActionable({ world: this.#world, locator, intent, deadline, pendingNavigation: () => this.#pending })
@@ -847,8 +854,7 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   // page set off for another document. Retest reads that from Firefox's own navigation events instead: once the page
   // began to open another document, or opened one, after a key went, it types no more.
   async #typeSelection({ locator, intent, plan, document, commandToken }: Typing, deadline: Deadline, dispatch: Dispatch): Promise<CommandResult | undefined> {
-    const problem = selectionProblem(plan)
-    if (problem !== undefined) return { ok: false, failure: { class: 'unsupported', message: `Could not select ${describeChoices(intent)} in ${describeLocator(locator)}: ${problem} Retest sent no input.`, details: { inputSent: false } } }
+    if (selectionProblem(plan) !== undefined) return toggleRefused(locator, intent)
     const commits = this.#commits
     // Firefox's trusted Escape release resets native incremental search without waiting for its timer.
     const keys = [{ key: 'Escape', toggle: false }, ...plan.keys]
@@ -1350,6 +1356,11 @@ function selectionStayed(locator: LocatorRecipe, intent: Extract<ActionIntent, {
       ? 'then no single select it matched still held the options asked for'
       : `the select holds ${last.selected.length === 0 ? 'nothing' : last.selected.map((label) => JSON.stringify(label)).join(', ')}`
   return { class: 'not_actionable', message: `Could not ${action}: Retest typed the keys that choose it, and ${after}. Retest does not type again.`, details: { check: 'selection', inputSent: true } }
+}
+
+// Firefox's refusal of a select that needs a key that toggles an option, worded as the shared look words it.
+function toggleRefused(locator: LocatorRecipe, intent: Extract<ActionIntent, { action: 'select' }>): CommandResult {
+  return { ok: false, failure: { class: 'unsupported', message: `Could not select ${describeChoices(intent)} in ${describeLocator(locator)}: ${toggleRefusal} Retest sent no input.`, details: { inputSent: false } } }
 }
 
 // Firefox sends no key that toggles an option, so the look refuses a select that needs one as soon as it finds it.

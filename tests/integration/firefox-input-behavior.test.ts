@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { toggleRefusal } from '../../src/browser/firefox/input.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
-import { byTestId, closeMs, observe, observeUntil, openPage, scratchFolder, servePages, setupMs, timed } from './browser-harness.ts'
+import { byLabel, byTestId, closeMs, observe, observeUntil, openPage, scratchFolder, servePages, setupMs, timed } from './browser-harness.ts'
 import { firefoxPath, testFirefoxRoute } from './engines.ts'
 
 const skip = process.platform === 'darwin' && process.arch === 'arm64' ? false : 'Firefox requires macOS on Apple silicon'
@@ -69,6 +69,28 @@ test('a Firefox multiple-select plan is refused at once, before Retest waits for
   assert.equal(dispatched.input, 'not_sent')
   assert.ok(ms < 2500, `the refusal came after ${Math.round(ms)} ms of a 5000 ms budget`)
   assert.equal((await observe(page, 'selected')).text, '')
+})
+
+// Several options are chosen only by toggling, so such a request is refused before the list is looked for: one that
+// matches nothing is not waited for, and the label lookup, many round trips on Firefox, is never made.
+test('a list of several options is refused on Firefox before Retest looks for the select', { skip }, async (t) => {
+  const folder = await scratchFolder(t)
+  const browser = await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), headless: true, logFile: join(folder, 'browser.log') }, setupMs)
+  t.after(() => browser.close(closeMs))
+  const site = await servePages(t, { '/': selectionPage })
+  const page = await browser.newPage({ baseUrl: site.url }, setupMs)
+  t.after(() => page.dispose(closeMs))
+  assert.ok((await page.execute({ kind: 'goto', url: '/' }, setupMs)).ok)
+  const { value: dispatched, ms } = await timed(page.dispatch({ kind: 'select', locator: byLabel('Toppings'), choices: [{ value: 'a' }, { value: 'd' }], multiple: true }, 5000))
+  assert.ok(!dispatched.result.ok)
+  assert.deepEqual(dispatched.result.failure, {
+    class: 'unsupported',
+    message: `Could not select [{ value: 'a' }, { value: 'd' }] in getByLabel('Toppings'): ${toggleRefusal} Retest sent no input.`,
+    details: { inputSent: false },
+  })
+  assert.equal(dispatched.input, 'not_sent')
+  assert.ok(ms < 2500, `the refusal came after ${Math.round(ms)} ms of a 5000 ms budget`)
+  assert.equal((await observe(page, 'events')).text, '')
 })
 
 test('one Firefox scroll is one trusted wheel event carrying the whole requested delta, as on Chrome', { skip }, async (t) => {
