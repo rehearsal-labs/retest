@@ -84,6 +84,12 @@ On macOS on Apple silicon, Retest pins Chrome for Testing, Firefox 133, Playwrig
 | Electron apps | The app's first window, driven like a Chrome page. Checked with Electron 44.5.1 on macOS |
 | One test across platforms | An iOS simulator app, a macOS app and web apps in the same test |
 | AI checks | `test.evaluate` asks a judge you choose whether a screenshot, text or recorded frames meet a requirement |
+| Layout checks | Overlapping elements, cut-off text, an element past the viewport's right edge and sideways scroll, each measured in pixels. Checked on Chrome on macOS |
+| Screenshot baselines | A page or an element compared to a saved image, pixel by pixel, with the difference in the report. Checked on Chrome on macOS |
+| Test inboxes | A test reads a one-time code and a sign-in link from a mailbox your config reads, types and opens them, and never holds either. Checked on Chrome. [The guide](docs/guide.md#inboxes) says how |
+| Files | Upload by path or content, intercept the file picker, save downloads as artifacts. Checked on Chrome on macOS |
+| Dialogs and popups | Accept or dismiss alert, confirm, prompt and beforeunload; drive a page the app opens. Checked on Chrome on macOS |
+| Mocked responses and drag | Answer a request with your own response or refuse it; drag an element onto another. Checked on Chrome on macOS |
 | Playwright test files | `retest run --playwright` runs `.spec.ts` files unchanged, for the methods [the guide](docs/guide.md#run-playwright-test-files) lists |
 | Linux | Chrome and Chromium only, checked inside Docker |
 

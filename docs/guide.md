@@ -168,6 +168,7 @@ The `declare module` block registers the config's type once, for every file in t
 
 - `apps` in a test takes only the config's app names, and a test can only use the apps it declares.
 - `tags`, `state`, `secret()` and `getByTestId()` take only the config's tags, states, secrets and test ids. A config that lists no `tags`, `states` or `testIds` accepts any string for them. One that declares no `secrets` accepts none.
+- `inbox()` takes only the config's inboxes. A config that declares no `inboxes` accepts none.
 - `locks` in a test takes only the config's locks. A config that lists no `locks` accepts none.
 - `tap()` exists only on an app whose every target emulates a touch screen.
 - An iOS simulator or macOS app's page has no `goto`, `select`, `check` or `uncheck`. Its elements take `tap()` on iOS and `click()` on macOS. A wrong method is a type error that says what to use.
@@ -187,6 +188,7 @@ The type check helps TypeScript callers only. Retest checks the same things agai
 | `runs` | App name to target name, one entry per pairing, for tests that use two or more apps with several targets each |
 | `secrets` | Each secret's source: `env(name)`, or a function |
 | `secretOrigins` | For a secret, more origins where it may be typed |
+| `inboxes` | Each test mailbox: a function that reads it, or `{ messages, origins }`; see [Inboxes](#inboxes) |
 | `testIds` | The test ids `getByTestId` accepts, as a list or an object of constants. Only the type check reads it |
 | `tags` | The tags tests may use. `--tag` refuses any other |
 | `states` | The names `test.setup` may save |
@@ -195,7 +197,7 @@ The type check helps TypeScript callers only. Retest checks the same things agai
 | `evaluation` | The AI judges, the default judge, their time and limits; see [AI checks](#ai-checks) |
 | `diagnostics` | Console and network capture, its strict and required policies and its limits; see [Console and network diagnostics](#console-and-network-diagnostics) |
 
-Names of apps, targets, secrets, tags, states and locks hold letters, digits, `_` and `-`, and start with a letter. A tag cannot be `and`, `or` or `not`. `executablePath`, `appPath` and `start.cwd` are relative to the config's folder. `baseUrl` and `start.ready` are http or https addresses. A key set to `undefined` counts as absent. An unknown key is an error.
+Names of apps, targets, secrets, inboxes, tags, states and locks hold letters, digits, `_` and `-`, and start with a letter. A tag cannot be `and`, `or` or `not`. `executablePath`, `appPath` and `start.cwd` are relative to the config's folder. `baseUrl` and `start.ready` are http or https addresses. A key set to `undefined` counts as absent. An unknown key is an error.
 
 An invalid config is a usage error, exit 2, before anything runs. The message names the file and each key at fault, such as `apps.web.baseUrl: expected an http or https URL, received "ftp://tasks.example"`. Every problem is named at once, except that a target whose shape cannot be read stops at that.
 
@@ -225,7 +227,7 @@ export default defineConfig({
 - Retest checks the build's `protocol.json` against the one its driver speaks, and fails the test's setup for any other build. `doctor` reads the build without starting it: "WebKit 626.1.6+, build 2359 found; a run starts it".
 - Each test gets a browser context of its own. The browser runs with a temporary home, which Retest removes when it closes. Its helper processes, for networking, graphics and web content, run outside its process group: Retest records each one while the browser runs and ends only those. A home that a Retest process killed outright left behind is removed at the next launch.
 - `browser.started` names the engine `webkit`, product `WebKit`, version `626.1.6+, build 2359` and build `2359`: WebKit's own version and the exact build revision.
-- A WebKit target takes a viewport, a pixel ratio and a user agent. A mobile layout, a touch screen, `tap` or a proxy fails by name.
+- A WebKit target takes a viewport, a pixel ratio and a user agent. A mobile layout, a touch screen, `tap` or a proxy fails by name. A layout matcher fails as `unsupported`.
 
 Where WebKit differs from Chrome, Retest reports what WebKit does, or refuses by name:
 
@@ -235,6 +237,7 @@ Where WebKit differs from Chrome, Retest reports what WebKit does, or refuses by
 - `getByRole` with a name is refused for a cell, a column or row header, a grid cell or a tooltip whose name comes from its text. An explicit `aria-label` or `aria-labelledby` remains usable. An unnamed native option lookup is refused; a named lookup is refused when a native option could answer it. Use `getByText()`, `getByTestId()` or a role lookup by position with `nth()`, and `select()` to choose an option.
 - `select()` chooses several options of a `<select multiple>` only when the requested set is contiguous and reaches the first or last reachable option, or starts beside the first or last reachable option that the list already holds alone. A set with a gap, or an interior set that requires passing an unrequested option, is refused before any key is sent. An unchanged selection sends no input.
 - Console and network diagnostics cover the document and its frames on build 2359, including frames of another site. Workers are named as not covered in the capture status.
+- A `getByRole` or `getByLabel` step is refused by name when an open shadow root in its search could hold a match, since the tree Retest reads stops at shadow roots. Test ids, text, placeholders and CSS look through open roots as on Chrome. A locator inside a frame fails as `unsupported`.
 
 ### Firefox
 
@@ -252,7 +255,7 @@ export default defineConfig({
 - Each launch gets a fresh profile in a temporary folder, which Retest removes when the browser closes. Firefox allows one WebDriver BiDi session per browser, so every test's page opens in a user context of its own, with its own cookies and storage, inside that one session.
 - Firefox keeps running when the Retest process that started it is killed outright. The launch records the Firefox it started, and the next launch ends a recorded Firefox whose launcher is gone, with its folder, and nothing else.
 - `browser.started` names the engine `firefox`, the product `Firefox`, its version and its reported build.
-- A Firefox target takes a viewport and pixel ratio. A mobile layout, a touch screen, a user agent, `tap` or a proxy fails by name.
+- A Firefox target takes a viewport and pixel ratio. A mobile layout, a touch screen, a user agent, `tap` or a proxy fails by name. A layout matcher fails as `unsupported`.
 
 Where Firefox differs from Chrome, Retest reports what Firefox does, or refuses by name:
 
@@ -264,6 +267,7 @@ Where Firefox differs from Chrome, Retest reports what Firefox does, or refuses 
 - A page's own script cannot use the Navigation API, which Firefox 133 lacks. Check for that API before listening for `navigateerror`; that event cannot confirm a cancellation here. In the shared fixture, a page that starts a fetch and immediately leaves for another document loses the request on Firefox. Await a required request before navigating, and verify delivery at the server.
 - `getByRole` confirms Firefox's names against Retest's whitespace normalization. Every lookup carries its own requested names. Loose and pattern names require Firefox to confirm the candidate names; a source it cannot confirm is refused by name. Password fields use their labelling markup, with hidden, nested or generated label content refused. Roles whose membership differs from Chrome, and known differing native markup, are refused by name rather than returning another set silently. These include generic, caption, presentation, rowgroup and gridcell lookups; named cells and figures; failed images; and the differing date, datalist and editable controls. Native tables with a visible caption or header of their own, or an explicit table, grid or treegrid role, permit row, unnamed-cell and header lookups. A visible native table without those cues still refuses table roles because the engines may disagree about layout tables. A cell looked up by name remains refused: Firefox's accessibility locator does not name it from its text. Use `getByText()`, `getByTestId()` or an unnamed cell's position with `nth()`. An `img` lookup is refused when an image that did not load could answer it.
 - `frame()` returns one PNG of the page. There is no live frame source.
+- A `getByRole` or `getByLabel` step is refused by name when an open shadow root in its search could hold a match, since Firefox's accessibility locator stops at shadow roots. Test ids, text, placeholders and CSS look through open roots as on Chrome. A locator inside a frame fails as `unsupported`.
 - Diagnostics record the network only. On Firefox 133.0.3, the console subscription runs enumerable getters in logged objects, including nested objects, before Retest receives the entry. The tested strings, numbers, plain data object and DOM node ran no getter. Subscription serialization options do not prevent object getters, and filtering received entries for primitive arguments is too late. Retest therefore keeps console `unavailable`; a strict console or runtime-error rule fails as "could not judge". Requests of the page and its frames, of its own site or another, are recorded with their responses, redirects, failures and pending ends, as on Chrome. A request a dedicated worker makes is recorded as its page's, since Firefox names only the browsing context, and only a navigation's request has a resource type, `Document`.
 
 ### Native apps
@@ -360,6 +364,7 @@ What Retest refuses, by name:
 - `page.goto()` on an Electron app is a type error: "An Electron app has no address. Its page is the first window the app opens." If it runs anyway, it fails as `unsupported`.
 - A test cannot reach any window after the first. Each launch writes `electron/<app and target>/<launch>/windows.json` in the run folder. It lists every window in the order Retest learned of it, with when it opened and closed and whether a test could reach it. A window already open when Retest began to watch is marked `existing`, and its opening time is when Retest learned of it. The browser log notes each new window. When the app closes its first window, the next command fails with `session_lost`, and the message says no other window is reachable.
 - The main process, native menus and native dialogs: a test reaches only what the first window shows.
+- A locator inside a frame of the window fails as `unsupported`: no test has looked inside a frame of an Electron window yet.
 - Sign-in state: a test cannot restore one into an Electron app, and a `test.setup` on one runs its body, then fails as `unsupported` when Retest cannot save its state. Use `userDataDir` to keep the app's data.
 - In an Electron window a secret is typed only on an http or https origin that `secretOrigins` lists for it. The base URLs of the test's other apps do not count there. A window on a `file://` address has no such origin, so the fill is refused. A window the app serves from `http://127.0.0.1:<port>` takes the secret once `secretOrigins` names that origin.
 
@@ -460,7 +465,7 @@ test('reads the code from the inbox', { locks: ['inbox'] }, async ({ page }) => 
 - A lock name must be in the config's `locks`. Any other, or any lock when the config lists none, fails its file with a usage error that names the declared ones. Without a config, as with `--browser`, any name holds.
 - A lock belongs to one run and lasts one run. Two runs at once, even two in one process, do not see each other's locks, so a named lock never keeps two runs apart. The Mac's desktop, a simulator and an Electron data folder are different: one table holds them for every run in the process (see Resources and leases).
 
-The example's count of every save holds the lock `saves`, as does every test that saves; [examples/tasks](../examples/tasks) shows it.
+The example's count of every save holds the lock `saves`, as does every test that saves; [examples/tasks](../examples/tasks) shows it. Tests that read one [inbox](#inboxes) hold a lock the same way: Retest takes none for them on its own.
 
 ### Resources and leases
 
@@ -585,7 +590,7 @@ A locator is a recipe, not an element. Retest finds the element again for every 
 | --- | --- |
 | `getByTestId(id)` | Elements whose `data-testid` equals `id` exactly |
 | `getByRole(role, { name?, exact? })` | Elements with this ARIA role and, when given, this accessible name |
-| `getByLabel(text, { exact? })` | Form controls whose accessible name matches: roles `textbox`, `searchbox`, `combobox`, `listbox`, `checkbox`, `radio`, `switch`, `slider` and `spinbutton` |
+| `getByLabel(text, { exact? })` | Form controls whose accessible name matches: roles `textbox`, `searchbox`, `combobox`, `listbox`, `checkbox`, `radio`, `switch`, `slider` and `spinbutton`, and a file input a `<label>`, `aria-label` or `aria-labelledby` names |
 | `getByText(text, { exact? })` | The innermost elements whose text matches |
 | `getByPlaceholder(text, { exact? })` | Elements whose `placeholder` attribute matches |
 | `locator(selector)` | Elements a CSS selector matches, as `querySelectorAll` matches it |
@@ -614,12 +619,58 @@ CSS:
 Where the name comes from:
 
 - `getByRole` and `getByLabel` use the accessibility tree Chrome computes. So the name comes from `aria-label`, `aria-labelledby`, `<label for>`, a wrapping `<label>`, `title`, a placeholder or the content, as Chrome decides. Retest does not compute names itself.
+- A file input is the one exception. `getByLabel` finds it only through a `<label>` for it or around it, its `aria-label`, or the elements its `aria-labelledby` names. Chrome's tree names an unlabelled file input after its own button, such as Choose File, which no page wrote.
 - Chrome gives a table row or a list item a name only from `aria-label` or `aria-labelledby`, not from its text, as Retest reads its tree. So `getByRole('row', { name: 'Ada 36' })` is expected to find no row of a plain table; no check asks for a row or a list item by name. Retest's checks find a row by its place, as in `getByRole('row').nth(1)`, and a cell by its name. Find the row by its place or by a test id.
 - They leave out elements Chrome leaves out of that tree: `aria-hidden`, `display: none`, `hidden`, `visibility: hidden` and `inert`.
 - `getByText` reads the text in the page. It skips `script`, `style`, `template` and `noscript`. It finds hidden elements too, and reports them as not visible.
 - `getByPlaceholder` reads the attribute as the page wrote it.
 
-All of them search only the top-level document. They do not look into shadow roots or frames. A Playwright test file run with `--playwright` finds by Playwright's rules where Retest can; see [Run Playwright test files](#run-playwright-test-files).
+All of them search the page's own document and every open shadow root in it. None looks into a frame until the test names the frame with `page.frame()`, below. A Playwright test file run with `--playwright` finds by Playwright's rules where Retest can; see [Run Playwright test files](#run-playwright-test-files).
+
+#### Shadow DOM and frames
+
+```ts
+// Shadow DOM: nothing to write. Every finder looks through open shadow roots.
+await page.getByRole('button', { name: 'Pay' }).click() // the button is inside <my-checkout>'s shadow root
+await expect(page.getByTestId('total')).toHaveText('$42.00') // so is this
+await page.locator('my-checkout button.primary').click() // CSS crosses open shadow roots too
+
+// Frames: a frame is named by the locator of its <iframe>, and finders inside it work as on a page.
+const payment = page.frame(page.locator('iframe[title="Secure payment"]'))
+await payment.getByLabel('Card number').fill(secret('card'))
+await payment.getByRole('button', { name: 'Pay' }).click()
+await expect(payment.getByText('Thank you')).toBeVisible()
+const notes = payment.frame(payment.locator('iframe')) // a frame inside a frame
+```
+
+Shadow roots:
+
+- Every finder looks through open shadow roots: test ids, role, label, text, placeholder and CSS, on a page, in a frame and inside a locator. Matches come in the order the page shows them, with a slot's content where the slot stands.
+- A closed shadow root stays closed. Nothing inside it is found.
+- CSS matches across open shadow roots as Playwright's CSS engine does: each compound selector may stand on either side of a root's edge, so `my-checkout button.primary` finds a button inside the element's root. There is no `>>>`.
+- Role and label names come from Chrome's accessibility tree, which reads through shadow roots. `aria-labelledby` does not reach an element in another root, as the browser does not.
+- A host's text is its own children's text, then its root's text, as Playwright reads it. A slot holds no text of its own.
+- Text a slot shows is found on the element that holds it in the page. In `<my-button>Pay now</my-button>`, `getByText('Pay now')` finds `<my-button>`, visible as the button its root draws.
+- An action on an element inside a shadow root is checked and guarded as any other, and an element of the same root that covers it is named. Text or an element a slot shows inside the element counts as the element, so `getByRole('button', { name: 'Pay now' }).click()` presses that button.
+- On Firefox and WebKit, the accessibility tree Retest reads stops at shadow roots. A `getByRole` or `getByLabel` step fails at once as `unsupported` when an open shadow root in its search could hold a match, and names the root's host. A root that holds no element of the role, or not every word of the name, is left alone. Test ids, text, placeholders and CSS look through open roots on every engine.
+
+Frames:
+
+- `page.frame(locator)` takes the locator of an `<iframe>` or a `<frame>` on the page and gives a frame. A frame has a page's finders, and `frame()` for a frame inside it. It has no `goto`, and `toHaveURL` and `toHaveTitle` stay the page's.
+- The frame's element is found again for every command, through every frame on its path. A frame that is removed and added again is found again.
+- A frame of another site, which Chrome runs in a process of its own, works as a frame of the page's own origin does. A look inside it never scrolls the page.
+- A frame whose element is not there is waited for, as an element is. An action fails `not_found` once its time is up and names the frame: "frame(locator('iframe#pay')) found no frame." A look finds nothing. An element that is not a frame fails `usage` at once, and a frame's locator that matches several elements fails `ambiguous` at once.
+- `click`, `fill`, `press`, `hover`, `scroll`, `check`, `select` and `tap` work in a frame. Retest checks the element in the frame's own document. Then, in each document around the frame, it checks that the frame is shown, in view, standing still and the element where the input lands. A frame the page hides is refused as a hidden element is. A frame that an element of the page covers is refused, and that element is named.
+- Input goes to the page at that point in its viewport, and the browser passes it to the frame, as it does a person's. A frame the page draws at another size, as with a CSS `scale`, gets the point where its element is drawn.
+- The guard watches a press in a frame in every document on its way: the page, each frame around it and its own. If an element of the page takes the press, Retest stops it there and names that element, as on the page.
+- A navigation inside a frame, such as a form's post, belongs to the frame. It is not a navigation of the page, and the frame's locators find in the new document at their next use. While a frame on an element's path opens another document, an action waits, then acts in that document.
+- Matchers read in a frame as on a page, the layout matchers included, measured in the frame's own document and viewport. An element in a frame the page hides reads as hidden. A step in a frame records the frame's document as its page.
+- A secret is typed into a frame only on an origin the secret may reach. To type one into a frame of another site, name that site's origin in `secretOrigins`.
+- Reports, events and failures write a frame as the test wrote it: `frame(locator('iframe#pay')).getByLabel('Card number').fill(secret('card'))`. An event's `locator` holds the frame's path in `frame`.
+- A file picker that a click in a frame opens goes to `page.fileChooser()`, as the page's own do, in a frame of another site too. With nothing waiting for it, the click fails, as on the page.
+- A failure screenshot is of the page's view. A frame in that view is in the picture, and one below it is not: a check scrolls nothing.
+- `setInputFiles` and a screenshot comparison of an element in a frame fail as `unsupported`. A layout matcher that compares two elements in different frames fails `usage`, since one look reads one document.
+- Frames work on Chrome and Chromium. On Firefox, on WebKit and in an Electron window, a locator inside a frame fails as `unsupported`, naming where it ran.
 
 ### Actions
 
@@ -636,17 +687,18 @@ All of them search only the top-level document. They do not look into shadow roo
 - `locator.select(choice)` chooses options of a `<select>` with the keyboard: by label, by `{ value }`, or a list of them.
 - `locator.check()` and `locator.uncheck()` tick and untick a checkbox, a radio button or an element with a checkable role.
 - `locator.scroll({ x, y })` turns the mouse wheel at the element's centre. `page.scroll({ x, y })` turns it at the centre of the viewport.
+- `locator.dragTo(target)` presses the mouse on the element, moves it to the centre of the element `target` finds, and releases it there, as [Drag and drop](#drag-and-drop) says.
 
 A navigation that `reload`, `goBack` or `goForward` started is recorded with the cause `goto`, as a goto's is.
 
 Two reads tell a test about the page. `await page.url()` is the page's address as Retest records it: its origin and path, with no query or fragment. `await page.title()` is its title, cut to 300 code units and trimmed at its end, or empty for a page with none; while another document is on its way, it waits for that document. To wait for an address or a title, use `toHaveURL` or `toHaveTitle`, below.
 
-Retest checks the element just before it acts, and a guard in the page watches the input itself. If the press, the release or the click lands on another element, Retest stops that event before any listener of the page hears it. The action then fails `not_actionable` and names the element that took it. While the browser is opening another document in the frame, no action starts: Retest waits for that document and looks for the element there, and an action whose time runs out meanwhile fails `not_actionable`, naming the address the page was opening. Typing that arrives in a document that replaced the one Retest checked is stopped by that document's own guard, and the fill fails `not_actionable`, naming the document. Two cases end as `outcome_unknown` instead, because Retest cannot see where the input went:
+Retest checks the element just before it acts, and a guard in the page watches the input itself. If the press, the release or the click lands on another element, Retest stops that event before any listener of the page hears it. The action then fails `not_actionable` and names the element that took it. For an element in a frame, the guards of the page and of each frame around it watch the press too. While the browser is opening another document in the page, or in a frame on the element's path, no action starts: Retest waits for that document and looks for the element there, and an action whose time runs out meanwhile fails `not_actionable`, naming the address the page was opening. Typing that arrives in a document that replaced the one Retest checked is stopped by that document's own guard, and the fill fails `not_actionable`, naming the document. Two cases end as `outcome_unknown` instead, because Retest cannot see where the input went:
 
 - the press never reaches the element's document, as when a same-origin frame covers the element;
 - the page moves to a new document before the guard reports, and that document received no typing.
 
-The guard covers press, release, click, touch and typing events, the wheel while a scroll is on its way, and the mouse's arrival while a hover is. A hover's `pointerover` or `pointermove` must reach the element. If another element takes it, Retest stops the event before the page's listeners hear it, and the hover fails `not_actionable`, naming that element; the browser's own `:hover` style may already show on it. The mouse's move before a click is not guarded, so hover events such as `pointerover` still reach the page then, and so do the `input` and `change` events a checkbox fires after a click. Downloads are refused: Retest asks the browser to deny them in every context it opens.
+The guard covers press, release, click, touch and typing events, the wheel while a scroll is on its way, and the mouse's arrival while a hover is. A hover's `pointerover` or `pointermove` must reach the element. If another element takes it, Retest stops the event before the page's listeners hear it, and the hover fails `not_actionable`, naming that element; the browser's own `:hover` style may already show on it. The mouse's move before a click is not guarded, so hover events such as `pointerover` still reach the page then, and so do the `input` and `change` events a checkbox fires after a click. On Chrome and Chromium, the run folder keeps every download, as [Files](#files) says.
 
 ### Pressing keys
 
@@ -727,6 +779,159 @@ Action events record the key in `key`, as the test wrote it. Reports write a pre
 
 Reports write each of these as the test wrote it, with what the call leaves out: `getByLabel('Toppings').select(['Basil', { value: 'olives' }])`, `getByLabel('Newsletter').check(), clicked its label`, `getByTestId('agree').check(), already checked, sent nothing`, or `page.scroll({ y: 600 })`. A run recorded before select used the keyboard says `input: 'script'` on its selects, and reports say "set by script".
 
+### Files
+
+```ts
+// Upload: an <input type="file">, visible or hidden, gets files by path or by content.
+await page.getByLabel('Attachment').setInputFiles('./fixtures/report.pdf')
+await page.getByLabel('Photos').setInputFiles(['./a.png', './b.png'])
+await page.getByLabel('Notes').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', content: 'hello' })
+await page.getByLabel('Attachment').setInputFiles([]) // clears the input
+
+// A button that opens the file picker: the picker is caught, never shown.
+const chooser = await page.fileChooser(() => page.getByRole('button', { name: 'Upload' }).click())
+chooser.multiple // whether its input takes several files
+await chooser.setFiles('./fixtures/report.pdf')
+
+// Download: the action that starts it is wrapped, and the run folder keeps the file.
+const download = await page.download(() => page.getByRole('link', { name: 'Export CSV' }).click())
+download.suggestedFilename // 'tasks.csv'
+const path = await download.path() // inside the run folder; read it with node:fs
+await download.saveAs('./out/tasks.csv') // a copy, for the test's own checks
+```
+
+`setInputFiles(files)` gives an `<input type="file">` the files, in place of those it held:
+
+- It takes a path, a file by content, `{ name, mimeType?, content }`, or a list of them. `content` is text, written as UTF-8, or bytes. An empty list clears the input.
+- A path is read against the folder of the file that makes the call, as an import is. A path with no file at it fails `usage`, naming the path.
+- Retest writes a file given by content to `uploads/<attempt>/` in the run folder, for the browser to read. It removes the folder when the test ends, and the test never learns the path.
+- The input must be there and enabled. It need not be visible, since an upload input often hides behind a button. A missing or disabled input is waited for until the action budget runs out.
+- A locator that finds a `<label>` gives the files to the input the label names.
+- More than one match fails at once as `ambiguous`. An element that is not a file input fails at once as `not_actionable`, naming what it found. Two files for an input without `multiple` fail `usage`, and nothing is sent.
+- The files go in through Chrome's own `DOM.setFileInputFiles`, as a choice in the picker does. The page hears the input's own `input` and `change` events.
+- Chrome reads an empty list as a closed picker, which leaves the input as it was. So Retest clears an input from its own world, and the `input` and `change` events it fires have `isTrusted` false.
+- Chrome types each file by the end of its name. A `mimeType` Chrome does not give the file fails `usage`, after the input took the file.
+- Retest reads the files back as the page's `change` event found them. The action's event lists each in `files`, with its name, its size in bytes and its type.
+- A page may empty or change the input in its own `change` handler, and the action still passes. The event then lists what the input holds afterwards in `kept`.
+- `getByLabel` finds a file input only through its label, never by the browser's own button text. A hidden input is left out, so find it by test id or CSS.
+
+`page.fileChooser(action, { timeout? })` catches a file picker:
+
+- Every Chrome page catches each file picker it opens, so no picker is ever shown.
+- The wait starts before `action` runs and lasts the action budget, or a shorter `timeout`. Once `action` is done, it gives the picker that opened.
+- `chooser.multiple` says whether the picker's input takes several files. `chooser.setFiles(files)` takes what `setInputFiles` takes, and is an action of its own.
+- No picker in that time fails `timeout`. A picker that belongs to no input, as `showOpenFilePicker()` opens, fails `unsupported`. An action that fails gives `fileChooser` its own failure.
+- A page waits for one picker at a time.
+- A picker the test did not wait for fails the action that opened it, as `not_actionable`, with `details.picker: 'file'`. Retest closes it, so the page hears `cancel` and stays usable.
+- That failure says how to wait for a picker. In an agent session or a Playwright test file, it says files cannot be given there.
+- A picker an input in a frame of the page's own site opens is caught too. Retest reads that input from its own world, so the page's scripts cannot change what it reads.
+- A picker that opens after its action answered, as from a timer, fails the next action on that page. That action sends nothing.
+
+`page.download(action, { timeout? })` waits for a download:
+
+- Each download in a Chrome session is saved in the session's folder, `artifacts/<attempt>/<app>/downloads/`, under the name the page suggested.
+- In that name, each run of characters other than letters, digits, `.`, `_` and `-` becomes one `-`. A name the folder already holds gets `-2`, `-3` and so on before its extension.
+- The wait starts before `action` runs and lasts the action budget, or a shorter `timeout`. Once `action` is done, it gives the download that began. No download in that time fails `timeout`.
+- The download may begin in the page, in any of its frames, frames of other sites included, or in a page it opened, as a link with `target="_blank"` does, and that page's frames.
+- A download another page of the session begins is saved and recorded too, but `page.download` never takes it.
+- `download.suggestedFilename` is the name the browser suggested, with every secret replaced by its placeholder.
+- `download.path({ timeout? })` waits until the file is saved, for the navigation budget or a shorter `timeout`. It gives the file's absolute path.
+- `download.saveAs(path)` waits the same way, then copies the file to `path`, read against the calling file's folder. It makes the folders it needs. The run folder keeps its own copy.
+- A download the browser stops, as when the server breaks off, fails `path()` and `saveAs()` as `not_actionable`. The failure says how many bytes arrived; Chrome gives no reason of its own. Retest keeps no file for it.
+- A download no test waits for is saved and recorded all the same.
+- A download whose file holds the value of a secret is not kept. Retest removes the file and records the download as `withheld`. `path()` and `saveAs()` fail `unsupported` and say why.
+
+Each download writes one `download` event when it ends. A download still on its way when its test ends is recorded as `unfinished`. The event names the suggested name, the address it came from as its origin and path, and its `state`. `startedIn` is `popup` for a download a page it opened began, and `other` for one another page began. A saved download adds its `path` in the run folder and its `size`; a withheld one adds its `size` and its `failure`; a stopped one adds the bytes that arrived and its `failure`. A file's content never reaches an event. `inspect --test` and the HTML report show each download among the steps, and the report links each saved file under Downloads, also for a test that failed.
+
+On Firefox and WebKit, `setInputFiles`, `fileChooser` and `download` fail `unsupported`, naming the engine. An Electron app's window takes `setInputFiles` and `fileChooser` as a Chrome page does, and `download` fails `unsupported` there: the app saves its downloads its own way. All three were run on Chrome on macOS, and `setInputFiles` and `fileChooser` on Electron 44.5.1 on macOS.
+
+### Dialogs and popups
+
+```ts
+// A dialog the action opens: an alert, a confirm, a prompt or a beforeunload confirmation.
+const dialog = await page.dialog(() => page.getByRole('button', { name: 'Delete' }).click())
+dialog.type // 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+dialog.message // the text the page showed
+dialog.defaultValue // a prompt's default, else ''
+await dialog.accept() // or dialog.accept('Ada') for a prompt, or dialog.dismiss()
+
+// A page the action opens: a link with a target, window.open, a sign-in popup.
+const terms = await page.popup(() => page.getByRole('link', { name: 'Terms' }).click())
+await expect(terms.getByRole('heading', { name: 'Terms' })).toBeVisible()
+await terms.getByLabel('Email').fill('alice@example.com')
+await terms.close()
+```
+
+`page.dialog(action, { timeout? })` gives the next dialog the page opens:
+
+- Retest arms the page before `action` runs, and gives the dialog as soon as it opens.
+- A dialog holds the page, so the action is still waiting when `page.dialog()` resolves. Await `page.dialog()` first, then `dialog.accept()` or `dialog.dismiss()`. Each resolves once the dialog is answered and the action is over. When the action failed, it fails with the action's own failure.
+- `accept(text)` answers a prompt with the text. With no text, a prompt is answered with its default, as OK does. Text for any other dialog fails `usage`. `dismiss()` is Cancel, so a prompt gives `null`.
+- Answer each dialog once. A second answer fails `usage`.
+- The wait lasts the action budget, or a shorter `timeout`. No dialog in that time fails `timeout`: "No dialog opened within 500 ms." An action that fails first gives `page.dialog()` its own failure.
+- While a dialog the test was given is open, any other command to that page fails at once as `not_actionable`, and sends nothing. An action whose time runs out on the open dialog fails `timeout`, and says why.
+- A test that returns with such a dialog still open fails `not_awaited`, naming the line of its `page.dialog()`. Retest dismisses the dialog before it takes the failure screenshot.
+- The text is page text: every value the run hides is replaced in it.
+
+Two dialogs in a row take two waits, the second around the first one's answer:
+
+```ts
+const first = await page.dialog(() => page.getByRole('button', { name: 'Import' }).click())
+const second = await page.dialog(() => first.accept())
+await second.accept()
+```
+
+A `beforeunload` dialog comes from `goto`, `reload`, `goBack`, `goForward` and `close()`. Chrome asks it only of a page that has had a click; a page nobody clicked leaves without asking. Accepted, the page leaves. Dismissed, the page stays where it was, and the command fails `not_actionable`: "Retest could not open …: its beforeunload dialog was dismissed, so the page stayed where it was."
+
+A dialog nothing waited for is answered by Retest at once, so the page stays usable. It is dismissed, and a `beforeunload` dialog is accepted, so the navigation the test asked for happens. The action it opened during fails `not_actionable`, naming the dialog and its text: "The page opened a confirm dialog that says "Delete this task?" while Retest tried to click getByTestId('delete'). Retest dismissed it. To answer it, wrap the action in page.dialog()." An action that failed of its own accord keeps its own failure, and the dialog follows it in a sentence of its own: "… The page also opened an alert dialog that says "Saved", and Retest dismissed it." A dialog that opens while no action runs, as from a timer, fails the test the same way. No dialog is ever answered as a pass. A dialog answered before the test's first command, as an Electron app's alert at start, is written down and fails nothing: no action of the test opened it.
+
+`page.popup(action, { timeout? })` gives the next page the page opens, by `window.open`, a link or a form with a target:
+
+- Retest arms the page before `action` runs. It takes the first page the page opens after that.
+- Chrome holds the new page before its first document. Retest sets it up as it sets up every page, with the input guard, then lets it run. So a sign-in popup that sends itself on at once is followed from its first page.
+- `page.popup()` resolves once the popup's first document has arrived and the action is over. The wait lasts the action budget, or a shorter `timeout`. No page in that time fails `timeout`. An action that fails first gives `page.popup()` its own failure.
+- The popup is a page of its own: every command, read and check works on it, and so do its own dialogs and popups. It has the emulation of the page that opened it.
+- The page that opened it keeps its place, so an action on `page` still acts on `page`. Retest keeps every Chrome page focused as far as its own scripts can tell, so a window in front of it stops nothing.
+- A page opened while nothing waited is no popup of the test, and Retest still sets it up and keeps it. A dialog it shows is answered as above and told as its opener's: "A page this page opened showed an alert dialog that says "Welcome" while no action was running. Retest dismissed it." It closes with the page that opened it. A later wait takes only a page opened after it began. A `window.open` into a window it opened before reuses that window, which is no new popup.
+- `popup.close()` closes the popup and waits for it to go, after its `beforeunload` handlers run. Answer their dialog with `popup.dialog(() => popup.close())`. A `beforeunload` dialog nothing waited for is accepted, so the popup closes, and the close fails as any action with such a dialog does. `close()` on one of the test's own pages fails `usage`: those close when the test ends.
+- A popup that closes itself is written down as `popup.closed`. A command to it after that fails `not_actionable`: "This page closed itself, so Retest sent nothing to it." A command after `close()` fails `usage`. A popup whose browser was lost did not close itself: its commands fail `session_lost`, as the opener's do.
+- A popup is named after the page that opened it: `web/popup-1`, then `web/popup-2`, and `web/popup-1/popup-1` for a popup's own. Its session id is `<attempt>:web/popup-1`. It follows the capture rules of the app that opened it, and a secret is typed on it only on the origins the secret allows.
+- When the test fails, each popup still open gets a failure screenshot of its own, named by its app. Retest closes every popup as the test ends, before the page that opened it.
+- A popup is not recorded, and its console and network are not captured: those cover the pages the test began with. Its diagnostics are `unavailable`, "popups are not captured". In a run that records its app, it has a recording that never began, whose gap says the same, so the attempt's evidence is partial, never complete.
+- A test that is stopped or ends stops its waits for a dialog or a popup. A popup that opens after that is closed, and is no page of the test.
+
+Each dialog that closed writes a `dialog` event: its kind in `dialog`, its text in `message`, cut to 300 code units, `answer` (`accepted` or `dismissed`), and `by`, `test` or `retest`. A prompt accepted with text adds `typed`, the count of its characters, never the text. Opening a popup writes `popup.opened`: `session` names the page that opened it, `popup` the popup's app, `popupSessionId` its session, and `url` and `title` its first page. A first page that sends the browser on before its title can be read has no title. `inspect --test` and the HTML report show both among the steps, and name the app of every row in a test that was given a popup, so a popup's steps read as its own.
+
+On Firefox and WebKit, `page.dialog()`, `page.popup()` and `close()` fail `unsupported`, naming the engine, and a dialog holds the page as before: [Firefox](compatibility/firefox.md) and [WebKit](compatibility/webkit.md) say how. An Electron app's window hands its dialogs over as a Chrome page does, and `page.popup()` fails `unsupported` there, since a test reaches only the app's first window. Dialogs and popups were run on Chrome on macOS, and dialogs on Electron 44.5.1 on macOS.
+
+### Drag and drop
+
+```ts
+// A card the page lets you drag (draggable, dragstart, drop): its drop handler reads what the drag carries.
+await page.getByText('Write release notes').dragTo(page.getByTestId('done-column'))
+// A list that follows the mouse itself, with more steps for one that wants to see the mouse travel.
+await page.getByTestId('handle').dragTo(page.getByTestId('slot-3'), { steps: 10 })
+```
+
+`locator.dragTo(target, { steps?, timeout? })` drags the element onto the element `target` finds:
+
+- Both must be ready before anything is sent. The element passes the checks a click does: visible, stable, enabled and not covered. The target must be visible, stable and not covered at its centre. Both must be in the viewport together, since Retest does not scroll while it drags.
+- A locator that finds nothing is waited for until the action budget runs out, then fails `not_found`, naming it. Two matches fail at once as `ambiguous`. A covered target fails `not_actionable`, naming what covers it. In each case, nothing is sent.
+- Retest presses the mouse at the element's centre, and the guard checks the press as it checks a click's. When another element takes the press, Retest stops the press and its release before the page hears them, and the drag fails `not_actionable`, naming that element.
+- The mouse then moves in `steps` positions, 5 unless given, along a straight line to the target's centre, read again once the press is in. The button is held on every move, so a page that follows the mouse itself, such as a sortable list or a canvas, sees the drag. The mouse is released at the target's centre.
+- Chrome does not run an HTML drag (`draggable`, `dragstart`, `drop`) from mouse input a test sends. When the page begins one, Chrome hands it to Retest, which carries it on with the browser's drag events, `dragenter` and `dragover`, to a `drop` at the target. The page's `drop` handler reads the drag's `dataTransfer`, and the dragged element hears its `dragend`. As in a person's drag, no mouse release follows the drop: the page hears no `pointerup` or `mouseup`.
+- Retest hears the page's `dragstart` before any of the page's own listeners, so a page that stops its propagation still has its drag carried on.
+- A drag event goes to the element at its point. When another element covers the target's centre at the drop, Retest cancels the drag, and it fails `not_actionable`, naming that element. A mouse drag is released whatever is at the point, since a page that follows the mouse often draws what it drags there.
+- The page may move the target while the mouse travels. Just before the drop, Retest reads the target again, and moves once more to its centre if it moved.
+- A target that left the page by then gets no drop. Retest cancels an HTML drag, and releases a mouse drag where the moves ended, which the page may take as a drop. The drag fails `not_actionable`, says which it did, and has `details.inputSent: true`.
+- Once the press is in, a drag whose time runs out fails `timeout` with `details.inputSent: true`, as a click does. Retest then cancels an HTML drag the browser still holds, and the page hears its `dragend` with no drop. A mouse drag gets its button released where the mouse is. Either way the page takes input again.
+- `steps` is a whole number from 1 to 100. Anything else fails `usage`.
+- A drag from or to an element in a frame, and a drag on a page that emulates a touch screen, fail `unsupported`.
+
+Each drag is one step, written as the test wrote it: `getByText('Write release notes').dragTo(getByTestId('done-column'))` in the events, the HTML report and `inspect`. The action's event has `drag`: the target, the steps when the test gave them, and, once it dropped, `through`, `mouse` or `drag-events`. Reports add "through drag events" to an HTML drag.
+
+On Firefox and WebKit, `dragTo` fails `unsupported`, naming the engine. An agent session does not send it. Drag and drop was run on Chrome on macOS, and on Electron 44.5.1 on macOS.
+
 ### Matchers
 
 Locator matchers look again until they pass or the assertion budget runs out. They never repeat an action. Await them. The page tells Retest when its document changes, so a look follows a change as soon as 50 ms have passed since the previous look; without a change, looks come 50, 100 and 250 ms apart, then every 500 ms.
@@ -761,6 +966,32 @@ The parent judges each passed page matcher on the look it names, as it judges a 
 
 Every locator and page matcher takes `{ timeout }` in milliseconds, as in `toBeVisible({ timeout: 2000 })`. It shortens the assertion budget for that call and never lengthens it: a longer one is cut to the budget. The event records the time the assertion had in `timeoutMs`.
 
+Four layout matchers measure where the page draws an element. Each names a layout problem and passes while the page shows it, so `.not` passes once the problem is gone. A test that a layout bug stays fixed uses `.not`:
+
+```ts
+await expect(page.getByRole('button', { name: 'Save' })).not.toOverlap(page.getByRole('link', { name: 'Help' }))
+await expect(page.getByTestId('price')).not.toOverflowViewport()
+await expect(page.getByRole('heading')).not.toHaveClippedText()
+await expect(page).not.toScrollHorizontally()
+```
+
+- `toOverlap(other)`: exactly one element matches each locator, and their visible boxes share more than 4 pixels both across and down. A control inside a field, such as a button that clears a search, never overlaps it. The two locators must find two separate elements: an element and one inside it pass neither way. `other` is a locator of the same page.
+- `toOverflowViewport()`: exactly one element matches, and its visible box ends more than 1 pixel past the right edge of the viewport. It measures the right edge only.
+- `toHaveClippedText()`: exactly one element matches, and a container that hides its overflow cuts off more than 4 pixels of its words, or of the words of one of the first 200 elements inside it. An element that shows no words passes neither way.
+- `expect(page).toScrollHorizontally()`: the document is more than 1 pixel wider than the viewport without its scrollbar, and the page does not hide what runs past it.
+
+How a layout look measures:
+
+- An element is shown when it is inside the body, neither it nor any element around it has `display: none` or an opacity of 0, its own `visibility` is `visible`, and at least 2 pixels of it show each way. Each element a layout matcher measures must be shown: one that is missing, hidden or matched more than once passes neither way, so it is never read as the problem or as its absence.
+- An element's visible box is its client rect, cut down along each axis by every element around it whose overflow on that axis is not `visible`. The body cuts nothing. A fixed element stands on the viewport, so nothing above it cuts it.
+- Words are cut off only along an axis whose overflow is `hidden` or `clip`, never by a container that scrolls, and never by one that shortens its text on purpose with `text-overflow: ellipsis` or a line clamp. An element that hides its own overflow cuts off its words by how far they run past it.
+- The edge is the viewport's width without its scrollbar. The page hides what runs past it when the root's `overflow-x` is `hidden` or `clip`, or the body's is while the root's is `visible`.
+- 1 pixel past an edge is what rounding alone reaches, so it never counts.
+
+A failure names what was measured, in CSS pixels, and the viewport's width: "getByTestId('save') and getByTestId('help') overlap: they share 32 by 32 pixels at 390 pixels wide.", "getByTestId('price') ends 14 pixels past the right edge at 390 pixels wide.", "A container cuts off 14 pixels of the words in getByRole('heading') at 390 pixels wide." or "The page is 404 pixels wide and scrolls 14 pixels sideways at 390 pixels wide." When a scrollbar takes part of the width, the sentence gives the width without it too. The assertion event records the measurement in `layout`, to a tenth of a pixel: the viewport's size, the edge, and `shared`, `pastEdge`, `cut` or `documentWidth`. A layout look has no `observation` event of its own: the assertion names it in `observationId`, and the parent judges the assertion on that look, as it judges every locator matcher.
+
+Layout matchers measure Chrome and Chromium pages. They were run on Chrome on macOS, at emulated widths. On Firefox, on WebKit and on a native app they fail as `unsupported`.
+
 Value matchers check at once:
 
 - `toBe(expected)` compares with `Object.is`.
@@ -773,7 +1004,48 @@ Two more ways to check:
 - `expect.poll(fn, { timeout?, intervals? })` calls `fn` again until its value passes a value matcher or its time runs out. Its time is `timeout`, or the assertion budget. `intervals` are the waits between looks, the last one repeating. `fn` may only read. An action inside it fails the test, because it would run again on every look.
 - `expect.soft(x)` records a failure and lets the test go on. The test fails at the end, with its first failure leading and the others in `failure.details.also`. Every soft failure has its own event, marked `soft: true`.
 
-The type check rejects a value matcher on a locator, a locator matcher on a value or a page, a page matcher on a locator, `.not` written twice, and any matcher on a secret.
+The type check rejects a value matcher on a locator, a locator matcher on a value or a page, a page matcher on a locator, a layout matcher on a native app's locator, `.not` written twice, and any matcher on a secret.
+
+#### Screenshots
+
+```ts
+await expect(page).toHaveScreenshot('dashboard')
+await expect(page.getByTestId('chart')).toHaveScreenshot('chart', { maxDiffPixels: 50 })
+await expect(page).toHaveScreenshot('settings', { maxDiffPixelRatio: 0.001, threshold: 0.2 })
+```
+
+`toHaveScreenshot(name)` compares a picture of the page's viewport, or of one element, with a saved picture of it, its baseline, pixel by pixel. It takes a picture at once, then another after 100 ms, 250 ms, 500 ms and every second after that, until the assertion's time runs out.
+
+- A picture has settled when it is the same as the one before it, and the two were taken at least 100 ms apart. Only a settled picture is compared.
+- A settled picture that does not match its baseline is taken again, as other matchers look again, so a page still loading passes once it shows its baseline. The check fails when its time runs out on a picture that does not match.
+- A run with `--update-screenshots` writes a picture only once it has stayed the same for a whole second, so a loading state that lasts less than that never becomes the baseline. A state that lasts longer can, so wait for the page's content before the check.
+- A page that never stops moving fails as not settled. Retest does not stop animations or hide the text caret.
+
+- The baseline sits beside the test file, in `__screenshots__/<test file name>/<name>-<engine>-<platform>.png`. For `tests/tasks.retest.ts` on Chrome on an Apple silicon Mac, that is `tests/__screenshots__/tasks.retest.ts/dashboard-chromium-darwin-arm64.png`. Pixels differ between engines and platforms, so each one has its own baseline. Targets on one engine share it.
+- A name is lowercase letters, digits, dots, dashes and underscores. A `.png` at its end is left off.
+- A pixel differs when its two colours are further apart than `threshold`, from 0 to 1, and 0.2 when left out. The colour distance and the test for an anti-aliased edge are adapted from pixelmatch 7.2.0, and count the same pixels it counts on pictures with no transparency.
+- A pixel that looks like part of an anti-aliased edge is not counted, whatever its colour. So a line one pixel wide between two flat colours can change colour, even to red, and the check still passes.
+- `maxDiffPixels` is how many pixels may differ, and `maxDiffPixelRatio` what part of the baseline's pixels, from 0 to 1. With neither, no pixel may differ. With both, each must hold, as Playwright 1.63 reads them.
+- The picture and its baseline must be the same size. A baseline keeps the device scale factor it was taken at, and a picture taken at another fails, naming both. A baseline that records no scale, such as one another tool wrote, fails a picture that has one, and says to write it again with `--update-screenshots`.
+- A baseline Retest cannot read, such as one with a damaged byte, fails the check as `setup_failed`, naming the file and what is wrong with it.
+- An element's picture is its box, widened to whole CSS pixels. The element must be the one match, shown, and inside the viewport, since Retest never scrolls the page to take a picture. One that is missing, hidden or matched more than once fails as other locator matchers do.
+- `timeout` shortens the assertion budget for the call, as it does for other matchers. The matcher has no `.not`, which the type check and the run both refuse.
+
+A check with no baseline fails at its first settled picture. Its failure names the file Retest looked for, and the run folder keeps the picture as the candidate. A first run never passes by writing its baseline. To write the baselines, run with `--update-screenshots`:
+
+```sh
+retest run --update-screenshots
+```
+
+That run writes every baseline its checks compare against, from the picture each settled on, in place of any baseline there, and those checks pass. It does not read as an ordinary pass: `result.json` counts the baselines in `baselinesWritten`, each one has a `baseline.written` event, and the reports print a line such as `Baselines  2 written by --update-screenshots`. When two checks of one run give one baseline different pictures, the second fails, naming the file. Look at the written baselines before you commit them.
+
+A comparison that fails leaves three pictures under `artifacts/<attempt>/<app>/`: `<name>-<look>-expected.png`, `<name>-<look>-actual.png` and `<name>-<look>-diff.png`. The last is the actual picture faded to grey, with each differing pixel in red. A picture of another size has no pixels to compare, so its difference marks in red everything only one of them covers. The failure says how many pixels differ, what ratio of all, and how many may, as in `352 pixels differ from the baseline "dashboard", a ratio of 0.0029 of its 120000 pixels. At most 0 may differ.` The assertion's event lists the pictures in `attachments` and records in `screenshot` what was compared: the sizes, the scales, the pixels that differed and the limit. The terminal names the three files, and the HTML report shows them side by side.
+
+Retest's own process takes every picture and keeps its pixels. The test file's process learns only sizes and counts. Retest's own process also refuses a name or a threshold the test's API would refuse, before it reads any file. A picture's look has no `observation` event: the assertion names it in `observationId`, and the parent judges the assertion on that look, as it judges every locator matcher.
+
+A picture is a capture, so [the pixel policy](#what-may-be-captured-as-pixels) applies to it unchanged. A config that sets `screenshots: 'never'` for an app refuses the check, and so does a stretch in which a secret may be on screen. Either fails as `unsupported` with the policy's sentence.
+
+Pictures of a page were compared on Chrome, Firefox 133 and WebKit build 2359, on macOS. Pictures of one element and the device scale factor are Chromium's. On Firefox and WebKit an element's check fails as `unsupported`, and a page's baseline records no scale. A popup the test opened with `page.popup()` is compared as a page, on Chrome. An Electron window and a native app's screen are refused by name.
 
 ### Secrets
 
@@ -795,6 +1067,72 @@ await page.getByLabel('Password').fill(secret('password'))
 - A function source's value is known, and so hidden, only once the source has given it. A value that arrives after its fill stopped waiting for it is hidden too, from the moment it arrives. Every log is read again when the run ends, so a value a server or a test file printed before that is hidden there too. What the terminal and the events already carried before the value arrived stays as it was, and so does page text the test read before it.
 
 Screenshots are not redacted. A failure screenshot shows whatever the page showed, including a secret the page displays. Text redaction is not image redaction.
+
+### Inboxes
+
+A test that signs up, confirms an address or signs in by email reads that email from an inbox the config declares. Retest's own process reads the mailbox. The test is given the message with its codes and sign-in links hidden, and hands them to `fill()` and `goto()` without ever holding them.
+
+```ts
+// retest.config.ts
+inboxes: {
+  owner: ({ signal }) => mailbox.recent('owner@tasks.example', { signal }),
+  member: { messages: ({ signal }) => mailbox.recent('member@tasks.example', { signal }), origins: ['https://login.tasks.example'] },
+},
+locks: ['inbox'],
+
+// a test file
+import { expect, inbox, test } from '@rehearsal-labs/retest'
+
+test('signs up with the code from the email', { locks: ['inbox'] }, async ({ page }) => {
+  await page.goto('/sign-up')
+  await page.getByLabel('Email').fill('owner@tasks.example')
+  await page.getByRole('button', { name: 'Send code' }).click()
+  const message = await inbox('owner').latest({ subject: 'Your sign-in code' })
+  await page.getByLabel('Code').fill(message.code)
+  await page.getByRole('button', { name: 'Verify' }).click()
+  await page.goto(message.link({ path: '/welcome' }))
+  await expect(page.getByRole('heading')).toHaveText('Welcome')
+})
+```
+
+The source:
+
+- An inbox is a function, or `{ messages, origins }`. Retest's process calls it on each look with `{ signal }`, and aborts that `AbortSignal` once it stops waiting: when the read's time runs out, or when the test or the run is stopped. `InboxContext` is its type.
+- It returns the mailbox's messages, newest first, each `{ subject, from, text, codes, links, receivedAt }`, typed `InboxMessage`. `text` is plain text: Retest reads no HTML. `codes` are the one-time codes the message holds and `links` its links, each `{ url, text }`; the host finds both. `receivedAt` is when the mailbox received the message: a `Date`, an ISO time or milliseconds since 1970.
+- A function that throws or rejects fails the read with `setup_failed`, naming the inbox. So does one that gives anything else, and the failure names the message and the field. No failure quotes a value.
+
+Reading:
+
+- `inbox(name).latest({ subject?, timeout? })` waits for the newest message received since the test started, and since the last message this test was given from that inbox. It never gives one message twice. The test starts when `test.started` is written, before a host's preparation, by the clock of the machine Retest runs on, so `receivedAt` must come from a clock that agrees with it.
+- A message received before the last one given is not given, even when it matches. Read messages in the order they arrive.
+- It looks again, as a matcher does: at once, then after 100, 250, 500 and 1000 ms, then every second. Its time is `timeout`, or the assertion budget, and never more than the test has left. When nothing arrives in that time it fails `timeout`, saying how many messages the inbox held and how many arrived in time.
+- `subject` picks the newest such message whose subject holds the text, in any case, or matches the `RegExp`. It reads the subject as the test gets it, with codes and links replaced, so a pattern cannot find out a code.
+- A read touches no page and holds no app. Await it. It changes what the next read gives, so it may not run inside `expect.poll()`.
+
+The message:
+
+- `subject`, `from` and `text` have every code written `{{code}}`, and every link that carries a token written `{{link:1}}`, `{{link:2}}` and so on, by its place among the message's links. Every other value the run hides is replaced too. `receivedAt` is a `Date`.
+- `links` lists each link as `{ text, origin, path, token }`: its text, its origin, its path with each token in it replaced by the link's placeholder, and whether it carries a token. Its query and fragment never reach the test.
+- `code` is the message's first code, for `fill()`. It is a secret: it prints as `{{code}}`, and no matcher takes it. A fill of the code of a message that holds none fails `usage`.
+- `link()` is the first link that carries a token, or else the first link. `link(2)` is the second link, and `link({ path: '/verify' })` the first whose path, as the test reads it, is `/verify` or lies under it. A link prints as `{{link}}`, or `{{link:2}}` when chosen by number or path, and only `goto()` takes it.
+
+Where a code and a link may go:
+
+- A code is typed, and a link opens, only on the origins of the base URLs of the test's apps and the inbox's `origins`.
+- A code on any other page fails the fill `not_actionable`, naming the page's origin, and nothing is typed. The page checks its origin again as it types, as for a secret. On an Electron app's window a code is typed only on the inbox's `origins`. A native app takes no code, and the fill fails `unsupported`.
+- A link to any other origin fails the goto `not_actionable`, naming the link's origin, and nothing opens.
+
+What is hidden:
+
+- Codes and links that carry a token are secrets from the moment the mailbox gives them, whether or not a test is given that message. Retest writes their placeholders in place of their values in events, results, logs, reports and every address, as the [Secrets](#secrets) rules say. A code shorter than four characters cannot be hidden safely, so a read that would give a message holding one fails `setup_failed`.
+- A link carries a token when its address holds a password, or when one of its parts does: a path segment, a query value, the fragment, or a parameter of a fragment written as a query. A part carries a token when it is one of the message's codes; when it is the value of a parameter whose name is, or ends in, `token`, `code`, `key`, `secret`, `signature`, `sig`, `auth`, `otp`, `nonce`, `ticket`, `session`, `hash` or `password`, in any case, as `access_token` and `oobCode` do; or when it reads as a token the way diagnostics read a path segment: 16 letters and digits or more, 12 digits or more, or the shape of a JSON Web Token, unless it is a file name, a version or a date.
+- Each such part of four characters or more is hidden as its link's placeholder, so a page opened from the link records an address such as `/magic/{{link:1}}`. A link that carries no token is an ordinary address, and stays as it is.
+- A `goto` to a link records the page it reached by its origin and path, as every navigation does, never its query or fragment. Its event names the link in `secret`, as `link` or `link:2`, and the inbox in `inbox`. A fill of a code records `secret: 'code'` and the inbox.
+- Each read writes `inbox.read`: the inbox, how many messages it held on the last look in `messages`, how many times Retest looked in `looks`, how long the read took in `waitedMs`, and the subject the test asked for in `wanted`. A read that gave a message adds its `subject`, when it arrived and how many codes and links it holds; one that gave none adds its `failure`. `inspect --test` and the HTML report show it in the timeline. A reader built before this release refuses a run folder that holds one, as an event type it does not know.
+
+Tests that read one mailbox at once can take each other's mail, and Retest does nothing to keep them apart on its own. Give every test that reads the inbox one lock, as `locks: ['inbox']` above, and list it in the config's `locks`; see [Locks](#locks).
+
+Screenshots and recordings are not redacted: a page that shows a code shows it in pixels. Inboxes are checked on Chrome. Firefox and WebKit pages are handed the same text and address, and are not checked.
 
 ### Rules every test follows
 
@@ -1142,6 +1480,39 @@ The summary gains a row when the pages did something worth a look, a capture was
 
 An artifact is JSON lines: `capture.started`, the records in the order they came, and `capture.finished`. The records are `console`, `runtime_error`, `network.request`, `network.response`, `network.finished`, `network.failed` and `network.pending`. Each carries its test, attempt, app and session, and its target in a run with variants. Console messages and errors are numbered `c1`, `e1` and on, and request hops `n1` and on; a hop's later records carry its id. AI checks receive no diagnostics.
 
+## Mocked responses
+
+On Chrome, a test can answer its page's requests itself, or refuse them, before they leave the browser:
+
+```ts
+await page.route('**/api/tasks', { status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 1, title: 'Stubbed' }]) })
+await page.route('**/api/slow', { abort: 'connectionrefused' })
+await page.route(/\/api\/tasks\/\d+$/, { status: 404, body: 'Not found' })
+await page.goto('/') // the page renders the stubbed list
+await page.unroute('**/api/tasks')
+```
+
+`page.route(pattern, answer)` answers every request of the page whose address `pattern` matches, from then on:
+
+- `pattern` is a glob or a `RegExp`. A glob matches the whole address, query included: `**` matches any run of characters, `*` any run without a `/`, and every other character only itself. It starts with `*` or with a scheme, such as `https://`, and any other glob fails `usage`. A `RegExp` is searched for anywhere in the address, with its own flags. The fragment is no part of what is matched, since the request Chrome holds has none.
+- `answer` is data, since no function crosses from the test's process to the one that drives the browser. A response is `{ status?, headers?, contentType?, body? }`. `status` is 200 unless given, from 200 to 599. Its phrase is the standard one, such as `Not Found`, or `Status 599` for a status that has none. `contentType` sets the `Content-Type` header. `body` is text, sent as UTF-8, or bytes. A 3xx with a `location` header is followed, as from a server.
+- A refusal is `{ abort }`. It fails the request with one of Chrome's network errors, in lower case: `aborted`, `accessdenied`, `addressunreachable`, `blockedbyclient`, `blockedbyresponse`, `connectionaborted`, `connectionclosed`, `connectionfailed`, `connectionrefused`, `connectionreset`, `failed`, `internetdisconnected`, `namenotresolved` or `timedout`. An answer with a refusal and a response fails `usage`.
+- A later route answers before an earlier one. A request no route matches goes on unchanged, through the target's proxy as any request does.
+- `page.route()` resolves once Chrome holds the requests the route matches, so a `goto` after it meets the route. It needs the app to itself, as an action does, within the action budget.
+- `page.unroute(pattern)` removes every route added with that pattern, written as it was added: the same glob, or a `RegExp` with the same source and flags. A pattern no route was added with fails `usage`.
+- Routes belong to the page and end with it. A page the page opens shares one set of routes with it, whether or not `page.popup()` waited for it: a route added or removed through either changes both.
+- A change takes effect once Chrome confirms it. One Chrome did not confirm in time fails, and leaves the routes as they were.
+- Chrome may refuse an answer when a request arrives. Retest then fails that request, so the page sees a network error and never waits. The test fails `setup_failed`, naming the request. No answer the checks above let through was found that Chrome refuses, so this was run against a stand-in browser only.
+- A route answers the page's own requests and those of its frames of the same site: a document, a fetch and an image were run. It does not answer a frame of another site, which Chrome keeps apart from the page. A request a service worker answers for the page passes the routes too: Chrome sends it through the worker, never the page, so it reaches the network as the worker sends it.
+
+A mocked body is test data: Retest never treats it as a secret, and a secret written into one is the test's to keep out. What the page shows of it is page text, read and redacted as any page text is, so a secret the test types into a page a route served still reads as its name in every report.
+
+Each `page.route()` and `page.unroute()` writes a `route` event at its line: `operation` (`add` or `remove`), `pattern` as the test wrote it, and for an added route its `answer`: the status, the content type, the header names and the body's size, or the error it refuses requests with. A body or a header's value never reaches an event. A removal records how many routes went, in `removed`. An answer Chrome refused writes `operation: 'answer'`, with the request's origin and path in `url` and the failure. A pattern is redacted whole before it is cut to the message limit, and a secret in a `RegExp` is hidden as the expression writes it, escaped. The HTML report and `inspect --test` show each as a step, such as `page.route('**/api/tasks') answers 200, application/json, 21 bytes`.
+
+In the diagnostics, a response a route gave, or a request it refused, is recorded as any other, with `mocked: true` and the route's pattern in `route`. Each hop of a redirect is marked on its own: a 3xx a route gave is marked, and the page it leads to is not, unless a route answers that too. A request whose answer Chrome refused adds Chrome's reason in `routeRefused`. The HTML report's network section writes "mocked by page.route('**/api/tasks')" under it.
+
+On Firefox and WebKit, `page.route()` and `page.unroute()` fail `unsupported`, naming the engine. On an Electron app's page they are a type error, and its window refuses them by name. Routes were run on Chrome on macOS.
+
 ## Native diagnostics and screenshot checks
 
 The internal native collectors use an owned app's stdout and an explicitly declared network metadata file. They do not subscribe to the machine's logs. TaskPhone's stdout comes through the launch proxy's pipe in `simctl launch --console`; TaskDesk's stdout comes through the pipe its launcher opened. A line names its test, attempt, app, session, owned pid and source (`simctl-stdout` or `macos-stdout`). Text is redacted and bounded before persistence. Native lines retain `consoleType: 'stdout'` and `origin: 'native'`; they supply no JavaScript exception or console-error classification.
@@ -1218,6 +1589,7 @@ A test declared with `test.skip` counts as chosen but does not run. A run whose 
 - `--workers <n>` sets how many test files run at once, each in a process of its own, sharing each target's browser. The default is half the machine's cores, at least one. Setups run first, one after another, so every saved state exists before a test starts from it. `--workers 1` runs the files one after another. Tests in different files run at the same time, so two that share something outside the page, such as one account or one counter on a server, can disturb each other: give each its own, or hold a [lock](#locks), as the example's count of saves does.
 - `--browsers <n>` sets how many browsers a target's tests are spread over, each worker keeping to one. The default is one browser for every three workers that have a file to run. A target that runs a share of the run's tests, as each target of a matrix does, gets that share of the browsers, at least one, and never more than the files that use it. One browser serves all its pages from a single process, which many workers saturate; the human report says how many a target has, as in `started web=chromium  Chrome 154 · 3 browsers`, each further browser is a `browser.started` event with its `instance`, and its log is `logs/browser-…-2.log` and so on.
 - `--allow-only` runs the tests marked only when `CI` is set, which otherwise refuses them.
+- `--update-screenshots` writes every [screenshot baseline](#screenshots) the run's checks compare against, from the picture each settled on, and passes those checks. The reports say how many baselines it wrote.
 - `--headed` shows every browser window. Nobody has run it yet.
 - `--agent` and `--no-agent`. Retest prints the short agent report when `CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CURSOR_AGENT`, `GEMINI_CLI`, `AGENT` or `AI_AGENT` is set, unless you pick `--reporter` or `--no-agent`.
 
@@ -1254,10 +1626,11 @@ retest run --playwright tests/checkout.spec.ts --browser /usr/bin/chromium --bas
 - `selectOption` takes one option, named by its label, `{ label: 'High' }`, or by its value, `{ value: 'high' }`, and chooses it with Retest's `select`. A bare string is refused by name, since Playwright matches it against each option's value and its label at once and Retest has to know which; so are a list, `{ index }`, `null` and an option named both ways.
 - `{ timeout }` on `goto`, `reload`, `goBack`, `goForward`, those actions and those locator and page matchers goes to Retest's own, which shortens the budget and never lengthens it.
 - Everything else fails where it is used, as `unsupported`, naming the member: "page.getByAltText is not supported yet by Retest's Playwright compatibility." Nothing is skipped or dropped. Any other option is refused by name, such as `page.goto(url, { waitUntil })`, `locator.click({ force })`, `locator.fill(value, { noWaitAfter })`, `locator.press(key, { delay })`, `locator.selectOption(values, { force })`, `page.getByRole(role, { level })` or `expect().toHaveText(…, { ignoreCase })`, and so is `test.step`'s third argument. `.not` on a value, `toContainText` with a list, `page.url`, which Playwright reads at once where Retest has to ask the page, `getByRole('row', { name })`, `test.skip`, `test.only`, `test.use`, test details, a titled hook and a fixture other than `page` are each refused by name too. A test that meets one ends as an error at that line, and the run exits 2, or 1 when another test failed its checks.
+- Files are not supported yet. `setInputFiles` is refused by name, since Playwright reads a path against the folder it runs in and Retest against the test file's. Retest's own `fileChooser` and `download` are refused too. A file picker the page opens fails the action that opened it, and Retest closes the picker.
 - Playwright's `goto`, `reload`, `goBack` and `goForward` answer a response, and `selectOption` the values it chose. Retest's answer nothing, so under `--playwright` each answers a value that fails by name, as `unsupported`, the moment the test reads anything from it: "The response page.goto() returns is not supported yet by Retest's Playwright compatibility." Awaiting the call and leaving its answer alone is fine, and a call nothing awaited is still reported as not awaited.
 - The rules are Retest's. A test with no assertion fails, a locator that matches several elements is ambiguous, an action is sent once, and `toHaveText` compares whole text.
 - Finders follow Playwright's rules where Retest can. `getByText`, `getByLabel`, `getByPlaceholder` and a role's `name` match any part of the text in any case, unless `exact: true`; both trim the text and read each run of spaces as one. `exact` beside a `RegExp`, or on a role with no name, is left out, as Playwright ignores it. `getByLabel` also finds any element that an `aria-label`, or the text an `aria-labelledby` points at, names. Reports write these locators as the file wrote them. Retest's own test files keep Retest's defaults.
-- A page that holds an open shadow root is refused. Playwright looks inside shadow roots and Retest does not, so any locator on such a page fails at once as `unsupported`, naming the shadow root's host, rather than pass on what it could not see.
+- Finders look inside open shadow roots, as Playwright's do. Under `--playwright` on Firefox or WebKit, a role or label lookup fails as `unsupported` when an open shadow root in its search could hold a match, as it does in Retest's own files.
 - A table row by name is refused. Names come from Chrome's accessibility tree, which gives a row no name from its cells, where Playwright names a row from them; `getByRole('row', { name })` would find no row that Playwright finds, so it fails at once by name, and the types of `@rehearsal-labs/retest/playwright` refuse it before the file runs. Take the row by position with `nth()`, or find a cell by name.
 - What still differs from Playwright:
   - Names come from Chrome's accessibility tree, not from Playwright's own reckoning, for the roles that are not refused too. The comparison's corpus finds buttons, links, tabs, cells, column headers, headings, alerts, status lines and unnamed rows by role, and Playwright and Retest agreed on every one of those lookups.
@@ -1376,6 +1749,7 @@ Without `--output`, a run goes to `.retest/runs/<time>`.
 <run>/artifacts/*.png              one failure screenshot for each app page of a failed test
 <run>/diagnostics/*.jsonl          each test page's console, runtime errors and requests
 <run>/states/                      saved sign-in state, only while the run goes on
+<run>/uploads/<attempt>/           files a test gave an input by content, only while their test runs
 .retest/last-run.json              the tests the last run did not pass, for --last-failed
 ```
 
@@ -1483,6 +1857,8 @@ Screenshots, recordings, frames, diagnostics and the report live in the run fold
 <run>/artifacts/<attempt>/<app>/thumbnail-recording-1.jpg    a small picture made from a recording or a screenshot
 <run>/artifacts/<attempt>/<app>/recording-1.mp4              a recording; recording-1.mp4.partial while it is written
 <run>/artifacts/<attempt>/<app>/frames-1/000000.jpg          frames kept for an AI check of a stretch of time
+<run>/artifacts/<attempt>/<app>/dashboard-o7-diff.png        a failed screenshot comparison's picture, named by the check and its look
+<run>/artifacts/<attempt>/<app>/downloads/tasks.csv          a download, under the name the page suggested
 <run>/diagnostics/<attempt>.<app>.jsonl                      one session's console and network records
 <run>/report.html                                            the run's HTML report
 ```
@@ -1512,7 +1888,7 @@ Everything is kept, except in two cases:
 - When the config keeps recordings of failures only, an attempt that passed loses its recordings, and the thumbnails made from them, once the attempt has finished and its recordings have ended. A recording an AI check judged is kept, and so is every recording of an attempt that did not pass: failed, error, inconclusive or never run.
 - When the run finishes and the media process has closed, a `.partial` file a lost recording left under `artifacts/` is removed, unless a record names it as what was left of that recording.
 
-Screenshots, frames, diagnostics, the report and logs are never removed. Nothing outside `artifacts/` is removed, a file whose path has a link in it or that has a second name is kept, and nothing is removed at any other moment. Each removal is recorded before the file goes, so no record ever names as present a file that is gone. If the file then cannot be removed, that is recorded too, and the file counts as present.
+Screenshots, frames, downloads, diagnostics, the report and logs are never removed. Nothing outside `artifacts/` is removed, a file whose path has a link in it or that has a second name is kept, and nothing is removed at any other moment. Each removal is recorded before the file goes, so no record ever names as present a file that is gone. If the file then cannot be removed, that is recorded too, and the file counts as present.
 
 A run without recording keeps its existing screenshot and diagnostics behavior. Recording runs use these artifact paths and retention rules.
 
@@ -1524,7 +1900,7 @@ Text redaction hides a secret's value in every text Retest writes. It never reac
 
 Each app has two rules, `screenshots` and `recordings`, each `allowed` or `never`. Both are allowed unless the config says otherwise.
 
-- `screenshots` covers every single capture: the screenshot taken when a test fails, the screenshots an AI check sends its judge, and an agent session's frames.
+- `screenshots` covers every single capture: the screenshot taken when a test fails, the screenshots an AI check sends its judge, an agent session's frames, and the pictures a screenshot comparison takes.
 - `recordings` covers frames that run: saved recordings and live frames sent to a viewer. Allowing them does not turn recording on; a run records only when asked.
 
 A capture the rules forbid is not taken. The run says so where the capture would have been. An AI check whose evidence was not taken cannot pass: a required check without its evidence is never a pass.
@@ -1578,10 +1954,10 @@ Native secret entry keeps pixels by default: secure fields rely on the platform'
 
 A program can run tests itself, with no command line. This guide calls such a program a host. A host runs Retest on its own machines, often for apps it did not write. The root export stays the authoring API, and a host uses two subpaths:
 
-- `@rehearsal-labs/retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `readRunFolder`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError`, `RunFolderReadError` and `LaunchError`, and the types a caller needs: `RunOptions`, `StopReason`, `HostCheck`, `RunFolder`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements, `PageNavigation` included. It also exports the session contract's types, which a driver implements. A `WebRuntime` names what it runs on in `identity`, and a `WebSession` answers `dispatch(command, timeoutMs, signal?, token?)` with the result `execute` gives and how far the command's input got: `not_sent`, `sent` or `unknown`. A launcher a host passes still returns an `OwnedBrowser`, and a run does not record how far an input got yet. `SessionBudget` counts browser sessions across runs, and `HostPreparation`, `PreparationAnswer`, `PreparationContext`, `CleanupContext`, `SessionOptions` and `Requirement` type the options below.
+- `@rehearsal-labs/retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `readRunFolder`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError`, `RunFolderReadError` and `LaunchError`, and the types a caller needs: `RunOptions`, `StopReason`, `HostCheck`, `RunFolder`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements, `PageNavigation` included. It also exports the session contract's types, which a driver implements. A `WebRuntime` names what it runs on in `identity`, and a `WebSession` answers `dispatch(command, timeoutMs, signal?, token?)` with the result `execute` gives and how far the command's input got: `not_sent`, `sent` or `unknown`. A launcher a host passes still returns an `OwnedBrowser`, and a run does not record how far an input got yet. `SessionBudget` counts browser sessions across runs, and `HostPreparation`, `PreparationAnswer`, `PreparationContext`, `CleanupContext`, `SessionOptions` and `Requirement` type the options below. `LoadedInbox`, `InboxSource`, `InboxReader`, `InboxMessage`, `InboxMessageLink` and `InboxContext` type an inbox a host reads for a run.
 - `@rehearsal-labs/retest/protocol` exports the event, result, command and failure types, their schemas, `parse`, `testId` and `testTitle`, `defaultTimeouts` and `mergeTimeouts`, `eventSchemaUrl` and `resultSchemaUrl`, the file URLs of the JSON Schema files, and `eventsFile`, `resultFile` and `logsFolder`, the names of a run folder's files, and `formatSessionId`, which writes a session's id. `PageFacts`, `NavigationCause`, `OptionChoiceRecord` and `EvidenceReference` are among its types, and so are `ExecutionRecord`, `PreparationRecord`, `CleanupRecord` and `Ending`, with their schemas.
 
-The root export adds `OptionChoice`, `ScrollDelta` and `SecretContext` for code that passes options, distances or a secret's context on.
+The root export adds `OptionChoice`, `ScrollDelta` and `SecretContext` for code that passes options, distances or a secret's context on, and `InboxContext` and `InboxMessage` for code that reads a mailbox.
 
 ### The config in memory
 
@@ -1621,6 +1997,21 @@ const result = await runFiles(
 ```
 
 This is the heart of [examples/host/host.ts](../examples/host/host.ts). A test file can live anywhere, in a folder with no `node_modules` too. Its process loads `@rehearsal-labs/retest` and its subpaths from the copy of Retest that runs it, whatever copy sits beside the file.
+
+A host that holds a test mailbox gives it as an inbox, a function in the config in memory, as it gives a secret's function. `validateConfig` keeps it, the run calls it in its own process on each look, and `resolveSecrets` leaves it alone, so nothing else is passed to `runFiles`:
+
+```ts
+const loaded = validateConfig(
+  defineConfig({
+    apps: { web: chromium({ baseUrl }) },
+    inboxes: { owner: { messages: ({ signal }) => mailbox.recent(ownerAddress, { signal }), origins: [signInOrigin] } },
+    locks: ['inbox'],
+  }),
+  join(root, 'host.config.ts'),
+)
+```
+
+Each message the function gives is `{ subject, from, text, codes, links, receivedAt }`, with the codes and links the host found in it; [Inboxes](#inboxes) says how a test reads it and what Retest hides.
 
 ### Host checks
 
@@ -1774,6 +2165,7 @@ await host.close()
 - `saveState()` saves the context's cookies and `localStorage`, with the session it came from, that session's owner and app, and when. It holds session cookies, so it is the host's to keep. `open({ state })` restores it into a new context before the page loads anything, and only for a session of the same owner and app; another is refused by name (`other-owner` or `other-app`). A session opened without it starts empty. Nothing else passes between sessions: what one does after its state was saved never reaches another.
 - `frame()` is one PNG of the page, as the driver encoded it. `frameSource()` is the driver's own live frame source for the media process, its frames carrying the session's identity and kept encoded. Chrome's is its screencast. Firefox's and WebKit's drivers give none through the session contract, so it is refused by name there.
 - `check(hostCheck, requirement)` runs a host's required check against the session's page with the runner's own host check, looking again until it passes or its time runs out, so it decides and words its result as a test's would. Its identity, the requirement's version, the check's id and the SHA-256 of its content, is the one a test held to the same requirement records for the same check, in every session and attempt. A frozen requirement refuses a changed check by name. A check that fails is a result with `details.checkId`, not a refusal.
+- A JavaScript dialog the page shows is answered by Retest, as for a test: dismissed, or accepted for a `beforeunload`. An action it opened during fails, saying what the page showed and what Retest answered: "The page showed a confirm dialog that says "Delete this task?" while Retest tried to click getByTestId('delete'). Retest answered no." One that opened between calls is named in the next answer of `act`, `observe` or `observePage`, under `dialogs`, each with its kind, its text, how it was answered and `words`, a sentence for the agent. `session.answeredDialogs` lists every one. Its text is redacted.
 - The host holds the secrets. A `fill` of `{ secret: 'password' }` types only on the session's base URL origin and the origins the host lists for it. An open may name the secrets its session may type, as `secrets: ['password']`; a fill of any other is refused and that secret is not read. Every text an answer holds, looks, failures and addresses included, is redacted.
 - An agent session writes no events and no run folder.
 
@@ -1917,8 +2309,11 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - Host checks are given only by a program, through `runFiles`. They read the final page, not the steps to it, and not frames or shadow roots. A navigation's `cause` says what opened that page, and nothing about the steps before.
 - Retest does not sign in to a proxy. Only an `http` proxy was run.
 - `--headed`, and `headless: false` in a config, were never run.
-- Locators search the top-level document only: no shadow DOM, no frames. No `filter()`, `and()`, `or()`, `getByAltText()` or `getByTitle()`, and no XPath.
-- No popups, dialogs, uploads, downloads, network mocking or visual comparison. A JavaScript dialog fails the command as unsupported.
+- Locators see nothing inside a closed shadow root. Frames work on Chrome and Chromium only: on Firefox, WebKit and in an Electron window a locator inside a frame is refused. In a frame, `setInputFiles` and a screenshot of an element are refused. On Firefox and WebKit, a role or label lookup is refused when an open shadow root in its search could hold a match. No `filter()`, `and()`, `or()`, `getByAltText()` or `getByTitle()`, and no XPath.
+- No uploads, file picker, downloads, dialogs or popups on Firefox and WebKit, where a JavaScript dialog fails the command as unsupported. No popup in an Electron app.
+- No drag and drop or mocked responses on Firefox and WebKit, and no mocked responses in an Electron app. A route answers no frame of another site and no request a service worker answers, and was not run against a dedicated worker's requests.
+- Layout matchers measure Chrome and Chromium pages only, and were run on macOS only. They measure the elements a test names, and do not search the page for layout problems.
+- Screenshot comparison takes the viewport or one element inside it: no full-page picture, no masked region, and no animation stopped first. A picture of one element is Chromium's. An Electron window and a native app's screen are not compared, and nothing was compared on Linux. Targets on one engine and platform share a baseline.
 - No retries, watch mode, custom fixtures or `test.extend`, and no `test.skip()` called inside a test with a condition. Files run on workers; the tests of one file do not. A lock lasts one run and is not shared with another process.
 - `retest install` installs the pinned Chrome for Testing, Firefox, WebKit and Electron on macOS arm64, and builds the native executors and the media process. On Linux x64 it pins Chrome for Testing only, and installing it there was not run.
 - No `toMeet` or `test.eval`. The agent session API writes no events. AI checks judge text, screenshots and recorded frames: a screenshot cannot be cropped to a region or masked, and no live judge's accuracy has been measured on the labelled corpus; only the fake judges have run it. The Azure AI SDK adapter has been exercised against a live deployment.
@@ -1927,7 +2322,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - A function source's value is hidden only from the moment its source gives it; page text read before that reached the test's process as it was.
 - Locators match the page's text as it shows it, not redacted. Retest refuses a locator that holds a whole secret value, but a locator that holds part of one, with the text beside it, can still match it.
 - A page that moves the keyboard focus into a frame of another site as the text arrives can receive the text there. Retest reports `outcome_unknown` and names the frame; it cannot stop typing inside a frame it is not attached to.
-- Diagnostics come from browser pages only, within the scope above, and Firefox records requests but no console messages: no request or response body or header, no WebSocket message, and nothing from a frame of another site, a service worker or a shared worker. Network observation does not mock, wait on or replay a request.
+- Diagnostics come from browser pages only, within the scope above, and Firefox records requests but no console messages: no request or response body or header, no WebSocket message, and nothing from a frame of another site, a service worker or a shared worker. Network observation does not wait on or replay a request. A request `page.route()` answers is recorded as mocked.
 - SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is retained, since a later run cannot prove it is still disposable. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.
 - `list --json` has no published JSON Schema. Events and results do.
 
