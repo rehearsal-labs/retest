@@ -25,11 +25,12 @@ const checks = ['attached', 'visible', 'enabled', 'editable', 'stable', 'in-view
 /** An actionability check, in the order `prepare` runs them after the element is found. */
 export type Check = (typeof checks)[number]
 
-const unsupportedReasons = ['field', 'multiline', 'checkable', 'radio', 'select', 'multiple'] as const
+const unsupportedReasons = ['field', 'multiline', 'checkable', 'radio', 'select', 'multiple', 'toggle'] as const
 
 /**
  * Why an element cannot take an action at all: not a field `fill` can use, a line break for a one-line field, not a
- * control `check` can use, a radio button to uncheck, not a `<select>`, or a list for a select that takes one.
+ * control `check` can use, a radio button to uncheck, not a `<select>`, a list for a select that takes one, or a
+ * select whose keys would toggle an option, on an engine that sends no such key.
  */
 export type UnsupportedReason = (typeof unsupportedReasons)[number]
 
@@ -78,7 +79,8 @@ export type Pointer = 'click' | 'tap'
  * `allowedOrigins` are the only origins a `fill` may type into. A `press` names its key as the test wrote it, and how
  * many keys it holds and presses. A `check` or `uncheck` clicks through `pointer`. A `select` names its choices, and
  * `multiple` when the test gave a list; with `typing`, it is one key of the select's plan, which holds `strokes` keys.
- * A `scroll` turns the wheel, and a `hover` moves the mouse.
+ * `toggleRefusal`, on an engine that sends no key that toggles an option, says why: a select that needs one is refused
+ * as soon as it is found, before any check that waits. A `scroll` turns the wheel, and a `hover` moves the mouse.
  */
 export type ActionIntent = { multiline: boolean; secret?: string; allowedOrigins?: readonly string[] } & (
   | { action: Pointer }
@@ -87,7 +89,7 @@ export type ActionIntent = { multiline: boolean; secret?: string; allowedOrigins
   | { action: 'hover' }
   | { action: 'press'; key: string; strokes: number }
   | { action: 'check' | 'uncheck'; pointer: Pointer }
-  | { action: 'select'; choices: readonly OptionChoiceRecord[]; multiple: boolean; typing?: { strokes: number } }
+  | { action: 'select'; choices: readonly OptionChoiceRecord[]; multiple: boolean; typing?: { strokes: number }; toggleRefusal?: string }
 )
 
 /** A look at the page for input that goes to the document, not to an element: a key or the wheel. */
@@ -438,7 +440,9 @@ function pageIntent(intent: ActionIntent): Record<string, unknown> {
       return { action: 'check', checked: intent.action === 'check', pointer: intent.pointer }
     case 'select': {
       const typing = intent.typing === undefined ? {} : { typing: true, strokes: intent.typing.strokes }
-      return { action: 'select', choices: intent.choices, multiple: intent.multiple, ...typing }
+      // The page needs only to know that no toggle goes; the reason stays here, for the failure.
+      const toggles = intent.toggleRefusal === undefined ? {} : { toggles: false }
+      return { action: 'select', choices: intent.choices, multiple: intent.multiple, ...typing, ...toggles }
     }
     case 'press':
       return { action: 'press', strokes: intent.strokes }

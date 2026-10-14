@@ -260,7 +260,7 @@ export default defineConfig({
 Where Firefox differs from Chrome, Retest reports what Firefox does, or refuses by name:
 
 - `fill` types its text key by key, and the input guard counts each key. Text holding a code point WebDriver reserves for a named key, U+E000 to U+E05D, is refused before any key is sent. When the page moves the focus away as the fill starts, the failure names `keydown` as the event Retest stopped, where Chrome names `beforeinput`.
-- `select()` on a `<select multiple>` that needs keyboard input is refused before any key is sent, also for a single option. An unchanged selection sends no input and succeeds. Firefox does not expose its native focused option, so Retest cannot verify a move before Space toggles that option. Run a test that changes options of a multiple select on Chrome or WebKit.
+- `select()` on a `<select multiple>` that needs keyboard input is refused before any key is sent, also for a single option. The refusal comes as soon as Retest finds the list, without waiting for it to show or stand still. An unchanged selection sends no input and succeeds. Firefox does not expose its native focused option, so Retest cannot verify a move before Space toggles that option. Run a test that changes options of a multiple select on Chrome or WebKit.
 - An uppercase letter or a shifted symbol is typed with Shift held, so the page also hears the Shift key go down and up. On macOS, Home follows the system's key bindings and leaves the caret where it was: typing `abcd`, then Home, then X gives `abcdX`. Shift+Home still selects to the start of the field.
 - A scroll is one trusted wheel event carrying the whole delta, as on Chrome, and Firefox moves at most one page for it. A delta larger than a page scrolls less on Firefox than on Chrome, so a scroll meant to reach the end of a long text stops short. To reach the end, scroll several times, each by no more than the box's height.
 - A refused connection is `not_actionable` with a message ending `connectionFailure.` and `errorText: 'connectionFailure'`, rather than Chrome's `net::ERR_CONNECTION_REFUSED`. Assert Firefox's own error text. A raw title keeps ESC, for example `\x9BBell tab \x1B[2J`; Chrome reads `\x9BBell tab [2J`. Assert that exact raw title when checking `toHaveTitle`.
@@ -358,6 +358,7 @@ How a test runs:
 - The app's output goes to its browser log. A run that passes its redactor to the launch writes each line redacted, so a secret the app prints shows as its placeholder.
 - On macOS the app gets Chromium's fake keychain, so its safe storage stays out of your login keychain.
 - The app's windows open on your screen. Electron has no headless mode.
+- Retest keeps the first window's page focused as far as its own scripts can tell, as it does every Chrome page. A window behind another one, or covered by one, gets no frames from Chromium otherwise, and every action there waits on frames.
 
 What Retest refuses, by name:
 
@@ -1016,7 +1017,9 @@ await expect(page).toHaveScreenshot('settings', { maxDiffPixelRatio: 0.001, thre
 
 `toHaveScreenshot(name)` compares a picture of the page's viewport, or of one element, with a saved picture of it, its baseline, pixel by pixel. It takes a picture at once, then another after 100 ms, 250 ms, 500 ms and every second after that, until the assertion's time runs out.
 
-- A picture has settled when it is the same as the one before it, and the two were taken at least 100 ms apart. Only a settled picture is compared.
+- A picture has settled when the check's pictures have stayed the same for at least 100 ms. Only a settled picture has its pixels counted.
+- A picture that can never match fails the check at once, with no second picture: no baseline, one Retest cannot read, a picture at another device scale factor, or a page's picture of another size. An element's box can still grow or shrink, so its picture of another size is taken again.
+- When the time runs out on a picture that has not settled, the failure says why: only one picture fit in the time, the pictures stayed the same for too short a time, or no two in a row were the same.
 - A settled picture that does not match its baseline is taken again, as other matchers look again, so a page still loading passes once it shows its baseline. The check fails when its time runs out on a picture that does not match.
 - A run with `--update-screenshots` writes a picture only once it has stayed the same for a whole second, so a loading state that lasts less than that never becomes the baseline. A state that lasts longer can, so wait for the page's content before the check.
 - A page that never stops moving fails as not settled. Retest does not stop animations or hide the text caret.
@@ -1031,7 +1034,7 @@ await expect(page).toHaveScreenshot('settings', { maxDiffPixelRatio: 0.001, thre
 - An element's picture is its box, widened to whole CSS pixels. The element must be the one match, shown, and inside the viewport, since Retest never scrolls the page to take a picture. One that is missing, hidden or matched more than once fails as other locator matchers do.
 - `timeout` shortens the assertion budget for the call, as it does for other matchers. The matcher has no `.not`, which the type check and the run both refuse.
 
-A check with no baseline fails at its first settled picture. Its failure names the file Retest looked for, and the run folder keeps the picture as the candidate. A first run never passes by writing its baseline. To write the baselines, run with `--update-screenshots`:
+A check with no baseline fails at its first picture. Its failure names the file Retest looked for, and the run folder keeps the picture as the candidate. A first run never passes by writing its baseline. To write the baselines, run with `--update-screenshots`:
 
 ```sh
 retest run --update-screenshots

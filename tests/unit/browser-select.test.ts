@@ -11,9 +11,11 @@ import { test } from 'node:test'
 import { waitUntilActionable } from '../../src/browser/actionability.ts'
 import { CdpDisconnectedError } from '../../src/browser/cdp/errors.ts'
 import { describeAction, describeChoices } from '../../src/browser/element-queries.ts'
+import { selectionProblem, toggleRefusal } from '../../src/browser/firefox/input.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { disarmFunction, prepareFunction, selectionFunction, setOffFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
+import { describeLocator } from '../../src/protocol/locator.ts'
 import { FakeOption, FakeSelect, fakePage, oneElement } from './browser-fake-page.ts'
 import { functionsCalled, isRecord, never, scriptedPage, scriptedSession, value } from './browser-fixtures.ts'
 
@@ -134,6 +136,31 @@ test('a select multiple plans to start at the first option and toggle each whose
   green.disabled = true
   assert.deepEqual(await choose(page, element, [{ value: 'r' }], true), { status: 'unreachable', element: '<select data-testid="select">' })
   assert.deepEqual(selected(element), ['r', 'g'], 'planning chose nothing')
+})
+
+test('on an engine that sends no toggle, a select multiple whose keys would toggle is refused as soon as it is found', async () => {
+  const page = fakePage()
+  const element = select(page, colours, true)
+  const [red, , green] = element.options
+  assert.ok(red !== undefined && green !== undefined)
+  red.selected = true
+  const choices = [{ value: 'g' }]
+  const look = (toggles: object) => Promise.resolve(page.call(prepareFunction, { action: 'select', choices, multiple: true, ...toggles }, oneElement, element))
+  // Hidden, the list would wait to be shown; the refusal rests on its options alone, so it comes before that wait.
+  element.visible = false
+  assert.deepEqual(await look({ toggles: false }), { status: 'unsupported', reason: 'toggle', element: '<select data-testid="select">' })
+  assert.deepEqual(await look({}), { status: 'blocked', check: 'visible', detail: null }, 'an engine that toggles waits as before')
+  element.visible = true
+  // A list already as asked needs no key, and one an option no key reaches is named as before.
+  assert.deepEqual(await Promise.resolve(page.call(prepareFunction, { action: 'select', choices: [{ value: 'r' }], multiple: true, toggles: false }, oneElement, element)), { status: 'unchanged', page: facts })
+  green.selected = true
+  green.disabled = true
+  assert.deepEqual(await Promise.resolve(page.call(prepareFunction, { action: 'select', choices: [{ value: 'r' }], multiple: true, toggles: false }, oneElement, element)), { status: 'unreachable', element: '<select data-testid="select">' })
+  // A select that takes one option is typed to, with no toggle, so it is planned as before.
+  const single = select(page, colours)
+  assert.deepEqual(await Promise.resolve(page.call(prepareFunction, { action: 'select', choices: [{ value: 'g' }], multiple: false, toggles: false }, oneElement, single)), readyFor(typed('g')))
+  assert.deepEqual(selected(element), ['r', 'g'], 'refusing chose nothing')
+  assert.deepEqual(element.dispatched, [], 'and dispatched nothing')
 })
 
 test('a list for a select that takes one option, and an element that is not a select, fail at once', async () => {
@@ -276,6 +303,19 @@ test('each failure of a select names the choice it was about', async () => {
     message: `Could not select 'Mexico' in getByLabel('Country'): it is <div class="picker">, and select() chooses from a <select> element. Choose from a list the page draws itself with click().`,
     details: { element: '<div class="picker">' },
   })
+})
+
+test("a select refused for the toggle it needs is refused at once, in the engine's own words, with no input sent", async () => {
+  const intent = { ...intentOf([{ label: 'Olives' }, { value: 'basil' }], true), toggleRefusal }
+  const { value: refused, ms } = await timed(failureFor({ status: 'unsupported', reason: 'toggle', element: '<select id="toppings">' }, intent, 5000))
+  assert.deepEqual(refused, {
+    class: 'unsupported',
+    message: `Could not select ['Olives', { value: 'basil' }] in getByLabel('Country'): ${toggleRefusal} Retest sent no input.`,
+    details: { inputSent: false },
+  })
+  assert.ok(ms < 1000, 'the refusal fails at once')
+  // Firefox refuses a toggling plan before its first key in the same words, so the refusal reads alike wherever it is made.
+  assert.equal(refused.message, `Could not select ${describeChoices(intent)} in ${describeLocator(country)}: ${selectionProblem(toggled('Home', 'Space'))} Retest sent no input.`)
 })
 
 const formPage = { href: 'http://app.test/form', title: 'Form' }

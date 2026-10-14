@@ -287,6 +287,11 @@ function unsupported(readiness: Extract<Readiness, { status: 'unsupported' }>, l
         message: `Could not ${action}: it is ${element}, which takes one option, and select() was given a list. Pass one option, not a list.`,
         details: { element },
       }
+    case 'toggle': {
+      // Only an intent that carries the engine's reason asks the page to refuse a toggle.
+      if (intent.action !== 'select' || intent.toggleRefusal === undefined) throw new Error("Retest's page script refused a toggle its engine sends")
+      return { class: 'unsupported', message: `Could not ${action}: ${intent.toggleRefusal} Retest sent no input.`, details: { inputSent: false } }
+    }
   }
 }
 

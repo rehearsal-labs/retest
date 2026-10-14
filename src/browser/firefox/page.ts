@@ -58,7 +58,7 @@ import { FirefoxFrameSource } from './capture.ts'
 import { readBidi } from './bidi-client.ts'
 import { BidiProtocolError } from './bidi-errors.ts'
 import { cdpError, FirefoxBridge } from './bridge.ts'
-import { clickAt, moveTo, pressedStrokes, pressKey, selectionProblem, typeText, typedStrokes, typingProblem, wheelAt, type Point } from './input.ts'
+import { clickAt, moveTo, pressedStrokes, pressKey, selectionProblem, toggleRefusal, typeText, typedStrokes, typingProblem, wheelAt, type Point } from './input.ts'
 import { NavigationHold } from './navigation-hold.ts'
 import { navigate, NavigationWatcher, reload, traverse } from './navigation.ts'
 import { navigationShim, relayScript, sandboxName, wrapped } from './sandbox.ts'
@@ -1352,8 +1352,9 @@ function selectionStayed(locator: LocatorRecipe, intent: Extract<ActionIntent, {
   return { class: 'not_actionable', message: `Could not ${action}: Retest typed the keys that choose it, and ${after}. Retest does not type again.`, details: { check: 'selection', inputSent: true } }
 }
 
+// Firefox sends no key that toggles an option, so the look refuses a select that needs one as soon as it finds it.
 function selectIntent(command: Extract<BrowserCommand, { kind: 'select' }>): Extract<ActionIntent, { action: 'select' }> {
-  return { action: 'select', choices: command.choices, multiple: command.multiple === true, multiline: false }
+  return { action: 'select', choices: command.choices, multiple: command.multiple === true, multiline: false, toggleRefusal }
 }
 
 function sameSession(first: RecordIdentity, second: RecordIdentity): boolean {

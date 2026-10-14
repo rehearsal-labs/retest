@@ -766,7 +766,13 @@ const fitHelper = String.raw`
     if (!(control instanceof HTMLSelectElement)) return settled({ status: 'unsupported', reason: 'select', element: describe(control) })
     if (intent.multiple && !control.multiple) return settled({ status: 'unsupported', reason: 'multiple', element: describe(control) })
     const chosen = chooseOptions(control, intent.choices)
-    return chosen.status === 'chosen' ? { element: control } : settled(chosen)
+    if (chosen.status !== 'chosen') return settled(chosen)
+    // An engine that sends no toggle refuses a plan that needs one whatever the page draws, so it does not wait to draw.
+    if (intent.toggles === false && !isSelection(control, chosen.options)) {
+      const plan = planSelection(control, chosen.options)
+      if (plan !== null && plan.keys.some((planned) => planned.toggle)) return settled({ status: 'unsupported', reason: 'toggle', element: describe(control) })
+    }
+    return { element: control }
   }
   const fit = (intent, control) => {
     if (intent.action === 'fill') return fitField(intent, control)

@@ -169,11 +169,15 @@ export function typingProblem(text: string): string | undefined {
   return `it holds U+${reserved.codePointAt(0)?.toString(16).toUpperCase().padStart(4, '0')}, which Firefox reads as a named key`
 }
 
+/**
+ * Why Firefox sends no key that toggles an option of a select. BiDi does not expose which option of a native list holds
+ * the keyboard focus, so a move that missed cannot be caught before a toggle selects the wrong option.
+ */
+export const toggleRefusal = 'Firefox cannot verify the native option holding keyboard focus before toggling it. A move can leave that focus unchanged, so Retest refuses multiple-select keyboard input before an unrequested option could be selected.'
+
 /** A native list's focused option is not exposed by BiDi, so a missed move cannot be checked before a toggle. */
 export function selectionProblem(plan: SelectPlan): string | undefined {
-  return plan.keys.some((planned) => planned.toggle)
-    ? 'Firefox cannot verify the native option holding keyboard focus before toggling it. A move can leave that focus unchanged, so Retest refuses multiple-select keyboard input before an unrequested option could be selected.'
-    : undefined
+  return plan.keys.some((planned) => planned.toggle) ? toggleRefusal : undefined
 }
 
 /** Types `text` into whatever holds the keyboard focus, as one sequence of key presses. */
