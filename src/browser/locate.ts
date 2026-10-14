@@ -1,8 +1,10 @@
 import type { WorldArgument, WorldArguments, WorldScope } from './isolated-world.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { LocatorPick, LocatorRecipe, LocatorStep, TextMatch } from '../protocol/locator.ts'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { locatorSteps } from '../protocol/locator.ts'
 import { chromeRolesFor, elementsByRole, labelledRoles, type RoleQuery } from './accessibility.ts'
+import { shadowCandidates, type ShadowCandidates } from './shadow-candidates.ts'
 
 type Picked = { pick: LocatorPick | null }
 
@@ -17,14 +19,30 @@ type PageStep = Picked &
     | { by: 'testId'; value: string }
     | { by: 'text' | 'placeholder'; text: TextMatch; exact: boolean }
     | { by: 'css'; selector: string }
-    | { by: 'elements'; from: number; count: number; labelled?: { text: TextMatch; exact: boolean } }
+    | { by: 'elements'; from: number; count: number; labelled?: { text: TextMatch; exact: boolean }; files?: { text: TextMatch; exact: boolean }; shadow?: ShadowCandidates }
   )
 
+/** The steps of a locator as a page function takes them, and the key of the one node a pinned read may find. */
+type PageQuery = { steps: PageStep[]; element?: string }
+
+// The engine whose accessibility lookup does not look inside shadow roots, for the command now running on it.
+const shortOfShadowRoots = new AsyncLocalStorage<string>()
+
 /**
- * The steps of a locator as a page function takes them, by Playwright's rules a refusal of open shadow roots, and the
- * key of the one node a pinned read may find.
+ * Runs `work`, a driver's command on `engine`, whose accessibility lookup does not look inside shadow roots: a role or
+ * label step there whose search holds an open shadow root that could hold what it asks for is refused, naming the
+ * root's host, rather than find less than Chrome finds. Its step carries `shadow`, the candidates the page looks for.
+ *
+ * @example const result = await rolesStopAtShadowRoots('Firefox', () => this.#execute(command, executing))
  */
-type PageQuery = { steps: PageStep[]; shadow?: 'refused'; element?: string }
+export function rolesStopAtShadowRoots<T>(engine: string, work: () => Promise<T>): Promise<T> {
+  return shortOfShadowRoots.run(engine, work)
+}
+
+/** The engine whose role lookups stop at shadow roots, for the command now running, or undefined where they do not. */
+export function engineShortOfShadowRoots(): string | undefined {
+  return shortOfShadowRoots.getStore()
+}
 
 type RoleStep = Extract<LocatorStep, { by: 'role' | 'label' }>
 
@@ -71,7 +89,7 @@ export function locatorsArguments(locators: readonly LocatorRecipe[], values: re
 function queryInPage(locator: LocatorRecipe): PageQuery | undefined {
   const steps = locatorSteps(locator)
   const found = steps.flatMap((step) => (isRoleStep(step) ? [] : [pageStep(step)]))
-  return found.length === steps.length ? queryOf(locator, found) : undefined
+  return found.length === steps.length ? { steps: found } : undefined
 }
 
 // A locator's query in one document's world, with the elements each role and label step takes added to `elements`,
@@ -86,14 +104,13 @@ async function queryIn(locator: LocatorRecipe, scope: WorldScope, deadline: Dead
     }
     const found = await elementsByRole(scope, roleQuery(step), deadline)
     const labelled = playwright && step.by === 'label' ? { labelled: { text: step.text, exact: step.exact ?? true } } : {}
-    pageSteps.push({ by: 'elements', from: elements.length, count: found.length, pick: step.pick ?? null, ...labelled })
+    // A file input is found by its label in the page, never through the tree, which names an unlabelled one too.
+    const files = step.by === 'label' ? { files: { text: step.text, exact: step.exact ?? true } } : {}
+    const shadow = shortOfShadowRoots.getStore() === undefined ? {} : { shadow: shadowCandidates(step) }
+    pageSteps.push({ by: 'elements', from: elements.length, count: found.length, pick: step.pick ?? null, ...labelled, ...files, ...shadow })
     elements.push(...found)
   }
-  return queryOf(locator, pageSteps)
-}
-
-function queryOf(locator: LocatorRecipe, pageSteps: PageStep[]): PageQuery {
-  return locator.dialect === 'playwright' ? { steps: pageSteps, shadow: 'refused' } : { steps: pageSteps }
+  return { steps: pageSteps }
 }
 
 function isRoleStep(step: LocatorStep): step is RoleStep {

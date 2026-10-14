@@ -1,5 +1,5 @@
 import type { ActionIntent } from './element-queries.ts'
-import type { IsolatedWorld } from './isolated-world.ts'
+import type { PageWorld } from './isolated-world.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
@@ -9,7 +9,7 @@ import { CdpTimeoutError } from './cdp/errors.ts'
 import { pinnedKey, readChecked } from './element-queries.ts'
 
 export type CheckedStateOptions = {
-  world: IsolatedWorld
+  world: PageWorld
   locator: LocatorRecipe
   intent: Extract<ActionIntent, { action: 'check' | 'uncheck' }>
   /** `'label'` when the click went to the control's label. */

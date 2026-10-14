@@ -1,13 +1,14 @@
 import type { BrowserCommand, DispatchedCommand } from './contract.ts'
 import type { DocumentFacts } from './document-facts.ts'
 import type { Point } from './input.ts'
-import type { InDocument, IsolatedWorld } from './isolated-world.ts'
+import type { Guard } from './input-guard.ts'
+import type { InDocument, PageWorld, WorldArguments } from './isolated-world.ts'
 import type { Observation } from '../protocol/commands.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { EmptyStep, LocatorRecipe } from '../protocol/locator.ts'
 import type { OptionChoiceRecord } from '../protocol/option-choices.ts'
 import type { PageFacts } from '../protocol/page-facts.ts'
-import type { Schema } from '../protocol/schema.ts'
+import type { Infer, Schema } from '../protocol/schema.ts'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { observationSchema, observedItemLimit } from '../protocol/commands.ts'
 import { describeLocator, emptyStepSchema } from '../protocol/locator.ts'
@@ -129,6 +130,52 @@ const readinessSchema: Schema<Readiness> = s.discriminatedUnion('status', [
   readySchema,
 ])
 
+/** A look that readied an element, as `prepare` answers. */
+export type ReadyReadiness = Extract<Readiness, { status: 'ready' }>
+
+/**
+ * A look for an action, in the document it ran in. For an element in a frame, `around` holds the guards the look armed
+ * in the documents around the frame, outermost first.
+ */
+export type Prepared = InDocument<Readiness> & { around?: readonly Guard[] }
+
+/** The pointer input a frame's element passes on to an element inside it, which the documents around the frame guard. */
+export type PointerThrough = Pointer | 'hover' | 'scroll'
+
+/**
+ * A world in the document of a frame, which finds the frame again by its element for every call. A look there reads
+ * the frame's own document. `missing` says what an error a call threw was found missing: the element of one of the
+ * frames, as an empty step that names that frame, or null when the element is there and its document is not yet;
+ * undefined for any other error. `place` moves the point an action readied in the frame's document to the page's
+ * viewport, where input lands, after it checks the frame in each document around it, and for `pointer` input arms
+ * each of those documents' guards for the frame's element. `pageFacts` reads the page's own address and title.
+ */
+export interface FramedWorld extends PageWorld {
+  /** As `enter`, with each frame on the path brought into view first, as an action brings its element into view. */
+  enterInView<T>(functionDeclaration: string, args: WorldArguments, schema: Schema<T>, deadline: Deadline): Promise<InDocument<T>>
+  missing(error: unknown): EmptyStep | null | undefined
+  place(ready: InDocument<ReadyReadiness>, pointer: PointerThrough | null, deadline: Deadline): Promise<Prepared>
+  pageFacts(deadline: Deadline): Promise<DocumentFacts>
+}
+
+// The context of a look that found no frame, which has no document. Nothing reads the context of an unready look.
+const noDocument = -1
+
+function framedWorld(world: PageWorld): FramedWorld | undefined {
+  return isFramed(world) ? world : undefined
+}
+
+// Only a frame's world places a point, and it answers the rest of `FramedWorld` with it.
+function isFramed(world: PageWorld): world is FramedWorld {
+  return 'place' in world
+}
+
+// What a look reads when a frame of its locator is not there: no match, and the frame that kept nothing.
+function unseen(empty: EmptyStep | null): Observation {
+  const missing = empty === null ? {} : { emptyStep: empty }
+  return { count: 0, visible: null, text: null, value: null, checked: null, enabled: null, items: [], itemsTruncated: false, ...missing }
+}
+
 /** A CSS selector of a locator's step that the page could not read, with the browser's reason. */
 export type InvalidSelector = { step: number; message: string }
 
@@ -146,10 +193,20 @@ const observedSchema = s.union([
  */
 export type Observed = { observation: Observation; page: PageFacts } | { invalid: InvalidSelector } | { shadow: string }
 
-/** Resolves the locator once and reads what an assertion needs, and the page it read it on. */
-export async function observe(world: IsolatedWorld, locator: LocatorRecipe, deadline: Deadline): Promise<Observed> {
-  const observed = await world.call(observeFunction, locatorArguments(locator, [observedItemLimit]), observedSchema, deadline)
-  return 'observation' in observed ? { observation: observed.observation, page: pageFactsOf(observed.page) } : observed
+/**
+ * Resolves the locator once and reads what an assertion needs, and the page it read it on. In a frame whose element
+ * is not there, it reads no match, on the page the frame was looked for in.
+ */
+export async function observe(world: PageWorld, locator: LocatorRecipe, deadline: Deadline): Promise<Observed> {
+  try {
+    const observed = await world.call(observeFunction, locatorArguments(locator, [observedItemLimit]), observedSchema, deadline)
+    return 'observation' in observed ? { observation: observed.observation, page: pageFactsOf(observed.page) } : observed
+  } catch (error) {
+    const framed = framedWorld(world)
+    const missing = framed?.missing(error)
+    if (framed === undefined || missing === undefined) throw error
+    return { observation: unseen(missing), page: pageFactsOf(await framed.pageFacts(deadline)) }
+  }
 }
 
 /** One locator's read in a keyed look: its observation, and the key of each element it lists, in the same order. */
@@ -172,8 +229,16 @@ const keyedSchema = s.union([
  * listed with the key the document's world keeps for that node. An answer that does not read each locator once, or
  * does not key each element it lists, is not Retest's page function answering, and throws. Sends no input.
  */
-export async function observeKeyed(world: IsolatedWorld, locators: readonly LocatorRecipe[], deadline: Deadline): Promise<KeyedObserved> {
-  const observed = await world.call(keyedObserveFunction, locatorsArguments(locators, [observedItemLimit]), keyedSchema, deadline)
+export async function observeKeyed(world: PageWorld, locators: readonly LocatorRecipe[], deadline: Deadline): Promise<KeyedObserved> {
+  let observed: Infer<typeof keyedSchema>
+  try {
+    observed = await world.call(keyedObserveFunction, locatorsArguments(locators, [observedItemLimit]), keyedSchema, deadline)
+  } catch (error) {
+    const framed = framedWorld(world)
+    const missing = framed?.missing(error)
+    if (framed === undefined || missing === undefined) throw error
+    return { reads: locators.map(() => ({ observation: unseen(missing), keys: [] })), page: pageFactsOf(await framed.pageFacts(deadline)) }
+  }
   if ('invalid' in observed) return { invalid: observed.invalid, locator: observed.query }
   if ('shadow' in observed) return { shadow: observed.shadow, locator: observed.query }
   const whole = observed.reads.length === locators.length && observed.reads.every((read) => read.keys.length === read.observation.items.length)
@@ -217,17 +282,49 @@ export function pinnedKey(): string | undefined {
  * Resolves the locator once and runs the checks an action needs, readying a field for `fill` and focusing the
  * element for `press`, or for one key of a `select`'s plan. Also names the document it looked at, which holds the
  * guard a ready element armed. A `select` that is not yet typing is only checked here, and planned. Inside
- * `dispatchPinned` the one match must be the pinned node.
+ * `dispatchPinned` the one match must be the pinned node. In a frame, the checks run in the frame's document, and the
+ * point to act at is then placed in the page's viewport; a frame whose element is not there is missing, as an element is.
  */
-export function prepare(
-  world: IsolatedWorld,
+export async function prepare(
+  world: PageWorld,
   locator: LocatorRecipe,
   intent: ActionIntent,
   deadline: Deadline,
-): Promise<InDocument<Readiness>> {
+): Promise<Prepared> {
   const pinned = pinnedElement.getStore()
   const asked = pinned === undefined ? pageIntent(intent) : { ...pageIntent(intent), element: pinned }
-  return world.enter(prepareFunction, locatorArguments(locator, [asked]), readinessSchema, deadline)
+  const framed = framedWorld(world)
+  if (framed === undefined) return world.enter(prepareFunction, locatorArguments(locator, [asked]), readinessSchema, deadline)
+  let seen: InDocument<Readiness>
+  try {
+    seen = await framed.enterInView(prepareFunction, locatorArguments(locator, [asked]), readinessSchema, deadline)
+  } catch (error) {
+    const missing = framed.missing(error)
+    if (missing === undefined) throw error
+    return { value: { status: 'missing', empty: missing }, context: noDocument }
+  }
+  const { value, context } = seen
+  // A key goes to the focus, which the frame took with the element; only a point is placed in the page.
+  return value.status === 'ready' && value.point !== null ? framed.place({ value, context }, pointerThrough(intent), deadline) : seen
+}
+
+// The pointer input an action sends, which goes through each frame's element at its point; null for keys and typing,
+// which go to the focus.
+function pointerThrough(intent: ActionIntent): PointerThrough | null {
+  switch (intent.action) {
+    case 'click':
+    case 'tap':
+    case 'hover':
+    case 'scroll':
+      return intent.action
+    case 'check':
+    case 'uncheck':
+      return intent.pointer
+    case 'fill':
+    case 'press':
+    case 'select':
+      return null
+  }
 }
 
 /** Whether a select holds exactly the options its choices name, the labels of those it holds, and the page it is on. */
@@ -259,7 +356,7 @@ export type TypedSelect = { locator: LocatorRecipe; choices: readonly OptionChoi
  * undefined once that document has gone: a select another document holds is never read in its place. Inside
  * `dispatchPinned` it reads the pinned select only, and another in its place is `lost`. Sends no input.
  */
-export async function readSelection(world: IsolatedWorld, { locator, choices, document }: TypedSelect, deadline: Deadline): Promise<Selection | undefined> {
+export async function readSelection(world: PageWorld, { locator, choices, document }: TypedSelect, deadline: Deadline): Promise<Selection | undefined> {
   try {
     return selectionOf(await world.callIn(document, selectionFunction, locatorArguments(locator, [choices], pinnedKey()), pageSelectionSchema, deadline))
   } catch (error) {
@@ -272,7 +369,7 @@ export async function readSelection(world: IsolatedWorld, { locator, choices, do
  * Whether `document` set off for another document since the arming `token` began, or has gone already. A select's
  * next key goes only into a document that is staying. Sends no input.
  */
-export async function pageSetOff(world: IsolatedWorld, { document, token }: { document: number; token: number }, deadline: Deadline): Promise<boolean> {
+export async function pageSetOff(world: PageWorld, { document, token }: { document: number; token: number }, deadline: Deadline): Promise<boolean> {
   try {
     return await world.callIn(document, setOffFunction, [token], s.boolean(), deadline)
   } catch (error) {
@@ -286,16 +383,21 @@ export async function pageSetOff(world: IsolatedWorld, { document, token }: { do
  * to whatever holds the focus there, with the keys it holds and presses, or the wheel at the centre of the viewport.
  * Ready as `prepare` is, in that document.
  */
-export function armDocument(world: IsolatedWorld, action: DocumentAction, strokes: number, deadline: Deadline): Promise<InDocument<Extract<Readiness, { status: 'ready' }>>> {
+export function armDocument(world: PageWorld, action: DocumentAction, strokes: number, deadline: Deadline): Promise<InDocument<Extract<Readiness, { status: 'ready' }>>> {
   return world.enter(armDocumentFunction, [action, strokes], readySchema, deadline)
 }
 
 /**
- * Whether the one element the locator finds is checked, or null when no single such control is there. Inside
- * `dispatchPinned` it reads the pinned element only, and another in its place is null.
+ * Whether the one element the locator finds is checked, or null when no single such control is there, a frame it is
+ * in included. Inside `dispatchPinned` it reads the pinned element only, and another in its place is null.
  */
-export function readChecked(world: IsolatedWorld, locator: LocatorRecipe, deadline: Deadline): Promise<boolean | null> {
-  return world.call(checkedFunction, locatorArguments(locator, [], pinnedKey()), s.nullable(s.boolean()), deadline)
+export async function readChecked(world: PageWorld, locator: LocatorRecipe, deadline: Deadline): Promise<boolean | null> {
+  try {
+    return await world.call(checkedFunction, locatorArguments(locator, [], pinnedKey()), s.nullable(s.boolean()), deadline)
+  } catch (error) {
+    if (framedWorld(world)?.missing(error) === undefined) throw error
+    return null
+  }
 }
 
 /**

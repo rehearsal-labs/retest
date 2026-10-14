@@ -21,41 +21,238 @@ export const textMatchHelper: string = String.raw`
   }
 `
 
+// How the page's tree reaches through open shadow roots. `parentOf` is an element's parent element, or for the top of
+// a shadow tree its host, and `holds` whether a node is inside another, its own tree or a shadow tree inside it.
+// `drawnIn` says a node is drawn inside an element as the page lays it out, through the slots that show it, and
+// `reaches` that input at a node reaches an element, either way. `elementAt` and `focusedElement` follow the hit test
+// and the focus into open shadow roots, where the document alone stops at the host. `outsideClosedRoots` says a node is
+// in no closed root: a closed root keeps its inside to itself.
+const treeHelper = String.raw`
+  const parentOf = (node) => node.parentElement ?? (node.parentNode instanceof ShadowRoot ? node.parentNode.host : null)
+  const holds = (root, node) => {
+    for (let current = node; current !== null; ) {
+      if (root === current || root.contains(current)) return true
+      const tree = current.getRootNode()
+      current = tree instanceof ShadowRoot ? tree.host : null
+    }
+    return false
+  }
+  const shownParent = (node) => node.assignedSlot ?? parentOf(node)
+  const drawnIn = (element, node) => {
+    for (let current = node; current !== null && current !== undefined; current = shownParent(current)) if (current === element) return true
+    return false
+  }
+  const reaches = (element, node) => holds(element, node) || drawnIn(element, node)
+  // The document names the host for what its open root draws at a point, and a root names the host again for the
+  // host's own text that one of its slots draws: that text's slot is what is drawn there.
+  const slotAt = (host, x, y) => {
+    if (!host.shadowRoot) return null
+    for (const child of host.childNodes) {
+      if (child.nodeType !== Node.TEXT_NODE || !child.assignedSlot) continue
+      const range = document.createRange()
+      range.selectNodeContents(child)
+      if ([...range.getClientRects()].some((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)) return child.assignedSlot
+    }
+    return null
+  }
+  const elementAt = (x, y) => {
+    let found = document.elementFromPoint(x, y)
+    while (found !== null && found.shadowRoot) {
+      const inner = found.shadowRoot.elementFromPoint(x, y)
+      if (inner === null || inner === found) break
+      found = inner
+    }
+    return found === null ? null : (slotAt(found, x, y) ?? found)
+  }
+  const focusedElement = () => {
+    let focused = document.activeElement
+    while (focused !== null && focused.shadowRoot?.activeElement) focused = focused.shadowRoot.activeElement
+    return focused
+  }
+  // Only an open root is its host's shadowRoot. A closed root, or the browser's own inside a control, is not; and
+  // reading such a root's mode stops Chrome's renderer for the browser's own.
+  const outsideClosedRoots = (node) => {
+    for (let root = node.getRootNode(); root instanceof ShadowRoot; root = root.host.getRootNode()) if (root.host.shadowRoot !== root) return false
+    return true
+  }
+`
+
 const helpers = String.raw`
   ${textMatchHelper}
-  // An element's text is that of its text nodes and descendants, except inside elements whose content no one reads.
+  ${treeHelper}
+  // An element's text is that of its text nodes and descendants, except inside elements whose content no one reads,
+  // then that of its open shadow root, as Playwright reads it. Text a slot shows stays its own element's: a slot holds
+  // only its fallback, so a match on the text of <my-button>Pay now</my-button> is <my-button>, whose box is drawn.
   const skipped = ['script', 'style', 'template', 'noscript']
   const isText = (node) => node.nodeType === Node.TEXT_NODE
   const holdsText = (node) => node instanceof Element && !skipped.includes(node.localName)
+  const childrenOf = (node) => (node instanceof Element && node.shadowRoot ? [...node.childNodes, ...node.shadowRoot.childNodes] : [...node.childNodes])
+  // What a node shows inside it, as the page lays it out: an open shadow root's content in place of the host's
+  // children, which its slots show where they stand, and a slot's assigned nodes, or its own when none are assigned.
+  // The host's children no slot takes come last, so every node is reached once.
+  const shownIn = (node) => {
+    if (node instanceof HTMLSlotElement) {
+      const assigned = node.assignedNodes()
+      return assigned.length > 0 ? assigned : [...node.childNodes]
+    }
+    const shadow = node instanceof Element ? node.shadowRoot : null
+    if (!shadow) return [...node.childNodes]
+    return [...shadow.childNodes, ...[...node.childNodes].filter((child) => !child.assignedSlot)]
+  }
   const textOf = (element) => {
     let text = ''
-    for (const child of element.childNodes) {
+    for (const child of childrenOf(element)) {
       if (isText(child)) text += child.data
       else if (holdsText(child)) text += textOf(child)
     }
     return text
   }
-  // Only the document's own tree: input in a shadow tree reaches the window as input to its host, so the guard
-  // could not tell the element from whatever else is inside that host.
-  const inDocument = (element) => element instanceof Element && element.getRootNode() === document
   const documentOrder = (first, second) => (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
-  const ordered = (elements) => (elements.length < 2 ? elements : [...new Set(elements)].sort(documentOrder))
+  // Every element by its place in a walk of what each node shows, from the document down: the order the page shows
+  // them in, across shadow roots.
+  const shownOrder = () => {
+    const order = new Map()
+    const walk = (node) => {
+      for (const child of shownIn(node)) {
+        if (!(child instanceof Element) || order.has(child)) continue
+        order.set(child, order.size)
+        walk(child)
+      }
+    }
+    walk(document)
+    return order
+  }
+  // Matches in one tree keep the document's order. Matches across shadow roots, which the document cannot order, take
+  // the order the page shows them in.
+  const ordered = (elements) => {
+    if (elements.length < 2) return elements
+    const unique = [...new Set(elements)]
+    const tree = unique[0].getRootNode()
+    if (unique.every((element) => element.getRootNode() === tree)) return unique.sort(documentOrder)
+    const order = shownOrder()
+    const place = (element) => order.get(element) ?? order.size
+    return unique.sort((first, second) => place(first) - place(second))
+  }
   // Inside each root, never a root itself: a step after the first looks inside the elements the step before kept. The
   // first step's roots are null, the whole document.
-  const inside = (roots) => (element) => roots.some((root) => root !== element && root.contains(element))
+  const inside = (roots) => (element) => roots.some((root) => root !== element && holds(root, element))
+  // Every open shadow root of the document, roots inside roots included, read once for each resolution.
+  let openRoots = null
+  const shadowRoots = () => {
+    if (openRoots !== null) return openRoots
+    openRoots = []
+    const visit = (holder) => {
+      for (const element of holder.querySelectorAll('*')) {
+        if (!element.shadowRoot) continue
+        openRoots.push(element.shadowRoot)
+        visit(element.shadowRoot)
+      }
+    }
+    visit(document)
+    return openRoots
+  }
+  // A selector list split as CSS reads it, outside quotes, brackets and parentheses: each selector as its compound
+  // selectors, the last one rightmost, each with the combinator before it.
+  const splitSelector = (selector) => {
+    const list = []
+    let parts = []
+    let compound = ''
+    let combinator = null
+    let depth = 0
+    let quote = null
+    const close = () => {
+      if (compound.trim() === '') return
+      parts.push({ combinator: parts.length === 0 ? null : (combinator ?? ' '), compound: compound.trim() })
+      compound = ''
+      combinator = null
+    }
+    for (let index = 0; index < selector.length; index += 1) {
+      const character = selector[index]
+      if (character === '\\') {
+        compound += character + (selector[index + 1] ?? '')
+        index += 1
+      } else if (quote !== null) {
+        compound += character
+        if (character === quote) quote = null
+      } else if (character === '"' || character === "'") {
+        quote = character
+        compound += character
+      } else if (character === '(' || character === '[') {
+        depth += 1
+        compound += character
+      } else if (character === ')' || character === ']') {
+        depth -= 1
+        compound += character
+      } else if (depth > 0) {
+        compound += character
+      } else if (character === ',') {
+        close()
+        list.push(parts)
+        parts = []
+      } else if (character === '>' || character === '+' || character === '~') {
+        close()
+        combinator = character
+      } else if (/\s/.test(character)) {
+        close()
+        if (parts.length > 0) combinator ??= ' '
+      } else {
+        compound += character
+      }
+    }
+    close()
+    list.push(parts)
+    return list
+  }
+  // :scope names the element a scoped step looks inside, and the root element for the document.
+  const matchesCompound = (element, compound, scope) => (compound.includes(':scope') ? element === scope && element.matches(compound) : element.matches(compound))
+  const matchesFrom = (element, parts, index, scope) => {
+    const { compound, combinator } = parts[index]
+    if (!matchesCompound(element, compound, scope)) return false
+    if (index === 0) return true
+    if (combinator === '>') {
+      const parent = parentOf(element)
+      return parent !== null && matchesFrom(parent, parts, index - 1, scope)
+    }
+    if (combinator === '+') {
+      const before = element.previousElementSibling
+      return before !== null && matchesFrom(before, parts, index - 1, scope)
+    }
+    const next = combinator === '~' ? (current) => current.previousElementSibling : parentOf
+    for (let current = next(element); current !== null; current = next(current)) if (matchesFrom(current, parts, index - 1, scope)) return true
+    return false
+  }
+  // The elements a CSS selector matches inside a root, or the whole document for null, through open shadow roots, as
+  // Playwright's CSS engine matches: each compound selector of a selector may stand on either side of a shadow root's
+  // edge. The browser matches the tree the root is in, and refuses a selector it cannot read; Retest matches the rest,
+  // inside shadow roots, compound by compound, with the browser's own matching for each.
+  const cssIn = (root, selector) => {
+    const scope = root ?? document
+    const matched = [...scope.querySelectorAll(selector)]
+    const shadows = shadowRoots().filter((shadow) => root === null || holds(root, shadow.host))
+    const inShadowTree = root !== null && root.getRootNode() instanceof ShadowRoot
+    if (shadows.length === 0 && !inShadowTree) return matched
+    const list = splitSelector(selector)
+    const scopeElement = root ?? document.documentElement
+    if (list.every((parts) => parts.length === 1) && !selector.includes(':scope')) {
+      return ordered([...matched, ...shadows.flatMap((shadow) => [...shadow.querySelectorAll(selector)])])
+    }
+    const candidates = [...(inShadowTree ? scope.querySelectorAll('*') : []), ...shadows.flatMap((shadow) => [...shadow.querySelectorAll('*')])]
+    const pierced = candidates.filter((element) => list.some((parts) => parts.length > 0 && matchesFrom(element, parts, parts.length - 1, scopeElement)))
+    return ordered([...matched, ...pierced])
+  }
   const under = (roots, selector) => {
-    if (roots === null) return [...document.querySelectorAll(selector)]
-    return ordered(roots.flatMap((root) => [...root.querySelectorAll(selector)]))
+    if (roots === null) return cssIn(null, selector)
+    return ordered(roots.flatMap((root) => cssIn(root, selector)))
   }
   // The innermost elements whose text matches: an element that holds a match is left out for it. Pushed after
-  // their children, they stay in document order, since no element found holds another.
+  // their children, in a walk of each element's children then its open root's.
   const byText = (wanted, exact, roots) => {
     const matches = textMatcher(wanted, exact)
     const found = []
     const visit = (element) => {
       let text = ''
       let below = false
-      for (const child of element.childNodes) {
+      for (const child of childrenOf(element)) {
         if (isText(child)) text += child.data
         else if (holdsText(child)) {
           const inner = visit(child)
@@ -68,27 +265,70 @@ const helpers = String.raw`
       return { text, matched }
     }
     if (roots !== null) {
-      for (const root of roots) for (const child of root.children) if (holdsText(child)) visit(child)
+      for (const root of roots) for (const child of childrenOf(root)) if (holdsText(child)) visit(child)
       return ordered(found)
     }
     const root = document.body ?? document.documentElement
     if (root !== null) visit(root)
-    return found
+    return ordered(found)
   }
   // By Playwright's rules a label names any element through its aria-label, or through the text of the elements its
-  // aria-labelledby names.
+  // aria-labelledby names, in the element's own tree, as the browser reads it: a shadow root's ids are its own.
   const byLabelled = ({ text, exact }, roots) => {
     const matches = textMatcher(text, exact)
-    const labelledBy = (element) =>
-      (element.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter((id) => id !== '').map((id) => document.getElementById(id)?.textContent ?? '').join(' ')
+    const labelledBy = (element) => {
+      const tree = element.getRootNode()
+      return (element.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter((id) => id !== '').map((id) => tree.getElementById?.(id)?.textContent ?? '').join(' ')
+    }
     const labels = (element) => [element.getAttribute('aria-label'), element.hasAttribute('aria-labelledby') ? labelledBy(element) : null]
     return under(roots, '[aria-label], [aria-labelledby]').filter((element) => labels(element).some((label) => label !== null && matches(label)))
   }
-  // An open shadow root of the document, by its host's name, or null: by Playwright's rules a locator looks inside one,
-  // and Retest does not.
-  const shadowHost = () => {
-    for (const element of document.querySelectorAll('*')) if (element.shadowRoot !== null) return '<' + element.localName + '>'
-    return null
+  // A file input a label names: through a <label> for it or around it, its aria-label, or the elements its
+  // aria-labelledby names. Chrome's tree names an unlabelled file input after its own button's text, which no page
+  // wrote and which changes with the browser's language, so a file input is found by its label alone. One that is not
+  // shown, or that aria-hidden or inert hides, is left out, as the tree leaves out what it hides.
+  const byFileLabel = ({ text, exact }, roots) => {
+    const matches = textMatcher(text, exact)
+    const labelledBy = (element) => {
+      const tree = element.getRootNode()
+      return (element.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter((id) => id !== '').map((id) => tree.getElementById?.(id)?.textContent ?? '').join(' ')
+    }
+    const names = (input) => [...[...(input.labels ?? [])].map(textOf), input.getAttribute('aria-label'), input.hasAttribute('aria-labelledby') ? labelledBy(input) : null]
+    const shown = (input) => input.checkVisibility({ visibilityProperty: true }) && input.closest('[aria-hidden="true"], [inert]') === null
+    return under(roots, 'input').filter((input) => input.type === 'file' && shown(input) && names(input).some((name) => name !== null && matches(name)))
+  }
+  // Every word an element in an open root could take its name from: the text and attribute values of the root, and of
+  // its host and every host around it, whose own content the root's slots can show.
+  const nameWordsOf = (shadow) => {
+    const parts = []
+    const read = (node) => {
+      parts.push(node.textContent ?? '')
+      for (const element of node.querySelectorAll('*')) for (const attribute of element.attributes) parts.push(attribute.value)
+    }
+    read(shadow)
+    for (let host = shadow.host; host !== null; ) {
+      for (const attribute of host.attributes) parts.push(attribute.value)
+      read(host)
+      const tree = host.getRootNode()
+      host = tree instanceof ShadowRoot ? tree.host : null
+    }
+    return normalize(parts.join(' ')).toLowerCase()
+  }
+  // Whether an open root could hold an element the step finds by role or label: one of its candidates, which a custom
+  // element always is, since it can give itself a role, and, for a name, every word of it among the root's words, or an
+  // element whose name the page never writes.
+  const holdsCandidate = (shadow, step) => {
+    const candidate = shadow.querySelector(step.shadow.candidates) !== null || [...shadow.querySelectorAll('*')].some((element) => element.localName.includes('-'))
+    if (!candidate || step.shadow.named === null) return candidate
+    if (step.shadow.unnamed !== null && shadow.querySelector(step.shadow.unnamed) !== null) return true
+    const words = nameWordsOf(shadow)
+    return step.shadow.named.split(' ').every((word) => words.includes(word))
+  }
+  // The host of the first open shadow root inside the roots, or in the document for null, that could hold an element
+  // the step finds, by its name, or null.
+  const shadowHostIn = (roots, step) => {
+    const shadow = shadowRoots().find((each) => (roots === null || roots.some((root) => holds(root, each.host))) && holdsCandidate(each, step))
+    return shadow === undefined ? null : '<' + shadow.host.localName + '>'
   }
   const findStep = (step, roots, elements) => {
     if (step.by === 'testId') return under(roots, '[data-testid]').filter((element) => element.getAttribute('data-testid') === step.value)
@@ -98,7 +338,8 @@ const helpers = String.raw`
       return under(roots, '[placeholder]').filter((element) => matches(element.getAttribute('placeholder') ?? ''))
     }
     if (step.by === 'css') return under(roots, step.selector)
-    const named = elements.slice(step.from, step.from + step.count).filter(inDocument)
+    const fileInputs = step.files === undefined ? [] : byFileLabel(step.files, roots)
+    const named = [...elements.slice(step.from, step.from + step.count), ...fileInputs].filter(outsideClosedRoots)
     const kept = roots === null ? named : named.filter(inside(roots))
     return ordered(step.labelled === undefined ? kept : [...kept, ...byLabelled(step.labelled, roots)])
   }
@@ -111,29 +352,33 @@ const helpers = String.raw`
   }
   // Resolves the steps in order. A CSS selector the page cannot read is named, with the step it is in. When nothing
   // is left, empty names the first step that kept nothing and how many it matched before its pick, unless that is
-  // the last step and it matched nothing, which the count of none already says. A query by Playwright's rules finds
-  // nothing in a document that holds an open shadow root, and names its host.
+  // the last step and it matched nothing, which the count of none already says. A role or label step of an engine whose
+  // tree does not look inside shadow roots, which carries its shadow candidates, finds nothing where an open root inside its search
+  // could hold what it asks for, and names that root's host.
   const resolve = (query, elements) => {
-    const shadow = query.shadow === 'refused' ? shadowHost() : null
-    if (shadow !== null) return { found: [], empty: null, invalid: null, shadow }
+    openRoots = null
     let roots = null
     const last = query.steps.length - 1
     for (const [index, step] of query.steps.entries()) {
+      const host = step.by === 'elements' && step.shadow !== undefined ? shadowHostIn(roots, step) : null
+      if (host !== null) return { found: [], empty: null, invalid: null, shadow: host }
       let matched
       try {
         matched = findStep(step, roots, elements)
       } catch (error) {
         if (step.by !== 'css' || !(error instanceof DOMException)) throw error
-        return { found: [], empty: null, invalid: { step: index, message: error.message }, shadow }
+        return { found: [], empty: null, invalid: { step: index, message: error.message }, shadow: null }
       }
       roots = pickFrom(matched, step.pick)
       if (roots.length > 0) continue
       const said = index === last && matched.length === 0
-      return { found: [], empty: said ? null : { step: index, matched: matched.length }, invalid: null, shadow }
+      return { found: [], empty: said ? null : { step: index, matched: matched.length }, invalid: null, shadow: null }
     }
-    return { found: roots ?? [], empty: null, invalid: null, shadow }
+    return { found: roots ?? [], empty: null, invalid: null, shadow: null }
   }
+  // A document inside a frame that is hidden in the page shows none of its elements, whatever its own styles say.
   const isVisible = (element) => {
+    if (globalThis.retestFrameHidden === true) return false
     if (!element.checkVisibility() || getComputedStyle(element).visibility !== 'visible') return false
     const box = element.getBoundingClientRect()
     return box.width > 0 && box.height > 0
@@ -178,6 +423,8 @@ const describeHelper = String.raw`
 // next key is never typed into a document that is on its way out.
 // A hover is the mouse arriving: its over and move events must reach the element. The guard hears them from the
 // start of every document, as it does the rest, and lets them pass while no hover is armed.
+// An event inside an open shadow root reaches the window named for its host; the guard reads the element it is for
+// from the event's path, so an element inside a shadow root is told from the rest of its host.
 const guardHelpers = String.raw`
   const guarded = {
     click: { events: ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'], last: 'click' },
@@ -189,6 +436,15 @@ const guardHelpers = String.raw`
   }
   const isTyping = (event) =>
     guarded.fill.events.includes(event.type) && (event instanceof KeyboardEvent || event instanceof InputEvent)
+  // The element an event is for, inside open shadow roots too: at the window an event in a shadow tree names its host.
+  // A relay's stand-in for an event that has no path of its own names its target itself.
+  const targetOf = (event) => {
+    try {
+      return event.composedPath()[0] ?? event.target
+    } catch {
+      return event.target
+    }
+  }
   const installGuard = () => {
     if (globalThis.retestGuard !== undefined) return globalThis.retestGuard
     const guard = { armed: null, latest: null, count: 0, stray: null, setOff: -1 }
@@ -213,7 +469,7 @@ const guardHelpers = String.raw`
     const check = (event) => {
       const armed = guard.armed
       if (!event.isTrusted) return
-      const { target } = event
+      const target = targetOf(event)
       if (armed === null || !armed.events.includes(event.type)) {
         if (!isTyping(event)) return
         stop(event)
@@ -224,7 +480,7 @@ const guardHelpers = String.raw`
         stop(event)
       } else if (armed.decided === 'reached') {
         // The rest of the keystroke belongs to the page.
-      } else if (target instanceof Node && armed.element.contains(target)) {
+      } else if (target instanceof Node && reaches(armed.element, target)) {
         armed.reached.push(event.type)
         // A page that moved the caret since Retest selected the value would otherwise keep part of it.
         if (armed.action === 'fill' && event.type === 'beforeinput') armed.element.select()
@@ -268,7 +524,7 @@ const armHelper = String.raw`
     const unlisten = armed.whileArmed === true ? guard.listen(armed.events) : () => {}
     // What the guard saw so far, once: an action whose input decides early answers before the rest arrives.
     armed.report = () => {
-      const landed = point === null ? document.activeElement : document.elementFromPoint(point.x, point.y)
+      const landed = point === null ? focusedElement() : elementAt(point.x, point.y)
       const { reached, intercepted, leaving } = armed
       if (watched !== null) armed.selection ??= watched()
       const selection = armed.selection === undefined ? {} : { selection: armed.selection }
@@ -325,6 +581,11 @@ const actionHelpers = String.raw`
     element instanceof HTMLTextAreaElement || (element instanceof HTMLInputElement && fieldTypes.includes(element.type))
   const describeField = (element) =>
     element instanceof HTMLInputElement ? '<input type="' + element.type + '">' : '<' + element.localName + '>'
+  // Keys go to the focused element of the focused frame: in a frame, the frame itself must hold the focus too. The page's
+  // own document is asked nothing more, since a page in a tab the browser does not show has no focus and still takes
+  // keys. A driver may give page functions a window of its own, as Firefox's does for its relays, so the document's
+  // own window is read from the global.
+  const keepsFocus = (element) => focusedElement() === element && (globalThis.window === globalThis.window.top || document.hasFocus())
   // What is on screen, in client coordinates. A mobile page zoomed out to fit wide content shows more than its
   // layout viewport, and hit tests and input reach all of it.
   const viewport = () => {
@@ -357,7 +618,7 @@ const actionHelpers = String.raw`
     if (element.matches(':disabled')) return blocked('enabled')
     const armed = arm(element, 'press', null, null, strokes, watched)
     element.focus()
-    if (document.activeElement === element) {
+    if (keepsFocus(element)) {
       noteTyped(element)
       return ready(null, armed.token)
     }
@@ -526,10 +787,14 @@ const fitHelper = String.raw`
 
 /** Installs the input guard in each new document, before the page's own scripts run. */
 export const guardScript: string = `(() => {
+  ${treeHelper}
   ${describeHelper}
   ${guardHelpers}
   installGuard()
 })()`
+
+/** The binding `Runtime.addBinding` gives Retest's world in every document, which the change script calls. */
+export const changeBinding: string = 'retestChanged'
 
 // The page tells Retest when its document changes, so a look can follow a change at once instead of on a timer. The
 // observer reports once per task however much changed in it, through the binding `Runtime.addBinding` gave this
@@ -544,11 +809,11 @@ export const changeScript: string = `(() => {
 })()`
 
 // Disabled as toBeEnabled and toBeDisabled read it: a native control that is disabled, on its own or in a disabled
-// fieldset, or the nearest aria-disabled on the element or an ancestor saying true.
+// fieldset, or the nearest aria-disabled on the element or an ancestor saying true, a shadow root's host included.
 const stateHelper = String.raw`
   const isDisabled = (element) => {
     if (element.matches(':disabled')) return true
-    for (let current = element; current instanceof Element; current = current.parentElement) {
+    for (let current = element; current instanceof Element; current = parentOf(current)) {
       const value = current.getAttribute('aria-disabled')
       if (value === 'true') return true
       if (value === 'false') return false
@@ -726,9 +991,9 @@ export const prepareFunction: string = `async function prepare(intent, query, ..
   if (!sameBox(before, after)) return blocked('stable')
   const point = visibleCentre(after)
   if (point === null) return blocked('in-view')
-  const hit = document.elementFromPoint(point.x, point.y)
+  const hit = elementAt(point.x, point.y)
   if (hit === null) return blocked('hit-target')
-  if (hit !== element && !element.contains(hit)) return blocked('hit-target', describe(hit))
+  if (!reaches(element, hit)) return blocked('hit-target', describe(hit))
   if (action === 'select') return finishSelect(intent, element, point)
   if (action === 'check' && isChecked(control, fitted.kind) === intent.checked) return { status: 'unchanged', page: pageFacts() }
   const armed = arm(element, intent.pointer ?? action, action === 'fill' ? null : point, origins)
@@ -736,7 +1001,7 @@ export const prepareFunction: string = `async function prepare(intent, query, ..
     element.focus()
     element.select()
     const refusal = armed.leaving === null ? null : { status: 'refused', origin: armed.leaving, leaving: true }
-    const unready = refusal ?? (document.activeElement === element ? null : blocked('focused'))
+    const unready = refusal ?? (keepsFocus(element) ? null : blocked('focused'))
     if (unready !== null) {
       armed.settle()
       return unready
@@ -751,6 +1016,7 @@ export const prepareFunction: string = `async function prepare(intent, query, ..
  * the wheel at the centre of the viewport. Any element of this document may take it.
  */
 export const armDocumentFunction: string = `function armDocument(action, strokes) {
+  ${treeHelper}
   ${describeHelper}
   ${guardHelpers}
   ${armHelper}
@@ -885,4 +1151,217 @@ export const readStorageFunction: string = `function readStorage() {
 export const writeStorageFunction: string = `function writeStorage(items) {
   for (const { name, value } of items) localStorage.setItem(name, value)
   return location.origin
+}`
+
+/**
+ * Reads what a layout look measures, all in this one call, so no script of the page runs between the elements it
+ * reads. For each query's one match inside the body it lists that element and every element around it up to the
+ * body, as the page lays them out through open shadow roots, each once and after its parent, with its client rect, the parts of its computed style a layout rule reads,
+ * whether it holds text of its own, whether it is a field, and how far its content runs past its client box; with
+ * `words`, also the first `limit` elements inside it. It reads the viewport's size, the root's client and scroll
+ * widths, and the root's and the body's horizontal overflow. It applies no rule: the parent measures what it read.
+ * Returns the reading and the page it read it on, or the first CSS selector the page could not read, or the host of an
+ * open shadow root, each with its query's place. Never waits, and sends no input.
+ */
+export const layoutFunction: string = `function readLayout(words, limit, queries, ...elements) {
+  ${helpers}
+  ${pageFactsHelper}
+  const root = document.documentElement
+  const body = document.body
+  const nodes = []
+  const places = new Map()
+  const styleOf = (element) => {
+    const style = getComputedStyle(element)
+    return {
+      display: style.display,
+      visibility: globalThis.retestFrameHidden === true ? 'hidden' : style.visibility,
+      opacity: Number(style.opacity),
+      position: style.position,
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      textOverflow: style.textOverflow,
+      lineClamp: style.getPropertyValue('-webkit-line-clamp'),
+    }
+  }
+  const boxOf = (element) => {
+    const rect = element.getBoundingClientRect()
+    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+  }
+  const ownWords = (element) => [...element.childNodes].some((child) => child.nodeType === Node.TEXT_NODE && child.data.trim() !== '')
+  const isField = (element) => element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement
+  // The element around another as the page lays it out: the slot that shows it, or its parent, or for the top of a
+  // shadow tree its host.
+  const layoutParent = (element) => element.assignedSlot ?? element.parentElement ?? (element.parentNode instanceof ShadowRoot ? element.parentNode.host : null)
+  // The first elements the page shows inside an element, through open shadow roots, up to the limit.
+  const shownBelow = (element) => {
+    const found = []
+    const walk = (node) => {
+      for (const child of shownIn(node)) {
+        if (found.length >= limit) return
+        if (!(child instanceof Element)) continue
+        found.push(child)
+        walk(child)
+      }
+    }
+    walk(element)
+    return found
+  }
+  // Lists the element after every element around it that is not listed yet, up to the body, which starts every list.
+  const placeOf = (element) => {
+    const chain = []
+    for (let current = element; current !== null && !places.has(current); current = current === body ? null : layoutParent(current)) chain.push(current)
+    for (const current of chain.reverse()) {
+      const parent = current === body ? -1 : places.get(layoutParent(current))
+      const overrun = { across: current.scrollWidth - current.clientWidth, down: current.scrollHeight - current.clientHeight }
+      places.set(current, nodes.length)
+      nodes.push({ parent, box: boxOf(current), style: styleOf(current), words: ownWords(current), field: isField(current), overrun })
+    }
+    return places.get(element)
+  }
+  const targets = []
+  for (const [place, query] of queries.entries()) {
+    const resolved = resolve(query, elements)
+    if (resolved.invalid !== null) return { invalid: resolved.invalid, query: place }
+    if (resolved.shadow !== null) return { shadow: resolved.shadow, query: place }
+    const { found } = resolved
+    const empty = resolved.empty === null ? {} : { emptyStep: resolved.empty }
+    const element = found.length === 1 ? found[0] : null
+    const inBody = element !== null && body !== null && element !== body && holds(body, element)
+    const node = inBody ? placeOf(element) : null
+    const inner = inBody && words ? shownBelow(element).map(placeOf) : []
+    targets.push({ count: found.length, ...empty, node, inner })
+  }
+  const page = {
+    width: innerWidth,
+    height: innerHeight,
+    edge: root.clientWidth,
+    scrollWidth: root.scrollWidth,
+    rootOverflowX: getComputedStyle(root).overflowX,
+    bodyOverflowX: body === null ? null : getComputedStyle(body).overflowX,
+  }
+  return { reading: { targets, nodes, page }, page: pageFacts() }
+}`
+
+/**
+ * What a page function of another module needs to find a locator's elements as every look here finds them, to
+ * describe one, and to read the page it is on: `resolve`, `describe` and `pageFacts`, among the rest.
+ */
+export const locatorHelpers: string = `${helpers}
+${describeHelper}
+${pageFactsHelper}`
+
+// The one element a frame's recipe finds in this document, which must be an <iframe> or a <frame>: the frame, or why
+// there is none to use, as a look says it: no match, with the step that kept nothing, several, another element, or a
+// CSS selector the page could not read.
+const frameLookupHelper = String.raw`
+  const lookUpFrame = (query, elements) => {
+    const resolved = resolve(query, elements)
+    if (resolved.invalid !== null) return { status: 'invalid', ...resolved.invalid }
+    const { found } = resolved
+    if (found.length === 0) return { status: 'missing', empty: resolved.empty }
+    if (found.length > 1) return { status: 'ambiguous', count: found.length }
+    const [frame] = found
+    if (frame instanceof HTMLIFrameElement || frame instanceof HTMLFrameElement) return { status: 'frame', frame }
+    return { status: 'element', element: describe(frame) }
+  }
+`
+
+/**
+ * Finds a frame's element in this document by its recipe's query, and gives the element itself, as an object of this
+ * world, or, as JSON text, why there is none: as `lookUpFrame` says it. The browser then names the frame the element
+ * holds. With `reveal`, a frame out of this document's view is first scrolled just into it, as an action brings its
+ * element into view: a frame of another site out of view is never drawn, and runs no animation frame an action waits
+ * for. Never waits, and sends no input.
+ */
+export const frameElementFunction: string = `function frameElement(reveal, query, ...elements) {
+  ${helpers}
+  ${describeHelper}
+  ${frameLookupHelper}
+  const looked = lookUpFrame(query, elements)
+  if (looked.status !== 'frame') return JSON.stringify(looked)
+  const { frame } = looked
+  if (reveal) {
+    const box = frame.getBoundingClientRect()
+    const { offsetLeft, offsetTop, width, height } = visualViewport
+    const seen = box.right > offsetLeft && box.left < offsetLeft + width && box.bottom > offsetTop && box.top < offsetTop + height
+    if (!seen) frame.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+  }
+  return frame
+}`
+
+/**
+ * Whether a frame's element, `this`, is shown in its own document, as a look reads an element: a frame inside an
+ * element that is hidden shows nothing of its document, whatever that document says of its own elements.
+ */
+export const frameShownFunction: string = `function frameShown() {
+  ${helpers}
+  return isVisible(this)
+}`
+
+/**
+ * Tells a frame's document whether the frame is hidden in the page, as `frameShown` read each frame around it. While it
+ * is, every look there reads each element hidden, and a layout reads each one's visibility as hidden.
+ */
+export const frameHiddenFunction: string = `function frameHidden(hidden) {
+  globalThis.retestFrameHidden = hidden
+  return hidden
+}`
+
+/**
+ * Places a point of a frame's document in this document, the frame's parent: the point, scaled as the frame's element
+ * is drawn, as under a CSS scale, plus the top left corner of that element's content box. `query` finds the
+ * element. A point outside this document's view is brought into it, first by the frame's own element, then by the
+ * document's scroll. As `prepare` checks an element, it checks the frame's element is shown, waits for it to stand
+ * still for a frame of the page's, and checks that the element at the point is the frame's own, so an element here that
+ * covers the frame is named. Then, for pointer input (`action`, or null for keys), it arms this document's input guard
+ * for the frame's element, in the task of the hit test, so a press another element of this document takes is stopped
+ * before any listener hears it. Returns the point, the visual viewport's scale and the guard's token, or why the point
+ * cannot be placed, as `lookUpFrame` says it or as a blocked check.
+ */
+export const placeFunction: string = `async function place(point, action, query, ...elements) {
+  ${helpers}
+  ${describeHelper}
+  ${guardHelpers}
+  ${armHelper}
+  ${frameLookupHelper}
+  const looked = lookUpFrame(query, elements)
+  if (looked.status !== 'frame') return looked
+  const { frame } = looked
+  if (!isVisible(frame)) return { status: 'blocked', check: 'visible', detail: null }
+  const view = () => {
+    const { offsetLeft, offsetTop, width, height } = visualViewport
+    return { left: offsetLeft, top: offsetTop, right: offsetLeft + width, bottom: offsetTop + height }
+  }
+  const placed = () => {
+    const box = frame.getBoundingClientRect()
+    const style = getComputedStyle(frame)
+    const across = frame.offsetWidth > 0 ? box.width / frame.offsetWidth : 1
+    const down = frame.offsetHeight > 0 ? box.height / frame.offsetHeight : 1
+    return {
+      x: box.left + across * (frame.clientLeft + parseFloat(style.paddingLeft) + point.x),
+      y: box.top + down * (frame.clientTop + parseFloat(style.paddingTop) + point.y),
+    }
+  }
+  // A point on the view's last pixel is no point a hit test reaches, so a point needs a pixel of room on every side.
+  const inView = ({ x, y }) => {
+    const shown = view()
+    return x >= shown.left + 1 && x <= shown.right - 1 && y >= shown.top + 1 && y <= shown.bottom - 1
+  }
+  const boxAfterFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(frame.getBoundingClientRect())))
+  if (!inView(placed())) {
+    frame.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+    const at = placed()
+    const shown = view()
+    if (!inView(at)) scrollBy({ left: at.x - (shown.left + shown.right) / 2, top: at.y - (shown.top + shown.bottom) / 2, behavior: 'instant' })
+  }
+  const before = await boxAfterFrame()
+  const after = await boxAfterFrame()
+  if (!frame.isConnected) return { status: 'blocked', check: 'attached', detail: null }
+  if (before.x !== after.x || before.y !== after.y || before.width !== after.width || before.height !== after.height) return { status: 'blocked', check: 'stable', detail: null }
+  const at = placed()
+  if (!inView(at)) return { status: 'blocked', check: 'in-view', detail: null }
+  const hit = elementAt(at.x, at.y)
+  if (hit !== frame) return { status: 'blocked', check: 'hit-target', detail: hit === null ? null : describe(hit) }
+  const token = action === null ? null : arm(frame, action, at, null).token
+  return { status: 'placed', point: at, scale: visualViewport.scale, token }
 }`

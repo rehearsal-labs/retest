@@ -41,6 +41,11 @@ const treeSchema = s.object({
   nodes: s.array(s.object({ ignored: s.boolean(), name: nameSchema, backendDOMNodeId: s.optional(s.number({ integer: true })) })),
 })
 const resolvedSchema = s.object({ object: s.object({ objectId: s.optional(s.string()) }) })
+const fullTreeSchema = s.object({
+  nodes: s.array(
+    s.object({ ignored: s.boolean(), role: s.optional(s.object({ value: s.optional(s.string()) })), name: nameSchema, backendDOMNodeId: s.optional(s.number({ integer: true })) }),
+  ),
+})
 
 /**
  * The names to ask Chrome's tree for a WAI-ARIA role by.
@@ -57,6 +62,7 @@ export function chromeRolesFor(role: AriaRole): readonly string[] {
  * as elements under `aria-hidden="true"`; elements that are not rendered or are inert are not in its tree at all.
  */
 export async function elementsByRole(scope: WorldScope, query: RoleQuery, deadline: Deadline): Promise<WorldArgument[]> {
+  if (scope.frame !== undefined) return frameElementsByRole(scope, scope.frame, query, deadline)
   const { session, context, objectGroup } = scope
   const evaluate = { expression: 'document', contextId: context, objectGroup }
   const document = await request(session, 'Runtime.evaluate', evaluate, documentSchema, sendOptions(deadline))
@@ -71,7 +77,23 @@ export async function elementsByRole(scope: WorldScope, query: RoleQuery, deadli
     if (node.ignored || node.backendDOMNodeId === undefined) continue
     if (query.name === undefined || matchesText(node.name?.value ?? '', query.name, query.exact)) found.add(node.backendDOMNodeId)
   }
-  const ids = [...found]
+  return resolveAll(scope, [...found], deadline)
+}
+
+// A frame of another site that is out of view is never drawn, and Chrome does not answer a query of its tree that waits
+// for it to be (`Accessibility.queryAXTree`). So a frame's whole tree is read at once, as Chrome computes it then, and the
+// query is answered from it by the same roles and names.
+async function frameElementsByRole(scope: WorldScope, frameId: string, query: RoleQuery, deadline: Deadline): Promise<WorldArgument[]> {
+  const { nodes } = await request(scope.session, 'Accessibility.getFullAXTree', { frameId }, fullTreeSchema, sendOptions(deadline))
+  const found = new Set<number>()
+  for (const node of nodes) {
+    if (node.ignored || node.backendDOMNodeId === undefined || !query.roles.includes(node.role?.value ?? '')) continue
+    if (query.name === undefined || matchesText(node.name?.value ?? '', query.name, query.exact)) found.add(node.backendDOMNodeId)
+  }
+  return resolveAll(scope, [...found], deadline)
+}
+
+async function resolveAll(scope: WorldScope, ids: readonly number[], deadline: Deadline): Promise<WorldArgument[]> {
   const elements: WorldArgument[] = []
   for (let start = 0; start < ids.length; start += resolveBatch) {
     const objectIds = await Promise.all(ids.slice(start, start + resolveBatch).map((id) => resolve(scope, id, deadline)))

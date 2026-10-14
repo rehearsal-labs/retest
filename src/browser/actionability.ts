@@ -1,6 +1,7 @@
-import type { ActionIntent, Check, DocumentAction, Readiness, SelectPlan } from './element-queries.ts'
+import type { ActionIntent, Check, DocumentAction, Prepared, Readiness, SelectPlan } from './element-queries.ts'
 import type { Point } from './input.ts'
-import type { InDocument, IsolatedWorld } from './isolated-world.ts'
+import type { Guard } from './input-guard.ts'
+import type { PageWorld } from './isolated-world.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
@@ -12,6 +13,7 @@ import { secretPlaceholder } from '../protocol/secret.ts'
 import { CdpTimeoutError } from './cdp/errors.ts'
 import { pageFactsOf } from './document-facts.ts'
 import { armDocument, describeAction, prepare } from './element-queries.ts'
+import { engineShortOfShadowRoots } from './locate.ts'
 import { originRefusal } from './origin-refusal.ts'
 import { originAndPath } from './page-url.ts'
 
@@ -19,12 +21,14 @@ import { originAndPath } from './page-url.ts'
  * An element, or the document, that passed every check. `point` is where to act, or null for a key, which goes to
  * the focus. `context` is the document the look ran in, which holds the guard the look armed with `token`, or none
  * for a `select`'s look. `via` is `'label'` when a hidden control is acted on through its label, `scale` the visual
- * viewport's, `page` the page the look read, and `plan` the keys that make a select's choice.
+ * viewport's, `page` the page the look read, and `plan` the keys that make a select's choice. An element in a frame
+ * has, in `around`, the guards its look armed in the documents around the frame.
  */
 export type ReadyTarget = {
   point: Point | null
   context: number
   token: number | null
+  around?: readonly Guard[]
   via: 'label' | undefined
   scale: number
   page: PageFacts
@@ -44,7 +48,7 @@ export type ActionTarget =
 export type PendingNavigation = { url: string }
 
 export type ActionabilityOptions = {
-  world: IsolatedWorld
+  world: PageWorld
   /** The element to act on, or undefined for input the document takes, which only waits out a navigation. */
   locator: LocatorRecipe | undefined
   intent: ActionIntent
@@ -103,7 +107,7 @@ export async function waitUntilActionable(options: ActionabilityOptions): Promis
 async function look({ world, locator, intent, deadline, pendingNavigation }: ActionabilityOptions, last: Unready | undefined): Promise<Look> {
   const pending = pendingNavigation()
   if (pending !== undefined) return { kind: 'unready', unready: { status: 'navigating', url: pending.url } }
-  let seen: InDocument<Readiness>
+  let seen: Prepared
   try {
     seen = locator === undefined ? await armDocument(world, documentAction(intent), strokesOf(intent), deadline) : await prepare(world, locator, intent, deadline)
   } catch (error) {
@@ -114,10 +118,10 @@ async function look({ world, locator, intent, deadline, pendingNavigation }: Act
   return lookedAt(seen, locator, intent)
 }
 
-function lookedAt({ value: readiness, context }: InDocument<Readiness>, locator: LocatorRecipe | undefined, intent: ActionIntent): Look {
+function lookedAt({ value: readiness, context, around }: Prepared, locator: LocatorRecipe | undefined, intent: ActionIntent): Look {
   switch (readiness.status) {
     case 'ready':
-      return { kind: 'settled', target: readyTarget(readiness, context) }
+      return { kind: 'settled', target: readyTarget(readiness, context, around) }
     case 'unchanged':
       return { kind: 'settled', target: { ok: true, kind: 'unchanged', page: pageFactsOf(readiness.page), context } }
     case 'missing':
@@ -160,9 +164,10 @@ function settledFailure(
   }
 }
 
-function readyTarget(readiness: Extract<Readiness, { status: 'ready' }>, context: number): ActionTarget {
+function readyTarget(readiness: Extract<Readiness, { status: 'ready' }>, context: number, around: readonly Guard[] | undefined): ActionTarget {
   const { point, token, via, scale, page, plan } = readiness
-  return { ok: true, kind: 'ready', point, context, token, via: via ?? undefined, scale, page: pageFactsOf(page), plan }
+  const through = around === undefined || around.length === 0 ? {} : { around }
+  return { ok: true, kind: 'ready', point, context, token, ...through, via: via ?? undefined, scale, page: pageFactsOf(page), plan }
 }
 
 // Only an action on an element can meet an element that does not suit it.
@@ -194,16 +199,17 @@ export function invalidSelector({ step, message }: { step: number; message: stri
 }
 
 /**
- * The failure for a locator by Playwright's rules on a document that holds an open shadow root. Playwright looks inside
- * one, and Retest does not, so it fails at once rather than find less than Playwright would.
+ * The failure for a role or label lookup whose search holds an open shadow root, on an engine whose accessibility tree,
+ * as Retest reads it, does not look inside one. Chrome's does, so the lookup fails at once rather than find less.
  *
- * @example shadowRefused('<todo-list>', { by: 'role', role: 'button', dialect: 'playwright' }, undefined).class // 'unsupported'
+ * @example shadowRefused('<todo-list>', { by: 'role', role: 'button' }, undefined).class // 'unsupported'
  */
 export function shadowRefused(host: string, locator: LocatorRecipe, intent: ActionIntent | undefined): Failure {
   const action = intent === undefined ? `read ${describeLocator(locator)}` : describeAction(intent, locator)
+  const engine = engineShortOfShadowRoots() ?? 'this browser'
   return {
     class: 'unsupported',
-    message: `Could not ${action}: the page holds an open shadow root, in ${host}. Playwright looks inside shadow roots and Retest does not, so Retest refuses the lookup rather than find less than Playwright would.`,
+    message: `Could not ${action}: on ${engine}, Retest finds by role or label outside shadow roots only, and the open shadow root of ${host} could hold a match. Find the element by test id, text or CSS.`,
     details: { host },
   }
 }
