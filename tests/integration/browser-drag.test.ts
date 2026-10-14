@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { DRAG_PAGE } from '../../fixtures/task-app/drag-page.ts'
 import { launchElectron } from '../../src/browser/electron.ts'
 import { assertOk, byTestId, byText, click, failureOf, goto, launch, observe, observeUntil, openApp, openPage, scratchFolder, sharedBrowser } from './browser-harness.ts'
@@ -177,17 +178,27 @@ test('a cover the mouse brings up over the source takes the press: Retest stops 
 const electronBinary = process.env['RETEST_TEST_ELECTRON'] ?? join(homedir(), 'Library/Caches/retest-proofs/electron/44.5.1/dist/Electron.app/Contents/MacOS/Electron')
 const noElectron = process.platform !== 'darwin' && process.env['RETEST_TEST_ELECTRON'] === undefined ? 'unverified: RETEST_TEST_ELECTRON is not set, and Retest has no route yet to an Electron build here' : false
 
-// A window as large as a browser's page, which loads the drag page from a file of the app's own.
+// A window as large as a browser's page, which loads the drag page from a file of the app's own. Once it has loaded, a
+// second window covers it and takes the focus, as another app's window does on a test machine, and the page is told so
+// through a mark on its body. The cover comes second, so the drag page's window is the app's first.
 const ELECTRON_DRAG_MAIN = `import { app, BrowserWindow } from 'electron'
 import { fileURLToPath } from 'node:url'
 app.whenReady().then(() => {
   const window = new BrowserWindow({ width: 800, height: 600, x: 40, y: 40, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } })
   void window.loadFile(fileURLToPath(new URL('./index.html', import.meta.url)))
+  window.webContents.once('did-finish-load', () => {
+    const cover = new BrowserWindow({ width: 900, height: 700, x: 0, y: 0, alwaysOnTop: true, backgroundColor: '#336699' })
+    cover.webContents.once('did-finish-load', () => {
+      cover.focus()
+      void window.webContents.executeJavaScript("document.body.dataset.covered = 'yes'")
+    })
+    void cover.loadURL('data:text/html,<title>Cover</title>')
+  })
 })
 app.on('window-all-closed', () => app.quit())
 `
 
-test("an Electron window takes an HTML drag with its data and a drag by the handle, as a Chrome page does", { skip: noElectron }, async (t) => {
+test("an Electron window another window covers takes an HTML drag with its data and a drag by the handle, as a Chrome page does", { skip: noElectron }, async (t) => {
   const folder = await scratchFolder(t)
   const appPath = join(folder, 'app')
   mkdirSync(appPath)
@@ -197,7 +208,9 @@ test("an Electron window takes an HTML drag with its data and a drag by the hand
   const electron = await launchElectron({ executablePath: electronBinary, appPath, args: [], windowsFile: join(folder, 'windows.json'), logFile: join(folder, 'electron.log'), app: 'desk', target: 'electron', launch: 1 })
   t.after(() => electron.close(5000))
   const page = await electron.newPage({}, 10_000)
-  await observeUntil(page, 'data-zone', (observation) => observation.count === 1)
+  await observeUntil(page, { by: 'css', selector: 'body[data-covered="yes"]' }, (observation) => observation.count === 1, 10_000)
+  // macOS tells a window it is covered a moment after the cover shows, and only then does Chromium stop its frames.
+  await delay(1500)
   const carried = await drag(page, byTestId('data-source'), byTestId('data-zone'))
   assert.equal(carried.ok && carried.kind === 'dragTo' ? carried.through : carried, 'drag-events')
   assert.equal(await textOf(page, 'dropped-data'), 'text/plain=release notes; application/x-task={"id":7}')

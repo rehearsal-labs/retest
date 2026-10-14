@@ -49,6 +49,7 @@ import { describeDiagnostic, handshake, launchOutput, logLength, logWriter } fro
 import { Listeners } from './listeners.ts'
 import { browserCommandLocators, framesUnreached } from './frames.ts'
 import { ChromiumPage } from './page.ts'
+import { keepFocus } from './popups.ts'
 import { routesRefused, type RouteRemoval } from './routes.ts'
 import { changeScript } from './page-scripts.ts'
 import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
@@ -215,6 +216,10 @@ export async function launchElectron(
     const pageOptions = { connection, session, browserContextId: attached.browserContextId === '' ? first.browserContextId : attached.browserContextId, onListenerError }
     const answeredDialogs = () => watch.handOver()
     const page = await ChromiumPage.open({ ...pageOptions, baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, answeredDialogs }, deadline)
+    // Chromium draws no animation frames for a window another window covers, or one left behind others, and every action
+    // waits on frames to see its element stand still. A window on a test machine is often not in front, so the page is
+    // made to act as focused, as a Chrome page is, which keeps its frames coming.
+    await keepFocus(session, deadline)
     await observeChanges(session, deadline, (note) => {
       windows.note(note)
       log(note)
