@@ -662,7 +662,6 @@ export class RunningTest {
       durationMs: timing.durationMs,
       ...(location === undefined ? {} : { location }),
       ...actionDetails(command, result, touch),
-      ...firstFrameOf(result),
       ...(timing.timeoutMs === undefined || timing.callTimeoutMs === undefined ? {} : { timeoutMs: timing.timeoutMs, callTimeoutMs: timing.callTimeoutMs }),
     }
     this.#options.emit(result.ok ? { type: 'action.completed', ...fields } : { type: 'action.failed', ...fields, failure: result.failure })
@@ -1246,11 +1245,6 @@ function actionDetails(command: PageCommand, result: CommandResult, touch: boole
     default:
       return {}
   }
-}
-
-// A navigation whose page drew no frame before Retest stopped waiting for one says so; one that drew says nothing.
-function firstFrameOf(result: CommandResult): { firstFrame?: boolean } {
-  return result.ok && 'firstFrame' in result && result.firstFrame === false ? { firstFrame: false } : {}
 }
 
 function changedOf(result: CommandResult): { changed?: boolean } {

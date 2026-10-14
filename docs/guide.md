@@ -675,7 +675,7 @@ Frames:
 
 ### Actions
 
-- `page.goto(url)` opens a URL and waits for the `load` event. A relative URL resolves against the app's base URL. A page that replaces itself before `load` is followed to its own `load`. Then, as every navigation does, it waits up to two seconds for the page's first frame, which an action's checks need. If none comes, its `action.completed` says `firstFrame: false`.
+- `page.goto(url)` opens a URL and waits for the `load` event. A relative URL resolves against the app's base URL. A page that replaces itself before `load` is followed to its own `load`.
 - `page.reload()` reloads the page and waits for its `load`.
 - `page.goBack()` and `page.goForward()` move one entry through the page's history, as the browser's buttons do, and wait for that page, or for a move within the document. A page with no entry that way fails `not_actionable`, and nothing is sent.
 - When the browser gives up the navigation of a `reload`, `goBack` or `goForward` without opening a document, as it does for a response with no content (204), which was run, or a download, which was not, the action fails `not_actionable` at once, naming the address it gave up, with `details.inputSent: true`. The page stays where it was.

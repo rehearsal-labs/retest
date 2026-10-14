@@ -39,7 +39,6 @@ import { documentFactsSchema, pageFactsOf, pageTitleOf } from '../document-facts
 import { describeAction, describeChoices, dispatchPinned, observe, observeKeyed, readSelection } from '../element-queries.ts'
 import { disarmGuard, guardFailure, guardInput } from '../input-guard.ts'
 import { originRefusal } from '../origin-refusal.ts'
-import { awaitFirstFrame } from '../first-frame.ts'
 import { isGoneContext, IsolatedWorld } from '../isolated-world.ts'
 import { dragRefused } from '../drag.ts'
 import { routesRefused, type RouteRemoval } from '../routes.ts'
@@ -639,12 +638,9 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     }
   }
 
-  // A page that has loaded may not be drawn yet, and nothing that waits for a frame answers until it is, so the
-  // navigation waits for its first frame within its own budget. A document already being replaced is not waited for.
   async #withLoadedPage(result: CommandResult, deadline: Deadline): Promise<CommandResult> {
     if (!result.ok || !isNavigationKind(result.kind) || !('url' in result)) return result
-    const drawn = this.#pending === undefined ? await awaitFirstFrame(this.#world, deadline) : undefined
-    return { ...result, page: await this.#loadedPage(result.url, deadline), ...(drawn === false ? { firstFrame: false } : {}) }
+    return { ...result, page: await this.#loadedPage(result.url, deadline) }
   }
 
   async #observePage(after: ObserveAfter | undefined, deadline: Deadline): Promise<CommandResult> {

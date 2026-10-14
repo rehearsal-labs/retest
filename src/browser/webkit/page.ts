@@ -47,7 +47,6 @@ import { documentFactsSchema, pageFactsOf, pageTitleOf } from '../document-facts
 import { describeAction, describeChoices, dispatchPinned, observe, observeKeyed, pageSetOff, readSelection } from '../element-queries.ts'
 import { clickAt, moveTo, pressKey, replaceSelection, wheelAt } from '../input.ts'
 import { disarmGuard, guardFailure, guardInput } from '../input-guard.ts'
-import { awaitFirstFrame } from '../first-frame.ts'
 import { IsolatedWorld, isGoneContext } from '../isolated-world.ts'
 import { dragRefused } from '../drag.ts'
 import { routesRefused, type RouteRemoval } from '../routes.ts'
@@ -741,12 +740,9 @@ export class WebKitPage implements WebSession, ElementIdentity {
     }
   }
 
-  // A page that has loaded may not be drawn yet, and nothing that waits for a frame answers until it is, so the
-  // navigation waits for its first frame within its own budget. A document already being replaced is not waited for.
   async #withLoadedPage(result: CommandResult, deadline: Deadline): Promise<CommandResult> {
     if (!result.ok || !isNavigationKind(result.kind) || !('url' in result)) return result
-    const drawn = this.#pendingNavigation === undefined ? await awaitFirstFrame(this.#world, deadline) : undefined
-    return { ...result, page: await this.#loadedPage(result.url, deadline), ...(drawn === false ? { firstFrame: false } : {}) }
+    return { ...result, page: await this.#loadedPage(result.url, deadline) }
   }
 
   async #loadedPage(url: string, deadline: Deadline): Promise<PageFacts> {
