@@ -19,7 +19,7 @@ export const screenshotNameLimit = 100
  */
 export const pictureWaits: readonly number[] = [0, 100, 250, 500, 1000]
 
-/** The least time, in milliseconds, between the starts of two pictures that can settle a check. */
+/** How long, in milliseconds, a check's pictures must stay the same before the newest settles it. */
 export const settleGapMs = 100
 
 /**
@@ -85,15 +85,20 @@ export type ScreenshotTarget = { count: number; emptyStep?: EmptyStep; refused?:
 /**
  * What one screenshot look saw. `baseline` is where the check's baseline is, POSIX and relative to the project's root.
  * `target` is what the locator found, for a picture of an element. `picture` is the picture taken, absent when none
- * was. `settled` is true when it is, pixel for pixel, the picture the previous look of the same check took, at the same
- * place and scale, at least `settleGapMs` before it, and, in a run that writes baselines, the same for `baselineHoldMs`.
- * `comparison` is present on a settled look only. `unreadable` says why the browser's picture could not be read.
+ * was. `settled` is true when the check's pictures, this one and those right before it, have been the same pixels at
+ * the same place and scale for `settleGapMs`, or `baselineHoldMs` in a run that writes baselines. `first` marks a
+ * picture with no earlier one of its check to compare it with; `steady` says, for a picture the same as the one before
+ * it that has not settled yet, how long they have been the same and how long settling needs. `comparison` is present
+ * on a settled look, and on any look whose picture no later one could change the verdict of: no baseline, one that
+ * cannot be read, or one of another size or scale. `unreadable` says why the browser's picture could not be read.
  */
 export type ScreenshotLook = {
   baseline: string
   target?: ScreenshotTarget
   picture?: PictureSize
   settled: boolean
+  first?: true
+  steady?: { forMs: number; neededMs: number }
   comparison?: BaselineComparison
   unreadable?: string
 }
@@ -109,6 +114,8 @@ export const screenshotLookSchema: Schema<ScreenshotLook> = s.object({
   target: s.optional(s.object({ count: s.number({ integer: true, min: 0 }), emptyStep: s.optional(emptyStepSchema), refused: s.optional(s.enum(['hidden', 'outside'])) })),
   picture: s.optional(pictureSizeSchema),
   settled: s.boolean(),
+  first: s.optional(s.literal(true)),
+  steady: s.optional(s.object({ forMs: s.number({ min: 0 }), neededMs: s.number({ min: 0 }) })),
   unreadable: s.optional(s.string()),
   comparison: s.optional(
     s.union([
@@ -257,7 +264,8 @@ export type ScreenshotCheck = {
   readonly comparison: string
   /**
    * Whether a look is the last one the check needs: it passes, or nothing a later look shows can change the verdict,
-   * since the picture or the baseline cannot be read or there is no baseline.
+   * since the picture or the baseline cannot be read, there is no baseline, or the picture is not the baseline's
+   * scale, or, for the page, its size.
    */
   done(look: ScreenshotLook): boolean
   passes(look: ScreenshotLook): boolean
@@ -272,7 +280,9 @@ export type ScreenshotCheck = {
  * picture has settled and, against the baseline, the run writes it as the baseline, or the two have one size and one
  * scale and no more pixels differ than `allowedPixels` lets. A look with no baseline never passes. A settled picture
  * that does not pass is looked at again until the time runs out, as other matchers look, so a page still loading
- * passes once it shows its baseline.
+ * passes once it shows its baseline. Settling is only for a picture that could match: no baseline, one that cannot be
+ * read, or a picture of another scale, or a page's picture of another size, ends the check on the picture at hand,
+ * since no later one can change it. An element's box can still grow or shrink, so its picture is looked at again.
  *
  * @example screenshotCheck({ matcher: 'toHaveScreenshot', name: 'dashboard' }).passes(look)
  */
@@ -283,12 +293,24 @@ export function screenshotCheck(record: ScreenshotCheckRecord): ScreenshotCheck 
     matcher: 'toHaveScreenshot',
     expected: `matches ${named}${describeLimits(record)}`,
     comparison: `each pixel's colour against the baseline's once two pictures in a row were the same, a distance above ${threshold} counted, anti-aliasing left out`,
-    done: (look) => look.unreadable !== undefined || (look.settled && (verdict(record, look).passes || look.comparison?.kind === 'missing' || look.comparison?.kind === 'unreadable')),
+    done: (look) => look.unreadable !== undefined || verdict(record, look).passes || cannotMatch(look),
     passes: (look) => verdict(record, look).passes,
     actual: (look) => actualOf(look),
     measured: (look) => measuredOf(record, look, threshold),
     unmet: (look, locator) => unmetOf(record, look, locator),
   }
+}
+
+// Whether no later picture of the check can match its baseline: there is none, it cannot be read, or the picture is of
+// another scale, or, for the page, whose size the viewport fixes for the whole check, of another size.
+function cannotMatch(look: ScreenshotLook): boolean {
+  const { comparison, picture } = look
+  if (comparison === undefined || comparison.kind === 'update') return false
+  if (comparison.kind === 'missing' || comparison.kind === 'unreadable') return true
+  if (picture === undefined) return false
+  if (comparison.expected.scale !== picture.scale) return true
+  const sized = comparison.expected.width === picture.width && comparison.expected.height === picture.height
+  return !sized && look.target === undefined
 }
 
 function describeLimits(record: ScreenshotCheckRecord): string {
@@ -316,11 +338,12 @@ function actualOf(look: ScreenshotLook): string | null {
   const { picture, comparison } = look
   if (picture === undefined) return null
   const size = describeSize(picture)
-  if (!look.settled || comparison === undefined) return `${size}, still changing`
+  if (comparison === undefined) return look.first === true ? `${size}, the only picture` : `${size}, not settled`
   if (comparison.kind === 'missing') return `${size}, no baseline`
   if (comparison.kind === 'unreadable') return `${size}, the baseline cannot be read`
   if (comparison.kind === 'update') return `${size}, written as the baseline`
   if (comparison.differentPixels === undefined) return `${size}${describeScale(picture)}, the baseline ${describeSize(comparison.expected)}${describeScale(comparison.expected)}`
+  if (!look.settled) return `${size}, not settled`
   return `${comparison.differentPixels} of ${picture.width * picture.height} pixels different`
 }
 
@@ -353,9 +376,7 @@ function unmetOf(record: ScreenshotCheckRecord, look: ScreenshotLook, locator: L
   if (target?.refused === 'hidden') return { class: 'check_failed', message: `${subject} is not shown, so Retest took no picture of it.` }
   if (target?.refused === 'outside') return { class: 'check_failed', message: `${subject} runs past the viewport, so Retest took no picture of it. Scroll it into view first.` }
   if (picture === undefined) return { class: 'check_failed', message: `Retest took no picture of ${locator === undefined ? 'the page' : subject}.` }
-  if (!look.settled || comparison === undefined) {
-    return { class: 'check_failed', message: `${subject} never settled. No two pictures in a row were the same, so Retest compared none with ${named}. An animation that never stops cannot be compared.` }
-  }
+  if (comparison === undefined || (!look.settled && comparison.kind === 'compared' && sameShape(picture, comparison.expected))) return unsettled(look, subject, named)
   if (comparison.kind === 'missing') {
     return { class: 'check_failed', message: `No baseline named ${JSON.stringify(record.name)} exists at ${look.baseline}. Run with --update-screenshots to save this picture as the baseline.` }
   }
@@ -371,6 +392,23 @@ function unmetOf(record: ScreenshotCheckRecord, look: ScreenshotLook, locator: L
   const ratio = differentPixels / total
   const limit = `At most ${formatCount(allowed)} may differ.`
   return { class: 'check_failed', message: `${differentPixels} ${differentPixels === 1 ? 'pixel differs' : 'pixels differ'} from ${named}, a ratio of ${formatRatio(ratio)} of its ${total} pixels. ${limit}` }
+}
+
+function sameShape(picture: PictureSize, expected: PictureSize): boolean {
+  return picture.width === expected.width && picture.height === expected.height && picture.scale === expected.scale
+}
+
+// Why a picture that could match its baseline was compared with nothing: no second picture came in time, the pictures
+// stayed the same for less than settling needs, or no two in a row were the same.
+function unsettled(look: ScreenshotLook, subject: string, named: string): ScreenshotUnmet {
+  const lowered = subject === 'The page' ? 'the page' : subject
+  if (look.first === true) {
+    return { class: 'check_failed', message: `Only one picture of ${lowered} was taken in the time allowed, so Retest could not tell whether it had settled, and compared none with ${named}.` }
+  }
+  if (look.steady !== undefined) {
+    return { class: 'check_failed', message: `${subject} had stayed the same for ${Math.round(look.steady.forMs)} ms when the time ran out, and a picture settles after ${look.steady.neededMs} ms, so Retest compared none with ${named}.` }
+  }
+  return { class: 'check_failed', message: `${subject} never settled. No two pictures in a row were the same, so Retest compared none with ${named}. An animation that never stops cannot be compared.` }
 }
 
 // The sentence for a picture whose device scale factor is not its baseline's, or that one of them does not record.

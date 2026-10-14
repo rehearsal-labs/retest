@@ -158,14 +158,17 @@ export type ScreenshotAccess = {
 
 type Served = { app: string; key: string; command: PictureCommand; picture: KeptPicture | undefined; look: ScreenshotLook; followed: boolean }
 
+/** Where a picture stands in its check: settled, the first with nothing before it, or the same as the one before for a while. */
+type Chain = { settled: boolean; first: boolean; steady?: { forMs: number; neededMs: number } }
+
 /**
  * The pictures one attempt's screenshot checks take. A look takes a picture through the page, asks the pixel policy
  * before and again once it is back, and keeps it under the look's id until its assertion is judged or the attempt
  * ends. A look names the look before it in its check; that earlier look is followed once, by one later look, so two
  * checks of one name each keep their own chain, and its pixels then go, since only the newest of a chain is judged.
- * The new picture has settled when it is the earlier one's pixels at the same place and scale, asked for at least
- * `settleGapMs` after it, and, in a run that writes baselines, the check's pictures have been the same for
- * `baselineHoldMs`. Only a settled picture is compared with its baseline, or set to be written as one.
+ * The new picture has settled when the check's pictures have been the same pixels at the same place and scale for
+ * `settleGapMs`, or `baselineHoldMs` in a run that writes baselines. Only a settled picture has its pixels counted, or is
+ * set to be written as a baseline; a missing or unreadable baseline, or one of another size or scale, is told at once.
  */
 export class AttemptScreenshots implements ScreenshotAccess {
   readonly #baselines: ScreenshotBaselines
@@ -216,10 +219,10 @@ export class AttemptScreenshots implements ScreenshotAccess {
     }
     const picture: KeptPicture = { png: taken.png, ...(taken.scale === undefined ? {} : { scale: taken.scale }), ...(taken.clip === undefined ? {} : { clip: taken.clip }), decoded, askedAt, sameSince: askedAt }
     const size = { width: decoded.width, height: decoded.height, ...(picture.scale === undefined ? {} : { scale: picture.scale }) }
-    const settled = this.#settled(keyOf(app, command), command.previous, picture)
-    if (!settled) return { ok: true, look: { baseline, ...elementTarget, picture: size, settled: false }, picture, ...looked }
-    const comparison = this.#compare(baseline, decoded, picture.scale, command.threshold ?? defaultScreenshotThreshold)
-    return { ok: true, look: { baseline, ...elementTarget, picture: size, settled: true, comparison }, picture, ...looked }
+    const chain = this.#settled(keyOf(app, command), command.previous, picture)
+    const comparison = this.#compare({ baseline, decoded, scale: picture.scale, settled: chain.settled, threshold: command.threshold ?? defaultScreenshotThreshold })
+    const shown = { ...(chain.first ? { first: true as const } : {}), ...(chain.steady === undefined ? {} : { steady: chain.steady }), ...(comparison === undefined ? {} : { comparison }) }
+    return { ok: true, look: { baseline, ...elementTarget, picture: size, settled: chain.settled, ...shown }, picture, ...looked }
   }
 
   keep({ observationId, app, command, look, picture }: ServedPicture): void {
@@ -291,30 +294,36 @@ export class AttemptScreenshots implements ScreenshotAccess {
     return attachments.length === 0 ? {} : { attachments }
   }
 
-  // Whether a new picture settles its check, against the look its command names as the one before it: a look of the
-  // same check this attempt served, followed by no other look yet, whose picture has the same pixels at the same place
-  // and scale and was asked for at least `settleGapMs` earlier. That look is followed from now on, and its pixels go.
-  // Equal pictures carry on the time their run began; in a run that writes baselines, the run must last `baselineHoldMs`.
-  #settled(key: string, previous: string | undefined, picture: KeptPicture): boolean {
+  // Where a new picture stands in its check, against the look its command names as the one before it: a look of the
+  // same check this attempt served, followed by no other look yet, with a picture. That look is followed from now on,
+  // and its pixels go. With none, the picture is the first. Equal pictures carry on the time their run began, and the
+  // newest settles once the run has lasted `settleGapMs`, or `baselineHoldMs` in a run that writes baselines.
+  #settled(key: string, previous: string | undefined, picture: KeptPicture): Chain {
     const earlier = previous === undefined ? undefined : this.#served.get(previous)
-    if (earlier === undefined || earlier.key !== key || earlier.followed) return false
+    if (earlier === undefined || earlier.key !== key || earlier.followed) return { settled: false, first: true }
     earlier.followed = true
     const before = earlier.picture
     earlier.picture = undefined
-    if (before === undefined || !samePicture(before, picture)) return false
+    if (before === undefined) return { settled: false, first: true }
+    if (!samePicture(before, picture)) return { settled: false, first: false }
     picture.sameSince = before.sameSince
-    if (picture.askedAt - before.askedAt < settleGapMs) return false
-    return !this.#baselines.update || picture.askedAt - picture.sameSince >= baselineHoldMs
+    const forMs = picture.askedAt - picture.sameSince
+    const neededMs = this.#baselines.update ? baselineHoldMs : settleGapMs
+    return forMs >= neededMs ? { settled: true, first: false } : { settled: false, first: false, steady: { forMs: Math.round(forMs), neededMs } }
   }
 
-  // A baseline that cannot be read is the comparison's outcome, so the check fails with the sentence that names the file.
-  // The picture and the baseline must record one device scale factor, or neither, before their pixels are counted.
-  #compare(baseline: string, decoded: PngPicture, scale: number | undefined, threshold: number): BaselineComparison {
-    if (this.#baselines.update) return { kind: 'update' }
+  // How a picture stands against its baseline. A run that writes baselines needs a settled picture and reads none. Any
+  // other run decides at once what no later picture can change: no baseline, one that cannot be read, which fails with
+  // the sentence that names the file, or one of another size or device scale factor, both of which a picture and its
+  // baseline must share, the scale recorded by both or by neither. Pixels are counted on a settled picture only.
+  #compare(options: { baseline: string; decoded: PngPicture; scale: number | undefined; settled: boolean; threshold: number }): BaselineComparison | undefined {
+    const { baseline, decoded, scale, settled, threshold } = options
+    if (this.#baselines.update) return settled ? { kind: 'update' } : undefined
     const read = this.#baselines.read(baseline)
     if (!read.ok) return read.missing ? { kind: 'missing' } : { kind: 'unreadable', problem: read.problem }
     const expected = { width: read.picture.width, height: read.picture.height, ...(read.scale === undefined ? {} : { scale: read.scale }) }
     if (expected.width !== decoded.width || expected.height !== decoded.height || read.scale !== scale) return { kind: 'compared', expected }
+    if (!settled) return undefined
     return { kind: 'compared', expected, differentPixels: comparePixels(read.picture, decoded, threshold).differentPixels }
   }
 

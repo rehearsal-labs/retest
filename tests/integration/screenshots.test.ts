@@ -161,7 +161,7 @@ test('a page\'s baseline is missing, then written by --update-screenshots, then 
   for (const name of matchingNames) assert.equal(testNamed(first, name).status, 'failed', name)
   const missing = failed(first, 'the page matches its baseline')
   assert.equal(missing.failure.class, 'check_failed')
-  assert.match(missing.failure.message, new RegExp(`^No baseline named "page" exists at ${page.replaceAll('.', '\\.')}\\. Run with --update-screenshots to save this picture as the baseline\\. Looked \\d+ times in \\d+ ms\\.$`))
+  assert.match(missing.failure.message, new RegExp(`^No baseline named "page" exists at ${page.replaceAll('.', '\\.')}\\. Run with --update-screenshots to save this picture as the baseline\\. Looked 1 time in \\d+ ms\\.$`), 'no baseline is told on the first picture')
   assert.equal(missing.screenshot?.baselineState, 'missing')
   assert.deepEqual(missing.attachments?.map((attachment) => attachment.name), ['actual'])
   const candidate = missing.attachments?.[0]?.path ?? ''
@@ -233,7 +233,7 @@ test('a page\'s baseline is missing, then written by --update-screenshots, then 
   assert.equal(unreadable.failure.class, 'setup_failed')
   assert.equal(unreadable.failure.message, `The baseline at ${page} is not a picture Retest reads: The PNG's IDAT chunk fails its checksum, so the file is damaged.`)
   assert.equal(unreadable.failure.details?.['also'], undefined, 'nothing else leads it')
-  assert.deepEqual([unreadable.screenshot?.settled, unreadable.screenshot?.baselineState], [true, 'unreadable'])
+  assert.deepEqual([unreadable.screenshot?.settled, unreadable.screenshot?.baselineState, unreadable.attempts], [false, 'unreadable', 1], 'a baseline that cannot be read is told on the first picture')
 })
 
 test('an element\'s picture is clipped to it, a popup is a page, and a picture at another size or scale fails by name', async (t) => {
@@ -259,8 +259,8 @@ test('an element\'s picture is clipped to it, a popup is a page, and a picture a
   assert.deepEqual(wide.attachments?.map((attachment) => attachment.name), ['expected', 'actual', 'diff'])
 
   const scale = failed(run, 'a picture at another scale fails by name')
-  assert.match(scale.failure.message, /^The picture is 800 by 600 pixels, and the baseline "page" is 400 by 300 pixels\. The picture was taken at a device scale factor of 2, and the baseline "page" at 1\. Looked/)
-  assert.deepEqual([scale.screenshot?.picture?.scale, scale.screenshot?.expected?.scale], [2, 1])
+  assert.match(scale.failure.message, /^The picture is 800 by 600 pixels, and the baseline "page" is 400 by 300 pixels\. The picture was taken at a device scale factor of 2, and the baseline "page" at 1\. Looked 1 time in \d+ ms\.$/)
+  assert.deepEqual([scale.screenshot?.picture?.scale, scale.screenshot?.expected?.scale, scale.attempts], [2, 1, 1], 'a picture at another scale is told on the first picture, with no second one needed')
 
   // A baseline that records no device scale factor cannot be told from one taken at another, so it fails by name.
   const page = join(root, baseline(file, 'page'))
