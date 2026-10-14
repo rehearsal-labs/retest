@@ -3,7 +3,7 @@ import type { GuardVerdict } from '../../src/browser/input-guard.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CdpAbortedError, CdpInvalidResponseError, CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
-import { guardFailure, guardInput, hoverFailure, keyFailure, selectKeyFailure, wheelFailure } from '../../src/browser/input-guard.ts'
+import { disarmGuard, guardFailure, guardInput, hoverFailure, keyFailure, selectKeyFailure, wheelFailure } from '../../src/browser/input-guard.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { disarmFunction, registrationFunction, strayFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
@@ -180,6 +180,78 @@ test('the verdict is asked for before the input goes and settled by disarming af
     assert.ok(typeof command.params === 'object' && command.params !== null && 'executionContextId' in command.params)
     assert.equal(command.params.executionContextId, guard.context)
   }
+})
+
+// A guard of a frame's element with the guards armed for the same press in the page (context 1) and in the frame
+// around it (context 2), and the call each command made: which page function, in which document.
+const framed = { context: 7, token: 3, around: [{ context: 1, token: 11 }, { context: 2, token: 12 }] }
+
+function callOf(params: unknown): string {
+  const call = functionOf(params)
+  const name = call === verdictFunction ? 'verdict' : call === registrationFunction ? 'registered' : call === disarmFunction ? 'disarm' : 'other'
+  const context = typeof params === 'object' && params !== null && 'executionContextId' in params ? params.executionContextId : undefined
+  return `${name} ${String(context)}`
+}
+
+test('a press in a frame waits for the guards of the documents around it, and one that saw another element take the press answers', async () => {
+  const order: string[] = []
+  const verdicts = new Map([1, 2, 7].map((context) => [context, Promise.withResolvers<unknown>()]))
+  const answers = new Map<unknown, unknown>([
+    [1, { reached: [], intercepted: { event: 'pointerdown', by: cover }, landed: cover, leaving: null }],
+    [2, { reached: [], intercepted: null, landed: '<iframe>', leaving: null }],
+    [7, { reached: [], intercepted: null, landed: '<button>', leaving: null }],
+  ])
+  const { session } = scriptedSession(async (_method, params) => {
+    order.push(callOf(params))
+    const context = typeof params === 'object' && params !== null && 'executionContextId' in params ? params.executionContextId : undefined
+    const call = functionOf(params)
+    if (call === verdictFunction) return verdicts.get(Number(context))?.promise
+    if (call === registrationFunction) return { result: { value: true } }
+    if (call === disarmFunction) {
+      verdicts.get(Number(context))?.resolve({ result: { value: answers.get(context) } })
+      return { result: { value: true } }
+    }
+    throw new Error('unexpected call')
+  })
+  const verdict = await guardInput(new IsolatedWorld(session, () => 'F1'), framed, new Deadline(1000), async () => {
+    order.push('input')
+  })
+  assert.deepEqual(order, ['verdict 1', 'verdict 2', 'registered 1', 'registered 2', 'verdict 7', 'registered 7', 'input', 'disarm 7', 'disarm 2', 'disarm 1'])
+  assert.deepEqual(verdict, { kind: 'seen', reached: [], intercepted: { event: 'pointerdown', by: cover }, landed: cover, leaving: null })
+  assert.equal(guardFailure(verdict, click, save)?.class, 'not_actionable')
+})
+
+test('a press in a frame that nothing around it took is answered by the frame’s own guard', async () => {
+  const { session } = scriptedSession(async (_method, params) => {
+    const context = typeof params === 'object' && params !== null && 'executionContextId' in params ? params.executionContextId : undefined
+    const call = functionOf(params)
+    if (call === verdictFunction && context === 7) return { result: { value: { reached: ['pointerdown', 'click'], intercepted: null, landed: '<button>', leaving: null } } }
+    if (call === verdictFunction) return { result: { value: { reached: [], intercepted: null, landed: '<iframe>', leaving: null } } }
+    return { result: { value: true } }
+  })
+  const verdict = await guardInput(new IsolatedWorld(session, () => 'F1'), framed, new Deadline(1000), async () => {})
+  assert.deepEqual(verdict, { kind: 'seen', reached: ['pointerdown', 'click'], intercepted: null, landed: '<button>', leaving: null })
+})
+
+test('a document around a frame that went before its guard registered sends no input, and every arming is ended', async () => {
+  let inputs = 0
+  const { session, sent } = scriptedSession(async (_method, params) => {
+    const call = functionOf(params)
+    const context = typeof params === 'object' && params !== null && 'executionContextId' in params ? params.executionContextId : undefined
+    if (call === registrationFunction && context === 2) throw protocolError('Runtime.callFunctionOn', goneContext)
+    if (call === verdictFunction) return new Promise(() => {})
+    return { result: { value: true } }
+  })
+  const verdict = await guardInput(new IsolatedWorld(session, () => 'F1'), framed, new Deadline(1000), async () => { inputs += 1 })
+  assert.deepEqual(verdict, { kind: 'unregistered' })
+  assert.equal(inputs, 0)
+  assert.deepEqual(sent.map(({ params }) => callOf(params)), ['verdict 1', 'verdict 2', 'registered 1', 'registered 2', 'disarm 7', 'disarm 2', 'disarm 1'])
+})
+
+test('ending a frame’s arming ends the armings around it too, innermost first', async () => {
+  const { session, sent } = scriptedSession(async () => ({ result: { value: true } }))
+  await disarmGuard(new IsolatedWorld(session, () => 'F1'), framed, new Deadline(1000))
+  assert.deepEqual(sent.map(({ params }) => callOf(params)), ['disarm 7', 'disarm 2', 'disarm 1'])
 })
 
 test('input waits for the matching verdict request to register, even when the first marker read reaches the browser first', async () => {

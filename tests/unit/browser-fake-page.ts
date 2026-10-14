@@ -216,6 +216,10 @@ export function fakePage(): FakePage {
       listeners.set(type, forType)
     },
     removeEventListener: (type: string, listener: Listener) => void listeners.get(type)?.delete(listener),
+    // The page's own window, not a frame's.
+    get top(): unknown {
+      return window
+    },
   }
   const scope = {
     window,
@@ -226,10 +230,14 @@ export function fakePage(): FakePage {
     HTMLInputElement: FakeInput,
     HTMLTextAreaElement: class {},
     HTMLSelectElement: FakeSelect,
+    // A page with no shadow roots and no slots: nothing is ever one.
+    ShadowRoot: class {},
+    HTMLSlotElement: class {},
     Event: FakeEvent,
     KeyboardEvent: FakeKeyboardEvent,
     InputEvent: FakeInputEvent,
-    globalThis: {},
+    // The global's own window, as a page function reads it where a driver gives it a window of its own.
+    globalThis: { window },
     getComputedStyle: () => ({ visibility: 'visible' }),
     location: { origin: 'http://app.test', href: 'http://app.test/start?token=1' },
     visualViewport: { offsetLeft: 0, offsetTop: 0, width: 800, height: 600, scale: 1 },

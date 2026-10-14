@@ -1,6 +1,7 @@
 import type { TestContext } from 'node:test'
 import type { OwnedPage } from '../../src/browser/contract.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
+import type { DeclaredValue } from './engine-expectations.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ROW_COUNT } from '../../fixtures/task-app/locators-page.ts'
@@ -11,6 +12,7 @@ import { observedItemLimit } from '../../src/protocol/commands.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
 import {
   assertOk,
+  awaitFirstLook,
   byLabel,
   byRole,
   byText,
@@ -39,6 +41,7 @@ async function locatorsPage(t: TestContext): Promise<OwnedPage> {
   const app = await openApp(t)
   const page = await openPage(t, browser(), app.url)
   assertOk(await goto(page, '/locators'))
+  await awaitFirstLook(page, byRole('heading', 'Locators'))
   return page
 }
 
@@ -100,10 +103,16 @@ test('role without a name finds every element with it, and a role Chrome names i
   }
 })
 
-test('role stays in the document itself, out of shadow roots and frames, as test id and text do', async (t) => {
+test('role finds through an open shadow root, in the order the page shows, and stays out of frames, as test id and text do', async (t) => {
   const page = await locatorsPage(t)
-  assert.deepEqual(await texts(page, byRole('button', 'tree', false)), ['one', 'three'])
-  assert.equal((await observe(page, byRole('button', 'Tree two'))).count, 0)
+  const lookup = async (locator: LocatorRecipe): Promise<DeclaredValue> => {
+    const looked = await page.execute({ kind: 'observe', locator }, 2000)
+    if (!looked.ok) return { class: looked.failure.class, message: looked.failure.message }
+    return looked.kind === 'observe' ? looked.observation.items.map((item) => item.text) : looked.kind
+  }
+  const observed = { trees: await lookup(byRole('button', 'tree', false)), inRoot: await lookup(byRole('button', 'Tree two')) }
+  engineCase.assertOutcome(t, observed, { trees: ['one', 'two', 'three'], inRoot: ['two'] })
+  assert.equal((await observe(page, byRole('button', 'Tree framed'))).count, 0)
 })
 
 test('an observation lists at most its limit of matches and says when more matched', async (t) => {
@@ -184,9 +193,10 @@ test('text finds hidden elements too, and reports them as not visible', async (t
   assert.deepEqual(await observe(page, byText('Hidden note')), observationOf([{ text: 'Hidden note', visible: false }]))
 })
 
-test('text stays in the document itself, out of shadow roots and frames', async (t) => {
+test('text finds through an open shadow root and stays out of frames', async (t) => {
   const page = await locatorsPage(t)
-  assert.equal((await observe(page, byText('two'))).count, 0)
+  assert.deepEqual(await texts(page, byText('two')), ['two'])
+  assert.equal((await observe(page, byText('framed'))).count, 0)
   assert.equal((await observe(page, byText('Framed text'))).count, 0)
 })
 
@@ -211,6 +221,7 @@ test('the task page can be driven by role, label and text alone', async (t) => {
   const app = await openApp(t)
   const page = await openPage(t, browser(), app.url)
   assertOk(await goto(page, '/'))
+  await awaitFirstLook(page, byLabel('Title'))
   assertOk(await fill(page, byLabel('Title'), 'Release checklist'))
   assertOk(await click(page, byRole('button', 'Save')))
   await observeUntil(page, byText('Release checklist'), (seen) => seen.count === 1 && seen.visible === true)

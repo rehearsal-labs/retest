@@ -151,7 +151,7 @@ root.innerHTML = '<button>Inside</button>'
 /** A title longer than the 300 code units Retest records, which a page matcher still compares whole. */
 export const LONG_TITLE: string = 'Quarterly report '.repeat(25).trim()
 
-/** A page with an open shadow root, which Playwright's locators look inside and Retest's do not. */
+/** A page with an open shadow root, which Playwright's locators and Retest's look inside alike. */
 export const SHADOW_PAGE: string = htmlPage('Shadow', `<todo-widget data-testid="widget"></todo-widget><button>Outside</button>`, SHADOW_SCRIPT)
 
 /**

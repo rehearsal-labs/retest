@@ -252,7 +252,7 @@ describe('the arguments of several locators', () => {
   test('put every query in one list, in order, after the values', () => {
     assert.deepEqual(locatorsArguments([{ by: 'testId', value: 'save' }, { by: 'css', selector: 'form', dialect: 'playwright' }], [100]), [
       100,
-      [{ steps: [{ by: 'testId', value: 'save', pick: null }] }, { steps: [{ by: 'css', selector: 'form', pick: null }], shadow: 'refused' }],
+      [{ steps: [{ by: 'testId', value: 'save', pick: null }] }, { steps: [{ by: 'css', selector: 'form', pick: null }] }],
     ])
   })
 

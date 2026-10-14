@@ -1,6 +1,7 @@
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { roleWants } from '../../src/browser/firefox/accessible-names.ts'
 import { locatorArguments } from '../../src/browser/locate.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { scriptedSession } from './browser-fixtures.ts'
@@ -69,7 +70,7 @@ test("each role or label step of a chain names which of the elements after the q
         steps: [
           { by: 'elements', from: 0, count: 1, pick: 'first' },
           { by: 'testId', value: 'form', pick: null },
-          { by: 'elements', from: 1, count: 1, pick: null },
+          { by: 'elements', from: 1, count: 1, pick: null, files: { text: { pattern: '^em', flags: 'i' }, exact: true } },
         ],
       },
     },
@@ -89,14 +90,29 @@ test('label asks for every form control role and matches the name', async () => 
   assert.deepEqual(roles, ['textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'switch', 'slider', 'spinbutton'])
 })
 
-test("by Playwright's rules every query refuses open shadow roots, and a label step also finds what aria-label or aria-labelledby names", async () => {
-  assert.deepEqual(locatorArguments({ by: 'testId', value: 'save', dialect: 'playwright' }, [100]), [100, { steps: [{ by: 'testId', value: 'save', pick: null }], shadow: 'refused' }])
+// A file input is found by its label in the page, and the tree is never asked for a button, so a sign-in form's submit
+// input, which Firefox's lookup refuses to judge a button query beside, refuses no label lookup there.
+test('label asks the tree for no button, and hands the page its text to find a labelled file input by', async () => {
+  const { built, roles } = await made({ by: 'label', text: 'Save' })
+  assert.ok(!roles.includes('button'), 'a label lookup asks the tree for no button')
+  assert.deepEqual(built, [{ value: 'click' }, { value: false }, { value: { steps: [{ by: 'elements', from: 0, count: 0, pick: null, files: { text: 'Save', exact: true } }] } }])
+})
+
+// Firefox refuses a button lookup on a page that shows a submit, reset, image, colour or file input, so a label lookup
+// that asked for buttons would be refused on an ordinary sign-in form.
+test('on Firefox a label lookup asks for no button either', () => {
+  assert.equal(roleWants({ by: 'label', text: 'Email' }).has('button'), false)
+  assert.equal(roleWants({ by: 'label', text: 'Email' }).has('textbox'), true)
+})
+
+test("by Playwright's rules a label step also finds what aria-label or aria-labelledby names, and no query stops at shadow roots", async () => {
+  assert.deepEqual(locatorArguments({ by: 'testId', value: 'save', dialect: 'playwright' }, [100]), [100, { steps: [{ by: 'testId', value: 'save', pick: null }] }])
   const { built } = await made({ by: 'label', text: 'Email', exact: false, dialect: 'playwright' })
   assert.deepEqual(built.slice(0, 3), [
     { value: 'click' },
     { value: false },
-    { value: { steps: [{ by: 'elements', from: 0, count: 1, pick: null, labelled: { text: 'Email', exact: false } }], shadow: 'refused' } },
+    { value: { steps: [{ by: 'elements', from: 0, count: 1, pick: null, labelled: { text: 'Email', exact: false }, files: { text: 'Email', exact: false } }] } },
   ])
   const { built: native } = await made({ by: 'label', text: 'Email', exact: false })
-  assert.deepEqual(native[2], { value: { steps: [{ by: 'elements', from: 0, count: 1, pick: null }] } }, "Retest's own label finds only what the tree names a form control")
+  assert.deepEqual(native[2], { value: { steps: [{ by: 'elements', from: 0, count: 1, pick: null, files: { text: 'Email', exact: false } }] } }, "Retest's own label finds what the tree names a form control, and a file input its label names")
 })

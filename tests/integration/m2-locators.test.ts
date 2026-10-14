@@ -62,10 +62,11 @@ test('text finds the innermost element whose whole text matches, skipping script
   await expect(page.getByText('Hidden note')).toBeHidden()
 })
 
-test('locators stay in the top-level document, out of shadow roots and frames', async ({ page }) => {
-  await expect(page.getByRole('button', { name: 'tree', exact: false })).toHaveText(['one', 'three'])
+test('locators find through an open shadow root and stay out of the frames a page holds', async ({ page }) => {
+  await expect(page.getByRole('button', { name: 'tree', exact: false })).toHaveText(['one', 'two', 'three'])
+  await expect(page.getByText('two')).toHaveCount(1)
   await expect(page.getByText('Framed text')).toHaveCount(0)
-  await expect(page.getByText('two')).toHaveCount(0)
+  await expect(page.getByText('framed')).toHaveCount(0)
 })
 
 test('an action on a role that matches three buttons fails at once', async ({ page }) => {
@@ -97,7 +98,7 @@ test('role, label and text locators follow their rules in real Chrome, and ambig
     ['a locator is found again for each command, so a renamed button is found by its new name', 'passed', undefined],
     ['label finds a form control by label for, a wrapping label, aria-labelledby, aria-label, title and placeholder', 'passed', undefined],
     ['text finds the innermost element whose whole text matches, skipping script, style, template and noscript', 'passed', undefined],
-    ['locators stay in the top-level document, out of shadow roots and frames', 'passed', undefined],
+    ['locators find through an open shadow root and stay out of the frames a page holds', 'passed', undefined],
     ['an action on a role that matches three buttons fails at once', 'failed', 'ambiguous'],
     ['an action on a label that matches two fields fails at once', 'failed', 'ambiguous'],
     ['an action on text that matches nothing fails when the action budget runs out', 'failed', 'not_found'],

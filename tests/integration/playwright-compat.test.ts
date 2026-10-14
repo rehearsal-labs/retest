@@ -149,36 +149,37 @@ test('finds as Playwright does: any part of a name or a text in any case, and a 
   await expect(page.getByTestId('search')).toHaveValue('milk')
 })
 
-test('a hidden check on a page with an open shadow root is refused, never passed on what it cannot see', async ({ page }) => {
+test('finds inside an open shadow root, as Playwright does', async ({ page }) => {
   await page.goto('/lookup/shadow')
-  await expect(page.getByText('Inside')).toBeHidden()
+  await expect(page.getByText('Inside')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'inside' })).toHaveCount(1)
 })
 
-test('a click on a page with an open shadow root is refused by name', async ({ page }) => {
+test('a click on a page with an open shadow root reaches its button', async ({ page }) => {
   await page.goto('/lookup/shadow')
   await page.getByRole('button', { name: 'Outside' }).click()
+  await page.getByRole('button', { name: 'Inside' }).click()
+  await expect(page.getByRole('button', { name: 'Inside' })).toBeVisible()
 })
 `
 
-// Playwright's finders match any part of a text in any case, and find a label on any element; a page with an open
-// shadow root, which Playwright looks inside, is refused rather than searched less.
-test("a Playwright file finds by Playwright's rules, and a page with an open shadow root is refused rather than found empty", async (t) => {
+// Playwright's finders match any part of a text in any case, find a label on any element, and look inside an open
+// shadow root, as Retest's own finders do.
+test("a Playwright file finds by Playwright's rules, inside an open shadow root too", async (t) => {
   const app = await openApp(t)
   const root = await scratchFolder(t, 'retest-playwright-')
   await writeFiles(root, { 'tests/rules.spec.ts': rulesSpec })
   const output = join(await scratchFolder(t), 'run')
   const run = await runCli(t, ['run', '--playwright', '--browser', browserPath(), '--base-url', app.url, '--no-agent', '--output', output], { cwd: root })
-  assert.equal(run.exit.code, 2, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.exit.code, 0, `${run.stdout}\n${run.stderr}`)
   const result = readResult(readFileSync(join(output, resultFile), 'utf8'))
   const tests = result.files.flatMap((file) => file.tests)
-  const refused = (action: string) =>
-    `Could not ${action}: the page holds an open shadow root, in <todo-widget>. Playwright looks inside shadow roots and Retest does not, so Retest refuses the lookup rather than find less than Playwright would.`
   assert.deepEqual(
     tests.map((each) => [each.name, each.status, each.failure?.class, each.failure?.message]),
     [
       ['finds as Playwright does: any part of a name or a text in any case, and a label on any element', 'passed', undefined, undefined],
-      ['a hidden check on a page with an open shadow root is refused, never passed on what it cannot see', 'error', 'unsupported', refused("read getByText('Inside')")],
-      ['a click on a page with an open shadow root is refused by name', 'error', 'unsupported', refused("click getByRole('button', { name: 'Outside' })")],
+      ['finds inside an open shadow root, as Playwright does', 'passed', undefined, undefined],
+      ['a click on a page with an open shadow root reaches its button', 'passed', undefined, undefined],
     ],
   )
   const events = readEvents(readFileSync(join(output, eventsFile), 'utf8'))

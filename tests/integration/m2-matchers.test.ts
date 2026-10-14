@@ -21,7 +21,7 @@ test('locator matchers pass', async ({ page }) => {
   await expect(page.getByText('Hidden note')).toBeHidden()
   await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(1)
   await expect(page.getByRole('listitem')).toHaveCount(120)
-  await expect(page.getByRole('button', { name: 'tree', exact: false })).toHaveText(['one', 'three'])
+  await expect(page.getByRole('button', { name: 'tree', exact: false })).toHaveText(['one', 'two', 'three'])
   await expect(page.getByLabel('Email')).toHaveValue('email by label for')
 })
 
@@ -127,7 +127,7 @@ test('each matcher passes and fails correctly, poll never repeats an action, and
   const failures: [string, string, string, string][] = [
     ['toBeHidden fails on a visible element', 'toBeHidden', 'hidden', ''],
     ['toHaveCount fails on another count', 'toHaveCount', '2', '1'],
-    ['toHaveText with a list fails on another order', 'toHaveText', '["three","one"]', '["one","three"]'],
+    ['toHaveText with a list fails on another order', 'toHaveText', '["three","one"]', '["one","two","three"]'],
     ['toHaveValue fails on another value', 'toHaveValue', 'email in lower case', 'email by label for'],
     ['toEqual fails on a nested difference', 'toEqual', 'slow', 'smoke'],
     ['toContain fails on a missing item', 'toContain', 'slow', 'smoke'],
