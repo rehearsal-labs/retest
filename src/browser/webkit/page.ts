@@ -1,5 +1,5 @@
 import type { ActionTarget, PendingNavigation, ReadyTarget } from '../actionability.ts'
-import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
+import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, RequestResult, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
 import type { ActionIntent, PlannedKey, Pointer, Selection } from '../element-queries.ts'
 import type { Guard, GuardedIntent, GuardVerdict } from '../input-guard.ts'
 import type { Point } from '../input.ts'
@@ -48,6 +48,14 @@ import { describeAction, describeChoices, dispatchPinned, observe, observeKeyed,
 import { clickAt, moveTo, pressKey, replaceSelection, wheelAt } from '../input.ts'
 import { disarmGuard, guardFailure, guardInput } from '../input-guard.ts'
 import { IsolatedWorld, isGoneContext } from '../isolated-world.ts'
+import { dragRefused } from '../drag.ts'
+import { routesRefused, type RouteRemoval } from '../routes.ts'
+import { filesRefused } from '../file-chooser.ts'
+import { dialogsUnsupported, type DialogArming } from '../dialogs.ts'
+import { browserCommandLocators, framesUnreached } from '../frames.ts'
+import { rolesStopAtShadowRoots } from '../locate.ts'
+import { layoutUnmeasured } from '../layout.ts'
+import { closeUnsupported, popupsUnsupported, type PopupArming } from '../popups.ts'
 import { Listeners } from '../listeners.ts'
 import { NavigationCauses } from '../navigation-causes.ts'
 import { NavigationTitles } from '../navigation-titles.ts'
@@ -344,8 +352,10 @@ export class WebKitPage implements WebSession, ElementIdentity {
   }
 
   async dispatch(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand> {
+    const unreached = framesUnreached(browserCommandLocators(command), 'WebKit')
+    if (unreached !== undefined) return { result: { ok: false, failure: unreached }, input: 'not_sent' }
     const dispatch = new Dispatch()
-    const result = await this.#execute(command, { timeoutMs, signal, commandToken, dispatch })
+    const result = await rolesStopAtShadowRoots('WebKit', () => this.#execute(command, { timeoutMs, signal, commandToken, dispatch }))
     return { result, input: dispatch.input }
   }
 
@@ -354,7 +364,13 @@ export class WebKitPage implements WebSession, ElementIdentity {
    * listed. A lookup WebKit cannot answer as Chrome does is refused by name, as `observe` refuses it, for any of the
    * locators. Sends no input.
    */
-  async readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
+  readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
+    const unreached = framesUnreached(locators, 'WebKit')
+    if (unreached !== undefined) return Promise.resolve({ ok: false, failure: unreached })
+    return rolesStopAtShadowRoots('WebKit', () => this.#readElements(locators, timeoutMs, signal))
+  }
+
+  async #readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
     const startedAt = monotonicClock()
     const described = `read ${locators.map((locator) => describeLocator(locator)).join(' and ')}`
     for (const locator of locators) {
@@ -478,6 +494,25 @@ export class WebKitPage implements WebSession, ElementIdentity {
 
   onNavigation(listener: (navigation: PageNavigation) => void): () => void {
     return this.#navigations.add(listener)
+  }
+
+  /** WebKit cannot hand its dialogs to a test yet, so the page refuses by name; a dialog it opens holds it as before. */
+  armDialog(): DialogArming {
+    return { ok: false, failure: dialogsUnsupported('WebKit') }
+  }
+
+  /** WebKit cannot hand a test the pages a page opens yet, so the page refuses by name. */
+  async armPopup(): Promise<PopupArming> {
+    return { ok: false, failure: popupsUnsupported('WebKit') }
+  }
+
+  /** WebKit cannot answer a page's requests with routes yet, so the page refuses by name and holds no route. */
+  async addRoute(): Promise<RequestResult> {
+    return { ok: false, failure: routesRefused('on WebKit') }
+  }
+
+  async removeRoute(): Promise<RouteRemoval> {
+    return { ok: false, failure: routesRefused('on WebKit') }
   }
 
   /**
@@ -618,6 +653,10 @@ export class WebKitPage implements WebSession, ElementIdentity {
       }
       case 'observePage':
         return this.#observePage(command.after, deadline)
+      case 'observeLayout':
+        return { ok: false, failure: layoutUnmeasured('WebKit') }
+      case 'close':
+        return { ok: false, failure: closeUnsupported('WebKit') }
       case 'press':
         return this.#pressKey(command, deadline, dispatch, commandToken)
       case 'tap':
@@ -646,6 +685,11 @@ export class WebKitPage implements WebSession, ElementIdentity {
         return this.#check(command, deadline, dispatch, commandToken)
       case 'scroll':
         return this.#scroll(command, deadline, dispatch, commandToken)
+      case 'setInputFiles':
+      case 'setChooserFiles':
+        return { ok: false, failure: filesRefused('upload', 'on WebKit') }
+      case 'dragTo':
+        return { ok: false, failure: dragRefused('WebKit') }
     }
   }
 
@@ -944,6 +988,10 @@ export class WebKitPage implements WebSession, ElementIdentity {
         return `read ${describeLocator(command.locator)}`
       case 'observePage':
         return readCommand
+      case 'observeLayout':
+        return command.locator === undefined ? "measure the page's layout" : `measure ${describeLocator(command.locator)}`
+      case 'close':
+        return 'close the page'
       case 'hover':
         return `hover ${describeLocator(command.locator)}`
       case 'click':
@@ -962,6 +1010,12 @@ export class WebKitPage implements WebSession, ElementIdentity {
       case 'uncheck':
       case 'scroll':
         return describeAction({ action: command.kind, pointer: 'click', multiline: false }, command.locator)
+      case 'setInputFiles':
+        return `set the files of ${describeLocator(command.locator)}`
+      case 'setChooserFiles':
+        return 'give the file picker files'
+      case 'dragTo':
+        return `drag ${describeLocator(command.locator)} to ${describeLocator(command.target)}`
     }
   }
 

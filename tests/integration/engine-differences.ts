@@ -10,8 +10,50 @@ const webKitPhone = "Retest's WebKit driver cannot emulate a mobile layout or a 
 const firefoxToggle = 'Firefox cannot verify the native option holding keyboard focus before toggling it. A move can leave that focus unchanged, so Retest refuses multiple-select keyboard input before an unrequested option could be selected. Retest sent no input.'
 const titleWithEscape = '\u009bBell tab \u001b[2J'
 
+// The failure of a command an alert nothing waited for holds the page during, on an engine that does not answer it.
+function heldDialog(command: string): string {
+  return `The page opened an alert dialog while Retest tried to ${command}. Retest does not answer dialogs yet, and the dialog blocks the page.`
+}
+
 function refusedToggle(choice: string) {
   return { ok: false, failure: { class: 'unsupported', message: `Could not select ${choice} in getByTestId('toppings'): ${firefoxToggle}`, details: { inputSent: false } } }
+}
+
+// A role or label lookup refused on an engine whose tree, as Retest reads it, stops at shadow roots, naming the host of
+// the first open root in its search that could hold a match.
+function shadowRefusal(engine: string, command: string, host = '<checkout-panel>') {
+  return {
+    class: 'unsupported',
+    message: `Could not ${command}: on ${engine}, Retest finds by role or label outside shadow roots only, and the open shadow root of ${host} could hold a match. Find the element by test id, text or CSS.`,
+  }
+}
+
+// The shadow checkout's lookups on such an engine. A root holding no element of the role, or none of the words of the
+// name, is left alone: the sealed button is looked for, and is not found, as on Chrome.
+function shadowLookups(engine: string) {
+  return {
+    buttons: shadowRefusal(engine, "read getByRole('button')"),
+    ariaLabel: shadowRefusal(engine, "read getByRole('button', { name: 'Close panel' })"),
+    labelFor: shadowRefusal(engine, "read getByLabel('Coupon')"),
+    twoDeep: shadowRefusal(engine, "read getByLabel('Card number')", '<card-field>'),
+    acrossRoots: shadowRefusal(engine, "read getByLabel('Outside name')"),
+    closed: [],
+    scoped: shadowRefusal(engine, "read getByTestId('panel').getByRole('button', { name: 'Pay' })"),
+  }
+}
+
+function slottedClicks(engine: string) {
+  return {
+    payNow: shadowRefusal(engine, "click getByRole('button', { name: 'Pay now' })", '<my-button>'),
+    refund: shadowRefusal(engine, "click getByRole('button', { name: 'Refund' })", '<my-button>'),
+  }
+}
+
+function treeLookups(engine: string) {
+  return {
+    trees: shadowRefusal(engine, "read getByRole('button', { name: 'tree', exact: false })", '<div>'),
+    inRoot: shadowRefusal(engine, "read getByRole('button', { name: 'Tree two' })", '<div>'),
+  }
 }
 
 /** The cases of the shared browser suites an engine ends otherwise. */
@@ -197,6 +239,134 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     reason: 'Firefox cancels the request a page sends just before it leaves for another document, so that request never reaches the server.',
     documented: { item: 11, title: 'A request the page starts as it leaves is cancelled.' },
     observed: 0,
+  },
+  {
+    engine: 'firefox',
+    suite: 'browser-actions',
+    case: ['a click that opens an alert nothing waited for fails at once, and the next command and a screenshot do not wait on it'],
+    reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on Firefox the alert holds the page and every command fails at once.',
+    documented: { item: 12, title: 'A JavaScript dialog holds the page.' },
+    observed: {
+      click: { class: 'unsupported', message: heldDialog("click getByTestId('warn')"), details: { dialog: 'alert', inputSent: true } },
+      next: { dialog: 'alert', inputSent: false },
+      screenshot: 'unsupported',
+    },
+  },
+  {
+    engine: 'firefox',
+    suite: 'browser-secrets',
+    case: ['a dialog that opens while a secret is typed names the secret by its label'],
+    reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on Firefox the alert holds the page and the fill fails as unsupported.',
+    documented: { item: 12, title: 'A JavaScript dialog holds the page.' },
+    observed: { class: 'unsupported', message: heldDialog("fill getByTestId('field') with {{password}}") },
+  },
+  {
+    engine: 'webkit',
+    suite: 'browser-actions',
+    case: ['a click that opens an alert nothing waited for fails at once, and the next command and a screenshot do not wait on it'],
+    reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on WebKit the alert holds the page and every command fails at once.',
+    documented: { item: 11, title: 'A JavaScript dialog holds the page.' },
+    observed: {
+      click: { class: 'unsupported', message: heldDialog("click getByTestId('warn')"), details: { dialog: 'alert', inputSent: true } },
+      next: { dialog: 'alert', inputSent: false },
+      screenshot: 'unsupported',
+    },
+  },
+  {
+    engine: 'webkit',
+    suite: 'browser-secrets',
+    case: ['a dialog that opens while a secret is typed names the secret by its label'],
+    reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on WebKit the alert holds the page and the fill fails as unsupported.',
+    documented: { item: 11, title: 'A JavaScript dialog holds the page.' },
+    observed: { class: 'unsupported', message: heldDialog("fill getByTestId('field') with {{password}}") },
+  },
+  {
+    engine: 'firefox',
+    suite: 'browser-navigation',
+    case: ['a page that opens a dialog while loading fails its goto at once, naming the dialog, rather than as slow'],
+    reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on Firefox the confirm holds the page and the goto fails as unsupported.',
+    documented: { item: 12, title: 'A JavaScript dialog holds the page.' },
+    observed: {
+      class: 'unsupported',
+      message: 'The page opened a confirm dialog while Retest tried to open {origin}/. Retest does not answer dialogs yet, and the dialog blocks the page.',
+      details: { dialog: 'confirm', inputSent: true },
+    },
+  },
+  {
+    engine: 'webkit',
+    suite: 'browser-navigation',
+    case: ['a page that opens a dialog while loading fails its goto at once, naming the dialog, rather than as slow'],
+    reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on WebKit the confirm holds the page and the goto fails as unsupported.',
+    documented: { item: 11, title: 'A JavaScript dialog holds the page.' },
+    observed: {
+      class: 'unsupported',
+      message: 'The page opened a confirm dialog while Retest tried to open {origin}/. Retest does not answer dialogs yet, and the dialog blocks the page.',
+      details: { dialog: 'confirm', inputSent: true },
+    },
+  },
+  {
+    engine: 'firefox',
+    suite: 'browser-shadow-dom',
+    case: ['role and label find through open shadow roots, two deep, and never into a closed one'],
+    reason: "Firefox's accessibility locator does not look inside shadow roots, so a role or label lookup whose search holds an open root that could hold a match is refused by name.",
+    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    observed: shadowLookups('Firefox'),
+  },
+  {
+    engine: 'firefox',
+    suite: 'browser-shadow-dom',
+    case: ['an action by label on a field inside a shadow root'],
+    reason: "Firefox's accessibility locator does not look inside shadow roots, so a fill found by label whose search holds an open root that could hold the field is refused by name and types nothing.",
+    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    observed: shadowRefusal('Firefox', "fill getByLabel('Card number')", '<card-field>'),
+  },
+  {
+    engine: 'firefox',
+    suite: 'browser-shadow-dom',
+    case: ['a button that shows its host’s text or element through a slot takes a click found by its role'],
+    reason: "Firefox's accessibility locator does not look inside shadow roots, so a click found by role whose search holds an open root that could hold the button is refused by name and sends nothing.",
+    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    observed: slottedClicks('Firefox'),
+  },
+  {
+    engine: 'firefox',
+    suite: 'browser-locators',
+    case: ['role finds through an open shadow root, in the order the page shows, and stays out of frames, as test id and text do'],
+    reason: "Firefox's accessibility locator does not look inside shadow roots, so a role lookup whose search holds an open root that could hold a match is refused by name.",
+    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    observed: treeLookups('Firefox'),
+  },
+  {
+    engine: 'webkit',
+    suite: 'browser-shadow-dom',
+    case: ['role and label find through open shadow roots, two deep, and never into a closed one'],
+    reason: "Retest's reading of WebKit's accessibility tree does not look inside shadow roots, so a role or label lookup whose search holds an open root that could hold a match is refused by name.",
+    documented: { item: 12, title: 'Role and label lookups stop at shadow roots.' },
+    observed: shadowLookups('WebKit'),
+  },
+  {
+    engine: 'webkit',
+    suite: 'browser-shadow-dom',
+    case: ['an action by label on a field inside a shadow root'],
+    reason: "Retest's reading of WebKit's accessibility tree does not look inside shadow roots, so a fill found by label whose search holds an open root that could hold the field is refused by name and types nothing.",
+    documented: { item: 12, title: 'Role and label lookups stop at shadow roots.' },
+    observed: shadowRefusal('WebKit', "fill getByLabel('Card number')", '<card-field>'),
+  },
+  {
+    engine: 'webkit',
+    suite: 'browser-shadow-dom',
+    case: ['a button that shows its host’s text or element through a slot takes a click found by its role'],
+    reason: "Retest's reading of WebKit's accessibility tree does not look inside shadow roots, so a click found by role whose search holds an open root that could hold the button is refused by name and sends nothing.",
+    documented: { item: 12, title: 'Role and label lookups stop at shadow roots.' },
+    observed: slottedClicks('WebKit'),
+  },
+  {
+    engine: 'webkit',
+    suite: 'browser-locators',
+    case: ['role finds through an open shadow root, in the order the page shows, and stays out of frames, as test id and text do'],
+    reason: "Retest's reading of WebKit's accessibility tree does not look inside shadow roots, so a role lookup whose search holds an open root that could hold a match is refused by name.",
+    documented: { item: 12, title: 'Role and label lookups stop at shadow roots.' },
+    observed: treeLookups('WebKit'),
   },
 ]
 

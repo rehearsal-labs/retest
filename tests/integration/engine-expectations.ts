@@ -45,7 +45,7 @@ export type Declaration = {
 }
 
 /** A shared browser suite every engine runs unchanged, by its file's name without `.test.ts`. */
-export type SharedSuite = 'browser-actions' | 'browser-locators' | 'browser-navigation' | 'browser-secrets'
+export type SharedSuite = 'browser-actions' | 'browser-locators' | 'browser-navigation' | 'browser-secrets' | 'browser-shadow-dom'
 
 /**
  * A case of a shared suite that an engine ends otherwise: the test's title and each subtest's down to the one that

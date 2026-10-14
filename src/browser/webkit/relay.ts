@@ -60,6 +60,7 @@ export function bootstrapScript(secret: string): string {
   const stopNow = Event.prototype.stopImmediatePropagation
   const typeOf = Object.getOwnPropertyDescriptor(Event.prototype, 'type').get
   const targetOf = Object.getOwnPropertyDescriptor(Event.prototype, 'target').get
+  const pathOf = Event.prototype.composedPath
   const getAttribute = Element.prototype.getAttribute
   const localNameOf = Object.getOwnPropertyDescriptor(Element.prototype, 'localName').get
   const Custom = CustomEvent
@@ -93,7 +94,9 @@ export function bootstrapScript(secret: string): string {
       stray ??= { event: type, by: target instanceof ElementClass ? describe(target) : 'the page', origin: location.origin }
       return
     }
-    const passed = dispatch.call(target ?? window, new Custom(secret + '-' + type, { cancelable: true, bubbles: false, detail: kind }))
+    // Handed over from the element the event is for, inside an open shadow root too, so the guard can tell it apart
+    // from the rest of its host; composed, it still reaches the window, where the user world listens.
+    const passed = dispatch.call(pathOf.call(event)[0] ?? target ?? window, new Custom(secret + '-' + type, { cancelable: true, bubbles: false, composed: true, detail: kind }))
     if (!passed) {
       prevent.call(event)
       stopNow.call(event)
@@ -165,6 +168,7 @@ export function guardInstallScript(secret: string): string {
           type: { value: type },
           isTrusted: { value: true },
           target: { value: forwarded.target },
+          composedPath: { value: () => forwarded.composedPath() },
           preventDefault: { value: halt },
           stopPropagation: { value: halt },
           stopImmediatePropagation: { value: halt },

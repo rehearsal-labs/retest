@@ -1,5 +1,5 @@
 import type { BidiClient } from './bidi-client.ts'
-import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
+import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, RequestResult, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
 import type { ActionTarget, ReadyTarget } from '../actionability.ts'
 import type { ActionIntent, PlannedKey, Pointer, SelectPlan, Selection } from '../element-queries.ts'
 import type { Guard, GuardedIntent, GuardVerdict } from '../input-guard.ts'
@@ -40,6 +40,14 @@ import { describeAction, describeChoices, dispatchPinned, observe, observeKeyed,
 import { disarmGuard, guardFailure, guardInput } from '../input-guard.ts'
 import { originRefusal } from '../origin-refusal.ts'
 import { isGoneContext, IsolatedWorld } from '../isolated-world.ts'
+import { dragRefused } from '../drag.ts'
+import { routesRefused, type RouteRemoval } from '../routes.ts'
+import { filesRefused } from '../file-chooser.ts'
+import { dialogsUnsupported, type DialogArming } from '../dialogs.ts'
+import { browserCommandLocators, framesUnreached } from '../frames.ts'
+import { rolesStopAtShadowRoots } from '../locate.ts'
+import { layoutUnmeasured } from '../layout.ts'
+import { closeUnsupported, popupsUnsupported, type PopupArming } from '../popups.ts'
 import { Listeners } from '../listeners.ts'
 import { NavigationCauses } from '../navigation-causes.ts'
 import { NavigationTitles } from '../navigation-titles.ts'
@@ -275,8 +283,10 @@ export class FirefoxPage implements WebSession, ElementIdentity {
 
   // The answer is read from the dispatch once the command has settled, so it says how far the input got by then.
   async dispatch(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<DispatchedCommand> {
+    const unreached = framesUnreached(browserCommandLocators(command), 'Firefox')
+    if (unreached !== undefined) return { result: { ok: false, failure: unreached }, input: 'not_sent' }
     const dispatch = new Dispatch()
-    const result = await this.#execute(command, { timeoutMs, signal, commandToken, dispatch })
+    const result = await rolesStopAtShadowRoots('Firefox', () => this.#execute(command, { timeoutMs, signal, commandToken, dispatch }))
     return { result, input: dispatch.input }
   }
 
@@ -286,7 +296,13 @@ export class FirefoxPage implements WebSession, ElementIdentity {
    * are scoped together, and one Firefox cannot answer as Chrome does is refused by name, as a look refuses it. Waits
    * for no change and sends no input; a page that is lost, closed or held by a dialog answers as a look does.
    */
-  async readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
+  readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
+    const unreached = framesUnreached(locators, 'Firefox')
+    if (unreached !== undefined) return Promise.resolve({ ok: false, failure: unreached })
+    return rolesStopAtShadowRoots('Firefox', () => this.#readElements(locators, timeoutMs, signal))
+  }
+
+  async #readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
     const startedAt = monotonicClock()
     const deadline = new Deadline(timeoutMs, { signal, startedAt })
     const described = `read ${locators.map((locator) => describeLocator(locator)).join(' and ')}`
@@ -387,6 +403,25 @@ export class FirefoxPage implements WebSession, ElementIdentity {
 
   onNavigation(listener: (navigation: PageNavigation) => void): () => void {
     return this.#navigations.add(listener)
+  }
+
+  /** Firefox cannot hand its dialogs to a test yet, so the page refuses by name; a dialog it opens holds it as before. */
+  armDialog(): DialogArming {
+    return { ok: false, failure: dialogsUnsupported('Firefox') }
+  }
+
+  /** Firefox cannot hand a test the pages a page opens yet, so the page refuses by name. */
+  async armPopup(): Promise<PopupArming> {
+    return { ok: false, failure: popupsUnsupported('Firefox') }
+  }
+
+  /** Firefox cannot answer a page's requests with routes yet, so the page refuses by name and holds no route. */
+  async addRoute(): Promise<RequestResult> {
+    return { ok: false, failure: routesRefused('on Firefox') }
+  }
+
+  async removeRoute(): Promise<RouteRemoval> {
+    return { ok: false, failure: routesRefused('on Firefox') }
   }
 
   /**
@@ -521,6 +556,10 @@ export class FirefoxPage implements WebSession, ElementIdentity {
       }
       case 'observePage':
         return this.#observePage(command.after, deadline)
+      case 'observeLayout':
+        return { ok: false, failure: layoutUnmeasured('Firefox') }
+      case 'close':
+        return { ok: false, failure: closeUnsupported('Firefox') }
       case 'press':
         return this.#pressKey(command, deadline, dispatch, commandToken)
       case 'tap':
@@ -540,6 +579,11 @@ export class FirefoxPage implements WebSession, ElementIdentity {
         return this.#check(command, deadline, dispatch, commandToken)
       case 'scroll':
         return this.#scroll(command, deadline, dispatch, commandToken)
+      case 'setInputFiles':
+      case 'setChooserFiles':
+        return { ok: false, failure: filesRefused('upload', 'on Firefox') }
+      case 'dragTo':
+        return { ok: false, failure: dragRefused('Firefox') }
     }
   }
 
@@ -950,6 +994,10 @@ export class FirefoxPage implements WebSession, ElementIdentity {
         return `read ${describeLocator(command.locator)}`
       case 'observePage':
         return readCommand
+      case 'observeLayout':
+        return command.locator === undefined ? "measure the page's layout" : `measure ${describeLocator(command.locator)}`
+      case 'close':
+        return 'close the page'
       case 'hover':
         return `hover ${describeLocator(command.locator)}`
       case 'click':
@@ -968,6 +1016,12 @@ export class FirefoxPage implements WebSession, ElementIdentity {
       case 'uncheck':
       case 'scroll':
         return describeAction({ action: command.kind, pointer: 'click', multiline: false }, command.locator)
+      case 'setInputFiles':
+        return `set the files of ${describeLocator(command.locator)}`
+      case 'setChooserFiles':
+        return 'give the file picker files'
+      case 'dragTo':
+        return `drag ${describeLocator(command.locator)} to ${describeLocator(command.target)}`
     }
   }
 
