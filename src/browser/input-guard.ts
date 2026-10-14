@@ -1,9 +1,9 @@
 import type { ActionIntent, Pointer, Selection } from './element-queries.ts'
-import type { IsolatedWorld } from './isolated-world.ts'
-import type { Deadline } from '../protocol/deadline.ts'
+import type { PageWorld } from './isolated-world.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { Deadline } from '../protocol/deadline.ts'
 import { describeLocator } from '../protocol/locator.ts'
 import { s } from '../protocol/schema.ts'
 import { secretPlaceholder } from '../protocol/secret.ts'
@@ -36,8 +36,12 @@ const guardedEvents = [
 
 export type GuardedEvent = (typeof guardedEvents)[number]
 
-/** The input guard an element armed when it passed its checks: the document it is in, and which arming. */
-export type Guard = { context: number; token: number }
+/**
+ * The input guard an element armed when it passed its checks: the document it is in, and which arming. An element in
+ * a frame has, in `around`, the guards its action armed in the documents around the frame, outermost first, each for
+ * the element of the frame the input goes through.
+ */
+export type Guard = { context: number; token: number; around?: readonly Guard[] }
 
 /**
  * What the guard saw of an action's input. `reached` lists the events that went to the element, `intercepted`
@@ -96,6 +100,8 @@ const seenSchema = s.object({
 
 const straySchema = s.nullable(s.object({ event: eventSchema, by: s.string(), origin: s.string() }))
 
+const letGoMs = 1000
+
 /**
  * Sends an action's input while the guard its element armed watches, then ends the guard and returns what it saw.
  * An event meant for the element that reaches another one is stopped before any listener of the page hears it.
@@ -105,11 +111,13 @@ const straySchema = s.nullable(s.object({ event: eventSchema, by: s.string(), or
  * @example const verdict = await guardInput(world, target.guard, deadline, () => clickAt(session, point, deadline, dispatch))
  */
 export async function guardInput(
-  world: IsolatedWorld,
+  world: PageWorld,
   guard: Guard,
   deadline: Deadline,
   input: () => Promise<void>,
 ): Promise<GuardVerdict> {
+  const { around = [], ...own } = guard
+  if (around.length > 0) return guardThroughFrames(world, { own, around }, deadline, input)
   // Request order does not prove the browser entered this function before processing input in another domain.
   // The matching guard must acknowledge the request before input can replace its document.
   const verdict = settled(world.callIn(guard.context, verdictFunction, [guard.token], seenSchema, deadline))
@@ -132,8 +140,57 @@ export async function guardInput(
   return stray === null ? { kind: 'replaced' } : { kind: 'stopped', ...stray }
 }
 
+// A press for an element in a frame reaches a document around the frame only when another of its elements takes it
+// there, and that document's guard stops it before any listener hears it. Each of those guards is asked for its verdict
+// before any input goes, as the frame's own is, and one that saw another element take the press answers for the action:
+// the frame's own guard heard nothing of it.
+async function guardThroughFrames(world: PageWorld, { own, around }: { own: Guard; around: readonly Guard[] }, deadline: Deadline, input: () => Promise<void>): Promise<GuardVerdict> {
+  const verdicts = around.map((guard) => settled(world.callIn(guard.context, verdictFunction, [guard.token], seenSchema, deadline)))
+  let heard: GuardVerdict
+  try {
+    heard = (await allRegistered(world, around, deadline)) ? await guardInput(world, own, deadline, input) : { kind: 'unregistered' }
+  } catch (error) {
+    await letGo(world, [own, ...around])
+    throw error
+  }
+  // A document around the frame that went took its arming with it; the frame's own guard is ended here when no input went.
+  if (heard.kind === 'unregistered') await disarmGuard(world, own, deadline)
+  for (const guard of [...around].reverse()) await disarmGuard(world, guard, deadline)
+  for (const verdict of verdicts) {
+    const answer = await verdict
+    if (!answer.ok || answer.value.intercepted === null) continue
+    const { reached, intercepted, landed, leaving } = answer.value
+    return { kind: 'seen', reached, intercepted, landed, leaving }
+  }
+  return heard
+}
+
+// Whether the guard of each document took its verdict's request: false once one of those documents went.
+async function allRegistered(world: PageWorld, guards: readonly Guard[], deadline: Deadline): Promise<boolean> {
+  for (const guard of guards) {
+    try {
+      await waitForGuardRegistration(world, guard, deadline)
+    } catch (error) {
+      if (!isGoneContext(error)) throw error
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Ends armings once the action that made them stopped early, as when its time ran out, with a short budget of their
+ * own, so a document keeps no guard armed for input that never comes. A guard that cannot be reached is left to the
+ * next action in its document, whose arming ends it.
+ *
+ * @example await letGo(world, [guard])
+ */
+export async function letGo(world: PageWorld, guards: readonly Guard[]): Promise<void> {
+  await Promise.allSettled(guards.map((guard) => disarmGuard(world, guard, new Deadline(letGoMs))))
+}
+
 // A marker belongs to one arming in one document, and a read can run before the pending verdict request does.
-async function waitForGuardRegistration(world: IsolatedWorld, guard: Guard, deadline: Deadline): Promise<void> {
+async function waitForGuardRegistration(world: PageWorld, guard: Guard, deadline: Deadline): Promise<void> {
   const command = { method: 'Runtime.callFunctionOn', sessionId: undefined }
   for (;;) {
     if (deadline.signal?.aborted === true) throw new CdpAbortedError(command, { written: false })
@@ -156,11 +213,13 @@ async function waitForGuardRegistration(world: IsolatedWorld, guard: Guard, dead
  *
  * @example await disarmGuard(world, target.guard, deadline)
  */
-export async function disarmGuard(world: IsolatedWorld, guard: Guard, deadline: Deadline): Promise<void> {
-  try {
-    await world.callIn(guard.context, disarmFunction, [guard.token], s.boolean(), deadline)
-  } catch (error) {
-    if (!isGoneContext(error)) throw error
+export async function disarmGuard(world: PageWorld, guard: Guard, deadline: Deadline): Promise<void> {
+  for (const { context, token } of [guard, ...[...(guard.around ?? [])].reverse()]) {
+    try {
+      await world.callIn(context, disarmFunction, [token], s.boolean(), deadline)
+    } catch (error) {
+      if (!isGoneContext(error)) throw error
+    }
   }
 }
 

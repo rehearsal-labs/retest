@@ -70,13 +70,14 @@ export function cssRecipe(selector: unknown): BuiltRecipe {
 
 /**
  * A recipe scoped inside another: the outer recipe's steps, then the inner one's, which finds elements inside those
- * the outer one keeps.
+ * the outer one keeps, in the frame the outer one is in.
  *
  * @example scopedRecipe({ by: 'testId', value: 'tasks' }, { by: 'role', role: 'listitem' }) // { by: 'role', role: 'listitem', within: [{ by: 'testId', value: 'tasks' }] }
  */
 export function scopedRecipe(outer: LocatorRecipe, inner: LocatorRecipe): LocatorRecipe {
-  const { within: _innerScope, dialect: _innerDialect, ...step } = inner
-  return { ...step, within: locatorSteps(outer), ...(outer.dialect === undefined ? {} : { dialect: outer.dialect }) }
+  const { within: _innerScope, dialect: _innerDialect, frame: _innerFrame, ...step } = inner
+  const dialect = outer.dialect === undefined ? {} : { dialect: outer.dialect }
+  return { ...step, within: locatorSteps(outer), ...dialect, ...(outer.frame === undefined ? {} : { frame: outer.frame }) }
 }
 
 /**

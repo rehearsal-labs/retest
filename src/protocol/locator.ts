@@ -30,13 +30,20 @@ export type LocatorStep =
 export type LocatorDialect = 'playwright'
 
 /**
+ * The `<iframe>` or `<frame>` element of a frame, found as a locator finds an element: its last step, and in `within`
+ * the steps it is scoped to, in the document of the frame around it.
+ */
+export type FrameRecipe = LocatorStep & { within?: LocatorStep[] }
+
+/**
  * How to find an element again: its last step, and in `within` the steps it is scoped to, outermost first. Each step
  * after the first finds elements inside those the step before it kept, never those elements themselves. A recipe
  * without `within` or `pick` is the flat recipe Retest has always written. With `dialect: 'playwright'`, `getByLabel`
- * also finds any element whose `aria-label` or `aria-labelledby` names it, as Playwright's does, and a document that
- * holds an open shadow root is refused, since Playwright would look inside it and Retest does not.
+ * also finds any element whose `aria-label` or `aria-labelledby` names it, as Playwright's does. `frame` names the
+ * frames the element is inside, outermost first, each by the element that holds it in the document before; a recipe
+ * without it finds in the page's own document. Every step looks through open shadow roots.
  */
-export type LocatorRecipe = LocatorStep & { within?: LocatorStep[]; dialect?: LocatorDialect }
+export type LocatorRecipe = LocatorStep & { within?: LocatorStep[]; dialect?: LocatorDialect; frame?: FrameRecipe[] }
 
 const exact = s.optional(s.boolean())
 const pick = s.optional(s.union([s.literal('first'), s.literal('last'), s.number({ integer: true })]))
@@ -64,13 +71,24 @@ export const locatorStepSchema: Schema<LocatorStep> = s.discriminatedUnion('by',
 const within = s.optional(s.array(locatorStepSchema))
 const dialect = s.optional(s.literal('playwright'))
 
+export const frameRecipeSchema: Schema<FrameRecipe> = s.discriminatedUnion('by', [
+  s.object({ ...testIdStep, within }),
+  s.object({ ...roleStep, within }),
+  s.object({ ...labelStep, within }),
+  s.object({ ...textStep, within }),
+  s.object({ ...placeholderStep, within }),
+  s.object({ ...cssStep, within }),
+])
+
+const frame = s.optional(s.array(frameRecipeSchema))
+
 export const locatorRecipeSchema: Schema<LocatorRecipe> = s.discriminatedUnion('by', [
-  s.object({ ...testIdStep, within, dialect }),
-  s.object({ ...roleStep, within, dialect }),
-  s.object({ ...labelStep, within, dialect }),
-  s.object({ ...textStep, within, dialect }),
-  s.object({ ...placeholderStep, within, dialect }),
-  s.object({ ...cssStep, within, dialect }),
+  s.object({ ...testIdStep, within, dialect, frame }),
+  s.object({ ...roleStep, within, dialect, frame }),
+  s.object({ ...labelStep, within, dialect, frame }),
+  s.object({ ...textStep, within, dialect, frame }),
+  s.object({ ...placeholderStep, within, dialect, frame }),
+  s.object({ ...cssStep, within, dialect, frame }),
 ])
 
 /**
@@ -79,8 +97,46 @@ export const locatorRecipeSchema: Schema<LocatorRecipe> = s.discriminatedUnion('
  * @example locatorSteps({ by: 'text', text: 'Save', within: [{ by: 'testId', value: 'dialog' }] }).length // 2
  */
 export function locatorSteps(recipe: LocatorRecipe): LocatorStep[] {
-  const { within: scope, dialect: _dialect, ...last } = recipe
+  const { within: scope, dialect: _dialect, frame: _frame, ...last } = recipe
   return [...(scope ?? []), last]
+}
+
+/**
+ * Every step a recipe matches against a page, those of the frames it is in first, then its own: what a guard that reads
+ * a recipe's text, such as the refusal of a secret's value, must read whole.
+ *
+ * @example everyStep({ by: 'text', text: 'Paid', frame: [{ by: 'css', selector: '#pay' }] }).length // 2
+ */
+export function everyStep(recipe: LocatorRecipe): LocatorStep[] {
+  return [...(recipe.frame ?? []).flatMap(locatorSteps), ...locatorSteps(recipe)]
+}
+
+/**
+ * The frame path of a frame whose element `locator` finds: the frames that element is inside, then the element itself.
+ *
+ * @example framePathOf({ by: 'css', selector: 'iframe', frame: [{ by: 'testId', value: 'outer' }] }).length // 2
+ */
+export function framePathOf(locator: LocatorRecipe): FrameRecipe[] {
+  const { dialect: _dialect, frame: path, ...element } = locator
+  return [...(path ?? []), element]
+}
+
+/**
+ * A frame's element as a recipe of its own, found by the rules of the locator whose path holds it.
+ *
+ * @example frameLocator({ by: 'css', selector: 'iframe' }, { by: 'text', text: 'Pay', dialect: 'playwright' }).dialect // 'playwright'
+ */
+export function frameLocator(frame: FrameRecipe, locator: LocatorRecipe): LocatorRecipe {
+  return locator.dialect === undefined ? frame : { ...frame, dialect: locator.dialect }
+}
+
+/**
+ * Whether two frame paths name the same frames, step for step: two recipes without one are both the page itself.
+ *
+ * @example sameFramePath(undefined, []) // true
+ */
+export function sameFramePath(first: readonly FrameRecipe[] | undefined, second: readonly FrameRecipe[] | undefined): boolean {
+  return JSON.stringify(first ?? []) === JSON.stringify(second ?? [])
 }
 
 /**
@@ -89,11 +145,24 @@ export function locatorSteps(recipe: LocatorRecipe): LocatorStep[] {
  *
  * @example describeLocator({ by: 'role', role: 'button', name: 'Save' }) // "getByRole('button', { name: 'Save' })"
  * @example describeLocator({ by: 'role', role: 'listitem', pick: 'last', within: [{ by: 'testId', value: 'tasks' }] }) // "getByTestId('tasks').getByRole('listitem').last()"
+ * @example describeLocator({ by: 'label', text: 'Card number', frame: [{ by: 'css', selector: 'iframe#pay' }] }) // "frame(locator('iframe#pay')).getByLabel('Card number')"
  */
 export function describeLocator(recipe: LocatorRecipe): string {
-  return locatorSteps(recipe)
-    .map((step, index) => `${index === 0 ? '' : '.'}${describeStep(step, recipe.dialect)}`)
-    .join('')
+  return `${describeFrames(recipe.frame ?? [], recipe.dialect)}${describeSteps(locatorSteps(recipe), recipe.dialect)}`
+}
+
+/**
+ * Writes a frame path as the calls that reach it, each frame by its element's locator, with the dot that follows, or
+ * nothing for the page itself.
+ *
+ * @example describeFrames([{ by: 'css', selector: 'iframe#pay' }]) // "frame(locator('iframe#pay'))."
+ */
+export function describeFrames(path: readonly FrameRecipe[], dialect?: LocatorDialect): string {
+  return path.map((frame) => `frame(${describeSteps(locatorSteps(frame), dialect)}).`).join('')
+}
+
+function describeSteps(steps: readonly LocatorStep[], dialect: LocatorDialect | undefined): string {
+  return steps.map((step, index) => `${index === 0 ? '' : '.'}${describeStep(step, dialect)}`).join('')
 }
 
 /**
@@ -177,24 +246,49 @@ export function patternProblem({ pattern, flags }: TextPattern): string | undefi
 
 /**
  * The first step of a recipe that kept no element, by its index from 0, and how many elements it matched before its
- * pick, which is more than 0 only when the pick kept none of them.
+ * pick, which is more than 0 only when the pick kept none of them. With `frame`, the step is one of the recipe of the
+ * frame at that place in the recipe's frame path, whose element was not there, so nothing inside it was looked for.
  */
-export type EmptyStep = { step: number; matched: number }
+export type EmptyStep = { step: number; matched: number; frame?: number }
 
-export const emptyStepSchema: Schema<EmptyStep> = s.object({ step: s.number({ integer: true, min: 0 }), matched: s.number({ integer: true, min: 0 }) })
+export const emptyStepSchema: Schema<EmptyStep> = s.object({
+  step: s.number({ integer: true, min: 0 }),
+  matched: s.number({ integer: true, min: 0 }),
+  frame: s.optional(s.number({ integer: true, min: 0 })),
+})
 
 /**
  * Says which step of a recipe that matched nothing kept nothing, as a sentence, or undefined when that is the last
- * step and it matched no element, which the recipe as a whole already says.
+ * step and it matched no element, which the recipe as a whole already says. A frame whose element is not there is
+ * always named, since the recipe as a whole names the element inside it.
  *
  * @example describeEmptyStep({ by: 'role', role: 'button', within: [{ by: 'testId', value: 'tasks' }] }, { step: 0, matched: 0 }) // "getByTestId('tasks') matched no element."
+ * @example describeEmptyStep({ by: 'text', text: 'Paid', frame: [{ by: 'css', selector: '#pay' }] }, { frame: 0, step: 0, matched: 0 }) // "frame(locator('#pay')) found no frame."
  */
 export function describeEmptyStep(recipe: LocatorRecipe, empty: EmptyStep): string | undefined {
+  if (empty.frame !== undefined) return describeMissingFrame(recipe, empty.frame, empty)
   const steps = locatorSteps(recipe)
   const step = steps[empty.step]
   if (step === undefined || (empty.matched === 0 && empty.step === steps.length - 1)) return undefined
-  const before = steps.slice(0, empty.step).map((each) => `${describeStep(each, recipe.dialect)}.`)
-  const where = `${before.join('')}${describeFinder(step, recipe.dialect)}`
+  return describeKeptNothing(steps, empty, recipe.dialect)
+}
+
+// A frame's element that is not there, and, when an earlier step of its recipe kept nothing, that step.
+function describeMissingFrame(recipe: LocatorRecipe, place: number, empty: EmptyStep): string | undefined {
+  const path = recipe.frame ?? []
+  const frame = path[place]
+  if (frame === undefined) return undefined
+  const named = `${describeFrames(path.slice(0, place + 1), recipe.dialect).slice(0, -1)} found no frame.`
+  const steps = locatorSteps(frame)
+  if (steps[empty.step] === undefined || (empty.matched === 0 && empty.step === steps.length - 1)) return named
+  return `${named} ${describeKeptNothing(steps, empty, recipe.dialect)}`
+}
+
+function describeKeptNothing(steps: readonly LocatorStep[], empty: EmptyStep, dialect: LocatorDialect | undefined): string {
+  const step = steps[empty.step]
+  if (step === undefined) throw new Error(`A locator has no step ${empty.step}`)
+  const before = steps.slice(0, empty.step).map((each) => `${describeStep(each, dialect)}.`)
+  const where = `${before.join('')}${describeFinder(step, dialect)}`
   if (empty.matched === 0) return `${where} matched no element.`
   const elements = empty.matched === 1 ? '1 element' : `${empty.matched} elements`
   return `${where} matched ${elements}, and ${describePick(step.pick).slice(1)} keeps none of them.`
@@ -206,14 +300,15 @@ const enginePrefix = /^\s*(?:[a-z][\w-]*\s*=|internal:)/i
 const enginesChained = /\s>>\s/
 
 /**
- * What the test process and the parent both refuse, as `usage`, in a recipe before it reaches the page: a pattern
- * that is not a regular expression, `exact` beside a pattern, a CSS selector that is empty or written in another
- * syntax, such as XPath, and an index that is not a safe integer. Whether CSS is valid is for the page to tell.
+ * What the test process and the parent both refuse, as `usage`, in a recipe before it reaches the page, in its own
+ * steps and in those of its frames: a pattern that is not a regular expression, `exact` beside a pattern, a CSS
+ * selector that is empty or written in another syntax, such as XPath, and an index that is not a safe integer. Whether
+ * CSS is valid is for the page to tell.
  *
  * @example locatorProblem({ by: 'css', selector: '//button' })?.class // 'usage'
  */
 export function locatorProblem(recipe: LocatorRecipe): Failure | undefined {
-  for (const step of locatorSteps(recipe)) {
+  for (const step of everyStep(recipe)) {
     const problem = stepProblem(step)
     if (problem !== undefined) return { class: 'usage', message: problem }
   }

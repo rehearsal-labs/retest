@@ -16,15 +16,22 @@ export type WorldArgument = { value: unknown } | { objectId: string }
 
 /**
  * One document's world while a call's arguments are made in it. Objects made there for the call belong to
- * `objectGroup`, which is released once the call is done.
+ * `objectGroup`, which is released once the call is done. `frame` names the frame of a document inside a frame, which
+ * the session reaches beside the page's own.
  */
-export type WorldScope = { session: CdpSession; context: number; objectGroup: string }
+export type WorldScope = { session: CdpSession; context: number; objectGroup: string; frame?: string }
 
 /** Makes a call's arguments in the world of the document it runs in, such as elements found there. */
 export type ArgumentsIn = (scope: WorldScope, deadline: Deadline) => Promise<readonly WorldArgument[]>
 
 /** A page function's arguments: JSON values, or arguments made afresh in each document the call reaches. */
 export type WorldArguments = readonly unknown[] | ArgumentsIn
+
+/**
+ * What the page functions need of a world: a call in its current document, and a call in one document it named. The
+ * page's own `IsolatedWorld` is one; the world of a frame, found again by its element for every call, is another.
+ */
+export type PageWorld = Pick<IsolatedWorld, 'call' | 'enter' | 'callIn'>
 
 /** A world being made, and the budget of the call that started it, which bounds how long it may take. */
 type Creation = { readonly promise: Promise<number>; readonly startedBy: Deadline; context: number | undefined }
