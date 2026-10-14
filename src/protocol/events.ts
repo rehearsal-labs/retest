@@ -197,6 +197,8 @@ type ActionFields = StepScope & {
   multiple?: true
   /** False when a `select`, `check` or `uncheck` found the element already as asked, and sent nothing. */
   changed?: boolean
+  /** False when a navigation ended before its page drew its first frame: Retest waited for one and went on. */
+  firstFrame?: boolean
   /** The wheel's delta a `scroll` sent, in CSS pixels. */
   scroll?: { x: number; y: number }
   /** How the input reached the page when it was not real input: a `select` sets the choice from Retest's world. */
@@ -860,6 +862,7 @@ const actionFields = {
   choices: s.optional(s.array(optionChoiceRecordSchema)),
   multiple: s.optional(s.literal(true)),
   changed: s.optional(s.boolean()),
+  firstFrame: s.optional(s.boolean()),
   scroll: s.optional(s.object({ x: s.number(), y: s.number() })),
   input: s.optional(s.literal('script')),
   via: s.optional(s.literal('label')),

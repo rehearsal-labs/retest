@@ -52,6 +52,7 @@ import { FrameError, framesApart, FrameWorld, inFrame, notInFrames, PageFrames }
 import { worldName } from './isolated-world.ts'
 import { readLayout } from './layout.ts'
 import { applyEmulation } from './emulation.ts'
+import { awaitFirstFrame } from './first-frame.ts'
 import { clickAt, moveTo, pressKey, replaceSelection, tapAt, wheelAt, type Point } from './input.ts'
 import { disarmGuard, guardFailure, guardInput } from './input-guard.ts'
 import { IsolatedWorld } from './isolated-world.ts'
@@ -750,9 +751,12 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     }
   }
 
+  // A page that has loaded may not be drawn yet, and nothing that waits for a frame answers until it is, so the
+  // navigation waits for its first frame within its own budget. A document already being replaced is not waited for.
   async #withLoadedPage(result: CommandResult, deadline: Deadline): Promise<CommandResult> {
     if (!result.ok || !isNavigationKind(result.kind) || !('url' in result)) return result
-    return { ...result, page: await this.#loadedPage(result.url, deadline) }
+    const drawn = this.#pendingNavigation === undefined ? await awaitFirstFrame(this.#world, deadline) : undefined
+    return { ...result, page: await this.#loadedPage(result.url, deadline), ...(drawn === false ? { firstFrame: false } : {}) }
   }
 
   // The page's address and title as `readPage` reads them. A title is unknown while another document is on its way,

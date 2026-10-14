@@ -2,6 +2,7 @@ import type { PageNavigation } from '../../src/browser/contract.ts'
 import type { ScriptedPage } from './browser-fixtures.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { firstFrameFunction } from '../../src/browser/first-frame.ts'
 import { NavigationCauses } from '../../src/browser/navigation-causes.ts'
 import { disarmFunction, pageFactsFunction, prepareFunction, selectionFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
 import { isRecord, mainFrame, scriptedPage, value } from './browser-fixtures.ts'
@@ -42,6 +43,7 @@ function causePage(hooks: Hooks = {}): CausePage {
           return value(true)
         }
         if (source === pageFactsFunction) return value(facts)
+        if (source === firstFrameFunction) return value(true)
         return Promise.reject(new Error('unexpected call'))
       },
       other: (method) => {

@@ -136,8 +136,10 @@ export type PageObservation = { url: string | null; title: string | null; cut?: 
 
 /**
  * The answer to a page command. After `goto`, `reload`, `goBack` or `goForward`, `url` is the final page's origin and
- * path. `observePage` carries the app's base URL, its origin and path, in `baseUrl`, when the app has one. `page` is
- * the page the command went to, as the browser read it. `changed` is false when the element already was as a
+ * path, and `firstFrame` is false when the page had drawn no frame by the time Retest stopped waiting for one; it is
+ * left out when the page was drawn, and by an engine that does not wait. `observePage` carries the app's base URL,
+ * its origin and path, in `baseUrl`, when the app has one. `page` is the page the command went to, as the browser
+ * read it. `changed` is false when the element already was as a
  * `select`, `check` or `uncheck` asked, and nothing was sent. `via: 'label'` marks a `check` or `uncheck` that clicked
  * the control's own label, because the control is hidden. The parent gives each observation it serves an id,
  * `observationId`, and names the session that served it, `sessionId`; a locator or page assertion sends both back to
@@ -146,7 +148,7 @@ export type PageObservation = { url: string | null; title: string | null; cut?: 
  * leaves it out. `waitedMs` is how long the look waited first.
  */
 export type CommandResult =
-  | { ok: true; kind: NavigationKind; url: string; page?: PageFacts }
+  | { ok: true; kind: NavigationKind; url: string; page?: PageFacts; firstFrame?: boolean }
   | { ok: true; kind: 'fill' | 'click' | 'tap' | 'hover' | 'press' | 'scroll' | 'swipe' | 'nativeKeyboard' | 'nativeAlert'; page?: PageFacts }
   | { ok: true; kind: 'select'; changed: boolean; page?: PageFacts }
   | { ok: true; kind: 'check' | 'uncheck'; changed: boolean; via?: 'label'; page?: PageFacts }
@@ -292,7 +294,7 @@ export const pageObservationSchema: Schema<PageObservation> = s.object({
 const page = s.optional(pageFactsSchema)
 
 export const commandResultSchema: Schema<CommandResult> = s.union([
-  s.object({ ok: s.literal(true), kind: s.enum(['goto', 'reload', 'goBack', 'goForward']), url: s.string(), page }),
+  s.object({ ok: s.literal(true), kind: s.enum(['goto', 'reload', 'goBack', 'goForward']), url: s.string(), page, firstFrame: s.optional(s.boolean()) }),
   s.object({ ok: s.literal(true), kind: s.enum(['fill', 'click', 'tap', 'hover', 'press', 'scroll', 'swipe', 'nativeKeyboard', 'nativeAlert']), page }),
   s.object({ ok: s.literal(true), kind: s.literal('select'), changed: s.boolean(), page }),
   s.object({ ok: s.literal(true), kind: s.enum(['check', 'uncheck']), changed: s.boolean(), via: s.optional(s.literal('label')), page }),
