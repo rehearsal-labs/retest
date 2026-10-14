@@ -20,11 +20,14 @@ const hints: Readonly<Record<string, string>> = {
   'locator.selectOption(text)':
     "Playwright matches the text against each option's value and its label at once, and Retest has to know which. Name the option with { label } or { value }.",
   'page.getByRole(row, { name })': rowNameHint,
+  'locator.setInputFiles': "Retest reads a path against the test file's folder, and Playwright against the folder it runs in, so a Playwright test file gives no file input files yet.",
   'locator.getByRole(row, { name })': rowNameHint,
 }
 
-// Members Retest has under a name Playwright gives to something else, refused rather than mistaken for it.
-const refused: ReadonlySet<string> = new Set(['page.url'])
+// Members Retest has under a name Playwright gives to something else, or with other rules, as setInputFiles reads its
+// paths, refused rather than mistaken for it; and Retest's own waits for a file picker or a download, which Playwright
+// has as events.
+const refused: ReadonlySet<string> = new Set(['page.url', 'locator.setInputFiles', 'page.fileChooser', 'page.download'])
 
 /** Where a member takes Playwright's options, which of them Retest takes, and how messages write the call. */
 type OptionsAt = { readonly index: number; readonly keys: readonly string[]; readonly call: string }

@@ -1,5 +1,6 @@
 export type { AppHandle, Apps, TestBody, TestContext } from './api/apps.ts'
 export type { CallOptions } from './api/call-options.ts'
+export type { DragOptions } from './api/drag.ts'
 export type {
   AbsenceRequirement,
   DiagnosticsFor,
@@ -12,11 +13,19 @@ export type {
   TextEvidence,
   TextRecordsEvidence,
 } from './api/evaluate.ts'
+export { inbox } from './api/inbox.ts'
+export type { Inbox, InboxCode, InboxLink, InboxReadOptions, LinkChoice, ReceivedLink, ReceivedMessage } from './api/inbox.ts'
 export type { KeyArgument } from './api/key-argument.ts'
 export type {
   Alert,
+  Dialog,
+  Download,
   ElectronPage,
+  FileChooser,
+  FilePayload,
   Finders,
+  Frame,
+  InputFiles,
   Keyboard,
   Locator,
   NativeKeyboard,
@@ -27,6 +36,10 @@ export type {
   OptionChoice,
   Page,
   RoleOptions,
+  RouteAbort,
+  RouteAnswer,
+  RouteFulfil,
+  RoutePattern,
   ScrollDelta,
   SwipeDirection,
   TextOptions,
@@ -41,6 +54,7 @@ export type {
   AssertionOptions,
   Assertions,
   Expect,
+  LayoutMatchers,
   LocatorAssertions,
   LocatorMatchers,
   NegatedLocatorAssertions,
@@ -49,6 +63,7 @@ export type {
   PageMatchers,
   PollAssertions,
   PollOptions,
+  ScreenshotOptions,
   ValueAssertions,
 } from './assertions/expect.ts'
 export { app, chrome, chromium, defineConfig, edge, electron, env } from './config/define.ts'
@@ -57,6 +72,7 @@ export type {
   AppKind,
   AppName,
   DefaultJudgeName,
+  InboxName,
   JudgeAccepts,
   JudgeName,
   LockName,
@@ -78,6 +94,11 @@ export type {
   ElectronTarget,
   EvaluationConfig,
   FirefoxTarget,
+  InboxContext,
+  InboxMessage,
+  InboxMessageLink,
+  InboxReader,
+  InboxSource,
   IosSimulatorTarget,
   JudgeConfig,
   MacosTarget,
@@ -104,4 +125,6 @@ export type {
   JudgedEvidence,
 } from './evaluation/contract.ts'
 export type { AriaRole } from './protocol/aria-role.ts'
+export type { DialogType } from './protocol/dialogs.ts'
 export type { CriterionVerdict, EvaluationMode, EvaluationVerdict, EvidenceKind } from './protocol/evaluation.ts'
+export type { AbortReason } from './protocol/routes.ts'

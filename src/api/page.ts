@@ -1,7 +1,11 @@
 import type { RetestTypeError, TestIdValue } from '../config/register.ts'
 import type { NativePlatform } from '../config/types.ts'
 import type { AriaRole } from '../protocol/aria-role.ts'
+import type { DialogType } from '../protocol/dialogs.ts'
+import type { AbortReason } from '../protocol/routes.ts'
 import type { CallOptions } from './call-options.ts'
+import type { DragOptions } from './drag.ts'
+import type { InboxLink } from './inbox.ts'
 import type { KeyArgument } from './key-argument.ts'
 import type { Secret } from './secret.ts'
 
@@ -66,11 +70,12 @@ export interface Finders<Touch extends boolean = boolean> {
  */
 export interface Page<Touch extends boolean = boolean> extends Finders<Touch> {
   /**
-   * Opens a URL and waits for the page to load. A relative URL resolves against the app's base URL.
+   * Opens a URL and waits for the page to load. A relative URL resolves against the app's base URL. A link from an
+   * inbox's message is opened by the process that runs Retest, which never hands its address to the test.
    *
    * @example await page.goto('/')
    */
-  goto(url: string, options?: CallOptions): Promise<void>
+  goto(url: string | InboxLink, options?: CallOptions): Promise<void>
   /**
    * Reloads the page and waits for it to load.
    *
@@ -104,6 +109,14 @@ export interface Page<Touch extends boolean = boolean> extends Finders<Touch> {
    * @example const title = await page.title()
    */
   title(): Promise<string>
+  /**
+   * The frame shown by the `<iframe>` or `<frame>` element `locator` finds on this page, a frame of another site
+   * included. The element is found again for every use, so a frame that is removed and added again is found again. Its
+   * finders find elements inside the frame's document.
+   *
+   * @example const payment = page.frame(page.locator('iframe[title="Secure payment"]'))
+   */
+  frame(locator: Locator<Touch>): Frame<Touch>
   /** The keyboard of this app's page. It presses keys on whatever holds the keyboard focus. */
   readonly keyboard: Keyboard
   /**
@@ -113,14 +126,199 @@ export interface Page<Touch extends boolean = boolean> extends Finders<Touch> {
    * @example await page.scroll({ y: 600 })
    */
   scroll(delta: ScrollDelta, options?: CallOptions): Promise<void>
+  /**
+   * Runs `action` and gives the JavaScript dialog it opens, as soon as it opens: an alert, a confirm, a prompt or a
+   * `beforeunload` confirmation. The page is armed before the action runs. A dialog holds the page, so the action is
+   * still waiting when this resolves, and finishes once the test answers the dialog: await this, then await
+   * `dialog.accept()` or `dialog.dismiss()`, which resolves once the action is over too. The wait lasts the action budget,
+   * or a shorter `{ timeout }`. A dialog nothing waited for fails the action that opened it, and Retest dismisses it.
+   *
+   * @example
+   * const dialog = await page.dialog(() => page.getByRole('button', { name: 'Delete' }).click())
+   * await dialog.accept()
+   */
+  dialog(action: () => Promise<unknown>, options?: CallOptions): Promise<Dialog>
+  /**
+   * Runs `action` and gives the page it opens, by `window.open`, a link with a target or a form, as a page of its own:
+   * its commands, checks and failure screenshot are its own, and it closes when the test ends. The page is armed before
+   * the action runs, and this resolves once the new page has opened its first document and the action is over. The wait
+   * lasts the action budget, or a shorter `{ timeout }`. A page opened while nothing waited runs on unwatched.
+   *
+   * @example const terms = await page.popup(() => page.getByRole('link', { name: 'Terms' }).click())
+   */
+  popup(action: () => Promise<unknown>, options?: CallOptions): Promise<Page<Touch>>
+  /**
+   * Closes a page the app opened, which `page.popup()` gave, and waits for it to go. Its `beforeunload` handlers run
+   * first; answer their dialog with `page.dialog()`. The test's own pages close when the test ends.
+   *
+   * @example await terms.close()
+   */
+  close(options?: CallOptions): Promise<void>
+  /**
+   * Runs `action` and gives the file picker it opens, which is never shown, so its input can be given files. The wait
+   * for the picker starts before the action, and lasts the action budget or a shorter `{ timeout }`. A picker the test
+   * did not wait for fails the action that opened it.
+   *
+   * @example const chooser = await page.fileChooser(() => page.getByRole('button', { name: 'Upload' }).click())
+   */
+  fileChooser(action: () => Promise<unknown>, options?: CallOptions): Promise<FileChooser>
+  /**
+   * Runs `action` and gives the download it starts. The wait for it starts before the action, and lasts the action
+   * budget or a shorter `{ timeout }`. The run folder keeps every download a page makes, under the name the page
+   * suggested, whether or not a test waits for it.
+   *
+   * @example const download = await page.download(() => page.getByRole('link', { name: 'Export CSV' }).click())
+   */
+  download(action: () => Promise<unknown>, options?: CallOptions): Promise<Download>
+  /**
+   * Answers every request of the page whose whole address `pattern` matches with `answer`, in the network's place, from
+   * now on: a response, or a refusal. A later route answers before an earlier one. It resolves once the page holds the
+   * route, so the next `goto` meets it. A popup shares the routes of the page that opened it.
+   *
+   * @example await page.route('http://127.0.0.1:4173/api/tasks', { contentType: 'application/json', body: JSON.stringify([{ title: 'Stubbed' }]) })
+   */
+  route(pattern: RoutePattern, answer: RouteAnswer): Promise<void>
+  /**
+   * Removes every route added with `pattern`, written as it was added. A pattern that matches no route fails.
+   *
+   * @example await page.unroute(/\/api\/tasks$/)
+   */
+  unroute(pattern: RoutePattern): Promise<void>
 }
+
+/**
+ * A frame of an app's page: the document an `<iframe>` or `<frame>` element shows, found again by that element's
+ * locator for every use. Its finders find elements inside that document, through its open shadow roots, and `frame()`
+ * a frame inside it. It has no address of its own to go to: `goto`, `toHaveURL` and `toHaveTitle` are the page's.
+ */
+export interface Frame<Touch extends boolean = boolean> extends Finders<Touch> {
+  /**
+   * The frame shown by the `<iframe>` or `<frame>` element `locator` finds in this frame's document.
+   *
+   * @example const notes = order.frame(order.locator('iframe'))
+   */
+  frame(locator: Locator<Touch>): Frame<Touch>
+}
+
+/**
+ * A JavaScript dialog an action opened: an alert, a confirm, a prompt or a `beforeunload` confirmation. It holds the page
+ * until the test answers it, and the action that opened it finishes only then, so `accept()` and `dismiss()` each
+ * resolve once the dialog is answered and that action is over. Answer each dialog once.
+ */
+export interface Dialog {
+  /** The kind of dialog the page opened. */
+  readonly type: DialogType
+  /** The text the page showed, with every value the run hides replaced. A `beforeunload` dialog's is empty. */
+  readonly message: string
+  /** A prompt's default answer, and empty for any other dialog. */
+  readonly defaultValue: string
+  /**
+   * Accepts the dialog, as its OK button does. A prompt takes the text to answer with, and without it answers with its
+   * default. A `beforeunload` dialog accepted lets the page leave.
+   *
+   * @example await dialog.accept('Ada')
+   */
+  accept(promptText?: string): Promise<void>
+  /**
+   * Dismisses the dialog, as its Cancel button does. A prompt dismissed answers `null`; a `beforeunload` dialog
+   * dismissed keeps the page where it is, so the navigation that asked fails.
+   *
+   * @example await dialog.dismiss()
+   */
+  dismiss(): Promise<void>
+}
+
+/**
+ * A file picker a `page.fileChooser()` caught: the operating system's picker was never shown, and the page waits for
+ * the files its input is given here.
+ */
+export interface FileChooser {
+  /** Whether the picker's input takes several files, as its `multiple` attribute says. */
+  readonly multiple: boolean
+  /**
+   * Gives the picker's input the files, as a person choosing them would, so the page hears its `input` and `change`
+   * events. A path is read against the folder of the file that makes the call.
+   *
+   * @example await chooser.setFiles('./fixtures/report.pdf')
+   */
+  setFiles(files: InputFiles, options?: CallOptions): Promise<void>
+}
+
+/**
+ * A download a `page.download()` caught. The process that runs Retest saves it in the run folder, under the name the
+ * page suggested, whether or not the test asks for it.
+ */
+export interface Download {
+  /** The name the browser suggested for the file, from the page's `download` attribute or the server's answer. */
+  readonly suggestedFilename: string
+  /**
+   * Waits for the download to be saved, within the navigation budget or a shorter `{ timeout }`, and gives the absolute
+   * path of its file in the run folder. A download the browser stopped fails, saying how much of it arrived.
+   *
+   * @example const csv = await readFile(await download.path(), 'utf8')
+   */
+  path(options?: CallOptions): Promise<string>
+  /**
+   * Waits for the download to be saved, as `path()` does, then copies its file to `path`, read against the folder of the
+   * file that makes the call, making the folders it needs. The run folder keeps its own copy.
+   *
+   * @example await download.saveAs('./out/tasks.csv')
+   */
+  saveAs(path: string, options?: CallOptions): Promise<void>
+}
+
+/**
+ * A file given by its content rather than a path: the name the page reads, its bytes or its text, which is written as
+ * UTF-8, and, when given, the type the page must read for it. The browser types a file by the end of its name, so a
+ * `mimeType` it does not give the file fails the call.
+ */
+export type FilePayload = { readonly name: string; readonly mimeType?: string | undefined; readonly content: string | Uint8Array }
+
+/**
+ * The files an input takes: a path, read against the folder of the file that makes the call, as an import is; a file by
+ * its content; or a list of them. An empty list clears the input.
+ */
+export type InputFiles = string | FilePayload | readonly (string | FilePayload)[]
+
+/**
+ * Which requests a route answers: a glob of the whole address, query included, where `**` matches any run of characters
+ * and `*` any run without a `/`; or a `RegExp` searched for in the address.
+ */
+export type RoutePattern = string | RegExp
+
+/**
+ * A response a route gives in the network's place: `status`, 200 unless given, `headers`, `contentType`, which sets the
+ * `Content-Type` header, and `body`, text written as UTF-8, or bytes.
+ */
+export type RouteFulfil = {
+  readonly status?: number | undefined
+  readonly headers?: Readonly<Record<string, string>> | undefined
+  readonly contentType?: string | undefined
+  readonly body?: string | Uint8Array | undefined
+  readonly abort?: never
+}
+
+/** A refusal: the request fails as Chrome's network error `abort` names, such as `'connectionrefused'`. */
+export type RouteAbort = {
+  readonly abort: AbortReason
+  readonly status?: never
+  readonly headers?: never
+  readonly contentType?: never
+  readonly body?: never
+}
+
+/** What a route answers each request it matches with: a response, or a refusal. Never both. */
+export type RouteAnswer = RouteFulfil | RouteAbort
 
 /**
  * An Electron app's page in a test: the first window the app opens. It finds, acts and checks as a web page does, and
  * reloads and moves through its history, but it has no address to go to.
  */
-export type ElectronPage = Omit<Page<false>, 'goto'> & {
+export type ElectronPage = Omit<Page<false>, 'goto' | 'popup' | 'route' | 'unroute'> & {
   readonly goto: RetestTypeError<'An Electron app has no address. Its page is the first window the app opens.'>
+  readonly popup: RetestTypeError<"A test reaches only an Electron app's first window. popup() is for a browser's page.">
+  readonly route: RetestTypeError<"Retest does not answer an Electron app's requests yet. route() is for a browser's page.">
+  readonly unroute: RetestTypeError<"Retest does not answer an Electron app's requests yet. unroute() is for a browser's page.">
 }
 
 /** An app's keyboard. Await each press, because an app takes one command at a time. */
@@ -160,7 +358,8 @@ export interface Locator<Touch extends boolean = boolean> extends Finders<Touch>
    */
   nth(index: number): Locator<Touch>
   /**
-   * Replaces the field's value by typing, as a person would. A secret is typed by the process that runs Retest.
+   * Replaces the field's value by typing, as a person would. A secret, or a code from an inbox's message, is typed by
+   * the process that runs Retest.
    *
    * @example await page.getByLabel('Password').fill(secret('password'))
    */
@@ -217,6 +416,23 @@ export interface Locator<Touch extends boolean = boolean> extends Finders<Touch>
    * @example await page.getByTestId('terms').scroll({ y: 600 })
    */
   scroll(delta: ScrollDelta, options?: CallOptions): Promise<void>
+  /**
+   * Gives an `<input type="file">` the files, in place of those it held, as a person choosing them in the picker
+   * would: the page hears its `input` and `change` events. The input must be there and enabled, and need not be
+   * visible. A path is read against the folder of the file that makes the call; an empty list clears the input.
+   *
+   * @example await page.getByLabel('Attachment').setInputFiles('./fixtures/report.pdf')
+   */
+  setInputFiles(files: InputFiles, options?: CallOptions): Promise<void>
+  /**
+   * Drags the element onto the element `target` finds, once both are visible, stable and not covered, in view
+   * together: it presses the mouse at the element's centre, moves it through `steps` positions, 5 unless given, to the
+   * target's centre, and releases it there. When the page begins an HTML drag, the browser's drag events carry it to
+   * the target, so the page's `drop` handler reads its `dataTransfer`.
+   *
+   * @example await page.getByText('Write release notes').dragTo(page.getByTestId('done-column'))
+   */
+  dragTo(target: Locator, options?: DragOptions): Promise<void>
   /**
    * Taps the element's centre, on an app whose every target has a touch screen.
    *
