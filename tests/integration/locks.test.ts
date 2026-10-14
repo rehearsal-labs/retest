@@ -56,6 +56,15 @@ function holds(run: FinishedRun, lock: string): { name: string; from: number; to
     .sort((one, other) => one.from - other.from)
 }
 
+// Every test of the run that neither passed nor was skipped, with its failure, so a run that failed says why.
+function unpassed(run: FinishedRun): string {
+  const tests = run.result?.files.flatMap((file) => file.tests) ?? []
+  return tests
+    .filter((each) => each.status !== 'passed' && each.status !== 'skipped')
+    .map((each) => `\n${each.name}${each.variantKey === undefined ? '' : ` (${each.variantKey})`}: ${each.status} ${JSON.stringify(each.failure)}`)
+    .join('')
+}
+
 function assertNoOverlap(spans: readonly { name: string; from: number; to: number }[]): void {
   for (const [index, span] of spans.entries()) {
     const previous = spans[index - 1]
@@ -175,12 +184,16 @@ test("the example's count of every save, which flaked under workers, passes run 
   const app = await openApp(t)
   const root = await writeProject(t, exampleFiles())
   for (const attempt of [1, 2, 3]) {
+    // The example runs with the budgets its config gives, as a person who runs it gets them. Its phone tests find their
+    // button by role on a page a fresh browser has just drawn, which a loaded CI host drew after more than the two
+    // seconds the harness's short budgets give an action.
     const run = await runProject(t, root, {
       args: ['--workers', '4'],
       env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD, RETEST_CHROMIUM: secondBrowserPath() },
+      timeouts: false,
     })
-    assert.equal(run.exit.code, 0, `run ${attempt}: ${run.stderr}`)
-    assert.equal(testNamed(run, 'the server counts one save for one click').status, 'passed', `run ${attempt}`)
+    assert.equal(run.exit.code, 0, `run ${attempt}: ${run.stderr}${unpassed(run)}`)
+    assert.equal(testNamed(run, 'the server counts one save for one click').status, 'passed', `run ${attempt}${unpassed(run)}`)
     const spans = holds(run, 'saves')
     assert.deepEqual(spans.map((span) => span.name).sort(), [
       'a task one role saves stays in its own browser',

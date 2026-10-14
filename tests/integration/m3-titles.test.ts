@@ -1,8 +1,9 @@
 import type { FinishedRun } from './cli-harness.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
-import { configSource, eventsOf, filesHolding, runCli, runProject, testNamed, textHolds, writeProject } from './cli-harness.ts'
+import { budgets, configSource, eventsOf, filesHolding, runCli, runProject, testNamed, textHolds, writeProject } from './cli-harness.ts'
 
 // Acceptance check 4: page titles and the cause of each navigation, through the command line against real Chrome
 // and the task app's title pages. A secret the page puts in its title reads as its name, and a title's control
@@ -47,6 +48,11 @@ const hides = 'hides a secret the page puts in its title'
 const cleans = 'keeps no control character of a title'
 const controlCharacters = /\p{Cc}/u
 
+// Each test's first action finds its element by role or label, which Chrome answers only once the page has drawn its
+// first frame. On a loaded CI host a fresh browser drew it more than two seconds after the page loaded, past the
+// harness's short action budget, so actions get the budget a run gets by default. The other budgets stay short.
+const timeouts = budgets({ action: defaultTimeouts.action })
+
 function navigations(run: FinishedRun, name: string, origin: string): [string, string | undefined, string | undefined][] {
   const { testId } = testNamed(run, name)
   return eventsOf(run.events, 'navigation')
@@ -69,13 +75,14 @@ test('navigations carry titles and causes, as do actions, looks and checks; a se
     [file]: tests,
   })
   const env = { [variable]: password, NO_COLOR: '1' }
-  const run = await runProject(t, root, { env })
+  const run = await runProject(t, root, { env, timeouts })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // Each navigation names its own document's title and what started it: goto, the link, Enter in a form and a new
   // path the click's listener set are the test's; the redirect the page makes on its own after it loads is the
   // page's. The server's redirect gives its own document its own title.
-  assert.equal(testNamed(run, opens).status, 'passed')
+  const navigated = testNamed(run, opens)
+  assert.equal(navigated.status, 'passed', JSON.stringify(navigated.failure))
   assert.deepEqual(navigations(run, opens, app.url), [
     ['/titles', 'goto', 'Titles'],
     ['/titles/next', 'action', 'Next'],
@@ -109,7 +116,7 @@ test('navigations carry titles and causes, as do actions, looks and checks; a se
 
   // A secret the page makes its title reads as its name in every event, and nowhere in the run folder or the output.
   const hidden = testNamed(run, hides)
-  assert.equal(hidden.status, 'passed')
+  assert.equal(hidden.status, 'passed', JSON.stringify(hidden.failure))
   assert.deepEqual(navigations(run, hides, app.url), [
     ['/titles/greeting', 'goto', 'Greeting'],
     ['/titles/echo', 'action', '{{password}}'],
@@ -129,8 +136,8 @@ test('navigations carry titles and causes, as do actions, looks and checks; a se
 
   // The human report, live and replayed, the agent report and inspect's timelines hold no control character, and show
   // the title beside each address they print.
-  const live = await runProject(t, root, { env, reporter: 'human' })
-  const agent = await runProject(t, root, { env, reporter: 'agent' })
+  const live = await runProject(t, root, { env, timeouts, reporter: 'human' })
+  const agent = await runProject(t, root, { env, timeouts, reporter: 'agent' })
   const replayed = await runCli(t, ['inspect', run.output], { env })
   const timelines = await Promise.all([opens, hides, cleans].map((name) => runCli(t, ['inspect', run.output, '--test', testNamed(run, name).testId], { env })))
   for (const [what, text] of [
