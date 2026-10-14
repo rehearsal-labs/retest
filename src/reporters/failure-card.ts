@@ -55,6 +55,11 @@ export type FailureCard = CardSubject & {
   location?: SourceLocation
   /** Paths inside the run folder, joined to the run folder as it was given. */
   screenshots: string[]
+  /**
+   * The files the failing assertion left, each by what it is, such as a screenshot comparison's expected and actual
+   * pictures and their difference, joined to the run folder as it was given. Absent when it left none.
+   */
+  attachments?: { name: string; path: string }[]
   evidenceProblems: string[]
   /** Cleanup failures besides `failure`. */
   cleanupFailures: Failure[]
@@ -216,6 +221,7 @@ export function testCard(test: TestResult, options: CardOptions): FailureCard {
     notRunChecks: notRunHostChecks(test),
     location: call?.location ?? failure?.location ?? test.location,
     screenshots: evidencePaths(events, test).map((path) => join(options.runFolder, path)),
+    ...(call?.type === 'assertion.failed' && call.attachments !== undefined ? { attachments: call.attachments.map(({ name, path }) => ({ name, path: join(options.runFolder, path) })) } : {}),
     evidenceProblems: events.flatMap((event) => (event.type === 'evidence.failed' ? [event.message] : [])),
     cleanupFailures,
     evaluations: evaluationCardLines(test.evaluations ?? [], options.runFolder),
@@ -282,9 +288,11 @@ export function recordedValues(call: FailingCall | undefined): RecordedValues | 
 
 /**
  * Whether the failure's message only repeats the recorded values, as the message of a check that failed on
- * them does. Any other failure, such as a timeout that stopped the check, says something the values do not.
+ * them does. Any other failure, such as a timeout that stopped the check, says something the values do not, and so
+ * does a screenshot comparison's, which names the baseline's file, the ratio of pixels and how many may differ.
  */
 export function messageRepeatsValues(card: FailureCard): boolean {
+  if (card.call?.type === 'assertion.failed' && card.call.matcher === 'toHaveScreenshot') return false
   return card.failure?.class === 'check_failed' && recordedValues(card.call) !== undefined
 }
 

@@ -10,8 +10,12 @@ import { describeLocator } from '../../protocol/locator.ts'
 import { secretPlaceholder } from '../../protocol/secret.ts'
 import { describeLeaseParts } from '../../runner/resources.ts'
 import { actionNotes, describeWrittenAction } from '../actions.ts'
+import { describeDialog, describePopupClosed, describePopupOpened } from '../dialogs-popups.ts'
+import { describeRouteChange } from '../routes.ts'
 import {
   describeCleanup,
+  describeDownload,
+  describeInboxRead,
   describeLeaseExpired,
   describeLocks,
   describePage,
@@ -50,7 +54,8 @@ const deepest = 6
 export function timelineView(test: TestResult, events: readonly TestEvent[]): Markup {
   if (events.length === 0) return html`<p class="gap">No steps are shown: the run folder holds no events for this test.</p>`
   const start = events[0]?.elapsedMs ?? 0
-  const named = test.variant !== undefined
+  // A popup's steps are the popup's own, so a test that was given one names the app of every row, as a variant does.
+  const named = test.variant !== undefined || events.some((event) => event.type === 'popup.opened')
   const stepNames = new Map<string, string>()
   let depth = 0
   const rows: Markup[] = []
@@ -100,7 +105,12 @@ function isPageEvent(event: TestEvent): boolean {
     case 'recording.finished':
     case 'capture.withheld':
     case 'capture.resumed':
+    case 'dialog':
+    case 'popup.opened':
+    case 'popup.closed':
     case 'capture.masked_entry':
+    case 'download':
+    case 'route':
       return true
     default:
       return false
@@ -166,6 +176,21 @@ function describe(entry: EventEntry, stepNames: ReadonlyMap<string, string>): De
       return { what: `screenshot not saved: ${event.message}`, mark: 'warning' }
     case 'evaluation.finished':
       return describeEvaluationEvent(event)
+    case 'inbox.read':
+      return event.failure === undefined ? { what: describeInboxRead(event), took: event.waitedMs } : { what: describeInboxRead(event), mark: 'failed', took: event.waitedMs, failure: failureLabel(event.failure.class) }
+    case 'dialog':
+      return event.by === 'test' ? { what: describeDialog(event) } : { what: describeDialog(event), mark: 'warning' }
+    case 'popup.opened':
+      return { what: describePopupOpened(event) }
+    case 'popup.closed':
+      return { what: describePopupClosed(event) }
+    case 'download': {
+      const what = describeDownload(event)
+      if (event.state === 'completed') return { what, ...(event.path === undefined ? {} : { details: [`file ${event.path}`] }) }
+      return event.failure === undefined ? { what, mark: 'warning' } : { what, mark: 'failed', failure: failureLabel(event.failure.class) }
+    }
+    case 'route':
+      return event.failure === undefined ? { what: describeRouteChange(event) } : { what: describeRouteChange(event), mark: 'failed', failure: failureLabel(event.failure.class) }
     case 'recording.started':
       return { what: `recording ${event.number} started: ${event.source}, ${event.mode}, ${event.width}×${event.height} at ${event.fps} fps` }
     case 'recording.finished': {

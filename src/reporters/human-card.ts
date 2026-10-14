@@ -161,6 +161,7 @@ function frame(rootDir: string, location: SourceLocation, style: Style): string[
 function closing(card: FailureCard, options: HumanCardOptions): string[] {
   const lines = card.screenshots.map((path) => field('Screenshot', path))
   for (const problem of card.evidenceProblems) lines.push(field('Screenshot', `not saved: ${problem}`))
+  for (const { name, path } of card.attachments ?? []) lines.push(field(attachmentLabel(name), path))
   for (const { label, value } of card.diagnostics ?? []) lines.push(field(label, value))
   for (const failure of card.cleanupFailures) {
     lines.push(field(options.style.red(failureLabel(failure.class)), messageLines(failure.message).join('\n')))
@@ -169,6 +170,13 @@ function closing(card: FailureCard, options: HumanCardOptions): string[] {
   const inspect = formatInspectCommand({ runFolder: options.runFolder, testId: card.test?.testId, targets: card.test?.targets })
   lines.push(field('Inspect', inspect))
   return lines
+}
+
+// A screenshot comparison's pictures are named as a reader looks for them: what was expected, what came, and where.
+function attachmentLabel(name: string): string {
+  if (name === 'expected') return 'Expected'
+  if (name === 'actual') return 'Actual'
+  return name === 'diff' ? 'Difference' : name
 }
 
 // Labels may carry colour codes, so the padding counts only the visible characters.

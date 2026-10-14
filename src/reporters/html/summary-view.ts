@@ -7,7 +7,7 @@ import type { TestEntry } from './test-view.ts'
 import { diagnosticsTotals } from '../../diagnostics/report.ts'
 import { countEvaluations } from '../../evaluation/report.ts'
 import { describeFileProblem, runFailureToShow } from '../failure-card.ts'
-import { countParts, describeNarrowed, failureLabel, formatDetail, formatDuration, runNotes, testTitle } from '../format.ts'
+import { countParts, describeBaselinesWritten, describeNarrowed, failureLabel, formatDetail, formatDuration, runNotes, testTitle } from '../format.ts'
 import { countHostChecks } from '../host-checks.ts'
 import { describeBrowser, describeNative, targetSummaries, variantLabel } from '../targets.ts'
 import { codeFrameView, failureView } from './failure-view.ts'
@@ -118,7 +118,8 @@ function noticesView(context: ReportContext): Markup {
   const stopped = result.status === 'interrupted' ? html`<div class="notice notice-error">The run was stopped before it finished. Tests it had not reached did not run.</div>` : undefined
   const incomplete = result.complete ? undefined : html`<div class="notice notice-error">The run is incomplete: it did not check everything it was asked to check.</div>`
   const narrowed = result.narrowed === undefined ? undefined : html`<div class="notice notice-error words">${describeNarrowed(result.narrowed)}</div>`
-  return html`${read}${failed}${stopped}${incomplete}${narrowed}`
+  const baselines = result.baselinesWritten === undefined ? undefined : html`<div class="notice notice-error words">Screenshot baselines: ${describeBaselinesWritten(result.baselinesWritten)}, so their checks compared nothing.</div>`
+  return html`${read}${failed}${stopped}${incomplete}${narrowed}${baselines}`
 }
 
 /**

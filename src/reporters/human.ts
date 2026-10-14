@@ -19,6 +19,7 @@ import {
 import {
   countParts,
   describeAppEvent,
+  describeBaselinesWritten,
   describeBorrowedSetup,
   describeHolders,
   describeLeaseExpired,
@@ -274,6 +275,7 @@ function summaryLines(result: RunResult, context: SummaryContext): string {
   const files = fileProblemCounts(result)
   if (files.length > 0) rows.push(['Files', files.join(' · ')])
   if (result.evidenceStatus !== undefined) rows.push(['Evidence', describeEvidence(result.evidenceStatus)])
+  if (result.baselinesWritten !== undefined) rows.push(['Baselines', describeBaselinesWritten(result.baselinesWritten)])
   rows.push(['Time', formatDuration(result.durationMs)], ['Output', context.runFolder])
   const notes = runNotes(result)
   const exit = `${result.exitCode}${notes.length === 0 ? '' : ` · ${notes.join(', ')}`}`

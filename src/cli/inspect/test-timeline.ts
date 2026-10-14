@@ -11,7 +11,9 @@ import { describeLocator } from '../../protocol/locator.ts'
 import { secretPlaceholder } from '../../protocol/secret.ts'
 import { formatLocation } from '../../protocol/location.ts'
 import { actionNotes, describeWrittenAction, type ActionEvent } from '../../reporters/actions.ts'
-import { describeCleanup, describeLeaseExpired, describeLocks, describePage, describePreparation, describeResources, describeSessions, describeSessionsReleased, describeStateEvent, formatDuration, plural, printable, statusLabel, testTitle } from '../../reporters/format.ts'
+import { describeDialog, describePopupClosed, describePopupOpened } from '../../reporters/dialogs-popups.ts'
+import { describeRouteChange } from '../../reporters/routes.ts'
+import { describeCleanup, describeDownload, describeInboxRead, describeLeaseExpired, describeLocks, describePage, describePreparation, describeResources, describeSessions, describeSessionsReleased, describeStateEvent, formatDuration, plural, printable, statusLabel, testTitle } from '../../reporters/format.ts'
 import { describeLeaseParts } from '../../runner/resources.ts'
 import { describeHostCheck, hostCheckPage } from '../../reporters/host-checks.ts'
 import { visibleLength } from '../../reporters/style.ts'
@@ -46,11 +48,13 @@ export function renderTimeline(test: TestResult, events: TimelineEvent[], option
   const stepNames = new Map<string, string>()
   let depth = 0
   const lines = [heading, summary, '']
+  // A popup's steps are the popup's own, so a test that was given one names the app of every line, as a variant does.
+  const popups = events.some((event) => event.type === 'popup.opened')
   for (const entry of timelineEntries(events)) {
     const event = entry.kind === 'event' ? entry.event : entry.last
     if (event.type === 'step.finished') depth = Math.max(0, depth - 1)
     const time = style.dim(formatDuration(event.elapsedMs - start).padStart(timeWidth))
-    const app = test.variant !== undefined && isPageEvent(event) && event.session !== undefined ? `${style.cyan(event.session)}  ` : ''
+    const app = (test.variant !== undefined || popups) && isPageEvent(event) && event.session !== undefined ? `${style.cyan(event.session)}  ` : ''
     const [first, ...details] = entry.kind === 'event' ? describe(entry, stepNames, options) : [describeLooks(entry.looks, entry.last)]
     const indent = `  ${' '.repeat(timeWidth)}  ${'  '.repeat(depth)}${' '.repeat(visibleLength(app) + 2)}`
     lines.push(`  ${time}  ${'  '.repeat(depth)}${app}${first}`, ...details.map((detail) => `${indent}${style.dim(detail)}`))
@@ -78,7 +82,13 @@ function isPageEvent(event: TimelineEvent): boolean {
     case 'capture.withheld':
     case 'capture.resumed':
     case 'capture.native_entry':
+    case 'dialog':
+    case 'popup.opened':
+    case 'popup.closed':
     case 'capture.masked_entry':
+    case 'download':
+    case 'baseline.written':
+    case 'route':
       return true
     default:
       return false
@@ -142,14 +152,34 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
     case 'state.restored':
       return [describeStateEvent(event)]
     case 'assertion.passed':
-    case 'assertion.failed':
-      return describeAssertion(event, entry.looks, style)
+    case 'assertion.failed': {
+      const [line, ...details] = describeAssertion(event, entry.looks, style)
+      return [line, ...details, ...(event.attachments ?? []).map((attachment) => `${attachment.name} ${join(options.runFolder, attachment.path)}`)]
+    }
     case 'evidence.captured':
       return [describeScreenshot(event, options)]
     case 'evidence.failed':
       return [style.yellow(`screenshot not saved: ${event.message}`)]
     case 'evaluation.finished':
       return describeEvaluationEvent(event, options)
+    case 'inbox.read': {
+      const text = `${describeInboxRead(event)}  ${style.dim(formatDuration(event.waitedMs))}`
+      return [event.failure === undefined ? text : `${style.red('✗')} ${text}  ${style.red(event.failure.class)}`]
+    }
+    case 'dialog':
+      return [event.by === 'test' ? describeDialog(event) : style.yellow(describeDialog(event))]
+    case 'popup.opened':
+      return [describePopupOpened(event), `session ${event.popupSessionId}`]
+    case 'popup.closed':
+      return [style.yellow(describePopupClosed(event))]
+    case 'download': {
+      const file = event.path === undefined ? [] : [`file ${join(options.runFolder, event.path)}`]
+      if (event.state === 'completed') return [describeDownload(event), ...file]
+      if (event.failure === undefined) return [style.yellow(describeDownload(event))]
+      return [`${style.red('✗')} ${describeDownload(event)}  ${style.red(event.failure.class)}`]
+    }
+    case 'route':
+      return [event.failure === undefined ? describeRouteChange(event) : `${style.red('✗')} ${describeRouteChange(event)}  ${style.red(event.failure.class)}`]
     case 'diagnostics.started':
       return [style.dim('diagnostics capture started')]
     case 'diagnostics.finished':
@@ -170,6 +200,8 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       return [`media closed: pid ${event.pid}${event.forced ? ', forced' : ''}`, ...(event.problems ?? [])]
     case 'media.leftovers':
       return [`media leftovers from ${event.previousRunId}: ${event.status}, ${event.removed.length} removed, ${event.skipped} skipped`, event.reference]
+    case 'baseline.written':
+      return [`baseline ${event.replaced ? 'replaced' : 'written'} for ${JSON.stringify(event.name)}: ${event.path}`, `${event.width} by ${event.height} pixels${event.scale === undefined ? '' : ` at scale ${event.scale}`}, from look ${event.observationId}`]
     case 'capture.withheld':
       return [style.yellow(`capture withheld for ${secretPlaceholder(event.secret)}: ${event.cause}`), `session ${event.sessionId}, from ${event.fromUs} us`, ...(event.exposedFromUs === undefined ? [] : [`possible exposure from ${event.exposedFromUs} us`])]
     case 'capture.resumed':

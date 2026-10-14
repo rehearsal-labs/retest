@@ -24,6 +24,7 @@ import {
 } from './failure-card.ts'
 import {
   countParts,
+  describeBaselinesWritten,
   describeNarrowed,
   formatDetail,
   formatDuration,
@@ -70,7 +71,8 @@ function renderAgentReport(result: RunResult, record: RunRecord, runFolder: stri
   const targets = runTargets(record, result)
   const cards = failureCards(result, { record, runFolder, targets })
   const narrowed = result.narrowed === undefined ? [] : [`warning: ${describeNarrowed(result.narrowed)}`]
-  const lines = [firstLine(result, targets), ...narrowed, ...runFailureLines(result), ...diagnosticsLines(result, runFolder), ...evidenceLines(result)]
+  const baselines = result.baselinesWritten === undefined ? [] : [`baselines: ${describeBaselinesWritten(result.baselinesWritten)}`]
+  const lines = [firstLine(result, targets), ...narrowed, ...baselines, ...runFailureLines(result), ...diagnosticsLines(result, runFolder), ...evidenceLines(result)]
   for (const card of cards) lines.push(...cardLines(card))
   for (const test of result.files.flatMap((file) => file.tests)) if (test.status === 'passed') lines.push(...warningLines(test))
   for (const test of testsNotRun(result)) lines.push(...notRunLines(test, notRunReason(result, test), targets))
@@ -126,6 +128,7 @@ function cardLines(card: FailureCard): string[] {
     ...card.evaluations.map(({ label, value }) => `  ${label.toLowerCase()} ${value}`),
     ...card.screenshots.map((path) => `  screenshot ${path}`),
     ...card.evidenceProblems.map((problem) => `  screenshot not saved: ${problem}`),
+    ...(card.attachments ?? []).map(({ name, path }) => `  ${name} ${path}`),
     ...(card.diagnostics ?? []).map(({ label, value }) => `  ${label.toLowerCase()} ${value}`),
     ...card.cleanupFailures.flatMap((cleanup) => indent(failureText(cleanup))),
   ]

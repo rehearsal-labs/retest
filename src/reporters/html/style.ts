@@ -114,6 +114,9 @@ tr.row-failed td.what { color: var(--failed); }
 .shot { margin: 0; max-width: 100%; }
 .shot img, .shot video { display: block; max-width: min(100%, 38rem); height: auto; border: 1px solid var(--rule); border-radius: 4px; }
 .shot figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+.comparison { flex-wrap: nowrap; }
+.comparison .shot { flex: 1 1 0; min-width: 0; max-width: 24rem; }
+.comparison .shot img { width: 100%; max-width: 100%; height: auto; }
 .gap { margin: 10px 0 0; padding: 12px 14px; border: 1.5px dashed var(--muted); border-radius: 4px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .gap strong { color: var(--ink); font-weight: 600; }
 .part { margin: 14px 0 0; }

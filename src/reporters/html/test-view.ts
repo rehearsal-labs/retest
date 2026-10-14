@@ -10,11 +10,13 @@ import { formatInspectCommand } from '../commands.ts'
 import { notRunReason } from '../failure-card.ts'
 import { failureLabel, formatDuration, statusLabel, testTitle } from '../format.ts'
 import { namingTargets, variantLabel } from '../targets.ts'
+import { comparisonView } from './comparison-view.ts'
 import { diagnosticsView } from './diagnostics-view.ts'
+import { downloadsView } from './downloads-view.ts'
 import { evaluationsView } from './evaluations-view.ts'
 import { evidenceLabel, noScreenshotReason } from './evidence-status.ts'
 import { codeFrameView, failureView } from './failure-view.ts'
-import { html } from './markup.ts'
+import { html, join } from './markup.ts'
 import { recordingsView } from './recordings-view.ts'
 import { replayView } from './replay-view.ts'
 import { screenshotsView } from './screenshots-view.ts'
@@ -71,7 +73,7 @@ function head({ test, evidence }: TestEntry, context: ReportContext): Markup {
 
 function body(entry: TestEntry, context: ReportContext): Markup {
   const { test, card, evidence, events } = entry
-  const failing = card === undefined ? undefined : failureView(card)
+  const failing = card === undefined ? undefined : join([failureView(card), comparisonView(card, context.files)])
   const reasons = evidenceReasons(entry)
   const warnings = evaluationWarnings(test).map((warning) => html`<div class="notice notice-error words">${warning}</div>`)
   const notRun = notRunNote(test, context)
@@ -79,11 +81,12 @@ function body(entry: TestEntry, context: ReportContext): Markup {
   const pictures = screenshotsView(evidence.screenshots, { missing })
   const code = card?.location === undefined ? undefined : codeFrameView(context, card.location)
   const recordings = recordingsView(test.recordings ?? [], context.files)
+  const downloads = downloadsView(events, context.input.directory)
   const evaluations = evaluationsView(test.evaluations ?? [], context.files)
   const openChecks = (test.evaluations ?? []).some((record) => record.verdict !== 'pass' && record.verdict !== 'not_run')
   const diagnostics = diagnosticsView(test.diagnostics ?? [], events, context.files)
   const replay = replayView(test)
-  return html`${failing}${notRun}${warnings}${reasons}${pictures}${code}${part('Recordings', recordings, card !== undefined)}${part('AI checks', evaluations, openChecks)}${part('Steps', timelineView(test, events), false)}${part('Console and network', diagnostics, false)}${part('Targets', targetsView(test, context), false)}${part('Replay facts', replay, false)}${commands(entry, context)}`
+  return html`${failing}${notRun}${warnings}${reasons}${pictures}${code}${part('Recordings', recordings, card !== undefined)}${part('Downloads', downloads, card !== undefined)}${part('AI checks', evaluations, openChecks)}${part('Steps', timelineView(test, events), false)}${part('Console and network', diagnostics, false)}${part('Targets', targetsView(test, context), false)}${part('Replay facts', replay, false)}${commands(entry, context)}`
 }
 
 function part(title: string, content: Markup | undefined, open: boolean): Markup | undefined {

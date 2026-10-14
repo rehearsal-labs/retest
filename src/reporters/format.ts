@@ -104,6 +104,16 @@ export function runNotes(result: { status: RunStatus; complete: boolean; narrowe
   ]
 }
 
+/**
+ * How many screenshot baselines a run wrote, as reports say it, so a run that wrote them never reads as an ordinary
+ * pass: its checks compared nothing with what they wrote.
+ *
+ * @example describeBaselinesWritten(2) // '2 written by --update-screenshots'
+ */
+export function describeBaselinesWritten(count: number): string {
+  return `${count} written by --update-screenshots`
+}
+
 export function totalTests(counts: Counts): number {
   return counts.passed + counts.failed + counts.error + counts.notRun + counts.inconclusive + (counts.skipped ?? 0)
 }
@@ -126,6 +136,48 @@ export function describeNarrowed(narrowed: Narrowed): string {
 export function describeLocks(event: { locks: readonly string[]; waitedMs: number }): string {
   const held = `holds ${event.locks.length === 1 ? 'lock' : 'locks'} ${listWords(event.locks, 'and')}`
   return event.waitedMs === 0 ? held : `${held}, after waiting ${formatDuration(event.waitedMs)}`
+}
+
+/**
+ * A test's read of an inbox: the message it was given, by its subject as the test read it, or that it was given none,
+ * and how many looks it took.
+ *
+ * @example describeInboxRead({ inbox: 'owner', subject: 'Your code is {{code}}', looks: 3 }) // 'inbox owner gave "Your code is {{code}}" after 3 looks'
+ */
+export function describeInboxRead(event: { inbox: string; subject?: string | undefined; looks: number }): string {
+  const given = event.subject === undefined ? 'gave no message' : `gave ${JSON.stringify(event.subject)}`
+  return `inbox ${event.inbox} ${given}${event.looks === 0 ? '' : ` after ${plural(event.looks, 'look')}`}`
+}
+
+/**
+ * A download a page made: the name the browser suggested, where it began when not in the app's page, and its size once
+ * saved, that Retest removed it for holding a secret, how much of it arrived when the browser stopped it, or that it was
+ * still on its way when its test ended.
+ *
+ * @example describeDownload({ suggestedFilename: 'tasks.csv', state: 'completed', size: 35 }) // 'download tasks.csv, 35 bytes'
+ */
+export function describeDownload(event: {
+  suggestedFilename: string
+  startedIn?: 'popup' | 'other' | undefined
+  state: 'completed' | 'withheld' | 'canceled' | 'unfinished'
+  size?: number | undefined
+  receivedBytes?: number | undefined
+  totalBytes?: number | undefined
+}): string {
+  const started = event.startedIn === undefined ? '' : event.startedIn === 'popup' ? ' from a page it opened' : ' from another page'
+  const name = `download ${printable(event.suggestedFilename)}${started}`
+  const received = event.receivedBytes ?? 0
+  const arrived = event.totalBytes === undefined || event.totalBytes === 0 ? plural(received, 'byte') : `${received} of ${plural(event.totalBytes, 'byte')}`
+  switch (event.state) {
+    case 'completed':
+      return `${name}, ${plural(event.size ?? 0, 'byte')}`
+    case 'withheld':
+      return `${name} not kept: it held a secret`
+    case 'canceled':
+      return `${name} stopped after ${arrived}`
+    case 'unfinished':
+      return `${name} unfinished when the test ended, ${arrived}`
+  }
 }
 
 /**
