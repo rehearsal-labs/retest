@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import { PROXY_HEADER, startProxy } from '../../fixtures/proxy/server.ts'
 import { MOCKED_IMAGE } from '../../fixtures/task-app/routes-page.ts'
 import { assertOk, byTestId, click, goto, launch, observe, observeUntil, openApp, openPage, sharedBrowser } from './browser-harness.ts'
+import { engineAbsence } from './engines.ts'
 
 // Mocked responses on Chrome, driven at the driver: a route answers the page's request, or refuses it, before it leaves
 // the browser, and the server counts what reached it, so a test sees both sides. Routes answer the page and the frames
@@ -178,6 +179,11 @@ test("a service worker that answers for the page fetches past the page's routes,
 test('Firefox and WebKit refuse routes by name, and hold none', async (t) => {
   for (const [engine, label] of [['firefox', 'Firefox'], ['webkit', 'WebKit']] as const) {
     await t.test(label, async (t) => {
+      const absent = engineAbsence(engine)
+      if (absent !== undefined) {
+        t.skip(absent)
+        return
+      }
       // The harness launches the engine RETEST_TEST_ENGINE names, read as it launches.
       const previous = process.env['RETEST_TEST_ENGINE']
       process.env['RETEST_TEST_ENGINE'] = engine

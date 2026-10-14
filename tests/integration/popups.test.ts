@@ -263,14 +263,15 @@ test("a popup has its opener's emulation and capture rules, a secret is typed on
 
   // The run records the app, and each popup has a recording that never began, which says why; so the attempt's
   // evidence is partial, never complete.
+  // The app's own recording is whatever this machine can make: complete where the media tools are installed, and
+  // unavailable for a reason of its own where they are not, never the popups' reason.
   const recordings = nested.recordings ?? []
-  assert.deepEqual(recordings.map((recording) => [recording.app, recording.status]), [
-    ['web', 'complete'],
-    ['web/popup-1', 'unavailable'],
-    ['web/popup-1/popup-1', 'unavailable'],
-  ])
+  assert.deepEqual(recordings.map((recording) => recording.app), ['web', 'web/popup-1', 'web/popup-1/popup-1'])
+  assert.deepEqual(recordings.slice(1).map((recording) => recording.status), ['unavailable', 'unavailable'])
+  assert.ok(recordings[0]?.status === 'complete' || recordings[0]?.gaps?.every((gap) => !gap.message.startsWith('Popups are not captured')), `the app's own recording: ${JSON.stringify(recordings[0])}`)
   assert.deepEqual(recordings[1]?.gaps, [{ code: 'no_frame_source', message: 'Popups are not captured, so Retest did not record this page.', app: 'web/popup-1', sessionId: `${nested.attemptId}:web/popup-1` }])
-  assert.equal(nested.evidenceStatus?.state, 'partial')
+  // Evidence is partial where the app was recorded and its popups were not, and unavailable where nothing was.
+  assert.equal(nested.evidenceStatus?.state, recordings[0]?.status === 'complete' ? 'partial' : 'unavailable')
   assert.deepEqual(nested.diagnostics?.map((summary) => [summary.sessionId.slice(summary.sessionId.indexOf(':') + 1), summary.console.state]), [
     ['web', 'complete'],
     ['web/popup-1', 'unavailable'],

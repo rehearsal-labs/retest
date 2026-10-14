@@ -10,6 +10,7 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { launchElectron } from '../../src/browser/electron.ts'
 import { assertOk, check, click, failureOf, goto, launch, observe, observeUntil, openApp, openPage, scratchFolder, sharedBrowser, timed, within } from './browser-harness.ts'
+import { engineAbsence } from './engines.ts'
 import { agentHost, assertActed, openOn, TASK_APP_PASSWORD, waitForText } from './agent-harness.ts'
 
 // JavaScript dialogs on Chrome, against the driver: a page armed for a dialog hands it over while the action that
@@ -304,6 +305,11 @@ test('a second wait on a page that already waits is refused', async (t) => {
 test('Firefox and WebKit refuse page.dialog(), page.popup() and close() by name, and send nothing', async (t) => {
   for (const [engine, label] of [['firefox', 'Firefox'], ['webkit', 'WebKit']] as const) {
     await t.test(label, async (t) => {
+      const absent = engineAbsence(engine)
+      if (absent !== undefined) {
+        t.skip(absent)
+        return
+      }
       // The harness launches the engine RETEST_TEST_ENGINE names, read as it launches.
       const previous = process.env['RETEST_TEST_ENGINE']
       process.env['RETEST_TEST_ENGINE'] = engine

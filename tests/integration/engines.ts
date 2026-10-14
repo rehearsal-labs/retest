@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
+import { firefoxPlatformProblem } from '../../src/browser/firefox/executable.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { FirefoxBrowser } from '../../src/browser/firefox/browser.ts'
 import { firefoxRoute } from '../../src/browser/firefox/route.ts'
@@ -68,6 +69,19 @@ export type InputGate = {
   /** A promise to hold the input back for, or undefined to let it go at once. */
   hold?: (input: GatedInput) => Promise<void> | undefined
   loaded?: (url: string) => void
+}
+
+/**
+ * Why `engine` cannot be driven on this machine, in one sentence, or undefined where it can: Firefox and WebKit are
+ * pinned for macOS on Apple silicon, so a Chromium suite's case that launches one of them elsewhere skips by name,
+ * as the per-engine suite files do. On a Mac without the build the case still fails, so a missing install is seen.
+ *
+ * @example engineAbsence('webkit') // 'Retest runs WebKit on macOS only, and this machine is linux x64.'
+ */
+export function engineAbsence(engine: Exclude<EngineName, 'chromium'>): string | undefined {
+  if (engine === 'firefox') return firefoxPlatformProblem()
+  if (process.platform === 'darwin') return undefined
+  return `Retest runs WebKit on macOS only, and this machine is ${process.platform} ${process.arch}.`
 }
 
 const defaultFirefox = '/Applications/Firefox.app/Contents/MacOS/firefox'

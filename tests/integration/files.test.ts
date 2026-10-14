@@ -9,7 +9,7 @@ import { eventArtifactReferences, inventoryArtifacts, resultArtifactReferences }
 import { browserPath } from '../support/test-browser.ts'
 import { openApp } from './browser-harness.ts'
 import { budgets, configSource, eventsOf, filesHolding, readResult, resultOf, runCli, runProject, scratchFolder, testNamed, writeFiles, writeProject } from './cli-harness.ts'
-import { firefoxPath, testFirefoxRoute, webKitPath } from './engines.ts'
+import { engineAbsence, firefoxPath, testFirefoxRoute, webKitPath } from './engines.ts'
 
 // Files through a whole run: a test file uploads by path and by content, catches a file picker, and waits for downloads,
 // against the task app's files page on Chrome. The events record each step, the run folder keeps each download where its
@@ -189,7 +189,10 @@ for (const app of ['fox', 'kit']) {
 }
 `
 
-test('Firefox and WebKit refuse uploads, the picker and downloads, each naming the engine', async (t) => {
+// Firefox and WebKit are pinned for macOS: elsewhere this case skips by name, as the per-engine suites do.
+const enginesAbsent = engineAbsence('firefox') ?? engineAbsence('webkit') ?? false
+
+test('Firefox and WebKit refuse uploads, the picker and downloads, each naming the engine', { skip: enginesAbsent }, async (t) => {
   const app = await openApp(t)
   const baseUrl = JSON.stringify(app.url)
   const root = await writeProject(t, {

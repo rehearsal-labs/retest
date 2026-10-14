@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import { DRAG_PAGE } from '../../fixtures/task-app/drag-page.ts'
 import { launchElectron } from '../../src/browser/electron.ts'
 import { assertOk, byTestId, byText, click, failureOf, goto, launch, observe, observeUntil, openApp, openPage, scratchFolder, sharedBrowser } from './browser-harness.ts'
+import { engineAbsence } from './engines.ts'
 
 // Drag and drop on Chrome, driven at the driver: an HTML drag the page begins is carried by the browser's drag events
 // to the page's drop handler, with its data; a list that follows the mouse itself hears every step; a covered target
@@ -134,6 +135,11 @@ test('a target that leaves the page during a drag by the handle: Retest releases
 test('Firefox and WebKit refuse dragTo by name, and send nothing', async (t) => {
   for (const [engine, label] of [['firefox', 'Firefox'], ['webkit', 'WebKit']] as const) {
     await t.test(label, async (t) => {
+      const absent = engineAbsence(engine)
+      if (absent !== undefined) {
+        t.skip(absent)
+        return
+      }
       // The harness launches the engine RETEST_TEST_ENGINE names, read as it launches.
       const previous = process.env['RETEST_TEST_ENGINE']
       process.env['RETEST_TEST_ENGINE'] = engine
