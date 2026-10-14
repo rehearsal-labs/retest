@@ -73,7 +73,11 @@ async function mainFrameId(session: CdpSession, deadline: Deadline): Promise<str
   return (await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))).frameTree.frame.id
 }
 
-// Answers the tab's document requests with an empty page and refuses anything else, such as a favicon.
+// The empty page names an inline icon: Chrome fetches a document's favicon from its browser process, outside the
+// tab's Fetch domain, so a page without one would send the site one request after all.
+const emptyDocument = Buffer.from('<!doctype html><link rel="icon" href="data:,">').toString('base64')
+
+// Answers the tab's document requests with an empty page and refuses anything else.
 function serveEmptyDocuments(session: CdpSession): { stop: () => void } {
   const stop = session.on('Fetch.requestPaused', (params) => {
     const paused = readProtocol(pausedSchema, params, { method: 'Fetch.requestPaused', sessionId: session.id })
@@ -83,6 +87,7 @@ function serveEmptyDocuments(session: CdpSession): { stop: () => void } {
             requestId: paused.requestId,
             responseCode: 200,
             responseHeaders: [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }],
+            body: emptyDocument,
           })
         : session.send('Fetch.failRequest', { requestId: paused.requestId, errorReason: 'BlockedByClient' })
     answer.catch(() => {
