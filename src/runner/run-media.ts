@@ -392,6 +392,8 @@ export class AttemptRecorder implements AttemptRecordings {
   readonly #steps = new Map<string, { name: string; fromUs: number; toUs?: number }>()
   readonly #latest = new Map<string, string>()
   #finishing: Promise<RecordingRecord[]> | undefined
+  #pageCount = 0
+  #unrecorded = 0
 
   constructor(options: AttemptRecorderOptions) {
     this.#options = options
@@ -402,7 +404,26 @@ export class AttemptRecorder implements AttemptRecordings {
    * to start, within the start budget, so no action comes before its recording began.
    */
   async start(pages: readonly AppPage[]): Promise<void> {
+    this.#pageCount = pages.length
     await Promise.all(pages.map((page, index) => this.#startOne(page, index)))
+  }
+
+  /**
+   * Notes a session the run cannot record, such as a page a test's page opened: when the app it comes from, `root`, is
+   * one the run records, it gets a recording that never began, with `reason`, so the attempt's evidence never counts it
+   * as seen. Before `finish` only.
+   */
+  notRecorded(page: AppPage, root: string, reason: string): void {
+    const { app, session } = page
+    const { testId, attemptId, records, sequences } = this.#options
+    if (this.#finishing !== undefined || !records(root) || this.#order.includes(app)) return
+    const identity: RecordIdentity = { testId, attemptId, app, sessionId: session.sessionId }
+    const sequence = sequences.next(identity, 'recording')
+    // Numbered after every page the attempt began with, as each of those is by its place.
+    this.#unrecorded += 1
+    const recordingId = `${attemptId}-${this.#pageCount + this.#unrecorded}-${sequence}`
+    this.#order.push(app)
+    this.#unstarted.set(app, unstartedRecording({ identity, sequence, recordingId }, 'no_frame_source', reason))
   }
 
   /** The session's recording for AI checks of its frames. */

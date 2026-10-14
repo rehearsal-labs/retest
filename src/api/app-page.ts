@@ -1,20 +1,28 @@
 import type { PageObservation } from '../protocol/commands.ts'
 import type { SourceLocation } from '../protocol/failures.ts'
-import type { LocatorDialect, LocatorRecipe } from '../protocol/locator.ts'
+import type { FrameRecipe, LocatorDialect, LocatorRecipe } from '../protocol/locator.ts'
+import type { AppDialog } from './dialog.ts'
+import type { InboxLink } from './inbox.ts'
 import type { BuiltRecipe } from './locator-recipes.ts'
-import type { Alert, Locator, NativeKeyboard, NativeLocatorStep, Page, SwipeDirection } from './page.ts'
+import type { Alert, Download, FileChooser, Frame, Locator, NativeKeyboard, NativeLocatorStep, Page, SwipeDirection } from './page.ts'
 import type { TestRun } from './test-run.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { withLocation } from '../protocol/failures.ts'
 import { parseKey } from '../protocol/keys.ts'
 import { pageAddress } from '../protocol/locator-checks.ts'
+import { framePathOf, sameFramePath } from '../protocol/locator.ts'
 import { recordedTitle } from '../protocol/page-facts.ts'
 import { isPlainObject } from '../protocol/schema.ts'
 import { listWords } from '../shared/list-words.ts'
 import { readScrollArgument, readSelectArgument } from './action-arguments.ts'
+import { readOpening, waitForDialog } from './dialog.ts'
+import { readDragOptions } from './drag.ts'
+import { download, fileChooser, setInputFiles } from './files.ts'
 import { formatValue } from './format-value.ts'
+import { inboxCodeReference, inboxLinkReference } from './inbox.ts'
 import { cssRecipe, pickedRecipe, roleRecipe, scopedRecipe, testIdRecipe, textRecipe } from './locator-recipes.ts'
 import { misuse } from './misuse.ts'
+import { route, unroute } from './route.ts'
 import { Secret } from './secret.ts'
 
 /** The test, app and recipe behind a locator, for assertions. */
@@ -63,8 +71,10 @@ export class AppPage implements Page<true> {
   }
 
 
-  goto(url: string, options?: unknown): Promise<void> {
+  goto(url: string | InboxLink, options?: unknown): Promise<void> {
     const location = this.#run.location()
+    const link = inboxLinkReference(url)
+    if (link !== undefined) return this.#run.action(this.#app, { kind: 'goto', url: link }, location, options)
     if (typeof url !== 'string') throw misuse(`goto() takes a URL string, received ${formatValue(url)}.`, this.#run)
     return this.#run.action(this.#app, { kind: 'goto', url }, location, options)
   }
@@ -115,6 +125,11 @@ export class AppPage implements Page<true> {
     })
   }
 
+  // The frame's element is found from this page, so its locator must be one of this page's own.
+  frame(locator: unknown): AppFrame {
+    return openFrame({ run: this.#run, app: this.#app, path: undefined, dialect: this.#dialect }, locator)
+  }
+
   title(): Promise<string> {
     const location = this.#run.location()
     return this.#run.read(this.#app, 'page.title()', location, () => this.#title(location))
@@ -122,6 +137,38 @@ export class AppPage implements Page<true> {
 
   scroll(delta: unknown, options?: unknown): Promise<void> {
     return scroll({ run: this.#run, app: this.#app }, delta, options)
+  }
+
+  fileChooser(action: unknown, options?: unknown): Promise<FileChooser> {
+    return fileChooser({ run: this.#run, app: this.#app }, action, options)
+  }
+
+  download(action: unknown, options?: unknown): Promise<Download> {
+    return download({ run: this.#run, app: this.#app }, action, options)
+  }
+
+  dialog(action: unknown, options?: unknown): Promise<AppDialog> {
+    return waitForDialog({ run: this.#run, app: this.#app }, action, options)
+  }
+
+  // A popup is an app's page of its own, by the name the parent gave it, and finds by the rules this page finds by.
+  popup(action: unknown, options?: unknown): Promise<AppPage> {
+    const location = this.#run.location()
+    const read = readOpening('popup', this.#run, action, options)
+    const wait = { app: this.#app, label: 'page.popup()', location, timeoutMs: read.timeoutMs, action: read.action }
+    return this.#run.waitForPopup(wait, (popup) => new AppPage(this.#run, popup.app, this.#dialect))
+  }
+
+  close(options?: unknown): Promise<void> {
+    return this.#run.action(this.#app, { kind: 'close' }, this.#run.location(), options)
+  }
+
+  route(pattern: unknown, answer: unknown): Promise<void> {
+    return route({ run: this.#run, app: this.#app }, pattern, answer)
+  }
+
+  unroute(pattern: unknown): Promise<void> {
+    return unroute({ run: this.#run, app: this.#app }, pattern)
   }
 
   swipe(direction: unknown, options?: unknown): Promise<void> {
@@ -161,6 +208,55 @@ export class AppPage implements Page<true> {
   }
 }
 
+/** Where a frame is opened from: the test and app, the frames already on the way to it, and the rules it finds by. */
+type FrameOwner = { readonly run: TestRun; readonly app: string; readonly path: FrameRecipe[] | undefined; readonly dialect: LocatorDialect | undefined }
+
+/**
+ * A frame of one app's page, by the path of frames that leads to it from the page. Its locators carry that path, so
+ * every command finds the frame again on its way to the element, and find by the rules the page finds by.
+ */
+export class AppFrame implements Frame<true> {
+  readonly #owner: FrameOwner & { readonly path: FrameRecipe[] }
+
+  constructor(owner: FrameOwner & { readonly path: FrameRecipe[] }) {
+    this.#owner = owner
+  }
+
+  getByTestId(id: string): AppLocator {
+    return this.#locator(testIdRecipe(id))
+  }
+
+  getByRole(role: string, options?: unknown): AppLocator {
+    return this.#locator(roleRecipe(role, options))
+  }
+
+  getByLabel(text: string | RegExp, options?: unknown): AppLocator {
+    return this.#locator(textRecipe('label', text, options))
+  }
+
+  getByText(text: string | RegExp, options?: unknown): AppLocator {
+    return this.#locator(textRecipe('text', text, options))
+  }
+
+  getByPlaceholder(text: string | RegExp, options?: unknown): AppLocator {
+    return this.#locator(textRecipe('placeholder', text, options))
+  }
+
+  locator(selector: string): AppLocator {
+    return this.#locator(cssRecipe(selector))
+  }
+
+  frame(locator: unknown): AppFrame {
+    return openFrame(this.#owner, locator)
+  }
+
+  #locator(built: BuiltRecipe): AppLocator {
+    const { run, app, path, dialect } = this.#owner
+    if ('problem' in built) throw misuse(built.problem, run)
+    return new AppLocator({ run, app, recipe: { ...built.recipe, ...(dialect === undefined ? {} : { dialect }), frame: path } })
+  }
+}
+
 /** A locator on one app's page. */
 export class AppLocator implements Locator<true> {
   readonly #target: LocatorTarget
@@ -176,6 +272,9 @@ export class AppLocator implements Locator<true> {
   fill(value: string | Secret, options?: unknown): Promise<void> {
     const { run, app, recipe } = this.#target
     const location = run.location()
+    // A code from an inbox is a secret too, so it is told apart first.
+    const code = inboxCodeReference(value)
+    if (code !== undefined) return run.action(app, { kind: 'fill', locator: recipe, value: code }, location, options)
     if (value instanceof Secret) return run.action(app, { kind: 'fill', locator: recipe, value: { secret: value.name } }, location, options)
     if (typeof value !== 'string') throw misuse(`fill() takes a string, received ${formatValue(value)}.`, run)
     return run.action(app, { kind: 'fill', locator: recipe, value }, location, options)
@@ -251,6 +350,22 @@ export class AppLocator implements Locator<true> {
 
   scroll(delta: unknown, options?: unknown): Promise<void> {
     return scroll(this.#target, delta, options)
+  }
+
+  // The target is another locator of the same test's same app, whose recipe goes with the source's in one command.
+  dragTo(target: unknown, options?: unknown): Promise<void> {
+    const { run, app, recipe } = this.#target
+    const location = run.location()
+    const into = locatorTarget(target)
+    if (into === undefined) throw misuse(`dragTo() takes the locator of the element to drop on, such as page.getByTestId('done'), received ${formatValue(target)}.`, run)
+    if (into.run !== run || into.app !== app) throw misuse(`dragTo() drops on an element of the same page. The target is a locator of ${into.app === app ? 'another test' : `the app ${into.app}`}.`, run)
+    const read = readDragOptions(options)
+    if (!read.ok) throw misuse(read.problem, run)
+    return run.action(app, { kind: 'dragTo', locator: recipe, target: into.recipe, ...read.steps }, location, read.call)
+  }
+
+  setInputFiles(files: unknown, options?: unknown): Promise<void> {
+    return setInputFiles(this.#target, files, options)
   }
 
   tap(options?: unknown): Promise<void> {
@@ -352,6 +467,16 @@ export function pageTarget(value: unknown): PageTarget | undefined {
  */
 export function withPlaywrightRules(value: object): object {
   return value instanceof AppPage ? (pageByPlaywrightRules?.(value) ?? value) : value
+}
+
+// A frame is opened by the locator of its element, made on the page or frame `frame()` is called on, of the same app.
+function openFrame(owner: FrameOwner, value: unknown): AppFrame {
+  const target = locatorTarget(value)
+  const { run, app } = owner
+  if (target === undefined) throw misuse(`frame() takes the locator of an <iframe> or a <frame>, such as page.locator('iframe#payment'), received ${formatValue(value)}.`, run)
+  if (target.run !== run || target.app !== app) throw misuse(`frame() takes a locator of the page it is called on, and this one is of the app ${JSON.stringify(target.app)}.`, run)
+  if (!sameFramePath(target.recipe.frame, owner.path)) throw misuse('frame() takes a locator made on the page or frame it is called on, and this one was made on another frame.', run)
+  return new AppFrame({ run, app, path: framePathOf(target.recipe), dialect: owner.dialect })
 }
 
 // A key `parseKey` refuses is never sent. The parent reads the key again, since it trusts nothing the test process checked.

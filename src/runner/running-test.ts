@@ -1,40 +1,56 @@
 import type { NativeLook } from '../native/assertions.ts'
 import { unsupportedCheck } from '../native/assertions.ts'
 import { describeElement } from '../native/locators.ts'
-import { isPageCheck, locatorCheck } from '../protocol/locator-checks.ts'
+import { isLayoutCheck, isPageCheck, isScreenshotCheck, locatorCheck } from '../protocol/locator-checks.ts'
 import { NativePageAdapter } from './native-pool.ts'
-import type { OwnedPage, PageNavigation } from '../browser/contract.ts'
+import type { OwnedPage, PageNavigation, ResolvedInputFiles } from '../browser/contract.ts'
 import type { EvaluationRequests } from '../evaluation/attempt.ts'
 import type { ActionKind, CommandResult, FillValue, PageCommand } from '../protocol/commands.ts'
 import type { ChildEvent, EventBody, EventOrigin } from '../protocol/events.ts'
 import type { Failure, FailureClass, SourceLocation } from '../protocol/failures.ts'
 import type { CheckRecord } from '../protocol/locator-checks.ts'
 import type { LocatorRecipe, TextMatch } from '../protocol/locator.ts'
-import type { ChildMessage } from '../protocol/messages.ts'
+import type { InboxCodeRef, InboxLinkRef, InboxRequest } from '../protocol/inbox.ts'
+import type { FilesAnswer } from '../protocol/files.ts'
+import type { ChildMessage, ParentMessage } from '../protocol/messages.ts'
+import type { SecretRef } from '../protocol/secret.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Variant } from '../protocol/variant.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
 import type { PageFields } from './observations.ts'
 import type { NavigationStamp, NotedNavigation, PageDocument } from './page-navigations.ts'
 import type { Redactor } from './redactor.ts'
+import type { KeptPicture, ScreenshotAccess } from './screenshot-baselines.ts'
+import type { InboxCodeFill, InboxRead, InboxReadBudget, LinkResolution } from './inbox.ts'
+import type { PopupRegistry } from './popups.ts'
 import type { FillResolution, SecretFill } from './secrets.ts'
+import type { AttemptFiles } from './files.ts'
 import type { ProcessEvent, TestFileMessage, TestFileProcess } from './test-file-process.ts'
 import { refusedAnswer } from '../evaluation/attempt.ts'
-import { describeCommand, isNavigationKind } from '../protocol/commands.ts'
+import { commandLocators, describeCommand, isNavigationKind } from '../protocol/commands.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
+import { dragProblem } from '../protocol/drag.ts'
 import { formatSessionId } from '../protocol/evidence.ts'
 import { errorMessage, failure, withAlso, withLocation } from '../protocol/failures.ts'
+import { inputFilesProblem } from '../protocol/files.ts'
+import { withPickerAdvice } from '../browser/file-chooser.ts'
+import { noFramesInApp } from '../browser/frames.ts'
 import { parseKey } from '../protocol/keys.ts'
+import { codePlaceholderName, linkName } from '../protocol/inbox.ts'
 import { formatLine } from '../protocol/location.ts'
 import { locatorProblem, locatorSteps } from '../protocol/locator.ts'
 import { observedRecord } from '../protocol/observation-record.ts'
 import { selectCommandProblem } from '../protocol/option-choices.ts'
+import { screenshotRequestProblem } from '../protocol/screenshot.ts'
 import { scrollProblem } from '../protocol/scroll-delta.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { bounded } from './bounded.ts'
 import { cleanedLook, pageFields, ServedObservations } from './observations.ts'
 import { isOurs } from './outcome.ts'
 import { PageNavigations } from './page-navigations.ts'
+import { TestDialogs, withDialogText } from './dialogs.ts'
+import { TestPopups } from './popups.ts'
+import { TestRoutes } from './routes.ts'
 
 /** How long a stopped test's process has to answer, and a page that lost its browser has to say so. */
 export const abortGraceMs = 1000
@@ -61,12 +77,41 @@ export type RunningTestOptions = {
   touch?: ReadonlySet<string>
   /** Runs the test's AI checks in this process. Without it, every check is refused. */
   evaluations?: EvaluationRequests
+  /** Reads the run's inboxes for the test, and resolves the codes and links they gave it. Without it, every read is refused. */
+  inbox?: InboxAccess
+  /**
+   * Makes the pages a test's pages open sessions of the attempt, which `page.popup()` hands the test. Without it, every
+   * wait for a popup is refused.
+   */
+  popups?: PopupRegistry
+  /**
+   * The attempt's files: what a test gives a file input, the pickers and downloads it waits for, and every download its
+   * pages make. Without it, every command and request about files is refused.
+   */
+  files?: FilesAccess
+  /** The test file is a Playwright test file, whose page has no `fileChooser()` and whose locators no `setInputFiles()`. */
+  playwright?: true
   /**
    * Told just before a secret's keys go to an app's page, with the secret's name, and given how far the keys got once
    * the fill has answered; the pixel capture policy withholds captures of that session in between. Absent in a run with
    * no capture policy.
    */
   secretEntry?: (app: string, secret: string) => SecretEntryEnd
+  /**
+   * Takes the pictures of the test's screenshot checks and keeps them, and leaves what a judged comparison needs in
+   * the run folder or the baseline. Without it, every screenshot check is refused.
+   */
+  screenshots?: ScreenshotAccess
+}
+
+/**
+ * What a running test needs of the run's inboxes: to read one, to turn a code it gave into the text a fill types, bound
+ * to the origins it may be typed on, and to turn a link it gave into the address a goto opens, when its origin allows.
+ */
+export type InboxAccess = {
+  read: (request: InboxRequest, budget: InboxReadBudget) => Promise<InboxRead>
+  fillCode: (command: InboxCodeFill, context: SecretFillContext) => Promise<FillResolution>
+  openLink: (reference: InboxLinkRef) => LinkResolution
 }
 
 /** Ends a secret's entry once its fill has answered: whether its keys were sent, not sent, or may have been. */
@@ -116,6 +161,10 @@ type Busy = { label: string; location: SourceLocation | undefined }
 /** An AI check the parent is running, and the apps whose pages it captures. */
 type Evaluating = { apps: readonly string[]; location: SourceLocation | undefined }
 type EvaluateMessage = Extract<ChildMessage, { type: 'evaluate' }>
+type InboxReadMessage = Extract<ChildMessage, { type: 'inbox' }>
+type FilesMessage = Extract<ChildMessage, { type: 'files' }>
+/** What a running test needs of its attempt's files. */
+export type FilesAccess = Pick<AttemptFiles, 'stage' | 'chooser' | 'download' | 'saved' | 'close'>
 type TestScope = { testId: string; attemptId: string }
 type InFlight = {
   message: CommandMessage
@@ -139,6 +188,10 @@ type InFlight = {
   answered: boolean
   reported: boolean
 }
+
+// What a test file can do about a file picker nobody waited for, which the picker's failure ends with.
+const testPickerAdvice = 'To give a picker files, wrap the action that opens it in page.fileChooser(), or call setInputFiles() on the file input.'
+const playwrightPickerAdvice = "Retest's Playwright compatibility cannot give a page files yet."
 
 // Commands that open a document, which the navigation budget times rather than the action budget.
 const navigationKinds: ReadonlySet<string> = new Set(['goto', 'reload', 'goBack', 'goForward'])
@@ -169,6 +222,19 @@ export class RunningTest {
   readonly #inFlight = new Map<number, InFlight>()
   /** The AI checks running, by the id the test process gave each. */
   readonly #evaluating = new Map<number, Evaluating>()
+  /** The inbox reads running, by the id the test process gave each, each stopped by its controller. */
+  readonly #inboxReads = new Map<number, AbortController>()
+  /** The test's JavaScript dialogs, and the pages its pages opened, which it was given as pages of its own, by app. */
+  readonly #dialogs: TestDialogs
+  readonly #popups: TestPopups
+  /** The test's changes to its pages' routes, which answer requests with the test's own responses. */
+  readonly #routes: TestRoutes
+  readonly #popupPages = new Map<string, OwnedPage>()
+  /** The waits for a file picker or a download running, by the id the test process gave each, and those it let go of. */
+  readonly #filesRequests = new Map<number, AbortController>()
+  readonly #releasedRequests = new Set<number>()
+  /** The pictures screenshot looks took, by the id the test process gave each look, until the look is served. */
+  readonly #pictures = new Map<number, KeptPicture>()
   readonly #finished = Promise.withResolvers<BodyReport>()
   #deadline: Deadline | undefined
   #startedAt: number | undefined
@@ -207,6 +273,33 @@ export class RunningTest {
   constructor(options: RunningTestOptions) {
     this.#options = options
     this.#observations = new ServedObservations(options.redactor)
+    const host = {
+      testId: options.testId,
+      attemptId: options.attemptId,
+      timeouts: options.timeouts,
+      page: (app: string) => options.pages.get(app) ?? this.#popupPages.get(app),
+      refusal: () => (this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest sent nothing to the page.')),
+      remainingMs: () => this.#deadline?.remainingMs,
+      answerable: () => this.#report === undefined && this.#revocation === undefined,
+      commandsSent: () => this.#sent.size > 0,
+      stepId: () => this.#stepId,
+      send: (message: ParentMessage) => options.process.send(message),
+      emit: (body: EventBody) => options.emit(body),
+      observe: (problem: Failure) => {
+        if (this.#report === undefined && this.#revocation === undefined) this.#observed.push(problem)
+      },
+      violation: (problem: string) => this.#violation(problem),
+      redact: (text: string) => options.redactor?.redact(text) ?? text,
+    }
+    this.#dialogs = new TestDialogs(host)
+    // A popup is one of the test's pages from the moment it opens: its navigations are written, its dialogs heard.
+    const adopt = (app: string, page: OwnedPage, follow: (listener: (navigation: PageNavigation) => void) => () => void): void => {
+      this.#popupPages.set(app, page)
+      this.#stopNavigation.push(follow((navigation) => this.#navigated(app, navigation)), this.#dialogs.watch(app, page))
+      this.#stopNavigation.push(this.#routes.watch(app, page))
+    }
+    this.#popups = new TestPopups({ ...host, adopt }, options.popups)
+    this.#routes = new TestRoutes(host)
   }
 
   /** Starts the body in the child and resolves when it is over, however it ends. A process that has ended gets no body. */
@@ -217,6 +310,8 @@ export class RunningTest {
       return this.#finished.promise
     }
     this.#stopNavigation = [...pages].map(([app, page]) => page.onNavigation((navigation) => this.#navigated(app, navigation)))
+    this.#stopNavigation.push(...[...pages].map(([app, page]) => this.#dialogs.watch(app, page)))
+    this.#stopNavigation.push(...[...pages].map(([app, page]) => this.#routes.watch(app, page)))
     process.listen((event) => this.#receive(event))
     process.send({ type: 'run', testId, attemptId, timeouts, apps: [...pages.keys()], ...(variant === undefined ? {} : { variant }) })
     this.#startedAt = monotonicClock()
@@ -240,6 +335,10 @@ export class RunningTest {
     this.#observed.push(reason)
     clearTimeout(this.#testTimer)
     this.#options.evaluations?.cancel(reason)
+    for (const read of this.#inboxReads.values()) read.abort(reason)
+    for (const request of this.#filesRequests.values()) request.abort(reason)
+    this.#dialogs.stop(reason)
+    this.#popups.stop(reason)
     for (const page of this.#options.pages.values()) if (page instanceof NativePageAdapter) page.cancel(reason)
     this.#completeAnswered()
     for (const entry of this.#inFlight.values()) {
@@ -297,6 +396,8 @@ export class RunningTest {
    */
   async settle(timeoutMs: number): Promise<void> {
     const deadline = new Deadline(timeoutMs)
+    // A dialog the test left open holds its page and the action that opened it, so it is dismissed before anything waits.
+    await this.#dialogs.settle(deadline.remainingMs)
     await bounded(Promise.all([...this.#inFlight.values()].map((entry) => entry.done.promise)), timeoutMs)
     await this.#navigations.flush(deadline.remainingMs)
     this.#completeAnswered()
@@ -325,6 +426,7 @@ export class RunningTest {
     for (const stop of this.#stopNavigation) stop()
     this.#navigations.writeWaiting()
     this.#options.process.listen(undefined)
+    this.#options.files?.close()
   }
 
   #receive(event: ProcessEvent): void {
@@ -338,6 +440,16 @@ export class RunningTest {
         return this.#childEvent(message.event)
       case 'evaluate':
         return this.#evaluate(message)
+      case 'inbox':
+        return this.#readInbox(message)
+      case 'dialog':
+        return this.#dialogs.receive(message)
+      case 'popup':
+        return this.#popups.receive(message)
+      case 'files':
+        return this.#filesRequest(message)
+      case 'route':
+        return this.#routes.receive(message)
       case 'test-finished':
         return this.#childFinished(message)
       default:
@@ -350,9 +462,9 @@ export class RunningTest {
     if (this.#deadline?.reached === true) this.#runOutOfTime()
     const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest sent nothing to the page.')
     if (refusal !== undefined) return this.#send(message.id, { ok: false, failure: withLocation(refusal, message.location) })
-    const page = this.#options.pages.get(message.app)
+    const page = this.#options.pages.get(message.app) ?? this.#popupPages.get(message.app)
     if (page === undefined) return this.#violation(`sent a command for the app ${JSON.stringify(message.app)}, which this test does not use`)
-    if (this.#inFlight.has(message.id) || this.#evaluating.has(message.id)) return this.#violation(`sent command ${message.id} again while the first was still running`)
+    if (this.#inFlight.has(message.id) || this.#evaluating.has(message.id) || this.#inboxReads.has(message.id)) return this.#violation(`sent command ${message.id} again while the first was still running`)
     const running = this.#busyWith(message.app, isLook(message.command))
     if (running !== undefined) return this.#refuseConcurrent(message, running)
     // Only a check's look waits for its assertion after a loss: a plain read reports nothing, so nothing is waited for.
@@ -424,6 +536,10 @@ export class RunningTest {
     } catch (error) {
       result = thrownResult(command, error)
     }
+    // A picker nobody waited for is answered by what this test file can call.
+    result = withPickerAdvice(result, this.#options.playwright === true ? playwrightPickerAdvice : testPickerAdvice)
+    // A dialog the page answered while the command ran is named in the failure, its text hidden as page text is.
+    result = this.#popups.settled(app, withDialogText(result, (text) => this.#options.redactor?.redact(text) ?? text))
     entry.pageAnswer = result.ok ? result : { ok: false, failure: withLocation(result.failure, location) }
     // A timeout spent the command's budget already. Optional titles cannot delay the page's answer further.
     if (!result.ok && result.failure.class === 'timeout') this.#navigations.writeWaiting(app)
@@ -461,29 +577,62 @@ export class RunningTest {
   // its own unredacted text.
   async #run({ message, page, stop, commandToken }: InFlight, timeoutMs: number): Promise<CommandResult> {
     const { command } = message
-    const problem = commandProblem(command) ?? secretLocatorProblem(command, this.#options.redactor) ?? (page instanceof NativePageAdapter ? undefined : namedRowProblem(command))
+    const problem = this.#popups.refusal(message.app, command) ?? commandProblem(command) ?? secretLocatorProblem(command, this.#options.redactor) ?? (page instanceof NativePageAdapter ? noFramesInApp(commandLocators(command)) : namedRowProblem(command))
     if (problem !== undefined) {
       // A look the parent refuses is refused every time, so no check on it can pass: the refusal is the parent's own
       // failure, as an action's is through its event.
       if (isLook(command) && this.#revocation === undefined) this.#observed.push(withLocation(problem, message.location))
       return { ok: false, failure: problem }
     }
+    if (command.kind === 'close') return this.#popups.close(message.app, message.location, () => page.execute(command, timeoutMs, stop.signal, commandToken))
+    if (command.kind === 'observeScreenshot') return this.#takePicture(message, command, timeoutMs, stop.signal)
     if (command.kind === 'swipe' || command.kind === 'nativeKeyboard' || command.kind === 'nativeAlert') return page instanceof NativePageAdapter ? page.execute(command, timeoutMs, stop.signal) : { ok: false, failure: failure('unsupported', `${command.kind} needs a native app session.`) }
+    if (command.kind === 'goto') {
+      // A link from an inbox opens only once its origin is one it may open on; the page is given the address alone.
+      const opened = typeof command.url === 'string' ? { ok: true as const, url: command.url } : this.#openLink(command.url)
+      return opened.ok ? page.execute({ kind: 'goto', url: opened.url }, timeoutMs, stop.signal, commandToken) : { ok: false, failure: opened.failure }
+    }
+    if (command.kind === 'setInputFiles' || command.kind === 'setChooserFiles') return this.#giveFiles(command, page, { timeoutMs, signal: stop.signal, commandToken })
     if (command.kind !== 'fill') return page.execute(command, timeoutMs, stop.signal, commandToken)
     const { locator, value } = command
     if (typeof value === 'string') return page.execute({ kind: 'fill', locator, value }, timeoutMs, stop.signal, commandToken)
     const deadline = new Deadline(timeoutMs)
-    const { fillSecret } = this.#options
     // A native app has no address: the bundle id read from its installed app is where the secret would go. A page can be
     // read again, so a fill that finds it on no address yet can wait for its first.
     const destination = page instanceof NativePageAdapter ? { pageUrl: undefined, bundleId: page.bundleId } : { pageUrl: page.url, currentUrl: () => page.url }
     const context: SecretFillContext = { app: message.app, ...destination, timeoutMs, signal: stop.signal }
-    const resolved = fillSecret === undefined ? noSecrets(value.secret) : await fillSecret({ kind: 'fill', locator, value }, context)
+    const resolved = await this.#resolveFill(locator, value, context)
     if (!resolved.ok) return { ok: false, failure: resolved.failure }
-    const ended = this.#options.secretEntry?.(message.app, value.secret)
+    const ended = this.#options.secretEntry?.(message.app, 'secret' in value ? value.secret : codePlaceholderName)
     const result = await page.execute(resolved.command, deadline.commandTimeoutMs, stop.signal, commandToken)
     ended?.(result.ok ? 'sent' : result.failure.details?.['inputSent'] === false ? 'not_sent' : 'unknown')
     return result
+  }
+
+  // A screenshot look's picture stays in this process: the page takes it, it is kept until the look is served, and the
+  // test process is told only its size and how it stands against its baseline. A look the attempt's pictures refuse is
+  // refused every time, so no check on it can pass: the refusal is the parent's own failure.
+  async #takePicture(message: CommandMessage, command: Extract<PageCommand, { kind: 'observeScreenshot' }>, timeoutMs: number, signal: AbortSignal): Promise<CommandResult> {
+    const { screenshots } = this.#options
+    const taken = screenshots === undefined ? { ok: false as const, refused: true as const, failure: failure('unsupported', 'This run takes no pictures for screenshot checks.') } : await screenshots.take(message.app, command, timeoutMs, signal)
+    if (!taken.ok) {
+      if (taken.refused === true && this.#revocation === undefined) this.#observed.push(withLocation(taken.failure, message.location))
+      return { ok: false, failure: taken.failure }
+    }
+    if (taken.picture !== undefined) this.#pictures.set(message.id, taken.picture)
+    return { ok: true, kind: 'observeScreenshot', observation: taken.look, ...(taken.page === undefined ? {} : { page: taken.page }) }
+  }
+
+  // A secret is read by the run's secrets, and a code by the run's inboxes; either says why it may not be typed.
+  #resolveFill(locator: LocatorRecipe, value: SecretRef | InboxCodeRef, context: SecretFillContext): Promise<FillResolution> {
+    const { fillSecret, inbox } = this.#options
+    if ('secret' in value) return fillSecret === undefined ? Promise.resolve(noSecrets(value.secret)) : fillSecret({ kind: 'fill', locator, value }, context)
+    return inbox === undefined ? Promise.resolve({ ok: false, failure: noInboxes(value.inbox) }) : inbox.fillCode({ kind: 'fill', locator, value }, context)
+  }
+
+  #openLink(reference: InboxLinkRef): LinkResolution {
+    const { inbox } = this.#options
+    return inbox === undefined ? { ok: false, failure: noInboxes(reference.inbox) } : inbox.openLink(reference)
   }
 
   // An action is reported once: by the page's answer, or as unknown when the page gave none in time.
@@ -545,6 +694,8 @@ export class RunningTest {
   #serve(entry: InFlight, result: CommandResult, nativeLook?: NativeLook): CommandResult {
     const { command, app, stepId } = entry.message
     if (result.ok && result.kind === 'observePage' && command.kind === 'observePage') return this.#servePage(app, result)
+    if (result.ok && result.kind === 'observeLayout' && command.kind === 'observeLayout') return this.#serveLayout(entry, command, result)
+    if (result.ok && result.kind === 'observeScreenshot' && command.kind === 'observeScreenshot') return this.#servePicture(entry, command, result)
     if (!result.ok || result.kind !== 'observe' || command.kind !== 'observe') return result
     const { locator } = command
     const { observation } = result
@@ -571,6 +722,34 @@ export class RunningTest {
     return { ...result, observation, observationId, sessionId }
   }
 
+  // A layout look is kept for the assertion that names it, which records what it measured, with the elements and the
+  // words the look was asked to measure, so the parent can tell a look made for one check from a look made for another.
+  // Like a look at the page, it has no event of its own, since an observation event lists a locator's matches.
+  #serveLayout(entry: InFlight, command: Extract<PageCommand, { kind: 'observeLayout' }>, result: Extract<CommandResult, { kind: 'observeLayout' }>): CommandResult {
+    const { app } = entry.message
+    const sessionId = formatSessionId(this.#options.attemptId, app)
+    const page = commandPage(entry, result, this.#documents.get(app))
+    const { locator, other, words } = command
+    const request = { ...(locator === undefined ? {} : { locator }), ...(other === undefined ? {} : { other }), ...(words === undefined ? {} : { words }) }
+    const observationId = this.#observations.serve({ app, sessionId, request, layout: result.observation, ...page })
+    return { ...result, observationId, sessionId }
+  }
+
+  // A screenshot look is kept for the assertion that names it, as a layout look is, with the element, the name and the
+  // threshold it was taken for; its picture stays with the attempt's pictures. It has no event of its own.
+  #servePicture(entry: InFlight, command: Extract<PageCommand, { kind: 'observeScreenshot' }>, result: Extract<CommandResult, { kind: 'observeScreenshot' }>): CommandResult {
+    const { app, id } = entry.message
+    const sessionId = formatSessionId(this.#options.attemptId, app)
+    const page = commandPage(entry, result, this.#documents.get(app))
+    const { locator, name, threshold } = command
+    const request = { ...(locator === undefined ? {} : { locator }), name, ...(threshold === undefined ? {} : { threshold }) }
+    const observationId = this.#observations.serve({ app, sessionId, picture: request, screenshot: result.observation, ...page })
+    const picture = this.#pictures.get(id)
+    this.#pictures.delete(id)
+    this.#options.screenshots?.keep({ observationId, app, command, look: result.observation, picture })
+    return { ...result, observationId, sessionId }
+  }
+
   // The page's own answer when it gave one. An action it never answered may have taken effect.
   #lossFailure(reason: string): Failure {
     const unanswered = [...this.#inFlight.values()].find((entry) => !entry.message.command.kind.startsWith('observe'))
@@ -594,7 +773,7 @@ export class RunningTest {
     if (event.type !== 'assertion.passed' && event.type !== 'assertion.failed') return this.#options.emit(event, 'child')
     // An assertion that names no app looks at the test's first one, as milestone 1's single page. One that names an app
     // the test does not have names a session that never existed.
-    if (event.session !== undefined && !this.#options.pages.has(event.session)) {
+    if (event.session !== undefined && !this.#options.pages.has(event.session) && !this.#popupPages.has(event.session)) {
       return this.#violation(`sent ${event.type} for the app ${JSON.stringify(event.session)}, which this test does not use`)
     }
     const [firstApp] = this.#options.pages.keys()
@@ -605,7 +784,7 @@ export class RunningTest {
     // A native look is judged on the tree the parent read, which can also show the reference stale or the check one the
     // platform cannot make; the parent's failure then stands in for any verdict the process sent, a pass included.
     let nativeFailure: Failure | undefined
-    if (native !== undefined && event.check !== undefined && !isPageCheck(event.check) && event.locator !== undefined) {
+    if (native !== undefined && event.check !== undefined && !isPageCheck(event.check) && !isLayoutCheck(event.check) && !isScreenshotCheck(event.check) && event.locator !== undefined) {
       const rule = locatorCheck(event.check)
       const unsupported = native.page.native.checkReference(native.look.reference) ?? unsupportedCheck(event.check, native.look.matches, event.locator, native.look.tree.platform)
       if (unsupported !== undefined || !rule.passes(native.look.observation)) {
@@ -615,9 +794,11 @@ export class RunningTest {
         assertion = event.type === 'assertion.failed' ? event : { ...event, type: 'assertion.failed', failure: nativeFailure }
       }
     }
-    const judged = this.#observations.judge(assertion, { app, ...looked })
+    // What a picture showed and the files a comparison left are the parent's to write, never the process's to claim.
+    const { screenshot: _claimedScreenshot, attachments: _claimedAttachments, ...sent } = assertion
+    const judged = this.#observations.judge(sent, { app, ...looked })
     if (!judged.ok) return this.#violation(judged.problem)
-    const { event: recorded, origin, seen } = this.#parentVerdict(judged.event, { app, check: event.check, nativeFailure })
+    const { event: recorded, origin, seen } = this.#settlePicture(this.#parentVerdict(judged.event, { app, check: event.check, nativeFailure }), event.check)
     // A class the parent did not see, and that would make the test ours rather than the app's, stays the process's claim.
     if (recorded.type === 'assertion.failed' && (seen || !isOurs(recorded.failure))) this.#observed.push(recorded.failure)
     this.#assertionsSeen++
@@ -642,6 +823,24 @@ export class RunningTest {
     if (own === undefined) return { event, origin: 'child', seen: false }
     if (nativeFailure === undefined && checkClasses.has(event.failure.class)) return { event, origin: 'child', seen: true }
     return { event: { ...event, failure: withAlso(withLocation(own, event.location), [event.failure]) }, origin: 'parent', seen: true }
+  }
+
+  // A judged screenshot assertion leaves its pictures in the run folder when it failed, or writes its baseline when it
+  // passed in a run that updates them. A baseline the run could not write fails the assertion with the parent's own
+  // failure, which leads whatever the process said.
+  #settlePicture(verdict: { event: AssertionRecord; origin: EventOrigin; seen: boolean }, check: CheckRecord | undefined): { event: AssertionRecord; origin: EventOrigin; seen: boolean } {
+    const { event } = verdict
+    const { screenshots } = this.#options
+    if (screenshots === undefined || check === undefined || !isScreenshotCheck(check) || event.observationId === undefined) return verdict
+    const step = event.stepId === undefined ? {} : { stepId: event.stepId }
+    const place = event.location === undefined ? {} : { location: event.location }
+    const settled = screenshots.settle({ passed: event.type === 'assertion.passed', check, observationId: event.observationId, ...step, ...place })
+    const attached = settled.attachments === undefined ? event : { ...event, attachments: settled.attachments }
+    if (settled.failure === undefined) return { ...verdict, event: attached }
+    const failed = withLocation(settled.failure, event.location)
+    if (attached.type === 'assertion.failed') return { event: { ...attached, failure: withAlso(failed, [attached.failure]) }, origin: 'parent', seen: true }
+    const { judgedBy: _judgedBy, type: _type, ...fields } = attached
+    return { event: { ...fields, type: 'assertion.failed', failure: failed }, origin: 'parent', seen: true }
   }
 
   // A check that failed because the browser was lost while it looked is the parent's own record, since the parent saw
@@ -690,6 +889,109 @@ export class RunningTest {
         if (this.#report === undefined && this.#revocation === undefined) process.send({ type: 'evaluation-result', id: message.id, answer })
       })
       .finally(() => this.#evaluating.delete(message.id))
+  }
+
+  // The parent reads the mailbox itself; the test file's process only names the inbox and the subject, and its own time
+  // bounds the read, cut to what the test has left. A read touches no page, so no app is held. Every read the parent
+  // answers is written down, the one stopped with its test too. A read that failed is the parent's own failure, which
+  // fails the test whatever the process claims, unless the test was stopped already.
+  #readInbox(message: InboxReadMessage): void {
+    if (!this.#isOwn(message)) return this.#violation('sent an inbox read for an inactive test attempt')
+    if (this.#inboxReads.has(message.id) || this.#inFlight.has(message.id) || this.#evaluating.has(message.id)) return this.#violation(`sent inbox read ${message.id} again while the first was still running`)
+    if (this.#deadline?.reached === true) this.#runOutOfTime()
+    const { inbox, process } = this.#options
+    const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest read no inbox.')
+    if (refusal !== undefined) return process.send({ type: 'inbox-result', id: message.id, answer: { ok: false, failure: withLocation(refusal, message.location) } })
+    if (inbox === undefined) {
+      const answer = { ok: false as const, failure: withLocation(noInboxes(message.request.inbox), message.location) }
+      this.#observed.push(answer.failure)
+      this.#writeInboxRead(message, { answer, messages: 0, looks: 0, waitedMs: 0 })
+      return process.send({ type: 'inbox-result', id: message.id, answer })
+    }
+    const stop = new AbortController()
+    this.#inboxReads.set(message.id, stop)
+    const timeoutMs = this.#deadline === undefined ? message.timeoutMs : smallestBudget(message.timeoutMs, this.#deadline.remainingMs)
+    const broken = (error: unknown): InboxRead => {
+      const problem = failure('setup_failed', `Retest could not read the inbox ${JSON.stringify(message.request.inbox)}: ${this.#options.redactor?.redact(errorMessage(error)) ?? errorMessage(error)}`)
+      return { answer: { ok: false, failure: problem }, messages: 0, looks: 0, waitedMs: 0 }
+    }
+    void inbox.read(message.request, { timeoutMs, signal: stop.signal }).then(undefined, broken).then((read) => {
+      this.#inboxReads.delete(message.id)
+      const answer = read.answer.ok ? read.answer : { ok: false as const, failure: withLocation(read.answer.failure, message.location) }
+      if (!answer.ok && this.#revocation === undefined && this.#report === undefined) this.#observed.push(answer.failure)
+      this.#writeInboxRead(message, { ...read, answer })
+      if (this.#report === undefined && this.#revocation === undefined) process.send({ type: 'inbox-result', id: message.id, answer })
+    })
+  }
+
+  #writeInboxRead({ request, stepId, location }: InboxReadMessage, { answer, messages, looks, waitedMs }: InboxRead): void {
+    const { testId, attemptId } = this.#options
+    const { subject } = request
+    const wanted = subject === undefined ? {} : { wanted: typeof subject === 'string' ? subject : `/${subject.pattern}/${subject.flags}` }
+    const found = answer.ok
+      ? { subject: answer.message.subject, receivedAt: answer.message.receivedAt, codes: answer.message.codes, links: answer.message.links.length }
+      : { failure: answer.failure }
+    const step = stepId === undefined ? {} : { stepId }
+    const place = location === undefined ? {} : { location }
+    this.#options.emit({ type: 'inbox.read', testId, attemptId, ...step, inbox: request.inbox, messages, looks, waitedMs, ...wanted, ...found, ...place })
+  }
+
+  // A file input takes paths on this machine: the parent checks each path the test gave, and writes each file given by
+  // content to the run's folder, before the page sees the command. A native app takes no files, and nothing is written.
+  #giveFiles(command: Extract<PageCommand, { kind: 'setInputFiles' | 'setChooserFiles' }>, page: OwnedPage, sending: { timeoutMs: number; signal: AbortSignal; commandToken: number }): Promise<CommandResult> {
+    const method = command.kind === 'setInputFiles' ? 'setInputFiles' : 'setFiles'
+    const refused = (problem: Failure): Promise<CommandResult> => Promise.resolve({ ok: false, failure: problem })
+    const problem = inputFilesProblem(command.files, method)
+    if (problem !== undefined) return refused(problem)
+    if (page instanceof NativePageAdapter) return refused(failure('unsupported', `${method}() gives files to a web page's file input, and a native app has none, so Retest gave none.`))
+    const { files } = this.#options
+    if (files === undefined) return refused(failure('unsupported', `${method}() needs a run that keeps files, and this one keeps none, so Retest gave none.`))
+    const staged = files.stage(command.files, method)
+    if (!staged.ok) return refused(staged.failure)
+    const resolved: ResolvedInputFiles = { ...command, paths: staged.paths, mimeTypes: staged.mimeTypes }
+    return page.execute(resolved, sending.timeoutMs, sending.signal, sending.commandToken)
+  }
+
+  // The parent arms the page and waits itself; the test file's process only names the app or the download, and its own
+  // time bounds the wait, cut to what the test has left. A wait holds no app: the action it waits on runs as an ordinary
+  // command. One that failed is the parent's own failure, which fails the test whatever the process claims, unless the
+  // test was stopped already or the process let go of it because its action failed.
+  #filesRequest(message: FilesMessage): void {
+    if (!this.#isOwn(message)) return this.#violation('sent a request about files for an inactive test attempt')
+    const { request, id, location } = message
+    if (request.kind === 'release') {
+      // Only a wait still running is let go of; one already answered has nothing left to stop.
+      const waiting = this.#filesRequests.get(request.request)
+      if (waiting === undefined) return
+      this.#releasedRequests.add(request.request)
+      waiting.abort(failure('interrupted', 'The action the test waited on failed, so Retest stopped waiting.'))
+      return
+    }
+    if (this.#filesRequests.has(id) || this.#inFlight.has(id) || this.#evaluating.has(id) || this.#inboxReads.has(id)) return this.#violation(`sent request ${id} again while the first was still running`)
+    if (request.kind !== 'saved' && !this.#options.pages.has(request.app)) return this.#violation(`sent a request for the app ${JSON.stringify(request.app)}, which this test does not use`)
+    if (this.#deadline?.reached === true) this.#runOutOfTime()
+    const { files, process } = this.#options
+    const answer = (sent: FilesAnswer): void => process.send({ type: 'files-result', id, answer: sent.ok ? sent : { ok: false, failure: this.#options.redactor?.redactFailure(sent.failure) ?? sent.failure } })
+    const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest waited for nothing.')
+    if (refusal !== undefined) return answer({ ok: false, failure: withLocation(refusal, location) })
+    if (files === undefined) {
+      const unkept = withLocation(failure('unsupported', 'This run keeps no files, so Retest waited for nothing.'), location)
+      this.#observed.push(unkept)
+      return answer({ ok: false, failure: unkept })
+    }
+    const stop = new AbortController()
+    this.#filesRequests.set(id, stop)
+    const timeoutMs = this.#deadline === undefined ? message.timeoutMs : smallestBudget(message.timeoutMs, this.#deadline.remainingMs)
+    const budget = { timeoutMs, signal: stop.signal, stepId: message.stepId, location }
+    const waiting = request.kind === 'chooser' ? files.chooser(request.app, budget) : request.kind === 'download' ? files.download(request.app, budget) : files.saved(request.download, budget)
+    const broken = (error: unknown): FilesAnswer => ({ ok: false, failure: failure('session_lost', `The browser call failed: ${errorMessage(error)}`) })
+    void waiting.then(undefined, broken).then((settled) => {
+      this.#filesRequests.delete(id)
+      const placed: FilesAnswer = settled.ok ? settled : { ok: false, failure: withLocation(settled.failure, location) }
+      const ignored = this.#releasedRequests.delete(id)
+      if (!placed.ok && !ignored && this.#revocation === undefined && this.#report === undefined) this.#observed.push(placed.failure)
+      if (this.#report === undefined && this.#revocation === undefined && !ignored) answer(placed)
+    })
   }
 
   #childFinished(message: Extract<TestFileMessage, { type: 'test-finished' }>): void {
@@ -780,6 +1082,11 @@ export class RunningTest {
     this.#stepId = undefined
     clearTimeout(this.#testTimer)
     this.#options.evaluations?.cancel(failure('evaluation_error', 'The test ended before the answer came.'))
+    for (const read of this.#inboxReads.values()) read.abort(failure('interrupted', 'The test ended before the inbox answered.'))
+    for (const request of this.#filesRequests.values()) request.abort(failure('interrupted', 'The test ended before the page opened a file picker or a download.'))
+    this.#dialogs.stop(failure('interrupted', 'The test ended before the page opened a dialog.'))
+    this.#popups.stop(failure('interrupted', 'The test ended before the page opened another page.'))
+    this.#releasedRequests.clear()
     if (this.#timedOut) this.#options.process.send({ type: 'close' })
     else clearTimeout(this.#killTimer)
     this.#checkReported?.resolve()
@@ -817,7 +1124,7 @@ function openedDocument(result: Extract<CommandResult, { url: string }>): PageDo
 
 // What the test process's own checks refuse, which the parent refuses again before the page sees the command.
 function commandProblem(command: PageCommand): Failure | undefined {
-  const located = 'locator' in command && command.locator !== undefined ? locatorProblem(command.locator) : undefined
+  const located = commandLocators(command).map(locatorProblem).find((problem) => problem !== undefined)
   if (located !== undefined) return located
   switch (command.kind) {
     case 'press': {
@@ -828,6 +1135,13 @@ function commandProblem(command: PageCommand): Failure | undefined {
       return selectCommandProblem(command)
     case 'scroll':
       return scrollProblem(command)
+    case 'dragTo':
+      return dragProblem(command)
+    case 'observeScreenshot': {
+      // A name is a file name and a threshold a distance, so the parent refuses either before it reads any file.
+      const problem = screenshotRequestProblem(command)
+      return problem === undefined ? undefined : failure('usage', problem)
+    }
     default:
       return undefined
   }
@@ -840,8 +1154,8 @@ function commandProblem(command: PageCommand): Failure | undefined {
  * Part of a value is not refused, since refusing it would itself say which texts are part of a secret.
  */
 function secretLocatorProblem(command: PageCommand, redactor: Redactor | undefined): Failure | undefined {
-  if (redactor === undefined || !('locator' in command) || command.locator === undefined) return undefined
-  const held = matchedTexts(command.locator).find((matched) => redactor.holdsValue(matched.text, matched.exact))
+  if (redactor === undefined) return undefined
+  const held = commandLocators(command).flatMap(matchedTexts).find((matched) => redactor.holdsValue(matched.text, matched.exact))
   if (held === undefined) return undefined
   const message = `Retest did not send this command to the page: its locator's ${held.named} holds the value of a secret. Find the element by its test id, or by text that holds no secret.`
   return failure('usage', message)
@@ -854,8 +1168,7 @@ function secretLocatorProblem(command: PageCommand, redactor: Redactor | undefin
  * every action and every check before the page is asked. A native app's tree names its rows, so it is not refused there.
  */
 function namedRowProblem(command: PageCommand): Failure | undefined {
-  if (!('locator' in command) || command.locator === undefined) return undefined
-  const named = locatorSteps(command.locator).some((step) => step.by === 'role' && step.role === 'row' && step.name !== undefined)
+  const named = commandLocators(command).some((locator) => locatorSteps(locator).some((step) => step.by === 'role' && step.role === 'row' && step.name !== undefined))
   if (!named) return undefined
   const message = "getByRole('row', { name }) finds no row on a web page: the browser's accessibility tree gives a table row no name from its cells, so the lookup would match nothing and a check that the row is hidden would pass while it is on screen. Find the row by its test id, or find the cell by its own text, such as getByText('Grace Hopper') or getByRole('cell', { name: 'Grace Hopper' })."
   return failure('unsupported', message)
@@ -886,7 +1199,7 @@ function textOf(text: TextMatch, exact: boolean | undefined, named: 'text' | 'na
 
 type ActionDetails = Pick<
   Extract<EventBody, { type: 'action.completed' }>,
-  'valueLength' | 'secret' | 'key' | 'choices' | 'multiple' | 'changed' | 'scroll' | 'input' | 'via' | 'touch' | 'direction' | 'operation' | 'button'
+  'valueLength' | 'secret' | 'inbox' | 'key' | 'choices' | 'multiple' | 'changed' | 'scroll' | 'input' | 'via' | 'touch' | 'direction' | 'operation' | 'button' | 'files' | 'kept' | 'drag'
 >
 
 const listed = { multiple: true } as const
@@ -904,6 +1217,8 @@ function actionDetails(command: PageCommand, result: CommandResult, touch: boole
   switch (command.kind) {
     case 'fill':
       return typedValue(command.value)
+    case 'goto':
+      return typeof command.url === 'string' ? {} : { secret: linkName(command.url.default === true ? undefined : command.url.link), inbox: command.url.inbox }
     case 'press':
       return { key: command.key }
     case 'select':
@@ -919,6 +1234,14 @@ function actionDetails(command: PageCommand, result: CommandResult, touch: boole
       return { operation: command.operation }
     case 'nativeAlert':
       return { operation: command.operation, ...(command.button === undefined ? {} : { button: command.button }) }
+    case 'setInputFiles':
+    case 'setChooserFiles':
+      if (!result.ok || !('files' in result) || result.files === undefined) return {}
+      return result.kept === undefined ? { files: result.files } : { files: result.files, kept: result.kept }
+    case 'dragTo': {
+      const through = result.ok && result.kind === 'dragTo' ? { through: result.through } : {}
+      return { drag: { target: command.target, ...(command.steps === undefined ? {} : { steps: command.steps }), ...through } }
+    }
     default:
       return {}
   }
@@ -930,7 +1253,7 @@ function changedOf(result: CommandResult): { changed?: boolean } {
 
 // The page's answer says what it did; a failed click on a touch screen was a tap too.
 function recordedKind(sent: ActionKind, result: CommandResult, touch: boolean): ActionKind {
-  if (result.ok && result.kind !== 'observe' && result.kind !== 'observePage') return result.kind
+  if (result.ok && result.kind !== 'observe' && result.kind !== 'observePage' && result.kind !== 'observeLayout' && result.kind !== 'observeScreenshot') return result.kind
   return sent === 'click' && touch ? 'tap' : sent
 }
 
@@ -938,9 +1261,14 @@ function noSecrets(name: string): FillResolution {
   return { ok: false, failure: failure('usage', `secret(${JSON.stringify(name)}) needs a config that declares it. This run has no secrets.`) }
 }
 
-// A fill records how much it typed, or which secret, and never the text itself.
-function typedValue(value: FillValue): { valueLength: number } | { secret: string } {
-  return typeof value === 'string' ? { valueLength: value.length } : { secret: value.secret }
+// A fill records how much it typed, or which secret, or that it typed an inbox's code, and never the text itself.
+function typedValue(value: FillValue): { valueLength: number } | { secret: string; inbox?: string } {
+  if (typeof value === 'string') return { valueLength: value.length }
+  return 'secret' in value ? { secret: value.secret } : { secret: codePlaceholderName, inbox: value.inbox }
+}
+
+function noInboxes(name: string): Failure {
+  return failure('usage', `inbox(${JSON.stringify(name)}) needs a config that declares it. This run has no inboxes.`)
 }
 
 function thrownResult(command: PageCommand, error: unknown): CommandResult {
@@ -966,8 +1294,8 @@ function concurrentFailure(asked: string, running: Busy, location: SourceLocatio
 }
 
 // A look reads its app's page and changes nothing there; every other command is an action.
-function isLook(command: PageCommand): command is Extract<PageCommand, { kind: 'observe' | 'observePage' }> {
-  return command.kind === 'observe' || command.kind === 'observePage'
+function isLook(command: PageCommand): command is Extract<PageCommand, { kind: 'observe' | 'observePage' | 'observeLayout' | 'observeScreenshot' }> {
+  return command.kind === 'observe' || command.kind === 'observePage' || command.kind === 'observeLayout' || command.kind === 'observeScreenshot'
 }
 
 function lineOrNull(location: SourceLocation | undefined): string | null {

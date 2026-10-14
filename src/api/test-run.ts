@@ -2,12 +2,20 @@ import type { ObserveAfter, CommandResult, PageCommand } from '../protocol/comma
 import type { EvaluationAnswer, EvaluationCall } from '../protocol/evaluation.ts'
 import type { ChildEvent } from '../protocol/events.ts'
 import type { Failure, SourceLocation } from '../protocol/failures.ts'
+import type { DialogAnswer, DialogRecord, DialogType } from '../protocol/dialogs.ts'
+import type { FilesAnswer, FilesRequest } from '../protocol/files.ts'
+import type { RouteReply, RouteRequest } from '../protocol/routes.ts'
+import type { InboxAnswer, InboxRequest, ReceivedMessageRecord } from '../protocol/inbox.ts'
+import type { LayoutRequest } from '../protocol/layout-checks.ts'
 import type { LocatorRecipe } from '../protocol/locator.ts'
 import type { ChildMessage } from '../protocol/messages.ts'
+import type { ScreenshotRequest } from '../protocol/screenshot.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
+import type { PopupAnswer, PopupRecord } from '../protocol/popups.ts'
 import type { Work } from './command-lanes.ts'
 import type { RunTime } from './run-time.ts'
 import type { Hook, RunnableTest, RuntimeContext } from './test-body.ts'
+import { dirname, join } from 'node:path'
 import { describeCommand } from '../protocol/commands.ts'
 import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
 import { failure, withAlso, withLocation } from '../protocol/failures.ts'
@@ -40,10 +48,55 @@ export type TestRunOptions = {
   time?: RunTime
 }
 
+/**
+ * A read of an inbox as the test asked for it: the call as the test wrote it, what it asks for, where the test sent it
+ * from, and the time it gave itself with `{ timeout }`, when it gave one.
+ */
+export type InboxReading = { readonly label: string; readonly request: InboxRequest; readonly location: SourceLocation | undefined; readonly timeoutMs?: number }
+
+/**
+ * A wait the parent makes about files, as the test asked for it: the call as the test wrote it, what it waits for, where
+ * the test sent it from, and its time in milliseconds, before the test's own time left cuts it.
+ */
+export type FilesWaiting = { readonly label: string; readonly request: FilesRequest; readonly location: SourceLocation | undefined; readonly timeoutMs: number }
+
+/**
+ * A wait for what an action opens on an app's page, as the test asked for it: the app, the call as the test wrote it,
+ * where the test sent it from, the time it gave itself with `{ timeout }`, when it gave one, and the action, which the
+ * wait runs once the page is armed.
+ */
+export type OpeningWait = {
+  readonly app: string
+  readonly label: string
+  readonly location: SourceLocation | undefined
+  readonly timeoutMs?: number | undefined
+  readonly action: () => Promise<unknown>
+}
+
+/**
+ * An answer to a dialog the test was given: the app whose page shows it, its id, whether to accept it and the text a
+ * prompt takes, the call as the test wrote it and where, and the action that opened it, which the answer waits for.
+ */
+export type DialogAnswering = {
+  readonly app: string
+  readonly dialog: string
+  readonly accept: boolean
+  readonly promptText?: string | undefined
+  readonly label: string
+  readonly location: SourceLocation | undefined
+  readonly acted: Promise<void>
+}
+
+/** A change to an app's routes, as the test asked for it: the app, the call as the test wrote it, and where it was sent from. */
+export type RouteChange = { readonly app: string; readonly label: string; readonly request: RouteRequest; readonly location: SourceLocation | undefined }
+
+/** Where a wait for a dialog or a popup goes, and where the test sent it from. */
+type WaitSending = { readonly app: string; readonly location: SourceLocation | undefined; readonly stepId: string | undefined }
+
 /** How a test ended, as the child reports it. */
 export type Verdict = { status: 'passed' | 'failed'; failure?: Failure; assertionCount: number; durationMs: number }
 
-type ActionCommand = Exclude<PageCommand, { kind: 'observe' | 'observePage' }>
+type ActionCommand = Exclude<PageCommand, { kind: 'observe' | 'observePage' | 'observeLayout' | 'observeScreenshot' }>
 type Progress = { readonly observed: boolean; readonly settled: boolean }
 type Tracked = Work & { kind: 'action' | 'assertion' | 'read' | 'step'; operation: Progress }
 type Ending = { kind: 'returned' } | { kind: 'threw'; error: unknown } | { kind: 'aborted' }
@@ -73,6 +126,13 @@ export class TestRun {
   readonly #failures: Failure[] = []
   readonly #answers = new Map<number, (result: CommandResult) => void>()
   readonly #evaluations = new Map<number, (answer: EvaluationAnswer) => void>()
+  readonly #inboxReads = new Map<number, (answer: InboxAnswer) => void>()
+  // Waits for dialogs and popups and answers to dialogs, by id; a wait is answered more than once, armed then opened.
+  readonly #pageWaits = new Map<number, (answer: DialogAnswer | PopupAnswer) => void>()
+  // The dialogs the test was given and has not answered yet, by id, with where it asked for each.
+  readonly #dialogsOpen = new Map<string, { readonly type: DialogType; readonly location: SourceLocation | undefined }>()
+  readonly #filesRequests = new Map<number, (answer: FilesAnswer) => void>()
+  readonly #routeChanges = new Map<number, (answer: RouteReply) => void>()
   readonly #lanes = new CommandLanes()
   readonly #aborted = Promise.withResolvers<void>()
   // Work created since the last function the test ran returned; each function answers for its own.
@@ -170,6 +230,247 @@ export class TestRun {
     return promise
   }
 
+  /**
+   * Asks the parent to read an inbox. The parent reads the mailbox, looks again until a message arrives or the read's
+   * time runs out, and answers with the message, its codes and links hidden; `wrap` turns that answer into what the
+   * test receives. The read touches no page, so it holds no app, and it starts at once. Its time is its own `timeoutMs`,
+   * or the assertion budget, cut to what the test has left. It changes what the next read gives, so it may not run
+   * inside the function `expect.poll` calls.
+   */
+  readInbox<T>({ label, request, location, timeoutMs }: InboxReading, wrap: (message: ReceivedMessageRecord) => T): Operation<T> {
+    const work = { label, location }
+    const operation = this.#track<T>('read', work)
+    const refusal = this.#refusal() ?? this.#whileReading(work)
+    if (refusal !== undefined) {
+      operation.reject(refusal)
+      return operation
+    }
+    const id = this.#options.nextCommandId()
+    const stepId = currentScope()?.stepId
+    this.#inboxReads.set(id, (answer) => {
+      if (answer.ok) operation.resolve(wrap(answer.message))
+      else operation.reject(this.fail(withLocation(answer.failure, location)))
+    })
+    const budget = this.assertionBudget(timeoutMs ?? this.timeouts.assertion)
+    this.#options.send({ type: 'inbox', testId: this.testId, attemptId: this.attemptId, id, request, timeoutMs: budget, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) })
+    return operation
+  }
+
+  resolveInbox(id: number, answer: InboxAnswer): void {
+    const resolve = this.#inboxReads.get(id)
+    if (resolve === undefined) return
+    this.#inboxReads.delete(id)
+    resolve(answer)
+  }
+
+  /**
+   * Asks the parent to arm an app's page for the next JavaScript dialog, runs the action once the page is armed, and
+   * resolves with what `wrap` makes of the dialog as soon as it opens. The action is still waiting then, since a page
+   * holds the input that opened a dialog until the dialog is answered; `wrap` is given the action's own promise, which
+   * settles once the action does. An action that fails before any dialog opened fails the wait with its own failure,
+   * and the parent stops waiting. A wait that sees no dialog in its time fails, unless its action failed meanwhile,
+   * whose failure it gives instead. The wait acts on a page, so it may not run inside the function `expect.poll` calls.
+   */
+  waitForDialog<T>(wait: OpeningWait, wrap: (dialog: DialogRecord, acted: Promise<void>) => T): Operation<T> {
+    return this.#waitForOpening('dialog', wait, (answer, acted) => {
+      if (!('dialog' in answer)) throw new Error('Retest answered a wait for a dialog with a page')
+      this.#dialogsOpen.set(answer.dialog.id, { type: answer.dialog.type, location: wait.location })
+      return wrap(answer.dialog, acted)
+    })
+  }
+
+  /**
+   * As `waitForDialog`, for the next page the action opens: the parent hands it over as an app of its own, and the wait
+   * resolves with what `wrap` makes of it once the action is over too, so the next command to the page that opened it
+   * never meets the action still running. An action that fails fails the wait with its own failure.
+   */
+  waitForPopup<T>(wait: OpeningWait, wrap: (popup: PopupRecord) => T): Operation<T> {
+    return this.#waitForOpening('popup', wait, async (answer, acted) => {
+      if (!('popup' in answer)) throw new Error('Retest answered a wait for a page with a dialog')
+      await acted
+      return wrap(answer.popup)
+    })
+  }
+
+  /**
+   * Asks the parent to answer a dialog the test was given, then waits for the action that opened it, so the answer's
+   * step ends once its action has. An answer the parent could not give fails, and an action that failed fails it too,
+   * with its own failure. It acts on a page, so it may not run inside the function `expect.poll` calls.
+   */
+  answerDialog({ app, dialog, accept, promptText, label, location, acted }: DialogAnswering): Operation<void> {
+    const work = { label, location }
+    const operation = this.#track<void>('read', work)
+    const refusal = this.#refusal() ?? this.#whileReading(work)
+    if (refusal !== undefined) {
+      operation.reject(refusal)
+      return operation
+    }
+    this.#dialogsOpen.delete(dialog)
+    const id = this.#options.nextCommandId()
+    const stepId = currentScope()?.stepId
+    this.#pageWaits.set(id, (answer) => {
+      this.#pageWaits.delete(id)
+      if (answer.kind === 'answered') acted.then(() => operation.resolve(), (error: unknown) => operation.reject(error))
+      else if (answer.kind === 'failed') operation.reject(this.fail(withLocation(answer.failure, location)))
+    })
+    const request = { kind: 'answer' as const, dialog, accept, ...(promptText === undefined ? {} : { promptText }) }
+    const timeoutMs = this.assertionBudget(this.timeouts.action)
+    this.#options.send({ type: 'dialog', testId: this.testId, attemptId: this.attemptId, id, app, request, timeoutMs, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) })
+    return operation
+  }
+
+  resolveDialog(id: number, answer: DialogAnswer): void {
+    this.#pageWaits.get(id)?.(answer)
+  }
+
+  resolvePopup(id: number, answer: PopupAnswer): void {
+    this.#pageWaits.get(id)?.(answer)
+  }
+
+  // The wait is armed before the action runs, so the parent hands over what the action's first command opens. The
+  // answer to the request comes on another turn, so the action runs in the scope the test called from, as its step.
+  #waitForOpening<T>(kind: 'dialog' | 'popup', { app, label, location, timeoutMs, action }: OpeningWait, take: (answer: Extract<DialogAnswer | PopupAnswer, { kind: 'opened' }>, acted: Promise<void>) => T | Promise<T>): Operation<T> {
+    const work = { label, location }
+    const operation = this.#track<T>('read', work)
+    const refusal = this.#refusal() ?? this.#whileReading(work)
+    if (refusal !== undefined) {
+      operation.reject(refusal)
+      return operation
+    }
+    const scope: Scope = currentScope() ?? { run: this }
+    const id = this.#options.nextCommandId()
+    const sending = { app, location, stepId: scope.stepId }
+    let acted: Promise<void> | undefined
+    let opened = false
+    const fail = (problem: Failure): void => operation.reject(this.fail(withLocation(problem, location)))
+    this.#pageWaits.set(id, (answer) => {
+      if (answer.kind === 'armed') {
+        const running = callInScope(scope, action).then(() => undefined)
+        acted = running
+        running.then(undefined, (error: unknown) => {
+          if (opened) return
+          this.#pageWaits.delete(id)
+          this.#sendWait(kind, this.#options.nextCommandId(), { kind: 'stop', wait: id }, 1, sending)
+          operation.reject(error)
+        })
+        return
+      }
+      this.#pageWaits.delete(id)
+      if (answer.kind === 'opened') {
+        opened = true
+        // The action may still be running: `take` is given its promise, so its own end is never lost.
+        const settled = acted ?? Promise.resolve()
+        Promise.resolve()
+          .then(() => take(answer, settled))
+          .then((value) => operation.resolve(value), (error: unknown) => operation.reject(error))
+        return
+      }
+      if (answer.kind !== 'failed') return
+      // The action's own failure says more than a wait that saw nothing while the action ran.
+      if (acted === undefined) fail(answer.failure)
+      else acted.then(() => fail(answer.failure), (error: unknown) => operation.reject(error))
+    })
+    this.#sendWait(kind, id, { kind: 'wait' }, this.assertionBudget(timeoutMs ?? this.timeouts.action), sending)
+    return operation
+  }
+
+  #sendWait(kind: 'dialog' | 'popup', id: number, request: { kind: 'wait' } | { kind: 'stop'; wait: number }, timeoutMs: number, { app, location, stepId }: WaitSending): void {
+    const scope = { testId: this.testId, attemptId: this.attemptId, id, app, timeoutMs, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) }
+    this.#options.send(kind === 'dialog' ? { type: 'dialog', ...scope, request } : { type: 'popup', ...scope, request })
+  }
+
+  /**
+   * Asks the parent to wait for what `request` names, runs `action` meanwhile when one is given, and resolves with what
+   * `wrap` makes of the parent's answer once the action is over and the parent has answered. The wait holds no app, so
+   * the action's own commands go as they would without it; the request goes first, so the parent is waiting before
+   * the action's first command arrives. An action that fails fails the wait with its own failure, and the parent lets go
+   * of what it armed. A wait with an action acts on a page, so it may not run inside the function `expect.poll` calls.
+   */
+  awaitFiles<T>({ label, request, location, timeoutMs }: FilesWaiting, wrap: (answer: Extract<FilesAnswer, { ok: true }>) => T | Promise<T>, action?: () => unknown): Operation<T> {
+    const work = { label, location }
+    const operation = this.#track<T>('read', work)
+    const refusal = this.#refusal() ?? (action === undefined ? undefined : this.#whileReading(work))
+    if (refusal !== undefined) {
+      operation.reject(refusal)
+      return operation
+    }
+    const id = this.#sendFiles(request, smallestBudget(timeoutMs, this.#deadline.commandTimeoutMs), location)
+    const answered = new Promise<FilesAnswer>((resolve) => this.#filesRequests.set(id, resolve))
+    started(action).then(
+      async () => {
+        const answer = await answered
+        if (!answer.ok) return operation.reject(this.fail(withLocation(answer.failure, location)))
+        try {
+          operation.resolve(await wrap(answer))
+        } catch (error) {
+          operation.reject(error)
+        }
+      },
+      (error: unknown) => {
+        this.#filesRequests.delete(id)
+        this.#sendFiles({ kind: 'release', request: id }, 1, location)
+        operation.reject(error)
+      },
+    )
+    return operation
+  }
+
+  resolveFiles(id: number, answer: FilesAnswer): void {
+    const resolve = this.#filesRequests.get(id)
+    if (resolve === undefined) return
+    this.#filesRequests.delete(id)
+    resolve(answer)
+  }
+
+  /**
+   * Asks the parent to change an app's routes, and resolves once the page holds the change, so the test's next command
+   * to the page meets it. It needs the app to itself, as an action does: a request already on its way when the routes
+   * change could meet either. Its time is the action budget, cut to what the test has left. It changes what the page's
+   * requests get, so it may not run inside the function `expect.poll` calls.
+   */
+  changeRoutes({ app, label, request, location }: RouteChange): Operation<void> {
+    const work = { label, location }
+    const operation = this.#track<void>('read', work)
+    const refusal = this.#refusal() ?? this.#whileReading(work) ?? this.#clash(app, work, 'action')
+    if (refusal !== undefined) {
+      operation.reject(refusal)
+      return operation
+    }
+    this.#lanes.startAction(app, work)
+    const id = this.#options.nextCommandId()
+    const stepId = currentScope()?.stepId
+    this.#routeChanges.set(id, (answer) => {
+      this.#lanes.endAction(app, work)
+      if (answer.ok) operation.resolve()
+      else operation.reject(this.fail(withLocation(answer.failure, location)))
+    })
+    const timeoutMs = this.assertionBudget(this.timeouts.action)
+    this.#options.send({ type: 'route', testId: this.testId, attemptId: this.attemptId, id, app, request, timeoutMs, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) })
+    return operation
+  }
+
+  resolveRoute(id: number, answer: RouteReply): void {
+    const resolve = this.#routeChanges.get(id)
+    if (resolve === undefined) return
+    this.#routeChanges.delete(id)
+    resolve(answer)
+  }
+
+  /**
+   * The folder a path a test wrote is read against, as an import's is: that of the file the call came from, or the
+   * test's own file when the call's place is unknown.
+   */
+  callerFolder(location: SourceLocation | undefined): string {
+    return dirname(join(this.#options.rootDir, location?.file ?? this.#options.file))
+  }
+
+  #sendFiles(request: FilesRequest, timeoutMs: number, location: SourceLocation | undefined): number {
+    const id = this.#options.nextCommandId()
+    const stepId = currentScope()?.stepId
+    this.#options.send({ type: 'files', testId: this.testId, attemptId: this.attemptId, id, request, timeoutMs, ...(location === undefined ? {} : { location }), ...(stepId === undefined ? {} : { stepId }) })
+    return id
+  }
+
   resolveEvaluation(id: number, answer: EvaluationAnswer): void {
     const resolve = this.#evaluations.get(id)
     if (resolve === undefined) return
@@ -248,6 +549,27 @@ export class TestRun {
     const refusal = this.#refusal()
     if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
     return this.#send(app, { kind: 'observePage', ...(after === undefined ? {} : { after }), check: true }, { timeoutMs, location })
+  }
+
+  /**
+   * Measures an app's page once for a layout assertion: the elements `request` names, and their words when it asks. With
+   * `after`, the page first waits for its next change. The look is marked as a check's, as `observe` marks its own.
+   */
+  observeLayout(app: string, request: LayoutRequest, timeoutMs: number, location: SourceLocation | undefined, after?: ObserveAfter): Promise<CommandResult> {
+    const refusal = this.#refusal()
+    if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
+    return this.#send(app, { kind: 'observeLayout', ...request, ...(after === undefined ? {} : { after }), check: true }, { timeoutMs, location })
+  }
+
+  /**
+   * Takes a picture of an app's page, or of one element, for a screenshot assertion, and learns its size and how it
+   * stands against its baseline; the pixels stay with the parent. `previous` names the look before it in the same check,
+   * whose picture this one must match to have settled. The look is marked as a check's, as `observe` marks its own.
+   */
+  observeScreenshot(app: string, request: ScreenshotRequest, previous: string | undefined, timeoutMs: number, location: SourceLocation | undefined): Promise<CommandResult> {
+    const refusal = this.#refusal()
+    if (refusal !== undefined) return Promise.resolve({ ok: false, failure: refusal.failure })
+    return this.#send(app, { kind: 'observeScreenshot', ...request, ...(previous === undefined ? {} : { previous }), check: true }, { timeoutMs, location })
   }
 
   /**
@@ -350,6 +672,7 @@ export class TestRun {
     // Rejections nobody handled are reported after the current microtasks; let them arrive first.
     await yieldToEventLoop()
     if (ending.kind === 'threw') this.recordThrown(ending.error)
+    for (const problem of this.#dialogsLeftOpen(what)) this.record(problem)
     for (const problem of this.#unfinishedWork(what)) this.record(problem)
     return ending
   }
@@ -462,6 +785,16 @@ export class TestRun {
     return error instanceof RetestError && this.#failures.includes(error.failure)
   }
 
+  // A dialog the test was given and never answered holds its page, and the action that opened it cannot finish.
+  #dialogsLeftOpen(what: string): Failure[] {
+    const open = [...this.#dialogsOpen.values()]
+    this.#dialogsOpen.clear()
+    return open.map(({ type, location }) => {
+      const message = `The ${type} dialog page.dialog() gave on ${this.describeLine(location)} was still open when ${what} returned. Answer it with dialog.accept() or dialog.dismiss().`
+      return failure('not_awaited', message, location)
+    })
+  }
+
   // Judges the work created since the last function returned, then forgets it.
   #unfinishedWork(what: string): Failure[] {
     const tracked = this.#tracked
@@ -495,8 +828,20 @@ function calledMethod(command: ActionCommand): string {
       return `keyboard.${command.operation}`
     case 'nativeAlert':
       return `alert.${command.operation}`
+    case 'setChooserFiles':
+      return 'setFiles'
     default:
       return command.kind
+  }
+}
+
+// A function the test passed, started at once; what it throws as it starts is its failure, as what it rejects with is.
+function started(action: (() => unknown) | undefined): Promise<unknown> {
+  if (action === undefined) return Promise.resolve()
+  try {
+    return Promise.resolve(action())
+  } catch (error) {
+    return Promise.reject(error)
   }
 }
 

@@ -52,6 +52,16 @@ function receive(message: ParentMessage): void {
       return current?.resolveCommand(message.id, message.result)
     case 'evaluation-result':
       return current?.resolveEvaluation(message.id, message.answer)
+    case 'inbox-result':
+      return current?.resolveInbox(message.id, message.answer)
+    case 'dialog-result':
+      return current?.resolveDialog(message.id, message.answer)
+    case 'popup-result':
+      return current?.resolvePopup(message.id, message.answer)
+    case 'files-result':
+      return current?.resolveFiles(message.id, message.answer)
+    case 'route-result':
+      return current?.resolveRoute(message.id, message.answer)
     case 'abort':
       return current?.abort()
     case 'close':

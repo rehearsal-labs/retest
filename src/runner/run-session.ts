@@ -1,4 +1,4 @@
-import type { NewPageOptions, OwnedBrowser, SessionIdentity } from '../browser/contract.ts'
+import type { NewPageOptions, OwnedBrowser, RuntimeIdentity, SessionIdentity } from '../browser/contract.ts'
 import type { ElectronRuntime } from '../browser/electron.ts'
 import type { LoadedTarget } from '../config/loaded.ts'
 import type { RecordingSettings } from '../config/read-recording.ts'
@@ -28,7 +28,7 @@ import type { RunOutcome } from './outcome.ts'
 import type { CollectedTests, Plan, PlannedFile, PlannedTest } from './plan.ts'
 import type { RunConfig } from './run-config.ts'
 import type { CheckedPages } from './run-host-checks.ts'
-import type { BodyReport, RunningTestOptions } from './running-test.ts'
+import type { BodyReport, InboxAccess, RunningTestOptions } from './running-test.ts'
 import type { Attempt, Visit } from './schedule.ts'
 import type { RunJudges } from './fingerprint.ts'
 import type { HostPreparations, TestPreparation } from './preparation.ts'
@@ -37,9 +37,10 @@ import type { StartMedia } from './run-media.ts'
 import type { SecretEntryEnd } from './running-test.ts'
 import type { SessionLease } from './sessions.ts'
 import type { AppPage, PagesContext } from './test-pages.ts'
+import type { FilesPage } from './files.ts'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { AttemptDiagnostics } from '../diagnostics/attempt.ts'
 import { defaultRecordingSettings, recordsApp, resolveRecording } from '../config/read-recording.ts'
@@ -58,7 +59,7 @@ import { appLogFile, browserLogFile, childLogFile, stateFile, targetBrowserLogFi
 import { originOf, withoutCredentials } from '../protocol/url.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { relativePosixPath } from '../shared/posix-path.ts'
-import { applyRetention, recordingArtifactReferences, ArtifactSequences, inventoryArtifacts, planRetention } from '../store/artifacts.ts'
+import { applyRetention, recordingArtifactReferences, ArtifactSequences, downloadsFolder, inventoryArtifacts, planRetention } from '../store/artifacts.ts'
 import { retestVersion } from '../version.ts'
 import { AppServers } from './app-servers.ts'
 import { newAttemptId } from './attempt-id.ts'
@@ -80,12 +81,15 @@ import { interruptionOf, runOutcome, stopReasonOf, testStatus } from './outcome.
 import { collectedTest, planTests } from './plan.ts'
 import { declaredBackend, preparationsScopeProblem, preparationsShapeProblem, prepareAttempt, readPreparations, testPreparations } from './preparation.ts'
 import { endedBeforeTest, fileProcessFailure, laterTestsReason, reportedErrors } from './process-failures.ts'
+import { AttemptFiles } from './files.ts'
+import { AttemptInbox } from './inbox.ts'
 import { Redactor } from './redactor.ts'
 import { runConfig } from './run-config.ts'
 import { runHostChecks } from './run-host-checks.ts'
 import { AttemptRecorder, discoverMediaLocation, RunMedia, startMediaProcess } from './run-media.ts'
 import { abortGraceMs, RunningTest } from './running-test.ts'
 import { attemptKey, phasesOf, scheduleRun } from './schedule.ts'
+import { AttemptScreenshots, pictureApp, ScreenshotBaselines } from './screenshot-baselines.ts'
 import { SecretFiller, secretValuesProblem, secretVariables } from './secrets.ts'
 import { emptySelectionFailure, selectionProblem, testSelected, variantSelected } from './selection.ts'
 import { acquireResources, hostResources, leasePart, partFree, resourceNeeds, sessionResource } from './resources.ts'
@@ -95,6 +99,7 @@ import { skippedCheckFailures } from './skipped-checks.ts'
 import { attemptRefusal, targetDriver } from './target-drivers.ts'
 import { TestFileProcess } from './test-file-process.ts'
 import { timerMs } from './timer.ts'
+import { AttemptPopups } from './popups.ts'
 import { captureFailure, disposePages, openPage, saveState } from './test-pages.ts'
 
 export type RunSessionOptions = {
@@ -116,6 +121,9 @@ type ReadyTarget = WebReadyTarget | ReadyNativeTarget
 
 // How much longer than the media process's own deadline the run waits for a recording's end.
 const finishMarginMs = 5000
+
+// Why a page a test's page opened has no diagnostics: Retest watches only the pages a test begins with.
+const notCaptured = 'popups are not captured'
 
 type Opened<T> = { ok: true; value: T } | { ok: false; failure: Failure }
 /**
@@ -217,6 +225,8 @@ export class RunSession {
   readonly #redactor = new Redactor()
   readonly #reporterNames: string
   readonly #rootDir: string
+  /** Where each screenshot's baseline is, and, in a run that updates them, what the run wrote. */
+  readonly #baselines: ScreenshotBaselines
   readonly #files: string[]
   readonly #runId = randomUUID()
   readonly #startedAt = new Date()
@@ -290,9 +300,13 @@ export class RunSession {
   /** Each running attempt's recordings, by attempt id, and each attempt by its id for the policy's records. */
   readonly #recorders = new Map<string, AttemptRecorder>()
   readonly #attempts = new Map<string, Described>()
+  /** When each running attempt started, in milliseconds since 1970: a message its inboxes received before then is not its. */
+  readonly #attemptStarts = new Map<string, number>()
   readonly #sequences = new ArtifactSequences()
   /** Each attempt's lost or withheld failure screenshots, for its evidence. */
   readonly #screenshotGaps = new Map<string, EvidenceGap[]>()
+  /** The app of the test's own that each popup came from, by the popup's app name, whose capture rules it follows. */
+  readonly #popupRoots = new Map<string, string>()
   /** Every recording the run wrote down, and every partial file a record names, as retention reads them. */
   readonly #recordingReferences: ArtifactReference[] = []
   /** Recordings retention removed, by path, and why. */
@@ -310,6 +324,7 @@ export class RunSession {
     this.#browserCount = options.browsers ?? defaultBrowsers(this.#workers)
     this.#store = store
     this.#rootDir = resolve(options.rootDir)
+    this.#baselines = new ScreenshotBaselines({ rootDir: this.#rootDir, update: options.updateScreenshots === true })
     this.#files = options.files.map((file) => relativePosixPath(this.#rootDir, resolve(this.#rootDir, file)))
     this.#reporterNames = describeReporters(reporters)
     this.#events = new EventLog({
@@ -402,7 +417,7 @@ export class RunSession {
     this.#recording = recording.ok ? recording.settings : defaultRecordingSettings
     this.#recordsApps = appNames.some((app) => recordsApp(this.#recording, app, pixels))
     this.#clockUs = microsecondsSince(this.#start)
-    this.#policy = this.#recordsApps || pixels.size > 0 || declared.size > 0 ? new PixelCapturePolicy({ rules: (app) => pixels.get(app) ?? defaultAppPixelRules, clock: this.#clockUs, record: (record) => this.#policyRecord(record) }) : undefined
+    this.#policy = this.#recordsApps || pixels.size > 0 || declared.size > 0 ? new PixelCapturePolicy({ rules: (app) => pixels.get(this.#popupRoots.get(app) ?? app) ?? defaultAppPixelRules, clock: this.#clockUs, record: (record) => this.#policyRecord(record) }) : undefined
     this.#media = this.#recordsApps
       ? new RunMedia({
           location: startMedia !== undefined && discoverMedia === undefined && options.media !== undefined ? options.media : signal => (discoverMedia ?? discoverMediaLocation)(options.media, process.env, timeouts.setup, signal),
@@ -932,6 +947,8 @@ export class RunSession {
     const { test } = described
     const execution = this.#executionRecord(described, planned, prepared, hashModules(this.#rootDir, modules.collected, modules.hashes))
     const shown = { name: test.registered.name, file: test.file, location: test.registered.location, ...describePath(test), ...setupMark(test) }
+    // A host's preparation can send mail the test then reads, so the attempt's inboxes count from here.
+    this.#attemptStarts.set(described.attemptId, Date.now())
     this.#emitFor(described, { type: 'test.started', testId: described.testId, attemptId: described.attemptId, ...shown, execution })
     const finished: Finished = { ...described, startedAt, failure: undefined, assertionCount: 0, evidence: [], cleanupFailures: [], execution }
     const { variant } = described
@@ -950,6 +967,7 @@ export class RunSession {
         ? await this.#runPrepared(child, described, planned, prepared, finished)
         : { kind: 'finished', finished: { ...finished, failure: preparing.failure, seen: [preparing.failure] } }
     // An app launched for the attempt is gone before the host cleans its state up, so it cannot touch that state again.
+    this.#attemptStarts.delete(described.attemptId)
     const quitFailures = await this.#quitLaunches(planned.config, described, prepared, ran.leftOpen ?? [])
     const cleaned = await preparing.cleanUp(ran.kind === 'not_run' || ran.finished.failure !== undefined)
     const records = { execution, preparations: preparing.records, cleanups: cleaned.records }
@@ -1042,7 +1060,7 @@ export class RunSession {
   async #runRecorded(child: TestFileProcess, described: Described, planned: Planned, finished: Finished, opened: { context: PagesContext; pages: readonly AppPage[]; diagnostics: AttemptDiagnostics; recorder: AttemptRecorder | undefined }): Promise<Ran> {
     const { context, pages, diagnostics, recorder } = opened
     const evaluations = this.#evaluations.attempt({ context, pages, hostChecks: described.hostEvaluations, runSignal: this.#options.signal, diagnostics: Object.freeze({ snapshot: (app: string) => diagnostics.snapshot(app) }), ...(recorder === undefined ? {} : { recordings: recorder }) })
-    const { report, running } = await this.#runBody(child, pages, described, planned.config, evaluations)
+    const { report, running, popups } = await this.#runBody(child, pages, described, planned.config, evaluations)
     let checked: CheckedPages | undefined
     try {
       if (report.endedBeforeStart !== undefined) return await this.#bodyNotRun(context, pages, report.endedBeforeStart, diagnostics, recorder)
@@ -1059,6 +1077,11 @@ export class RunSession {
       running.close()
     }
     const observed = [...(report.observed ?? []), ...(checked?.failure === undefined ? [] : [checked.failure])]
+    // A page a test's page opened is neither recorded nor watched for diagnostics, and its records say so.
+    for (const popup of popups.all()) {
+      diagnostics.notCaptured(popup.app, popup.session, notCaptured)
+      recorder?.notRecorded(popup, this.#popupRoots.get(popup.app) ?? popup.app, 'Popups are not captured, so Retest did not record this page.')
+    }
     // Capture ends once the body, its dispatched commands and the parent's checks are over, before the screenshot and
     // before any app is closed. A diagnostics policy's failure follows any failure the test already had, and never
     // replaces it.
@@ -1066,10 +1089,12 @@ export class RunSession {
     // Recordings end after the last check and before the screenshot, so their frames stop before anything is closed.
     const recordings = recorder === undefined ? {} : { recordings: await recorder.finish() }
     const verdict = withDiagnosticsFailure(withEvaluationFailures({ reported: report.failure ?? checked?.failure, recorded: await evaluations.failures(), observed }), diagnosed.failure)
-    const evidence = verdict === undefined ? [] : await captureFailure(context, pages)
+    // The popups still open are pictured and closed with the pages, each before the page that opened it.
+    const evidence = verdict === undefined ? [] : await captureFailure(context, [...pages, ...popups.open()])
     const unsaved = verdict === undefined ? await this.#saveSetupState(context, described, pages) : undefined
     const browserLost = pages.some((page) => !this.#connected(page.browser))
-    const { cleanupFailures, leftOpen } = await this.#closePages(context, pages)
+    const { cleanupFailures, leftOpen } = await this.#closePages(context, [...popups.open(), ...pages])
+    for (const { session } of popups.all()) this.#policy?.pageLeft(recordIdentity(described, session.owner.app, session.sessionId), 'session_ended')
     const problem = verdict ?? unsaved
     const hostChecks = checked === undefined ? {} : { checked: checked.results }
     const crashed = report.crashed === true ? { crashed: true } : {}
@@ -1183,11 +1208,13 @@ export class RunSession {
         return state
       }
       const baseUrl = runtime.kind === 'web' ? config.apps.get(app)?.baseUrl : undefined
+      const downloads = this.#downloadsOf(described, app, runtime, config)
       const options: NewPageOptions = {
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(emulation === undefined ? {} : { emulation }),
         ...(state === undefined ? {} : { storageState: state.value.storage }),
         ...(proxy === undefined ? {} : { proxy }),
+        ...(downloads === undefined ? {} : { downloads: downloads.folder }),
       }
       const { testId: id, attemptId } = described
       const session = { sessionId: formatSessionId(attemptId, app), owner: { runId: this.#runId, testId: id, attemptId, app }, runtime }
@@ -1260,13 +1287,33 @@ export class RunSession {
 
   // The body, settled: every command answered or reported as unknown. The test keeps hearing its pages' navigations
   // until the caller closes it, after the host checks.
-  async #runBody(child: TestFileProcess, pages: readonly AppPage[], described: Described, config: RunConfig, evaluations: AttemptEvaluations): Promise<{ report: BodyReport; running: RunningTest }> {
+  async #runBody(child: TestFileProcess, pages: readonly AppPage[], described: Described, config: RunConfig, evaluations: AttemptEvaluations): Promise<{ report: BodyReport; running: RunningTest; popups: AttemptPopups }> {
     const { test, testId: id, attemptId, variant } = described
     const timeouts = { ...this.#options.timeouts, ...(test.registered.timeout === undefined ? {} : { test: test.registered.timeout }) }
     const appOrigins = test.apps.flatMap((app) => originOf(config.apps.get(app)?.baseUrl) ?? [])
     // An Electron app shows whatever origin it serves, so a fill on its window takes only the origins `secretOrigins` lists.
     const electron = new Set(test.apps.filter((app) => isElectronTarget(targetOf(config, app, described.targets[app]))))
     const fillSecret: RunningTestOptions['fillSecret'] = (command, context) => this.#secrets.resolve(command, { ...context, appOrigins, ...(electron.has(context.app) ? { target: 'electron' as const } : {}) })
+    const inbox = this.#inboxAccess(described, appOrigins, electron)
+    const popups = new AttemptPopups({ pages, runId: this.#runId, rooted: (popup, app) => this.#popupRoots.set(popup, app) })
+    const files = new AttemptFiles({
+      pages: new Map(pages.map((page) => [page.app, this.#filesPage(described, config, page)])),
+      runFolder: this.#store.directory,
+      testId: id,
+      attemptId,
+      redactor: this.#redactor,
+      emit: (body) => this.#emitFor(described, body),
+    })
+    const screenshots = new AttemptScreenshots({
+      baselines: this.#baselines,
+      context: this.#pagesContext(described),
+      // A popup is one of the test's pages once it opens, so a page's matchers reach it; it follows the rules of its root.
+      app: (name) => {
+        const found = pages.find((page) => page.app === name) ?? popups.all().find((page) => page.app === name)
+        return found === undefined ? undefined : pictureApp(found.page, found.session.runtime, electron.has(this.#popupRoots.get(name) ?? name))
+      },
+      testFile: test.file,
+    })
     const running = new RunningTest({
       process: child,
       pages: new Map(pages.map(({ app, page }) => [app, page])),
@@ -1279,7 +1326,12 @@ export class RunSession {
       redactor: this.#redactor,
       touch: new Set(pages.filter((page) => page.touch).map(({ app }) => app)),
       evaluations,
-      ...(this.#policy === undefined ? {} : { secretEntry: (app: string, secret: string) => this.#secretEntry(described, pages, app, secret) }),
+      popups,
+      ...(inbox === undefined ? {} : { inbox }),
+      files,
+      ...(this.#options.playwright === true ? { playwright: true as const } : {}),
+      ...(this.#policy === undefined ? {} : { secretEntry: (app: string, secret: string) => this.#secretEntry(described, [...pages, ...popups.open()], app, secret) }),
+      screenshots,
     })
     // The test is known as running only while its body runs, as before: a browser lost while it settles is the
     // next test's problem, not this one's.
@@ -1292,7 +1344,42 @@ export class RunSession {
       this.#running.delete(active)
     }
     await running.settle(this.#settleBudget())
-    return { report, running }
+    return { report, running, popups }
+  }
+
+  // The attempt's reads of the config's inboxes, which bind a code and a link to the origins of the test's apps' base URLs
+  // and the inbox's own, as a secret is bound. None in a run whose config declares no inbox.
+  #inboxAccess(described: Described, appOrigins: readonly string[], electron: ReadonlySet<string>): InboxAccess | undefined {
+    const { apps } = this.#options
+    const inboxes = apps.kind === 'config' ? apps.config.inboxes : undefined
+    if (inboxes === undefined) return undefined
+    const attempt = new AttemptInbox({ inboxes, redactor: this.#redactor, startedAt: this.#attemptStarts.get(described.attemptId) ?? Date.now() })
+    return {
+      read: (request, options) => attempt.read(request, options),
+      fillCode: (command, context) => attempt.resolveCode(command, { ...context, appOrigins, ...(electron.has(context.app) ? { target: 'electron' as const } : {}) }),
+      openLink: (reference) => attempt.resolveLink(reference, { appOrigins }),
+    }
+  }
+
+  // A Chromium page saves its downloads in its session's folder of the run. An Electron app saves them its own way, and
+  // another engine's page and a native app have none Retest keeps.
+  #downloadsOf(described: Described, app: string, runtime: RuntimeIdentity, config: RunConfig): { folder: string; reference: string } | undefined {
+    if (runtime.kind !== 'web' || runtime.engine !== 'chromium' || isElectronTarget(targetOf(config, app, described.targets[app]))) return undefined
+    const reference = downloadsFolder({ testId: described.testId, attemptId: described.attemptId, app, sessionId: formatSessionId(described.attemptId, app) })
+    return { folder: join(this.#store.directory, reference), reference }
+  }
+
+  // An app's page as the attempt's files see it, with where it runs, for a refusal that names it.
+  #filesPage(described: Described, config: RunConfig, { app, page, session }: AppPage): FilesPage {
+    const { runtime } = session
+    const downloads = this.#downloadsOf(described, app, runtime, config)
+    const where =
+      runtime.kind !== 'web' ? 'in a native app'
+      : isElectronTarget(targetOf(config, app, described.targets[app])) ? 'in an Electron app'
+      : runtime.engine === 'firefox' ? 'on Firefox'
+      : runtime.engine === 'webkit' ? 'on WebKit'
+      : 'on this browser'
+    return { files: page.files, where, sessionId: session.sessionId, ...(downloads === undefined ? {} : { downloads }) }
   }
 
   // An interrupted run waits for nothing more.
@@ -1791,6 +1878,7 @@ export class RunSession {
       ...(this.#nativeStarts.length === 0 ? {} : { natives: this.#nativeStarts }),
       ...(this.#options.apps.kind === 'config' ? { browsers } : {}),
       ...(this.#narrowed === undefined ? {} : { narrowed: this.#narrowed }),
+      ...(this.#baselines.written === 0 ? {} : { baselinesWritten: this.#baselines.written }),
       ...evidence,
       files,
     }

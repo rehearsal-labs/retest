@@ -106,10 +106,13 @@ export function pageWithText(text: string): Responder {
   return (command) => {
     if (command.kind === 'observe') return { ok: true, kind: 'observe', observation: observationOf([{ text, visible: true }]) }
     if (command.kind === 'observePage') return { ok: true, kind: 'observePage', observation: { url: 'http://127.0.0.1:4173/', title: text } }
+    if (command.kind === 'observeLayout') return { ok: false, failure: { class: 'unsupported', message: 'This fake page measures no layout.' } }
+    if (command.kind === 'observeScreenshot') return { ok: false, failure: { class: 'unsupported', message: 'This fake page takes no pictures.' } }
     if (command.kind === 'goto' || command.kind === 'reload' || command.kind === 'goBack' || command.kind === 'goForward') {
       return { ok: true, kind: command.kind, url: 'http://127.0.0.1:4173/' }
     }
     if (command.kind === 'select' || command.kind === 'check' || command.kind === 'uncheck') return { ok: true, kind: command.kind, changed: true }
+    if (command.kind === 'dragTo') return { ok: true, kind: 'dragTo', through: 'mouse' }
     return { ok: true, kind: command.kind }
   }
 }
