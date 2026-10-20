@@ -4,7 +4,7 @@ import { discoverTests, fastFileLimitSeconds, makeTestPlan } from './test-plan.t
 const scope = process.env['RETEST_CI_SCOPE'] || 'all'
 const platform = process.env['RETEST_CI_PLATFORM'] || 'all'
 if (scope !== 'all' && scope !== 'fast' && scope !== 'checks' && scope !== 'unit' && scope !== 'integration') throw new Error('Choose all, fast, checks, unit or integration.')
-if (platform !== 'all' && platform !== 'linux-x64' && platform !== 'linux-arm64' && platform !== 'macos-arm64') throw new Error('Choose all, linux-x64, linux-arm64 or macos-arm64.')
+if (platform !== 'all' && platform !== 'linux-x64' && platform !== 'linux-arm64' && platform !== 'macos-arm64' && platform !== 'windows-x64') throw new Error('Choose all, linux-x64, linux-arm64, macos-arm64 or windows-x64.')
 const inventory = discoverTests(process.cwd())
 const plan = makeTestPlan({ inventory, scope, platform, files: (process.env['RETEST_CI_TEST_FILES'] ?? '').split(/\s+/).filter(Boolean) })
 const output = process.env['GITHUB_OUTPUT']

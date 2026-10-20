@@ -1,7 +1,7 @@
 import type { Durations, Inventory, Platform, PlatformSeconds } from './test-plan.ts'
 import { readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
-import { platformNames } from './test-plan.ts'
+import { assignedTo, platformNames } from './test-plan.ts'
 
 // The planner balances each platform's shards by that platform's times in test-durations.json. These read the
 // results.json each CI shard keeps, as scripts/ci/run-tests.ts writes it, and turn them into new durations: for each
@@ -30,7 +30,7 @@ const testPath = /^tests\/(?:unit|integration)\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.tes
 
 // The artifact names ci.yml gives each shard's results: unit-<platform>-<shard>-<attempt>,
 // integration-<linux platform>-<shard>-<attempt> and integration-macos-<lane>-<shard>-<attempt>.
-const artifactPlatform = /^(?:unit-(macos-arm64|linux-x64|linux-arm64)|integration-(linux-x64|linux-arm64)|integration-(macos)-(?:web|native))-\d+-\d+$/
+const artifactPlatform = /^(?:unit-(macos-arm64|linux-x64|linux-arm64|windows-x64)|integration-(linux-x64|linux-arm64)|integration-(macos)-(?:web|native))-\d+-\d+$/
 
 function ordered(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
@@ -98,11 +98,11 @@ export function readShardResults(folder: string): { readonly results: number; re
  * New durations in whole seconds: for each file and platform, the slowest passing measurement, rounded up, or the
  * earlier time there when no passing measurement names it. A file the repository no longer holds is dropped. `missing`
  * lists each file that is still in the repository and either had a time before or was run now, with every platform
- * that has no passing measurement; a complete refresh has none.
+ * that runs it and has no passing measurement; a complete refresh has none.
  *
  * @example refreshDurations({ previous: {}, measured: [{ file: 'tests/unit/a.test.ts', platform: 'linux-x64', durationMs: 1200 }], named: ['tests/unit/a.test.ts'], inventory })
  * // { durations: { 'tests/unit/a.test.ts': { 'linux-x64': 2 } }, measured: ['tests/unit/a.test.ts'], kept: [], dropped: [],
- * //   missing: [{ file: 'tests/unit/a.test.ts', platforms: ['macos-arm64', 'linux-arm64'] }] }
+ * //   missing: [{ file: 'tests/unit/a.test.ts', platforms: ['macos-arm64', 'linux-arm64', 'windows-x64'] }] }
  */
 export function refreshDurations(options: { readonly previous: Durations; readonly measured: readonly MeasuredFile[]; readonly named: readonly string[]; readonly inventory: Inventory }): RefreshedDurations {
   const present = new Set([...options.inventory.unit, ...options.inventory.integration])
@@ -127,6 +127,7 @@ export function refreshDurations(options: { readonly previous: Durations; readon
     const entry: Partial<Record<Platform, number>> = {}
     const lacking: Platform[] = []
     for (const platform of platformNames) {
+      if (!assignedTo(platform, file)) continue
       const milliseconds = times?.get(platform)
       if (milliseconds !== undefined) {
         // A file that took no measurable time still costs a shard something; zero would also fail the planner's check.

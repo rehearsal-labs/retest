@@ -21,7 +21,7 @@ on:
       platform:
         description: Platforms to check.
         type: choice
-        options: [all, linux-x64, linux-arm64, macos-arm64]
+        options: [all, linux-x64, linux-arm64, macos-arm64, windows-x64]
         default: all
       files:
         description: Optional space-separated test paths. Requires the unit or integration suite.
@@ -123,6 +123,7 @@ jobs:
       - name: Run assigned unit files one at a time
         env:
           RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
+        shell: bash
         run: node scripts/ci/run-tests.ts "$RETEST_CI_FILES" "$RUNNER_TEMP/retest-ci-results"
       - name: Keep file results and timings
         if: ${{ always() }}

@@ -2,7 +2,7 @@ import { readdirSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import recordedDurations from './test-durations.json' with { type: 'json' }
 
-export type Platform = 'linux-x64' | 'linux-arm64' | 'macos-arm64'
+export type Platform = 'linux-x64' | 'linux-arm64' | 'macos-arm64' | 'windows-x64'
 /** A file's recorded seconds on each platform a passing run has timed it on. */
 export type PlatformSeconds = Readonly<Partial<Record<Platform, number>>>
 export type Durations = Readonly<Record<string, PlatformSeconds>>
@@ -32,12 +32,21 @@ export const defaultShardTargets: ShardTargets = { unit: 150, linuxWeb: 300, mac
 export const fastFileLimitSeconds = 60
 
 /** Every platform CI runs on, in the order test-durations.json lists them. */
-export const platformNames: readonly Platform[] = ['macos-arm64', 'linux-x64', 'linux-arm64']
+export const platformNames: readonly Platform[] = ['macos-arm64', 'linux-x64', 'linux-arm64', 'windows-x64']
+
+/** The platforms with an integration lane. Windows runs build, types and unit files until the browsers run there. */
+export const integrationPlatforms: ReadonlySet<Platform> = new Set<Platform>(['linux-x64', 'linux-arm64', 'macos-arm64'])
+
+/** Whether CI assigns a test file to a platform: every platform runs the unit files. */
+export function assignedTo(platform: Platform, file: string): boolean {
+  return file.startsWith('tests/unit/') || integrationPlatforms.has(platform)
+}
 
 const platforms: readonly CheckJob[] = [
   { platform: 'linux-x64', runner: 'ubuntu-24.04' },
   { platform: 'linux-arm64', runner: 'ubuntu-24.04-arm' },
   { platform: 'macos-arm64', runner: 'macos-26' },
+  { platform: 'windows-x64', runner: 'windows-2025' },
 ]
 
 // These files use the desktop or simulator. Separate machines split them; each machine still runs one file at a time.
@@ -146,7 +155,7 @@ export function makeTestPlan(options: PlanOptions): TestPlan {
       const nativeJobs = split(macosFiles.filter((file) => nativeFiles.has(file)), job, 'native', targets.macosNative, weights)
       assertCoverage(macosFiles, [...browserJobs, ...nativeJobs].flatMap((part) => part.files))
       plan.macos.push(...browserJobs, ...nativeJobs)
-    } else if (!fast) {
+    } else if (!fast && integrationPlatforms.has(job.platform)) {
       plan.linux.push(...split(integration, job, 'web', targets.linuxWeb, weights))
     }
   }

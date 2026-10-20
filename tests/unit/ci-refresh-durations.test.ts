@@ -37,7 +37,7 @@ async function writeShard(root: string, name: string, runs: readonly Run[]): Pro
 /** One passing time for each file on each platform, given in seconds. */
 async function writeEveryPlatform(root: string, seconds: Readonly<Record<string, number>>): Promise<void> {
   const runs = Object.entries(seconds).map(([file, value]) => ({ file, durationMs: value * 1000 }))
-  for (const name of ['unit-macos-arm64-1-1', 'unit-linux-x64-1-1', 'unit-linux-arm64-1-1']) await writeShard(root, name, runs)
+  for (const name of ['unit-macos-arm64-1-1', 'unit-linux-x64-1-1', 'unit-linux-arm64-1-1', 'unit-windows-x64-1-1']) await writeShard(root, name, runs)
 }
 
 test('the platform of a results file is read from the artifact name ci.yml gives it', () => {
@@ -46,7 +46,8 @@ test('the platform of a results file is read from the artifact name ci.yml gives
   assert.equal(platformOfArtifact('integration-linux-x64-2-1'), 'linux-x64')
   assert.equal(platformOfArtifact('integration-macos-web-1-1'), 'macos-arm64')
   assert.equal(platformOfArtifact('integration-macos-native-1-3'), 'macos-arm64')
-  for (const name of ['chromium-ticker-web-2-1', 'unit-windows-x64-1-1', 'integration-macos-arm64-1-1', 'integration-linux-x64-1', 'results']) assert.equal(platformOfArtifact(name), undefined, name)
+  assert.equal(platformOfArtifact('unit-windows-x64-2-1'), 'windows-x64')
+  for (const name of ['chromium-ticker-web-2-1', 'integration-windows-x64-1-1', 'integration-macos-arm64-1-1', 'integration-linux-x64-1', 'results']) assert.equal(platformOfArtifact(name), undefined, name)
 })
 
 test('each file takes its slowest passing time on each platform, rounded up to whole seconds', async (context) => {
@@ -65,7 +66,7 @@ test('each file takes its slowest passing time on each platform, rounded up to w
     'tests/unit/bravo.test.ts': { 'macos-arm64': 3, 'linux-x64': 5, 'linux-arm64': 7 },
   })
   assert.deepEqual(refreshed.measured, ['tests/unit/alpha.test.ts', 'tests/unit/bravo.test.ts'])
-  assert.deepEqual(refreshed.missing, [{ file: 'tests/unit/alpha.test.ts', platforms: ['linux-arm64'] }, { file: 'tests/unit/bravo.test.ts', platforms: ['linux-arm64'] }])
+  assert.deepEqual(refreshed.missing, [{ file: 'tests/unit/alpha.test.ts', platforms: ['linux-arm64', 'windows-x64'] }, { file: 'tests/unit/bravo.test.ts', platforms: ['linux-arm64', 'windows-x64'] }])
 })
 
 test('a failing, killed or cut-off file gives no time, and keeps its earlier time on that platform', async (context) => {
@@ -86,7 +87,7 @@ test('a failing, killed or cut-off file gives no time, and keeps its earlier tim
   })
   assert.deepEqual(refreshed.kept, [])
   assert.deepEqual(refreshed.missing.map((each) => each.file), ['tests/integration/browser-state.test.ts', 'tests/unit/alpha.test.ts', 'tests/unit/bravo.test.ts'])
-  assert.deepEqual(refreshed.missing[1], { file: 'tests/unit/alpha.test.ts', platforms: ['macos-arm64', 'linux-x64', 'linux-arm64'] })
+  assert.deepEqual(refreshed.missing[1], { file: 'tests/unit/alpha.test.ts', platforms: ['macos-arm64', 'linux-x64', 'linux-arm64', 'windows-x64'] })
 })
 
 test('a file the repository no longer holds is dropped, and a file no artifact names keeps its earlier times', () => {
@@ -99,7 +100,7 @@ test('a file the repository no longer holds is dropped, and a file no artifact n
   assert.deepEqual(refreshed.durations, { 'tests/integration/conformance-chrome.test.ts': { 'macos-arm64': 257, 'linux-x64': 45 }, 'tests/unit/bravo.test.ts': { 'linux-x64': 1 } })
   assert.deepEqual(refreshed.dropped, ['tests/integration/conformance.test.ts'])
   assert.deepEqual(refreshed.kept, ['tests/integration/conformance-chrome.test.ts'])
-  assert.match(describeMissing(refreshed.missing), /^The artifacts have no passing time for 2 files on some platform: tests\/integration\/conformance-chrome\.test\.ts on macos-arm64, linux-x64, linux-arm64; tests\/unit\/bravo\.test\.ts on macos-arm64, linux-arm64\. .*--partial/)
+  assert.match(describeMissing(refreshed.missing), /^The artifacts have no passing time for 2 files on some platform: tests\/integration\/conformance-chrome\.test\.ts on macos-arm64, linux-x64, linux-arm64; tests\/unit\/bravo\.test\.ts on macos-arm64, linux-arm64, windows-x64\. .*--partial/)
 })
 
 test('results that are not what run-tests.ts writes, or whose folder names no platform, are refused by their path', async (context) => {
@@ -127,7 +128,7 @@ test('the durations file is written sorted by path with platforms in a fixed ord
     '{\n  "tests/integration/browser-state.test.ts": {\n    "linux-x64": 9\n  },\n  "tests/unit/bravo.test.ts": {\n    "macos-arm64": 2,\n    "linux-arm64": 3\n  }\n}\n',
   )
   const root = await folder(context)
-  for (const document of ['[]', '{"tests/unit/alpha.test.ts":3}', '{"tests/unit/alpha.test.ts":{}}', '{"tests/unit/alpha.test.ts":{"linux-x64":0}}', '{"tests/unit/alpha.test.ts":{"windows-x64":3}}', '{"README.md":{"linux-x64":3}}']) {
+  for (const document of ['[]', '{"tests/unit/alpha.test.ts":3}', '{"tests/unit/alpha.test.ts":{}}', '{"tests/unit/alpha.test.ts":{"linux-x64":0}}', '{"tests/unit/alpha.test.ts":{"freebsd-x64":3}}', '{"README.md":{"linux-x64":3}}']) {
     await writeFile(join(root, 'durations.json'), document)
     assert.throws(() => readDurations(join(root, 'durations.json')), document)
   }

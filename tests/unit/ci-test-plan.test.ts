@@ -51,11 +51,11 @@ test('a full plan covers every checked test file exactly once on each platform, 
   const actual = discoverTests(process.cwd())
   const plan = makeTestPlan({ inventory: actual, scope: 'all', platform: 'all', files: [] })
   assert.equal(plan.full, true)
-  assert.equal(plan.checks.length, 3)
-  for (const platform of ['linux-x64', 'linux-arm64', 'macos-arm64']) {
-    assertCoverage(actual.unit, plan.unit.filter((job) => job.platform === platform).flatMap((job) => job.files))
-    assertCoverage(actual.integration, [...plan.linux, ...plan.macos].filter((job) => job.platform === platform).flatMap((job) => job.files))
-  }
+  assert.equal(plan.checks.length, 4)
+  for (const platform of ['linux-x64', 'linux-arm64', 'macos-arm64', 'windows-x64']) assertCoverage(actual.unit, plan.unit.filter((job) => job.platform === platform).flatMap((job) => job.files))
+  for (const platform of ['linux-x64', 'linux-arm64', 'macos-arm64']) assertCoverage(actual.integration, [...plan.linux, ...plan.macos].filter((job) => job.platform === platform).flatMap((job) => job.files))
+  // Windows has no integration lane yet: it runs build, types and unit files.
+  assert.ok([...plan.linux, ...plan.macos].every((job) => job.platform !== 'windows-x64'))
   assert.ok(plan.macos.filter((job) => job.lane === 'web').every((job) => job.files.every((file) => !nativeIntegrationFiles.includes(file))))
   assert.ok(plan.macos.filter((job) => job.lane === 'native').every((job) => job.files.every((file) => nativeIntegrationFiles.includes(file))))
 })
@@ -171,8 +171,8 @@ test('the fast suite runs checks and unit files on the selected platforms, and o
   }
   const plan = makeTestPlan({ inventory, scope: 'fast', platform: 'all', files: [], durations })
   assert.equal(plan.full, false)
-  assert.equal(plan.checks.length, 3)
-  for (const platform of ['linux-x64', 'linux-arm64', 'macos-arm64']) assertCoverage(inventory.unit, plan.unit.filter((job) => job.platform === platform).flatMap((job) => job.files))
+  assert.equal(plan.checks.length, 4)
+  for (const platform of ['linux-x64', 'linux-arm64', 'macos-arm64', 'windows-x64']) assertCoverage(inventory.unit, plan.unit.filter((job) => job.platform === platform).flatMap((job) => job.files))
   assert.deepEqual(plan.linux, [])
   // The fast suite judges a file by its macOS time, however short it is on Linux.
   assert.deepEqual(plan.macos.filter((job) => job.lane === 'web').flatMap((job) => job.files), ['tests/integration/browser-state.test.ts'])
@@ -185,7 +185,7 @@ test('the fast suite runs checks and unit files on the selected platforms, and o
 test('checks-only mode creates no test jobs and partial suites remain focused', () => {
   const plan = makeTestPlan({ inventory, scope: 'checks', platform: 'all', files: [] })
   assert.equal(plan.full, false)
-  assert.equal(plan.checks.length, 3)
+  assert.equal(plan.checks.length, 4)
   assert.deepEqual([...plan.unit, ...plan.linux, ...plan.macos], [])
   assert.equal(makeTestPlan({ inventory, scope: 'integration', platform: 'all', files: [] }).full, false)
   assert.equal(makeTestPlan({ inventory, scope: 'unit', platform: 'all', files: [] }).full, false)
