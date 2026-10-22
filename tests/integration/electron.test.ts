@@ -401,10 +401,9 @@ test('needs the app', async ({ page }) => {
   assert.equal(run.exit.code, 2, run.stderr)
   const needed = testNamed(run, 'needs the app')
   assert.equal(needed.status, 'not_run')
-  assert.deepEqual(needed.failure, {
-    class: 'setup_failed',
-    message: `No Electron binary at ${missing}. Give the Electron binary, inside Electron.app on macOS: Electron.app/Contents/MacOS/Electron.`,
-  })
+  // Electron's own build names its binary electron.exe on Windows, and Electron inside Electron.app on macOS.
+  const give = process.platform === 'win32' ? "Give the Electron binary: electron.exe in Electron's own build." : 'Give the Electron binary, inside Electron.app on macOS: Electron.app/Contents/MacOS/Electron.'
+  assert.deepEqual(needed.failure, { class: 'setup_failed', message: `No Electron binary at ${missing}. ${give}` })
   assert.deepEqual(eventsOf(run.events, 'browser.started'), [], 'nothing was launched in its place')
 })
 

@@ -6,6 +6,7 @@ import { loadTests } from '../../src/runner/load-tests.ts'
 import { conditionArguments, endedCleanly, TestFileProcess } from '../../src/runner/test-file-process.ts'
 import { describeExit } from '../../src/shared/process-exit.ts'
 import { isRunning, rootDir, supportFile } from '../support/run-harness.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
 describe('conditionArguments', () => {
   test('keeps --conditions in each of its forms and drops everything else', () => {
@@ -92,7 +93,7 @@ describe('TestFileProcess', () => {
     assert.equal(child.killed, true)
   })
 
-  test('closes a bounded time after it exits, though a process it started still holds its output pipes', async () => {
+  test('closes a bounded time after it exits, though a process it started still holds its output pipes', { skip: unixOnly("on Windows Node puts a child's own children in a job that ends with it, so none outlives the test file to hold its pipes") }, async () => {
     const file = supportFile('grandchild.retest.ts')
     const output: string[] = []
     const child = TestFileProcess.spawn({ onOutput: (_stream, text) => output.push(text) })

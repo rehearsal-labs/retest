@@ -309,6 +309,10 @@ export function createArtifactFolder(runFolder: string, reference: string): { re
 
 // Safe reads -------------------------------------------------------------------------------------------------------
 
+// Windows has no O_NOFOLLOW, so an open there follows a link put in the file's place. The name is looked at again once
+// the file is open, and a link there is refused as the refused open is refused elsewhere.
+const openFollowsLinks = process.platform === 'win32'
+
 /** How large a file a read accepts, in bytes. The caller states it; there is no default. */
 export type ReadLimits = { readonly maxBytes: number }
 
@@ -337,10 +341,11 @@ export class CheckedArtifact {
   }
 
   /**
-   * Opens the file without following a link in its last part and without waiting on a pipe, then checks that the
-   * descriptor holds the very file that was checked, that it still has one name and fits the limit, and that every
-   * folder above it, the run folder included, is still the folder that was checked and not a link. A folder swapped
-   * for a link between the check and the open, or a file swapped for another, is refused as `changed`.
+   * Opens the file without following a link in its last part (on Windows, which cannot refuse one, a link there is
+   * found once open and refused) and without waiting on a pipe, then checks that the descriptor holds the very file
+   * that was checked, that it still has one name and fits the limit, and that every folder above it, the run folder
+   * included, is still the folder that was checked and not a link. A folder swapped for a link between the check and
+   * the open, or a file swapped for another, is refused as `changed`.
    */
   open(): { readonly ok: true; readonly file: OpenedArtifact } | ArtifactRefused {
     let descriptor: number
@@ -352,7 +357,7 @@ export class CheckedArtifact {
       if (isMissingFile(error)) return refused(this.reference, 'changed', `${describe(this.reference)} was removed or moved after it was checked.`)
       return refused(this.reference, 'unreadable', `${describe(this.reference)} could not be opened: ${errorMessage(error)}`)
     }
-    const problem = this.#descriptorProblem(descriptor) ?? this.verify()
+    const problem = this.#linkProblem() ?? this.#descriptorProblem(descriptor) ?? this.verify()
     if (problem !== undefined) {
       closeSync(descriptor)
       return problem
@@ -421,6 +426,13 @@ export class CheckedArtifact {
     } finally {
       closeSync(descriptor)
     }
+  }
+
+  #linkProblem(): ArtifactRefused | undefined {
+    if (!openFollowsLinks) return undefined
+    const named = lstatIfPresent(this.path)
+    if (named === undefined || !named.ok || !named.value.isSymbolicLink()) return undefined
+    return refused(this.reference, 'changed', `${describe(this.reference)} became a symbolic link after it was checked.`)
   }
 
   #descriptorProblem(descriptor: number): ArtifactRefused | undefined {

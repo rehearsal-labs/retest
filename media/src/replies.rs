@@ -19,6 +19,7 @@ const ADMISSION_WAIT: Duration = Duration::from_millis(100);
 const WRITER_CLOSE_WAIT: Duration = Duration::from_millis(500);
 
 /// Duplicating stdout keeps a blocked writer away from Rust's global stdout shutdown flush.
+#[cfg(unix)]
 pub fn stdout_pipe() -> io::Result<std::fs::File> {
     use std::os::fd::FromRawFd;
     // SAFETY: F_DUPFD_CLOEXEC creates a separately owned descriptor, atomically closed on child exec. File
@@ -29,6 +30,30 @@ pub fn stdout_pipe() -> io::Result<std::fs::File> {
     }
     // SAFETY: this newly duplicated descriptor is valid and has no other Rust owner.
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// Duplicating stdout keeps a blocked writer away from Rust's global stdout shutdown flush. The duplicate cannot be
+/// inherited. Windows gives a new process every inheritable handle of its parent, not only its standard ones, so the
+/// standard handles the client gave this process stop being inheritable too: an encoder, or anything it leaves
+/// running, then holds none of the client's pipes open.
+#[cfg(windows)]
+pub fn stdout_pipe() -> io::Result<std::fs::File> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+    let streams = [
+        io::stdin().as_raw_handle(),
+        io::stdout().as_raw_handle(),
+        io::stderr().as_raw_handle(),
+    ];
+    for handle in streams.into_iter().filter(|handle| !handle.is_null()) {
+        // SAFETY: a standard handle of this process; only its inheritance flag changes. A console handle that refuses
+        // the change was never inheritable by an encoder, which gets its own pipes and no console.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+    }
+    // `try_clone_to_owned` duplicates without inheritance.
+    Ok(std::fs::File::from(
+        io::stdout().as_handle().try_clone_to_owned()?,
+    ))
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -332,6 +357,7 @@ mod tests {
         })
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_writer_stdout_descriptor_is_closed_when_an_encoder_executes() {
         use std::os::fd::AsRawFd;
@@ -345,6 +371,35 @@ mod tests {
             0,
             "an encoder child must never inherit the reply pipe"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_writer_stdout_handle_and_the_standard_handles_are_not_inherited_by_an_encoder() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+        let flags_of = |handle| {
+            let mut flags = 0u32;
+            // SAFETY: GetHandleInformation only reads the flags of a live handle of this process.
+            let read = unsafe { GetHandleInformation(handle, &mut flags) };
+            assert_ne!(read, 0, "handle flags are readable");
+            flags
+        };
+        let output = stdout_pipe().expect("stdout duplicate");
+        // HANDLE_FLAG_INHERIT is the property that would let a lingering encoder retain the media pipe.
+        assert_eq!(
+            flags_of(output.as_raw_handle()) & HANDLE_FLAG_INHERIT,
+            0,
+            "an encoder child must never inherit the reply pipe"
+        );
+        let stdout = io::stdout().as_raw_handle();
+        if !stdout.is_null() {
+            assert_eq!(
+                flags_of(stdout) & HANDLE_FLAG_INHERIT,
+                0,
+                "nor the stdout the client reads"
+            );
+        }
     }
 
     #[test]

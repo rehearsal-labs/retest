@@ -1,7 +1,7 @@
 import type { EvaluationRecord, HostEvaluation } from '../../src/protocol/evaluation.ts'
 import type { Reporter } from '../../src/reporters/reporter.ts'
 import type { RetestEvent } from '../../src/protocol/events.ts'
-import type { TestResult } from '../../src/protocol/result.ts'
+import type { RunResult, TestResult } from '../../src/protocol/result.ts'
 import type { ProjectRecord } from '../support/project.ts'
 import assert from 'node:assert/strict'
 import { getEventListeners } from 'node:events'
@@ -155,6 +155,13 @@ test('capped by the config', async () => {
 `
 
 const allTests = (record: ProjectRecord): TestResult[] => record.result.files.flatMap((file) => file.tests)
+
+// What a run's exit code rests on besides its tests' verdicts, for an assertion on it to say: the run's own failure, a
+// file's failure, a test's cleanup failures and the evidence's state.
+function whyExit(result: RunResult): string {
+  const files = result.files.map((file) => ({ file: file.file, failure: file.failure?.message, cleanup: file.tests.flatMap((each) => (each.cleanupFailures ?? []).map((cleanup) => cleanup.message)) }))
+  return JSON.stringify({ failure: result.failure?.message, evidence: result.evidenceStatus?.state, files })
+}
 
 function named(record: ProjectRecord, name: string): TestResult {
   const found = allTests(record).find((each) => each.name === name)
@@ -369,12 +376,15 @@ describe('required AI checks through the parent', async () => {
 describe('the exit code of a run, for each required outcome alone', async () => {
   const root = tempProject({ 'retest.config.ts': config({ tag: 'exits' }), 'tests/outcomes.retest.ts': outcomes })
   const exits: Record<string, number> = {}
+  const reasons: string[] = []
   for (const name of ['required pass', 'required fail', 'required inconclusive', 'provider error']) {
-    exits[name] = (await runProject(root, { files: ['tests/outcomes.retest.ts'], selection: { grep: new RegExp(`^${name}$`) } })).result.exitCode
+    const { result } = await runProject(root, { files: ['tests/outcomes.retest.ts'], selection: { grep: new RegExp(`^${name}$`) } })
+    exits[name] = result.exitCode
+    reasons.push(`${name}: ${whyExit(result)}`)
   }
 
   test('pass exits 0, fail 1, and undecided or could not run 2', () => {
-    assert.deepEqual(exits, { 'required pass': 0, 'required fail': 1, 'required inconclusive': 2, 'provider error': 2 })
+    assert.deepEqual(exits, { 'required pass': 0, 'required fail': 1, 'required inconclusive': 2, 'provider error': 2 }, reasons.join('\n'))
   })
 })
 
@@ -399,7 +409,7 @@ describe('advisory AI checks', async () => {
 
   test('never change the test: every test passes and the run exits 0', () => {
     assert.deepEqual(allTests(record).map((result) => [result.name, result.status]), [['advisory pass', 'passed'], ['advisory fail', 'passed'], ['advisory inconclusive', 'passed'], ['advisory throw', 'passed']])
-    assert.equal(record.result.exitCode, 0)
+    assert.equal(record.result.exitCode, 0, whyExit(record.result))
   })
 
   test('record a warning for each check that did not pass, and no failure', () => {

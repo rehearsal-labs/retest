@@ -28,7 +28,7 @@ describe('writeTests', () => {
     const files = await writeTests(project, 'playwright', 'task-app', { tests: 5, files: 4 })
     assert.deepEqual(
       files.map((file) => file.slice(project.length + 1)),
-      ['tests/bench-1.spec.ts', 'tests/bench-2.spec.ts', 'tests/bench-3.spec.ts', 'tests/bench-4.spec.ts'],
+      ['bench-1.spec.ts', 'bench-2.spec.ts', 'bench-3.spec.ts', 'bench-4.spec.ts'].map((name) => join('tests', name)),
     )
     const texts = await Promise.all(files.map((file) => readFile(file, 'utf8')))
     assert.ok(texts.every((text) => text.startsWith("import { expect, test } from '@playwright/test'\n")))

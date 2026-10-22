@@ -29,14 +29,16 @@ const driverNames: Readonly<Record<DriverName, string>> = {
  * The driver a target needs. Chromium, Chrome and Edge run on Retest's Chromium driver, and an Electron app on the
  * same driver over the app's own debugging pipe. Firefox runs on Retest's Firefox driver over WebDriver BiDi, and WebKit
  * on Retest's WebKit driver over the inspector pipe. An iOS simulator or macOS target is accepted in the config and
- * refused here, naming its app and target, when its driver is not given. No other driver runs it in its place, and no
- * browser stands in for an Electron app.
+ * refused here, naming its app and target, when its driver is not given, and on Windows, where its drivers do not run, by
+ * its key. No other driver runs it in its place, and no browser stands in for an Electron app. `platform` is the host
+ * the target would run on, this machine unless a caller asks as another would.
  *
  * @example targetDriver('web', { name: 'mac', platform: 'macos', appPath: '/Applications/Tasks.app' }).ok // false
  */
 export function targetDriver(app: string, target: LoadedTarget): WebTargetDriver
-export function targetDriver(app: string, target: LoadedTarget, options: { native: true }): TargetDriver
-export function targetDriver(app: string, target: LoadedTarget, options?: { native: true }): TargetDriver {
+export function targetDriver(app: string, target: LoadedTarget, options: { native: true; platform?: NodeJS.Platform }): TargetDriver
+export function targetDriver(app: string, target: LoadedTarget, options?: { native: true; platform?: NodeJS.Platform }): TargetDriver {
+  if ('platform' in target && options?.native === true && (options.platform ?? process.platform) === 'win32') return nativeOnWindows(app, target)
   if ('platform' in target) return options?.native === true ? { ok: true, driver: target.platform, target } : noDriver(app, target.name, target.platform)
   if (target.browser === 'firefox') return { ok: true, driver: 'firefox', target }
   if (target.browser === 'webkit') return { ok: true, driver: 'webkit', target }
@@ -53,14 +55,14 @@ export function targetDriver(app: string, target: LoadedTarget, options?: { nati
  *
  * @example attemptRefusal({ desk: 'macos', notes: 'macos' }, config.apps)?.class // 'unsupported'
  */
-export function attemptRefusal(targets: Variant, apps: ReadonlyMap<string, LoadedApp>, test: { setup?: boolean } = {}): Failure | undefined {
+export function attemptRefusal(targets: Variant, apps: ReadonlyMap<string, LoadedApp>, test: { setup?: boolean; platform?: NodeJS.Platform } = {}): Failure | undefined {
   // The native runtime each app needs, by the key the native pool holds it under: one desktop, and one simulator per
   // device type and runtime.
   const runtimes = new Map<string, string>()
   for (const [app, name] of Object.entries(targets)) {
     const target = apps.get(app)?.targets.get(name)
     if (target === undefined) continue
-    const driver = targetDriver(app, target, { native: true })
+    const driver = targetDriver(app, target, { native: true, ...(test.platform === undefined ? {} : { platform: test.platform }) })
     if (!driver.ok) return driver.failure
     if (test.setup === true) {
       const refused = setupRefusal(app, target)
@@ -91,6 +93,14 @@ function setupRefusal(app: string, target: LoadedTarget): Failure | undefined {
   if (!isElectron && !('platform' in target)) return undefined
   const reason = isElectron ? `the Electron app ${app} keeps its own storage. Set userDataDir to keep the app's data from one launch to the next` : `the native app ${app} has no browser storage`
   return { class: 'unsupported', message: `Not run: a setup saves a sign-in state from its app's browser storage, and ${reason}.`, details: { app, target: target.name } }
+}
+
+// The macOS and iOS drivers run on a Mac, as WebKit's does: on Windows a native target is refused at its own setup, before
+// anything starts for it, and the rest of the config runs. Its key is named as the config writes it.
+function nativeOnWindows(app: string, target: LoadedNativeTarget): WebTargetDriver {
+  const key = target.name === target.platform ? `apps.${app}` : `apps.${app}.targets.${target.name}`
+  const kind = target.platform === 'macos' ? 'a macOS app, which Retest runs only on a Mac' : 'an iOS simulator app, which Retest runs only on a Mac with Xcode'
+  return { ok: false, failure: { class: 'setup_failed', message: `${key} is ${kind}.`, details: { app, target: target.name, driver: target.platform } } }
 }
 
 function noDriver(app: string, target: string, driver: DriverName): WebTargetDriver {

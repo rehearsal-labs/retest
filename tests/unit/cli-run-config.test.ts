@@ -185,7 +185,8 @@ describe('run selection', () => {
     assert.match(await rejected([`${file}:7#2`, `./${file}:7#2`]), /\.\/examples\/task\.retest\.ts:7#2 is named twice\./)
     assert.match(await rejected([`${file}:7`, `./${file}:7`]), /\.\/examples\/task\.retest\.ts:7 is named twice\./)
     assert.match(await rejected([file, `${file}:7`]), /examples\/task\.retest\.ts is named on its own and with a line\. Name it one way\./)
-    assert.match(await rejected(['tests/b.retest.ts:3']), /tests\/b\.retest\.ts does not exist\. Did you mean tests\/a\.retest\.ts\?/)
+    const missing = await rejected(['tests/b.retest.ts:3'])
+    assert.ok(missing.includes(`tests/b.retest.ts does not exist. Did you mean ${join('tests', 'a.retest.ts')}?`), missing)
   })
 
   test('--grep is text, or a pattern written /pattern/flags', async () => {

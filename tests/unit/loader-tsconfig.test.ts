@@ -3,7 +3,13 @@ import { chmodSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { findTsconfig, parseJsonWithComments, readTsconfig } from '../../src/loader/tsconfig.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
+
+// A path inside a pattern: a Windows path's backslashes and a folder's dots are literal.
+function escape(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
 // A project folder with these files, by its real path, as Node and the reader name files.
 function project(files: Readonly<Record<string, string>>): string {
@@ -123,16 +129,16 @@ describe('readTsconfig', () => {
 
   test('a tsconfig that is not JSON, or not an object, is a usage failure naming the file', () => {
     const broken = project({ 'tsconfig.json': '{ "compilerOptions": { "paths": ' })
-    assert.match(failureOf(broken), new RegExp(`^${join(broken, 'tsconfig.json')} is not valid JSON: `))
+    assert.match(failureOf(broken), new RegExp(`^${escape(join(broken, 'tsconfig.json'))} is not valid JSON: `))
     const list = project({ 'tsconfig.json': '[]' })
     assert.equal(failureOf(list), `${join(list, 'tsconfig.json')} must hold a JSON object.`)
   })
 
-  test('a tsconfig that cannot be read is a usage failure naming the file', { skip: process.getuid?.() === 0 ? 'root reads any file' : false }, () => {
+  test('a tsconfig that cannot be read is a usage failure naming the file', { skip: process.getuid?.() === 0 ? 'root reads any file' : unixOnly('a Windows file has no mode that refuses reading it') }, () => {
     const root = project({ 'tsconfig.json': '{}' })
     chmodSync(join(root, 'tsconfig.json'), 0o000)
     try {
-      assert.match(failureOf(root), new RegExp(`^${join(root, 'tsconfig.json')} could not be read: EACCES`))
+      assert.match(failureOf(root), new RegExp(`^${escape(join(root, 'tsconfig.json'))} could not be read: EACCES`))
     } finally {
       chmodSync(join(root, 'tsconfig.json'), 0o644)
     }

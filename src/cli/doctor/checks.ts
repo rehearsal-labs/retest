@@ -105,10 +105,12 @@ function redactChecks(checks: readonly Check[], redactor: Redactor): Check[] {
 type TargetContext = CheckContext & { launches: Map<string, Promise<Launched>>; redactor: Redactor }
 
 // A target whose driver does not exist is refused as a run refuses it, and nothing is launched for it. A native target
-// has the drivers a run gives it; its row is read from the executor builds in the cache, and nothing is started.
+// has the drivers a run gives it; its row is read from the executor builds in the cache, and nothing is started. On
+// Windows, where those drivers do not run, its row is the refusal a run gives it.
 async function checkTarget(app: LoadedApp, loaded: LoadedTarget, context: TargetContext): Promise<Check> {
   const subject = targetCall(loaded)
   const native = targetDriver(app.name, loaded, { native: true })
+  if (!native.ok && 'platform' in loaded) return { group: app.name, subject, ok: false, text: native.failure.message }
   if (native.ok && (native.driver === 'ios-simulator' || native.driver === 'macos')) return checkNativeTarget({ app: app.name, subject, target: native.target, env: context.dependencies.env })
   const driver = targetDriver(app.name, loaded)
   if (!driver.ok) return { group: app.name, subject, ok: false, text: driver.failure.message }

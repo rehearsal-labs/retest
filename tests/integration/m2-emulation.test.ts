@@ -5,6 +5,7 @@ import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { browserPath, openApp } from './browser-harness.ts'
 import {
   assertSucceeded,
+  browserVersion,
   budgets,
   configSource,
   eventsOf,
@@ -20,6 +21,8 @@ import {
 // the target is emulated. Emulation is desktop Chrome pretending, never a real device.
 
 async function chromeVersion(): Promise<string> {
+  // Chrome on Windows has no `--version`: it opens a browser that never exits, so there the version is the file's own.
+  if (process.platform === 'win32') return browserVersion(browserPath())
   const printed = await runProgram(browserPath(), ['--version'], process.cwd())
   assertSucceeded(printed, 'chrome --version')
   const version = /(\d+\.\d+\.\d+\.\d+)/.exec(printed.stdout)?.[1]

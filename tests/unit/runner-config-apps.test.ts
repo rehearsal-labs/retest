@@ -1,7 +1,7 @@
 import type { RetestEvent } from '../../src/protocol/events.ts'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { lastRunFile, lastRunSchema } from '../../src/protocol/last-run.ts'
 import { targetBrowserLogFile } from '../../src/protocol/run-folder.ts'
@@ -69,7 +69,7 @@ describe('a test whose app has two targets', async () => {
   })
 
   test('each target launches its own browser once, named with its app and target, with its own log', () => {
-    assert.deepEqual(record.browsers.map((browser) => browser.executablePath), ['/fake/stable', '/fake/beta'])
+    assert.deepEqual(record.browsers.map((browser) => browser.executablePath), [resolve(record.root, '/fake/stable'), resolve(record.root, '/fake/beta')])
     assert.deepEqual(record.browsers.map((browser) => browser.pages.length), [2, 2])
     assert.ok(record.browsers.every((browser) => browser.closed && browser.pages.every((page) => page.disposed)))
     assert.deepEqual(
@@ -118,7 +118,7 @@ describe('--target', () => {
     const root = tempProject({ 'retest.config.ts': matrixConfig, 'tests/matrix.retest.ts': matrixTests })
     const record = await runProject(root, { files: ['tests/matrix.retest.ts'], selection: { targets: { web: 'beta' } } })
     assert.deepEqual(record.result.files[0]?.tests.map((result) => result.variantKey), ['web=beta', 'web=beta'])
-    assert.deepEqual(record.browsers.map((browser) => browser.executablePath), ['/fake/beta'])
+    assert.deepEqual(record.browsers.map((browser) => browser.executablePath), [resolve(root, '/fake/beta')])
   })
 })
 
@@ -254,7 +254,7 @@ export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1
       files: ['tests/matrix.retest.ts'],
       findExecutable: findTargetExecutable,
     })
-    const reason = { class: 'setup_failed', message: 'No browser at /nowhere/chromium, the path executablePath gives. Install one there, or change the path.' }
+    const reason = { class: 'setup_failed', message: `No browser at ${resolve(record.root, '/nowhere/chromium')}, the path executablePath gives. Install one there, or change the path.` }
     assert.deepEqual(record.result.files[0]?.tests.map((result) => [result.status, result.failure]), [['not_run', reason], ['not_run', reason]])
     assert.deepEqual([record.result.exitCode, record.result.failure], [2, reason])
     assert.equal(record.browsers.length, 0)

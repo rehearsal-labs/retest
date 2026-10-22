@@ -7,8 +7,11 @@ import { extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { testProcessFlags } from '../loader/node.ts'
 import { playwrightArgument } from '../loader/resolve.ts'
+import { failure } from '../protocol/failures.ts'
 import { childMessageSchema } from '../protocol/messages.ts'
 import { parse } from '../protocol/schema.ts'
+import { withoutVariables } from '../shared/environment.ts'
+import { holdOwnChild, prepareOwnedLaunch } from '../shared/process-system.ts'
 
 /** A message about the file or the test running in it. Errors outside any test are kept by the process. */
 export type TestFileMessage = Exclude<ChildMessage, { type: 'process-error' }>
@@ -91,19 +94,27 @@ export class TestFileProcess {
    */
   static spawn(options: SpawnOptions = {}): TestFileProcess {
     const output = options.onOutput
-    const hidden = new Set(options.hiddenVariables)
+    // On Windows the runner is held before its first test file's process starts, and each one is held as a launch of
+    // its own, so whatever a test starts below it is held too, and ends with Retest.
+    prepareOwnedLaunch()
     const child = fork(childEntry, options.playwright === true ? [playwrightArgument] : [], {
       execArgv: [...conditionArguments(process.execArgv), ...testProcessFlags],
-      env: Object.fromEntries(Object.entries(options.environment ?? process.env).filter(([name]) => !hidden.has(name))),
+      env: withoutVariables(options.environment ?? process.env, options.hiddenVariables),
       serialization: 'json',
       stdio: output === undefined ? ['ignore', 'ignore', 'ignore', 'ipc'] : ['ignore', 'pipe', 'pipe', 'ipc'],
+      // On Windows a console of its own with no window, so a key pressed on Retest's console stops the run as Retest
+      // decides, rather than each test file's process at once; Node ignores it elsewhere.
+      windowsHide: true,
     })
     own(child)
+    const holding = holdOwnChild(child)
     if (output !== undefined) {
       child.stdout?.setEncoding('utf8').on('data', (text: string) => output('stdout', text))
       child.stderr?.setEncoding('utf8').on('data', (text: string) => output('stderr', text))
     }
-    return new TestFileProcess(child)
+    const spawned = new TestFileProcess(child)
+    for (const problem of holding) spawned.#errors.push(failure('setup_failed', `Retest could not hold the test file's process: ${problem}`))
+    return spawned
   }
 
   get pid(): number | undefined {

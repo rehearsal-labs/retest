@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import { failureSchema, sourceLocationSchema } from '../../src/protocol/failures.ts'
 import { s } from '../../src/protocol/schema.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
+import { commandPath, shellQuote } from '../../src/reporters/commands.ts'
 import { browserPath, openApp } from './browser-harness.ts'
 import {
   assertReleased,
@@ -33,6 +34,13 @@ const listSchema = s.object({
     }),
   ),
 })
+
+// A word of a printed command as a shell hands it to the program: without the quotes `shellQuote` put around it.
+function unquoted(word: string): string {
+  if (word.length >= 2 && word.startsWith('"') && word.endsWith('"')) return word.slice(1, -1)
+  if (word.length < 2 || !word.startsWith("'") || !word.endsWith("'")) return word
+  return word.slice(1, -1).replaceAll(process.platform === 'win32' ? "''" : "'\\''", "'")
+}
 
 function packageVersion(): string {
   const manifest: unknown = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8'))
@@ -75,7 +83,7 @@ test('a run never writes over an earlier one: a folder that holds files is refus
 
 test('list --json reports each collected test with its source location, without a browser', async (t) => {
   const listed = await retestCommand(t, ['list', exampleFile, '--json'])
-  assert.equal(listed.exit.code, 0)
+  assert.equal(listed.exit.code, 0, listed.stderr)
   const { files } = parseLine(listSchema, listed.stdout, 'the list')
   assert.deepEqual(files, [
     {
@@ -109,7 +117,7 @@ test('a failed run prints one card, with a screenshot and an inspect command tha
   const inspect = /Inspect +npx retest inspect (\S+) --test "([^"]+)"/.exec(run.stdout)
   assert.ok(inspect?.[1] !== undefined && inspect[2] !== undefined, 'the card names an inspect command')
 
-  const shown = await retestCommand(t, ['inspect', inspect[1], '--test', inspect[2]])
+  const shown = await retestCommand(t, ['inspect', unquoted(inspect[1]), '--test', inspect[2]])
   assert.equal(shown.exit.code, 0)
   assert.match(shown.stdout, /\+ Received +"Release checklis"/)
 })
@@ -125,7 +133,7 @@ test('a coding agent gets the short report, ending in a next: line', async (t) =
   const lines = run.stdout.trimEnd().split('\n')
   assert.match(lines[0] ?? '', /^retest: 1 failed \(1\) in .+, exit 1$/)
   assert.ok(lines.includes(`fail ${exampleFile}:7 saves a task`), run.stdout)
-  assert.equal(lines.at(-1), `next: npx retest inspect ${output} --test "${exampleFile} > saves a task" --json`)
+  assert.equal(lines.at(-1), `next: npx retest inspect ${shellQuote(commandPath(output))} --test "${exampleFile} > saves a task" --json`)
 })
 
 test('test.step reports nested steps, and each action carries the step it ran in', async (t) => {

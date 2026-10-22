@@ -8,14 +8,14 @@ The cases cover the first release's browser scope: navigation, locators, actions
 
 An engine that refuses an operation by name, or whose browser does something Chrome's does not, ends a case otherwise only where `tests/integration/engine-differences.ts` declares it, with the outcome it gives, why, and the item of the engine's page in `docs/compatibility/` that records it. Such a case is held to that outcome exactly, and is marked **declared** in its cell; the declarations are listed under the tables. Chrome declares nothing.
 
-Generated 2026-10-11T17:46:50.078Z on darwin arm64, Node 24.12.0, Retest 0.0.0 at commit d19c196 with uncommitted changes.
+Generated 2026-10-21T22:15:52.291Z on darwin arm64, Node 24.12.0, Retest 0.0.0 at commit 30743ca with uncommitted changes.
 
 ## Engines
 
 | Engine | Available | Browsers the runs launched | Cases as declared |
 | --- | --- | --- | --- |
-| Chrome | yes | Chrome 154.0.8037.99 (`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`) | 148 of 148 cases; 15 of 15 runs |
-| Firefox | yes This process may not read ~/Library/Application Support/Firefox, so the runs started Firefox through Launch Services rather than as a child process. | Firefox 133.0.3 (`/Applications/Firefox.app/Contents/MacOS/firefox`) | 148 of 148 cases; 15 of 15 runs |
+| Chrome | yes | Chrome 155.0.8059.85 (`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`) | 148 of 148 cases; 15 of 15 runs |
+| Firefox | yes This process may not read ~/Library/Application Support/Firefox, so the runs started Firefox through Launch Services rather than as a child process. | Firefox 158.0.1 (`/private/tmp/retest-ff158-home/Library/Caches/retest/browsers/firefox-158.0.1-mac-arm64/build/Firefox.app/Contents/MacOS/firefox`) | 148 of 148 cases; 15 of 15 runs |
 | WebKit | yes | WebKit 626.1.6+, build 2359 (`/Users/dragon/Library/Caches/ms-playwright/webkit-2359/Playwright.app/Contents/MacOS/Playwright`) | 148 of 148 cases; 15 of 15 runs |
 
 ## Cases
@@ -44,7 +44,7 @@ Generated 2026-10-11T17:46:50.078Z on darwin arm64, Node 24.12.0, Retest 0.0.0 a
 | A4 | Actions | `web/actions.retest.ts` › keys move the focus, Enter submits a form once, and shortcuts hold their modifiers | passed | passed | passed | passed |
 | A5 | Actions | `web/actions.retest.ts` › select chooses by label, by value and several options at once, and the page hears trusted input | passed | passed | error unsupported at select, **declared** | passed |
 | A6 | Actions | `web/actions.retest.ts` › check and uncheck work a checkbox, an element whose role is checkbox, a hidden checkbox through its label, and radios | passed | passed | passed | passed |
-| A7 | Actions | `web/actions.retest.ts` › the wheel scrolls an element to its end and the page near its end, which each answer once | passed | passed | failed check_failed at toBeEnabled, **declared** | passed |
+| A7 | Actions | `web/actions.retest.ts` › the wheel scrolls an element to its end and the page near its end, which each answer once | passed | passed | passed | passed |
 | A8 | Actions | `web/actionability.retest.ts` › a click waits for a button that is enabled a moment after the page loads, and clicks it once | passed | passed | passed | passed |
 | A9 | Actions | `web/actionability.retest.ts` › a click on a covered button is refused when its time runs out, naming what covers it | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click |
 | A10 | Actions | `web/actionability.retest.ts` › a click on a disabled button is refused when its time runs out | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click | failed not_actionable at click |
@@ -175,29 +175,28 @@ Generated 2026-10-11T17:46:50.078Z on darwin arm64, Node 24.12.0, Retest 0.0.0 a
 
 | Run | Folder | Declared exit | Chrome | Firefox | WebKit |
 | --- | --- | --- | --- | --- | --- |
-| web | `web` | 1 | exit code 1, 29.8 s | exit code 1, 32.8 s | exit code 1, 32.9 s |
-| workflow | `workflow` | 1 | exit code 1, 23.1 s | exit code 1, 28.2 s | exit code 1, 24.0 s |
-| projects | `projects` | 0 | exit code 0, 2.0 s | exit code 0, 2.6 s | exit code 0, 2.6 s |
-| projects-narrow | `projects` | 0 | exit code 0, 1.5 s | exit code 0, 2.3 s | exit code 0, 1.6 s |
-| server | `server` | 0 | exit code 0, 1.7 s | exit code 0, 2.4 s | exit code 0, 1.8 s |
-| server-fails | `server-fails` | 2 | exit code 2, 2.6 s | exit code 2, 3.5 s | exit code 2, 2.5 s |
-| participants | `participants` | 0 | exit code 0, 4.5 s | exit code 0, 7.4 s | exit code 0, 5.8 s |
-| limits | `limits` | 0 | exit code 0, 2.8 s | exit code 0, 3.7 s | exit code 0, 3.2 s |
-| locks | `locks` | 0 | exit code 0, 3.9 s | exit code 0, 5.6 s | exit code 0, 4.7 s |
-| only | `only` | 0 | exit code 0, 1.6 s | exit code 0, 2.5 s | exit code 0, 2.0 s |
-| only-ci | `only` | 2 | exit code 2, 0.6 s | exit code 2, 0.5 s | exit code 2, 0.6 s |
-| filter | `filter` | 0 | exit code 0, 1.5 s | exit code 0, 2.4 s | exit code 0, 1.9 s |
-| cancel-after-input | `lifecycle` | 130 | exit code 130, 1.5 s | exit code 130, 2.3 s | exit code 130, 1.7 s |
-| lost-after-input | `lifecycle` | 2 | exit code 2, 1.4 s | exit code 2, 2.0 s | exit code 2, 1.8 s |
-| lost-while-looking | `lifecycle` | 2 | exit code 2, 1.4 s | exit code 2, 2.0 s | exit code 2, 1.7 s |
+| web | `web` | 1 | exit code 1, 29.5 s | exit code 1, 36.0 s | exit code 1, 33.8 s |
+| workflow | `workflow` | 1 | exit code 1, 23.5 s | exit code 1, 38.9 s | exit code 1, 24.8 s |
+| projects | `projects` | 0 | exit code 0, 2.0 s | exit code 0, 7.9 s | exit code 0, 2.8 s |
+| projects-narrow | `projects` | 0 | exit code 0, 1.5 s | exit code 0, 7.5 s | exit code 0, 1.7 s |
+| server | `server` | 0 | exit code 0, 1.8 s | exit code 0, 7.9 s | exit code 0, 1.9 s |
+| server-fails | `server-fails` | 2 | exit code 2, 2.7 s | exit code 2, 7.2 s | exit code 2, 2.6 s |
+| participants | `participants` | 0 | exit code 0, 4.8 s | exit code 0, 12.8 s | exit code 0, 6.4 s |
+| limits | `limits` | 0 | exit code 0, 2.9 s | exit code 0, 8.9 s | exit code 0, 3.2 s |
+| locks | `locks` | 0 | exit code 0, 4.3 s | exit code 0, 15.9 s | exit code 0, 4.8 s |
+| only | `only` | 0 | exit code 0, 1.6 s | exit code 0, 7.8 s | exit code 0, 1.9 s |
+| only-ci | `only` | 2 | exit code 2, 0.6 s | exit code 2, 0.6 s | exit code 2, 0.6 s |
+| filter | `filter` | 0 | exit code 0, 1.6 s | exit code 0, 7.7 s | exit code 0, 1.9 s |
+| cancel-after-input | `lifecycle` | 130 | exit code 130, 1.5 s | exit code 130, 7.5 s | exit code 130, 1.7 s |
+| lost-after-input | `lifecycle` | 2 | exit code 2, 1.5 s | exit code 2, 7.4 s | exit code 2, 1.9 s |
+| lost-while-looking | `lifecycle` | 2 | exit code 2, 1.5 s | exit code 2, 7.5 s | exit code 2, 1.9 s |
 
 ## Declared differences
 
 | Engine | Case | Declared outcome | Why | Recorded in |
 | --- | --- | --- | --- | --- |
 | Firefox | A5 | error unsupported at select | Firefox's driver refuses keyboard input to a multiple select before any key, since Firefox shows no option holding the list's focus to check before Space toggles it. | `docs/compatibility/firefox.md`, Engine differences 4 |
-| Firefox | A7 | failed check_failed at toBeEnabled | Firefox scrolls an element by at most one page for one wheel event, so a 2000 pixel turn moves the terms without reaching their end. | `docs/compatibility/firefox.md`, Engine differences 5 |
-| Firefox | F8.1a | error unsupported at toBeVisible | Firefox's accessibility tree does not name a cell from its text, so the driver refuses a cell looked up by such a name. | `docs/compatibility/firefox.md`, Engine differences 7 |
+| Firefox | F8.1a | error unsupported at toBeVisible | Retest's Firefox driver refuses a cell looked up by name, since Firefox's cell names have not been compared with Chrome's across the role pages. | `docs/compatibility/firefox.md`, Engine differences 6 |
 | WebKit | F8.1a | error unsupported at toBeVisible | WebKit's accessibility tree does not name a cell from its text, so the driver refuses a cell looked up by such a name. | `docs/compatibility/webkit.md`, Engine differences 4 |
 
 ## Differences

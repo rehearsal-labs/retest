@@ -7,12 +7,12 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { after, afterEach, before, beforeEach, describe, test } from 'node:test'
-import { buildFolder, buildPlatform, cacheFolders, findPin } from '../../src/browser/builds.ts'
+import { buildFolder, buildPlatform, cacheFolders, cacheVariable, findPin } from '../../src/browser/builds.ts'
 import { describeResult } from '../../src/cli/install/report.ts'
 import { createStyle } from '../../src/reporters/style.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { unpinnedBuilds } from '../support/unpinned-host.ts'
-import { listeningPort } from './builds-fixtures.ts'
+import { homeEnvironment, listeningPort } from './builds-fixtures.ts'
 import { fakeCli } from './cli-fixtures.ts'
 
 // `retest install` through the command line with a home folder of its own. Real downloads never happen here: the
@@ -51,7 +51,7 @@ after(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()))
 })
 
-async function install(args: string[], env: Record<string, string> = { HOME: tempFolder('retest-install-home-') }, signal?: AbortSignal) {
+async function install(args: string[], env: Record<string, string> = homeEnvironment(tempFolder('retest-install-home-')), signal?: AbortSignal) {
   const fake = fakeCli({ cwd, env, ...(signal === undefined ? {} : { signal }) })
   const code = await fake.cli(['install', ...args])
   return { code, stdout: fake.stdout.text, stderr: fake.stderr.text }
@@ -70,7 +70,7 @@ describe('retest install', () => {
     assert.equal(await fake.cli(['help', 'install']), 0)
     const help = fake.stdout.text
     assert.match(help, /^Usage\n {2}retest install <engine\.\.\.> \| --list \[options\]\n/)
-    assert.match(help, /Engines: chromium, firefox, webkit, electron, webdriveragent, mac2, media\./)
+    assert.match(help, /Engines: chromium, firefox, webkit, electron, webdriveragent, mac2, media, supervisor\./)
     assert.match(help, /RETEST_DOWNLOAD_MIRROR names a mirror/)
     assert.match(help, /run, doctor and --list never download/)
     const general = fakeCli({ cwd })
@@ -81,29 +81,29 @@ describe('retest install', () => {
   test('asks for engines, names the ones it knows, and keeps --verify and --json to --list', async () => {
     const none = await install([])
     assert.equal(none.code, 2)
-    assert.match(none.stderr, /^error: Name the engines to install: chromium, firefox, webkit, electron, webdriveragent, mac2 or media\. Or list them with --list\.\nSee retest help install\.\n$/)
+    assert.match(none.stderr, /^error: Name the engines to install: chromium, firefox, webkit, electron, webdriveragent, mac2, media or supervisor\. Or list them with --list\.\nSee retest help install\.\n$/)
     const typo = await install(['firefx'])
     assert.equal(typo.code, 2)
     assert.match(typo.stderr, /Unknown engine firefx\. Did you mean firefox\?/)
     const unknown = await install(['safari'])
-    assert.match(unknown.stderr, /Unknown engine safari\. The engines are chromium, firefox, webkit, electron, webdriveragent, mac2 and media\./)
+    assert.match(unknown.stderr, /Unknown engine safari\. The engines are chromium, firefox, webkit, electron, webdriveragent, mac2, media and supervisor\./)
     assert.match((await install(['electron', '--json'])).stderr, /--verify and --json go with --list\./)
     assert.match((await install(['--list', 'electron'])).stderr, /--list takes no engines, received electron\./)
     assert.equal(fetches, 0)
   })
 
   // A machine with no pins is refused for that before its cache folder is looked for.
-  test('refuses a HOME that is not an absolute folder, which leaves no cache folder', { skip: unpinnedBuilds }, async () => {
+  test('refuses a HOME, or on Windows a LOCALAPPDATA, that is not an absolute folder, which leaves no cache folder', { skip: unpinnedBuilds }, async () => {
     const homeless = await install(['--list'], {})
     assert.equal(homeless.code, 2)
-    assert.match(homeless.stderr, /HOME is not set to an absolute folder, so Retest has no cache folder to install into or read\./)
+    assert.match(homeless.stderr, new RegExp(`${cacheVariable()} is not set to an absolute folder, so Retest has no cache folder to install into or read\\.`))
     assert.equal(fetches, 0)
   })
 
   test('lists every pin for this machine and what the cache holds, downloading nothing', async (t) => {
     if (!onMac(t)) return
     const home = tempFolder('retest-install-home-')
-    const listed = await install(['--list'], { HOME: home, NO_COLOR: '1' })
+    const listed = await install(['--list'], { ...homeEnvironment(home), NO_COLOR: '1' })
     assert.equal(listed.code, 0, listed.stderr)
     const lines = listed.stdout.split('\n').map((line) => line.trim().replaceAll(/ {2,}/g, ' | '))
     assert.ok(lines.includes(`Pinned builds for macOS arm64, in ${join(home, 'Library/Caches/retest')}`), listed.stdout)
@@ -113,7 +113,7 @@ describe('retest install', () => {
     assert.ok(lines.includes('LGPL 2.1 and BSD, notices kept with the build'), listed.stdout)
     assert.doesNotMatch(listed.stdout, /Licence licenses\/|SHA-256|Source https:|Patches https:/)
     for (const line of [
-      'firefox | Firefox 133.0.3 (build 20241209150345) | - not installed · npx retest install firefox',
+      'firefox | Firefox 158.0.1 (build 20261019185856) | - not installed · npx retest install firefox',
       'webdriveragent | WebDriverAgent 16.13.6 | - not installed · npx retest install webdriveragent',
       'mac2 | WebDriverAgentMac (appium-mac2-driver) 4.3.6 | - not installed · npx retest install mac2',
     ]) assert.ok(lines.includes(line), `${line}:\n${listed.stdout}`)
@@ -152,15 +152,15 @@ describe('retest install', () => {
   test('marks a build folder that holds no record as not matching, and exits 2', async (t) => {
     if (!onMac(t)) return
     const home = tempFolder('retest-install-home-')
-    const folders = cacheFolders({ HOME: home })
+    const folders = cacheFolders(homeEnvironment(home))
     const pin = findPin('electron', 'mac-arm64')
     assert.ok(folders !== undefined && pin !== undefined)
     await mkdir(buildFolder(folders, pin), { recursive: true })
-    const listed = await install(['--list'], { HOME: home, NO_COLOR: '1' })
+    const listed = await install(['--list'], { ...homeEnvironment(home), NO_COLOR: '1' })
     assert.equal(listed.code, 2)
     assert.match(listed.stdout, /electron +Electron 44\.5\.1 +✗ not as recorded in .+electron-44\.5\.1-mac-arm64\n +.+ holds no build\.json, so nothing records what is in it\.\n +Remove the folder and run npx retest install electron again\./)
     assert.match(listed.stdout, /One build does not match its record\./)
-    const refused = await install(['electron'], { HOME: home, NO_COLOR: '1' })
+    const refused = await install(['electron'], { ...homeEnvironment(home), NO_COLOR: '1' })
     assert.equal(refused.code, 2)
     assert.match(refused.stdout, /✗ electron +Electron 44\.5\.1 is in .+, but not as recorded: .+ Remove .+ and run the install again\./)
     assert.equal(fetches, 0)
@@ -169,7 +169,7 @@ describe('retest install', () => {
   test('moves all nine retained WebKit notice texts and pointers to licences, fetching nothing', async (t) => {
     if (!onMac(t)) return
     const home = tempFolder('retest-install-home-')
-    const fake = fakeCli({ cwd, env: { HOME: home, NO_COLOR: '1' } })
+    const fake = fakeCli({ cwd, env: { ...homeEnvironment(home), NO_COLOR: '1' } })
     assert.equal(await fake.cli(['licences', 'webkit']), 2, 'archive-only notices are unavailable before installation')
     const text = fake.stdout.text
     const lines = text.split('\n')
@@ -187,7 +187,7 @@ describe('retest install', () => {
     allowFetch = true
     const home = tempFolder('retest-install-home-')
     const before = requests.length
-    const result = await install(['electron'], { HOME: home, NO_COLOR: '1', RETEST_DOWNLOAD_MIRROR: mirror })
+    const result = await install(['electron'], { ...homeEnvironment(home), NO_COLOR: '1', RETEST_DOWNLOAD_MIRROR: mirror })
     assert.equal(result.code, 2)
     assert.deepEqual(requests.slice(before), ['/github.com/electron/electron/releases/download/v44.5.1/electron-v44.5.1-darwin-arm64.zip'])
     assert.ok(result.stdout.includes(`  Downloading Electron 44.5.1 for macOS arm64 from ${mirror}/github.com/electron/electron/releases/download/v44.5.1/electron-v44.5.1-darwin-arm64.zip (124.2 MiB)\n`), result.stdout)
@@ -200,7 +200,7 @@ describe('retest install', () => {
   test('rejects a hand-written cache record that disagrees with the archive pin, and exits 2', async (t) => {
     if (!onMac(t)) return
     const home = tempFolder('retest-install-home-')
-    const folders = cacheFolders({ HOME: home })
+    const folders = cacheFolders(homeEnvironment(home))
     const pin = findPin('chromium', 'mac-arm64')
     assert.ok(folders !== undefined && pin?.kind === 'archive')
     const folder = buildFolder(folders, pin)
@@ -208,7 +208,7 @@ describe('retest install', () => {
     await mkdir(join(folder, 'build'), { recursive: true })
     await writeFile(join(folder, 'build.json'), JSON.stringify({ schemaVersion: 1, engine: 'chromium', version: pin.version, platform: 'mac-arm64', source: pin.archive.url, fetchedFrom: 'hand', archive: { size: 1, sha256: 'not-an-archive' }, executable: { path: pin.executable.path, sha256: pin.executable.sha256 }, files: [], licences: [], tree: { sha256: 'x' }, installedAt: '2026-10-05T00:00:00.000Z', installedBy: 'hand' }))
     for (const args of [['--list'], ['--list', '--verify']]) {
-      const listed = await install(args, { HOME: home, NO_COLOR: '1' })
+      const listed = await install(args, { ...homeEnvironment(home), NO_COLOR: '1' })
       assert.equal(listed.code, 2, args.join(' '))
       const lines = listed.stdout.split('\n').map((line) => line.trim().replaceAll(/ {2,}/g, ' | '))
       assert.ok(lines.includes(`chromium | Chrome for Testing 153.0.8010.12 | ✗ not as recorded in ${folder}`), listed.stdout)
@@ -217,7 +217,7 @@ describe('retest install', () => {
       assert.ok(lines.includes('One build does not match its record.'), listed.stdout)
       assert.ok(!/chromium .*✓/.test(listed.stdout), 'it is never listed as installed')
     }
-    const document = JSON.parse((await install(['--list', '--json'], { HOME: home })).stdout) as { builds: { engine: string; state: string; executablePath?: string }[] }
+    const document = JSON.parse((await install(['--list', '--json'], homeEnvironment(home))).stdout) as { builds: { engine: string; state: string; executablePath?: string }[] }
     const chromium = document.builds.find((build) => build.engine === 'chromium')
     assert.deepEqual([chromium?.state, chromium?.executablePath], ['damaged', undefined])
     assert.equal(fetches, 0)
@@ -225,7 +225,7 @@ describe('retest install', () => {
 
   test('refuses a mirror with a query or a fragment by name, before anything is fetched, and never prints it back', { skip: unpinnedBuilds }, async () => {
     for (const [given, named] of [['https://mirror.example.com/?token=mirror-secret', 'a query'], ['https://mirror.example.com/builds#mirror-secret', 'a fragment'], ['https://mirror.example.com/?', 'a query']] as const) {
-      const result = await install(['electron'], { HOME: tempFolder('retest-install-home-'), RETEST_DOWNLOAD_MIRROR: given })
+      const result = await install(['electron'], { ...homeEnvironment(tempFolder('retest-install-home-')), RETEST_DOWNLOAD_MIRROR: given })
       assert.equal(result.code, 2, given)
       assert.match(result.stderr, new RegExp(`^error: RETEST_DOWNLOAD_MIRROR carries ${named}, which Retest neither sends to a mirror nor records\\. Give the mirror's address without it\\.`), given)
       assert.ok(!result.stderr.includes('mirror-secret') && !result.stdout.includes('mirror-secret'), 'the mirror is not printed back')
@@ -235,7 +235,7 @@ describe('retest install', () => {
 
   test('refuses a mirror that is not https or this machine, before anything is fetched', { skip: unpinnedBuilds }, async () => {
     for (const given of ['http://mirror.example.com', 'ftp://127.0.0.1', 'https://user:password@mirror.example.com', 'not an address']) {
-      const result = await install(['electron'], { HOME: tempFolder('retest-install-home-'), RETEST_DOWNLOAD_MIRROR: given })
+      const result = await install(['electron'], { ...homeEnvironment(tempFolder('retest-install-home-')), RETEST_DOWNLOAD_MIRROR: given })
       assert.equal(result.code, 2, given)
       assert.match(result.stderr, /^error: RETEST_DOWNLOAD_MIRROR/, given)
       assert.ok(!result.stderr.includes('password'), 'the mirror is not printed back with its credentials')
@@ -260,7 +260,7 @@ describe('retest install', () => {
   test('exits as interrupted when stopped before it starts', { skip: unpinnedBuilds }, async () => {
     const controller = new AbortController()
     controller.abort()
-    const result = await install(['electron'], { HOME: tempFolder('retest-install-home-') }, controller.signal)
+    const result = await install(['electron'], homeEnvironment(tempFolder('retest-install-home-')), controller.signal)
     assert.equal(result.code, 130)
     assert.equal(fetches, 0)
   })

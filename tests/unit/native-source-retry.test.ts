@@ -5,6 +5,11 @@ import { waitUntilDeadline } from '../../src/assertions/wait-before-read.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
 import { earlyClock } from './early-waits-clock.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 const sourceRoute = 'GET /session/:session/source'
 const locator = { by: 'testId', value: 'service-status' } as const
@@ -27,7 +32,7 @@ for (const platform of ['ios-simulator', 'macos'] as const) {
   })
 
   for (const phase of ['before input', 'after typing'] as const) {
-    test(`a ${platform} account fill waits for its owned tree ${phase} and sends each input once`, async (t) => {
+    test(`a ${platform} account fill waits for its owned tree ${phase} and sends each input once`, macDriver, async (t) => {
       const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn })
       app.find('account-field').text = 'old'
       const refuse = (): void => {

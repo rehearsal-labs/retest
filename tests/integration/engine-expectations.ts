@@ -42,6 +42,20 @@ export type Declaration = {
   /** Why the engine ends the case otherwise, in one sentence. */
   readonly reason: string
   readonly documented: ProofItem
+  /**
+   * The systems the engine ends the case otherwise on, for a difference that comes from the system, as a key binding
+   * does; every system when absent. Elsewhere the case is held to Chrome's outcome, as any undeclared case is.
+   */
+  readonly platforms?: readonly NodeJS.Platform[]
+}
+
+/**
+ * Whether a declaration holds on this system.
+ *
+ * @example declaredHere({ platforms: ['darwin'] }, 'win32') // false
+ */
+export function declaredHere(declaration: Pick<Declaration, 'platforms'>, platform: NodeJS.Platform = process.platform): boolean {
+  return declaration.platforms === undefined || declaration.platforms.includes(platform)
 }
 
 /** A shared browser suite every engine runs unchanged, by its file's name without `.test.ts`. */
@@ -88,6 +102,7 @@ export type CheckedDeclaration = {
   readonly documented: ProofItem
   readonly case: string | readonly string[]
   readonly suite?: string
+  readonly platforms?: readonly NodeJS.Platform[]
 }
 
 /** The name a case goes by: its titles joined as `TestContext.fullName` joins them, or a conformance case's id. */
@@ -123,6 +138,7 @@ export function declarationProblems(declarations: readonly CheckedDeclaration[],
       continue
     }
     if (!/^\S[^\n]*\.$/.test(declaration.reason) || /[.!?]\s+[A-Z]/.test(declaration.reason)) problems.push(`${name} gives its reason in other than one sentence: ${JSON.stringify(declaration.reason)}`)
+    if (declaration.platforms?.length === 0) problems.push(`${name} names no system it holds on; leave platforms out for every system.`)
     if (!holdsItem(proofs[engine], declaration.documented)) {
       problems.push(`${name} cites item ${declaration.documented.item}, "${declaration.documented.title}", which the "${proofSection.slice(3)}" section of ${proofFiles[engine]} does not hold.`)
     }
@@ -187,7 +203,7 @@ export function conformanceExpectation(
   engine: string,
   testCase: { readonly id: string; readonly outcome: Declared; readonly facts?: readonly Fact[] },
 ): { readonly outcome: Declared; readonly facts: readonly Fact[]; readonly declaration?: ConformanceDifference } {
-  const declaration = declarations.find((each) => each.engine === engine && each.case === testCase.id)
+  const declaration = declarations.find((each) => each.engine === engine && each.case === testCase.id && declaredHere(each))
   if (declaration === undefined) return { outcome: testCase.outcome, facts: testCase.facts ?? [] }
   // The judge compares the literal text separately, using the assertion count of the failing event.
   const { message: _message, ...outcome } = declaration.outcome
@@ -243,7 +259,7 @@ export type OutcomeCheck<Observed extends DeclaredValue> = {
  * @example assertCaseOutcome(suiteDifferences, { engine: 'firefox', suite: 'browser-navigation', fullName, observed, chrome })
  */
 export function assertCaseOutcome<Observed extends DeclaredValue>(declarations: readonly SuiteDifference[], check: OutcomeCheck<Observed>): SuiteDifference | undefined {
-  const declaration = declarations.find((each) => each.engine === check.engine && each.suite === check.suite && caseName(each) === check.fullName)
+  const declaration = declarations.find((each) => each.engine === check.engine && each.suite === check.suite && caseName(each) === check.fullName && declaredHere(each))
   if (declaration === undefined) {
     assert.deepStrictEqual(check.observed, check.chrome)
     return undefined

@@ -15,6 +15,11 @@ import { defaultDiagnosticLimits, diagnosticRecordSchema } from '../../src/proto
 import { parse } from '../../src/protocol/schema.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { defaultDiagnosticsPolicy, policyFailure } from '../../src/diagnostics/policy.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 const identity: DiagnosticIdentity = { testId: 'native > diagnostics', attemptId: 'attempt', app: 'phone', sessionId: 'attempt:phone' }
 function budget(limits: Partial<DiagnosticLimits> = {}): AttemptBudget { return new AttemptBudget({ ...defaultDiagnosticLimits, ...limits }) }
@@ -88,7 +93,7 @@ test('native log source that cannot open says so', () => { const source = logs()
 test('disabled native logs keep no data', () => { const source = new NativeLogSource({ identity, budget: budget(), redactor: new Redactor(), enabled: false }); source.bind({ pid: 42, command: '/phone' }, 'simctl-stdout'); push(source, 'ignored\n'); assert.deepEqual(source.finish(), { records: [], capture: { state: 'disabled' } }) })
 test('native log rejects unowned chunks and a second bind', () => { const source = new NativeLogSource({ identity, budget: budget(), redactor: new Redactor() }); assert.throws(() => push(source, 'line\n'), /no owned process/); assert.throws(() => source.bind({ pid: 0, command: '' }, 'macos-stdout')); source.bind({ pid: 42, command: '/phone' }, 'simctl-stdout'); assert.throws(() => source.bind({ pid: 43, command: '/other' }, 'macos-stdout'), /already bound/) })
 
-test('owned launch stdout resolves the fake app through parent process scope, ignoring stderr acknowledgements, and stops only recorded processes', async (t) => {
+test('owned launch stdout resolves the fake app through parent process scope, ignoring stderr acknowledgements, and stops only recorded processes', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-log-launch-unit-')); t.after(() => rm(folder, { recursive: true, force: true }))
   const udid = '12345678-1234-1234-1234-123456789012'
   const appFolder = join(folder, 'Devices', udid); await mkdir(appFolder, { recursive: true })

@@ -2,7 +2,7 @@ import type { RetestEvent } from '../../src/protocol/events.ts'
 import type { TestResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { describe, test } from 'node:test'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { ownStartTime } from '../../src/runner/media-leftovers.ts'
@@ -161,7 +161,7 @@ describe('a run that records', { skip: unpinnedMedia }, async () => {
       assert.ok(recording !== undefined, result.name)
       assert.deepEqual(recording.start.identity, { runId: run.result.runId, attemptId: result.attemptId, testId: result.testId, app: 'web', sessionId: formatSessionId(result.attemptId, 'web') })
       assert.deepEqual({ width: recording.start.width, height: recording.start.height, fps: recording.start.fps }, { width: 800, height: 600, fps: 10 })
-      assert.ok(recording.start.output.includes(`/artifacts/${result.attemptId}/`), recording.start.output)
+      assert.ok(recording.start.output.includes(`${sep}artifacts${sep}${result.attemptId}${sep}`), recording.start.output)
     }
     assert.equal(new Set(recordings.map((each) => each.start.output)).size, recordings.length, 'no two attempts share an output')
   })

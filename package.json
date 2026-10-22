@@ -57,6 +57,11 @@
     "media/Cargo.lock",
     "media/build.rs",
     "media/src/*.rs",
+    "supervisor/Cargo.toml",
+    "supervisor/Cargo.lock",
+    "supervisor/build.rs",
+    "supervisor/src/*.rs",
+    "supervisor/NOTICES",
     "LICENSE",
     "src/cli/install/media-notices.txt",
     "src/cli/install/licences/**"

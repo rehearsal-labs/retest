@@ -11,7 +11,7 @@ const output = process.env['GITHUB_OUTPUT']
 if (output === undefined) throw new Error('GITHUB_OUTPUT is required.')
 for (const [name, value] of Object.entries(plan)) appendFileSync(output, `${name}=${JSON.stringify(value)}\n`)
 // The result job checks each lane's outcome against these counts, so it never reads the plan's file lists.
-const requested = { checks: plan.checks.length, unit: plan.unit.length, linux: plan.linux.length, macos: plan.macos.length }
+const requested = { checks: plan.checks.length, unit: plan.unit.length, linux: plan.linux.length, macos: plan.macos.length, windows: plan.windows.length }
 appendFileSync(output, `requested=${JSON.stringify(requested)}\n`)
 const summary = process.env['GITHUB_STEP_SUMMARY']
 const selected = plan.checks.map((job) => job.platform).join(', ')
@@ -26,6 +26,6 @@ if (summary !== undefined) appendFileSync(summary, [
   '',
   `Inventory: ${inventory.unit.length} unit files and ${inventory.integration.length} integration files.`,
   '',
-  ...[...plan.unit, ...plan.linux, ...plan.macos].map((job) => `- ${job.platform} ${job.lane} ${job.shard}/${job.total}: ${job.files.length} files, estimated ${job.estimatedSeconds} s of tests for a target of ${job.targetSeconds} s.`),
+  ...[...plan.unit, ...plan.linux, ...plan.macos, ...plan.windows].map((job) => `- ${job.platform} ${job.lane} ${job.shard}/${job.total}: ${job.files.length} files, estimated ${job.estimatedSeconds} s of tests for a target of ${job.targetSeconds} s.`),
   '',
 ].join('\n'))

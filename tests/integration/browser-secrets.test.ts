@@ -3,7 +3,7 @@ import type { OwnedBrowser, OwnedPage } from '../../src/browser/contract.ts'
 import type { CommandResult } from '../../src/protocol/commands.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
@@ -227,8 +227,143 @@ test('a fill bound to its origin still lets the page move within the document, a
   })
 })
 
+// Diagnostic for the macOS runner (release 3, records/macos-verdict.md), removed once its cause is settled: when each
+// message of a gated browser went and came back, so a fill that runs out of time shows which answer it waited for.
+// Commands are numbered as the connection numbers them, from 1, so each answer names its command. No parameter and
+// no typed value is ever shown: commands by method and page function name, answers by the shape of their result.
+type MessageTimeline = {
+  note(text: string): void
+  sent(method: string, params: unknown): void
+  received(message: Record<string, unknown>): void
+  print(t: TestContext): void
+}
+
+const timelineEvents = new Set([
+  'Page.lifecycleEvent',
+  'Page.navigatedWithinDocument',
+  'Page.frameRequestedNavigation',
+  'Page.frameStartedNavigating',
+  'Page.frameNavigated',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+  'Runtime.executionContextCreated',
+  'Runtime.executionContextDestroyed',
+  'Runtime.executionContextsCleared',
+  'Inspector.targetCrashed',
+  'Inspector.detached',
+  'Target.targetCrashed',
+  'Target.detachedFromTarget',
+])
+
+function messageTimeline(): MessageTimeline {
+  const start = performance.now()
+  const lines: string[] = []
+  const commands = new Map<number, { name: string; at: number }>()
+  let sentCount = 0
+  const note = (text: string): void => {
+    lines.push(`${(performance.now() - start).toFixed(1).padStart(8)} ms  ${text}`)
+  }
+  // Chrome's log stamps local time to the microsecond; this line places 0 ms on that clock.
+  const clock = new Date()
+  const two = (part: number): string => String(part).padStart(2, '0')
+  note(`timeline starts at ${two(clock.getHours())}${two(clock.getMinutes())}${two(clock.getSeconds())}.${String(clock.getMilliseconds()).padStart(3, '0')} local time`)
+  return {
+    note,
+    sent(method, params) {
+      sentCount += 1
+      const source = isRecord(params) ? params['functionDeclaration'] : undefined
+      const name = typeof source === 'string' ? ` ${/^(?:async\s+)?function\s+([\w$]+)/.exec(source)?.[1] ?? 'anonymous'}` : ''
+      commands.set(sentCount, { name: `${method}${name}`, at: performance.now() })
+      note(`-> #${sentCount} ${method}${name}`)
+    },
+    received(message) {
+      const id = message['id']
+      if (typeof id === 'number') {
+        const command = commands.get(id)
+        const after = command === undefined ? '' : ` after ${(performance.now() - command.at).toFixed(1)} ms`
+        note(`<- #${id} ${command?.name ?? 'unknown command'}${after}: ${answerOf(message)}`)
+        return
+      }
+      const method = message['method']
+      if (typeof method === 'string' && timelineEvents.has(method)) note(`<- ${method}${eventDetail(message['params'])}`)
+    },
+    print(t) {
+      for (const line of lines) t.diagnostic(line)
+    },
+  }
+}
+
+// The log of the browser this test launched: the harness keeps it in a scratch folder made after `since`, and Chrome
+// writes why its GPU or compositor stalled there. Each distinct message is shown once, with how often and when it
+// came; a line that holds a typed value is never shown.
+async function gatedBrowserLog(since: number): Promise<string[]> {
+  const folders = (await readdir(tmpdir())).filter((name) => name.startsWith('retest-browser-test-'))
+  const made = await Promise.all(folders.map(async (name) => ({ name, at: (await stat(join(tmpdir(), name))).birthtimeMs })))
+  const lines: string[] = []
+  for (const { name } of made.filter(({ at }) => at >= since)) {
+    const log = await readFile(join(tmpdir(), name, 'browser.log'), 'utf8').catch(() => '')
+    const kept = log.split('\n').filter((line) => line.trim() !== '' && !line.includes(value) && !line.includes(TASK_APP_PASSWORD))
+    const distinct = new Map<string, { count: number; first: string; last: string }>()
+    for (const line of kept) {
+      // Chrome's prefix is [pid:thread:MMDD/HHMMSS.micros:LEVEL:file:line].
+      const parsed = /^\[\d+:\d+:\d{4}\/(\d{6}\.\d{6}):([^\]]+)\] (.*)$/.exec(line)
+      const key = parsed === null ? line : `${parsed[2]}] ${parsed[3]}`
+      const time = parsed?.[1] ?? ''
+      const seen = distinct.get(key)
+      if (seen === undefined) distinct.set(key, { count: 1, first: time, last: time })
+      else distinct.set(key, { ...seen, count: seen.count + 1, last: time })
+    }
+    lines.push(`browser log ${name}: ${kept.length} lines, ${distinct.size} distinct`)
+    for (const [key, { count, first, last }] of distinct) lines.push(`${count}x ${first}-${last} ${key.slice(0, 240)}`)
+  }
+  return lines
+}
+
+function answerOf(message: Record<string, unknown>): string {
+  const error = message['error']
+  if (isRecord(error)) return `error ${String(error['message'])}`
+  const result = message['result']
+  if (!isRecord(result)) return 'answered'
+  const exception = result['exceptionDetails']
+  if (isRecord(exception)) {
+    const thrown = exception['exception']
+    const description = isRecord(thrown) ? thrown['description'] : undefined
+    return `exception ${String(description ?? exception['text']).slice(0, 120)}`
+  }
+  const remote = result['result']
+  if (!isRecord(remote)) return 'answered'
+  const value = remote['value']
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value)
+  if (!isRecord(value)) return `a ${String(remote['type'])}`
+  if (typeof value['status'] === 'string') {
+    const check = typeof value['check'] === 'string' ? ` ${value['check']}` : ''
+    const token = typeof value['token'] === 'number' ? ` token ${value['token']}` : ''
+    return `${value['status']}${check}${token}`
+  }
+  if (Array.isArray(value['reached'])) return `reached [${value['reached'].join(', ')}], intercepted ${JSON.stringify(value['intercepted'])}, leaving ${JSON.stringify(value['leaving'])}`
+  return `an object with ${Object.keys(value).join(', ')}`
+}
+
+function eventDetail(params: unknown): string {
+  if (!isRecord(params)) return ''
+  const frame = isRecord(params['frame']) ? params['frame'] : undefined
+  const context = isRecord(params['context']) ? params['context'] : undefined
+  const address = params['url'] ?? frame?.['url']
+  const path = typeof address === 'string' ? ` ${URL.parse(address)?.pathname ?? address}` : ''
+  const facts = [
+    typeof params['name'] === 'string' ? ` ${params['name']}` : '',
+    path,
+    typeof params['navigationType'] === 'string' ? ` ${params['navigationType']}` : '',
+    typeof params['executionContextId'] === 'number' ? ` context ${params['executionContextId']}` : '',
+    context === undefined ? '' : ` context ${String(context['id'])} ${JSON.stringify(context['name'])}`,
+  ]
+  return facts.join('')
+}
+
 test('a fill waits for its verdict request to enter the document before input can replace it', async (t) => {
   if (!protocolOnly(t, 'chromium', 'the gate holds a DevTools verdict request')) return
+  const timeline = messageTimeline()
+  const launchedAfter = Date.now()
   const site = await servePages(t, {
     '/': `<!doctype html><input data-testid="field">${reportsTyping}<script>
       const field = document.querySelector('[data-testid="field"]')
@@ -244,11 +379,16 @@ test('a fill waits for its verdict request to enter the document before input ca
   let textDispatched = false
   const browser = await launchGated(t, {
     hold(method, params) {
+      timeline.sent(method, params)
       const source = isRecord(params) ? params['functionDeclaration'] : undefined
       if (method === 'Runtime.callFunctionOn' && source === verdictFunction) {
         verdictHeld = true
+        timeline.note('verdict request held')
         // Force the first registration request to overtake the held verdict request.
-        return releaseVerdict.promise.then(() => { verdictReleased = true })
+        return releaseVerdict.promise.then(() => {
+          verdictReleased = true
+          timeline.note('verdict request released')
+        })
       }
       if (method === 'Runtime.callFunctionOn' && source === registrationFunction) {
         registrationAsked = true
@@ -260,10 +400,20 @@ test('a fill waits for its verdict request to enter the document before input ca
       }
       return undefined
     },
+    watch: (message) => timeline.received(message),
   })
+  timeline.note('launched')
   const page = await openPage(t, browser, site.url)
+  timeline.note('page opened')
   assertOk(await goto(page, '/'))
-  assert.deepEqual(await fillBound(page, [site.url]), { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
+  timeline.note('page loaded, fill begins')
+  const filled = await fillBound(page, [site.url])
+  timeline.note(`fill answered: ${filled.ok ? 'ok' : `${filled.failure.class}, ${filled.failure.message}`}`)
+  // A request still unanswered when the fill's time ran out may yet be answered; when it is shows how late it was.
+  if (!filled.ok) await delay(3000)
+  timeline.print(t)
+  for (const line of await gatedBrowserLog(launchedAfter)) t.diagnostic(line)
+  assert.deepEqual(filled, { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
   await observeUntil(page, 'done', (seen) => seen.text === 'Done')
   assert.equal(site.posts('/typed'), 1)
   assert.ok(verdictHeld && textDispatched, 'the proof delayed a real verdict request and then sent text')

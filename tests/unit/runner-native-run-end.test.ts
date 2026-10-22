@@ -36,6 +36,10 @@ import { ScriptedProcess, scriptedTest } from '../support/scripted-process.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { openFake } from './native-interaction-fake.ts'
 import { standInRun } from './runner-native-stand-in.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// A run of a native app: on Windows each native app is refused at its setup, by its key, before anything starts for it.
+const nativeApps = { skip: unixOnly('Windows refuses a native app at its setup, before anything starts for it') }
 
 const budgets = { collection: 2000, setup: 2000, action: 2000, assertion: 2000, navigation: 2000, cleanup: 2000, test: 5000 }
 const stateScreen = () => [{ type: 'StaticText', identifier: 'state', label: 'Open', frame: { x: 16, y: 360, width: 200, height: 20 } }]
@@ -47,7 +51,7 @@ test('checks a state the app never shows', { apps: ['phone'] }, async ({ phone }
 `
 
 describe('a native app whose page and runtime will not close', () => {
-  test('gives its sessions back when the run ends, says so, and counts the failed close once', { timeout: 60_000 }, async (t) => {
+  test('gives its sessions back when the run ends, says so, and counts the failed close once', { timeout: 60_000, ...nativeApps }, async (t) => {
     const budget = new SessionBudget({ perOwner: 1, host: 1 })
     const run = await standInRun(t, {
       // The device stays held for the process once its app could not be closed, so no other test here uses it.
@@ -200,7 +204,7 @@ describe('a declared native network file', () => {
 })
 
 describe("a native app's diagnostics scope", () => {
-  test('a target that keeps no log covers no console, and says so in its scope and its summary alike', { timeout: 60_000 }, async (t) => {
+  test('a target that keeps no log covers no console, and says so in its scope and its summary alike', { timeout: 60_000, ...nativeApps }, async (t) => {
     const run = await standInRun(t, {
       screen: stateScreen,
       tests: `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('reads the state', { apps: ['phone'] }, async ({ phone }) => {\n  await expect(phone.getByTestId('state')).toHaveText('Open')\n})\n`,

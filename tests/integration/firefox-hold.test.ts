@@ -6,14 +6,13 @@ import { test } from 'node:test'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { byTestId, closeMs, observe, observeUntil, openPage, scratchFolder, servePages, setupMs } from './browser-harness.ts'
-import { firefoxPath, testFirefoxRoute } from './engines.ts'
+import { firefoxHostSkip, firefoxPath, testFirefoxRoute } from './engines.ts'
 
 // The navigation hold a Firefox fill bound to origins keeps while it types, on the real browser (review F-3 and F-10):
 // it holds only a navigation of the tab's own document, lets every other request go on at once, releases everything it
 // paused, and is armed only right before the input, so the page's own navigation during the wait for the field is let go.
 
-const onFirefoxHost = process.platform === 'darwin' && process.arch === 'arm64'
-const skip = onFirefoxHost ? false : 'Retest runs Firefox on macOS on Apple silicon only'
+const skip = firefoxHostSkip()
 const secretValue = 'correct-horse-battery-staple-held'
 
 async function firefox(t: TestContext, socket?: Parameters<typeof launchFirefox>[2]): Promise<FirefoxBrowser> {

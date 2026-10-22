@@ -2,6 +2,43 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## 0.3.0
+
+Retest runs on Windows x64. The Windows entries were checked on Windows Server 2025, on GitHub's `windows-2025` runner. Firefox 158.0.1 was checked on macOS and on Windows.
+
+### Added
+
+- **Windows x64.** Chrome, Chromium builds such as Chrome for Testing, Firefox 158.0.1 and Electron 44.5.1 run there. `retest install` pins Chrome for Testing 153.0.8010.12, Firefox 158.0.1 and Electron 44.5.1 for it, into `%LOCALAPPDATA%\retest`. `chrome()` and `edge()` look under Program Files and the user's local app data. No check has run `edge()` yet.
+- **The process supervisor.** `npx retest install supervisor` builds `retest-supervisor.exe` from the source in the package, with Rust 1.88 and the Visual Studio Build Tools. Only Windows needs it. Retest holds every process a run starts in a Job Object through it, so nothing a run starts outlives Retest, even when Retest is killed outright.
+- **Recordings on Windows.** `npx retest install media` builds `retest-media.exe` there too. With ffmpeg on `PATH`, a Windows run records its Chrome tests, and the HTML report plays the videos.
+- **Stopping a run on Windows.** Ctrl+C stops a run with exit 130, and Ctrl+Break with exit 143. Retest asks an app server to stop with Ctrl+C, and one second later ends everything the server started.
+- **Windows details.** Retest quotes the commands it prints for PowerShell and Git Bash. Git Bash misreads one kind of value: one that holds a single quote beside a backslash, `$`, `"`, a backtick or `!`. A saved sign-in state is readable by this user only. Retest removes a secret's variable from a test's environment whatever the case of its name. In a Windows console where none of `WT_SESSION`, `TERM_PROGRAM` and `TERM` is set, the report shows √ and × in place of ✓ and ✗.
+
+### Changed
+
+- **Firefox 158.0.1** replaces Firefox 133.0.3 on macOS, and is the Firefox Windows runs. Run `npx retest install firefox` to fetch it.
+- Two of Firefox's differences from Chrome are gone, checked on macOS. One wheel event now scrolls a box to its end, and a page's script has the Navigation API.
+- Firefox 158 counts an option directly in a combobox, a tree item outside a tree and a list item outside a list, where Chrome counts none. A lookup of such a role is refused by name on a page that holds one.
+- Firefox 158 names a cell from its text, and the refusal of a cell looked up by its name is kept in this release.
+- Chrome, Chromium and Edge start with three more Chromium switches on every platform: `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding` and `--disable-background-timer-throttling`. A covered or background page keeps its renderer's priority and its timers.
+
+### Fixed
+
+- In 0.2.0, `retest licences electron` printed Electron's own licence, then "Notice texts unavailable:" and "LICENSES.chromium.html: notice exceeds the byte limit.", and exited 2. Electron's Chromium notice is larger than the old 16 MiB limit. It now prints each notice whole once its checksum matches the record.
+- `setInputFiles` with a relative path no longer refuses a test file whose folder is on a drive, such as `C:\work`, or on a network share.
+
+### Not in 0.3.0
+
+- A WebKit target fails its setup on Windows, and `retest install webkit` refuses by name.
+- Retest pins no browser for Windows on Arm and builds no supervisor for it.
+- Retest has no driver for native Windows apps.
+- A run on Windows refuses each iOS simulator or macOS target at its setup, naming its key.
+
+### Continuous integration
+
+- A Windows x64 lane runs the build, the types, the unit files and every integration file on GitHub's `windows-2025` runner. A release needs it to pass.
+- Each Windows integration shard installs Rust 1.88.0, ffmpeg, the pinned browsers, the supervisor and the media process, and checks every installed file. Each test file runs with Ctrl+C turned on, as an interactive console has it.
+
 ## 0.2.0
 
 Checked on Chrome on macOS unless an entry says otherwise. Firefox and WebKit refuse what they cannot do by name.

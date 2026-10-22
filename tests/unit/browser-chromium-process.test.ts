@@ -2,7 +2,7 @@ import type { BrowserOutput } from '../../src/browser/chromium-process.ts'
 import type { OwnedProcessIdentity } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
 import { ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { closeSync, constants, existsSync, openSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,6 +17,14 @@ import { ChromiumProcess } from '../../src/browser/chromium-process.ts'
 import { closeGraceMs } from '../../src/browser/contract.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { unixOnly, windowsOnly } from '../support/platform-skip.ts'
+
+// A real process standing in for the browser, given as the shell lines it runs on Unix and the Node script it runs on
+// Windows, which has no /bin/sh. Either way it reads its debugging pipe, fd 3, as the browser does.
+function standIn(shell: string, script: string): { executable: string; args: string[] } {
+  return process.platform === 'win32' ? { executable: process.execPath, args: ['-e', script] } : { executable: '/bin/sh', args: ['-c', shell] }
+}
+const readsOneMessage = "require('node:fs').readSync(3, Buffer.alloc(64))"
 
 test('ordinary browser cleanup uses asynchronous snapshots and one-pid readings, in signal order', async () => {
   const child = new ChildProcess()
@@ -392,13 +400,13 @@ test('a failed process reading stays a cleanup failure after absence is confirme
 
 // A process stands in for the browser: it keeps its pipe open until its launch identity has been recorded.
 async function startShell(profile: string, logFile: string): Promise<ChromiumProcess> {
-  const browser = await ChromiumProcess.start({ executable: '/bin/sh', args: ['-c', 'read message <&3; exit 0'], profile, logFile })
+  const browser = await ChromiumProcess.start({ ...standIn('read message <&3; exit 0', readsOneMessage), profile, logFile })
   browser.pipe.writable.end('exit\n')
   return browser
 }
 
 // A host that runs many runs in one process must not gain an exit hook for every browser it could not clean up.
-test('a browser whose process group has gone takes its exit hook away, even when its profile could not be removed', async (t) => {
+test('a browser whose process group has gone takes its exit hook away, even when its profile could not be removed', { skip: unixOnly('a folder nobody may write keeps its files only on Unix; the Windows case holds a file of the profile open instead') }, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-exit-hook-'))
   const locked = join(folder, 'locked')
   t.after(async () => {
@@ -410,6 +418,24 @@ test('a browser whose process group has gone takes its exit hook away, even when
   await writeFile(join(profile, 'Preferences'), '{}')
   // A folder nobody may write keeps the profile in it from being removed.
   await chmod(locked, 0o555)
+  const before = process.listenerCount('exit')
+  const browser = await startShell(profile, join(folder, 'browser.log'))
+  assert.equal(process.listenerCount('exit'), before + 1, 'a running browser has its hook')
+  const problems = await browser.stop(1000)
+  assert.match(problems.join('\n'), /^Could not remove the browser profile /)
+  assert.equal(process.listenerCount('exit'), before, 'nothing is left for the hook to kill')
+})
+
+test('a browser whose job has ended takes its exit hook away, even when a file held open kept its profile', { skip: windowsOnly('a file open with no sharing keeps its folder only on Windows; the Unix case uses a folder nobody may write') }, async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-exit-hook-'))
+  const profile = join(folder, 'profile')
+  await mkdir(profile)
+  // libuv's UV_FS_O_EXLOCK: opened sharing nothing, so the file cannot be removed while this test holds it.
+  const held = openSync(join(profile, 'Preferences'), constants.O_RDWR | constants.O_CREAT | 0x10000000)
+  t.after(async () => {
+    closeSync(held)
+    await rm(folder, { recursive: true, force: true })
+  })
   const before = process.listenerCount('exit')
   const browser = await startShell(profile, join(folder, 'browser.log'))
   assert.equal(process.listenerCount('exit'), before + 1, 'a running browser has its hook')
@@ -609,7 +635,7 @@ test('a hung helper the browser started unrecorded is reported, never signaled, 
 test('a browser output that closes while the main thread is busy is not reported as left open', async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-output-close-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
-  const browser = await ChromiumProcess.start({ executable: '/bin/sh', args: ['-c', 'echo started; read message <&3; echo ending >&2; exit 0'], profile: join(folder, 'profile'), logFile: join(folder, 'browser.log'), redact: (text) => text })
+  const browser = await ChromiumProcess.start({ ...standIn('echo started; read message <&3; echo ending >&2; exit 0', `process.stdout.write('started\\n'); ${readsOneMessage}; process.stderr.write('ending\\n')`), profile: join(folder, 'profile'), logFile: join(folder, 'browser.log'), redact: (text) => text })
   // Synchronous work, such as process readings for other browsers, holding the main thread most of the time.
   const pause = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
   const busy = setInterval(() => { Atomics.wait(pause, 0, 0, 300) }, 10)

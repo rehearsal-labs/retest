@@ -30,9 +30,11 @@ type Outcome = { kind: 'done' } | { kind: 'timeout' } | { kind: 'stopped'; reaso
 
 const startedSchema = s.object({ navigation: s.nullable(s.string()), url: s.string() })
 
-// What Firefox answers a navigation it refused at once, such as one to a blocked port: an error that names the reason
-// in its own words, which is all of it Retest keeps.
-const refusedNavigation = /^unknown error: ([A-Za-z]+)$/
+// What Firefox answers a navigation it refused or gave up: an error that names the reason in its own words, which is all
+// of it Retest keeps. Firefox 133 refuses so only a navigation it never starts, such as one to a blocked port, with a
+// word such as `deniedPortAccess`. Firefox 158 answers every navigation once its document commits, so it also answers
+// so one whose error page committed or whose response opened no document, with a name such as `NS_BINDING_ABORTED`.
+const refusedNavigation = /^unknown error: ([A-Za-z_]+)$/
 
 /**
  * Opens a URL in the tab and waits for the `load` event of the document it returned, or of a document that replaced it
@@ -64,19 +66,22 @@ export async function navigate(page: FirefoxNavigationContext, url: string, dead
       throw error
     }
     if ('refused' in started) {
-      // Firefox shows its error page as a document of its own; waiting for it lets a screenshot show it.
-      await watcher.errorPage(new Deadline(Math.min(errorPageWaitMs, deadline.remainingMs), deadline.signal === undefined ? {} : { signal: deadline.signal }))
-      return { ok: false, failure: navigationFailed(address, started.refused) }
+      // Firefox shows its error page as a document of its own; waiting for it lets a screenshot show it. A navigation
+      // whose response opened no document is told by that response, which came before the answer.
+      await watcher.refused(new Deadline(Math.min(errorPageWaitMs, deadline.remainingMs), deadline.signal === undefined ? {} : { signal: deadline.signal }))
+      const abandoned = watcher.abandoned
+      if (abandoned !== undefined) return { ok: false, failure: gaveUp('open', abandoned, describeAddress(page.currentUrl())) }
+      return { ok: false, failure: navigationFailed(address, watcher.unreachable ?? started.refused) }
     }
     if (started.navigation !== null) page.opened?.(started.navigation)
+    // Firefox answers a move to another fragment of the document once it is made, and Firefox 158 tells no event for it
+    // to a subscription bound to the tab, so an answered move that started no navigation of the document is complete.
+    if (!watcher.startedAny && sameDocument(address, page.currentUrl())) watcher.onMovedWithinDocument()
     const outcome = await watcher.loaded(started.navigation, deadline)
     if (outcome.kind === 'timeout') return notLoaded(address, deadline)
     if (outcome.kind === 'stopped') return { ok: false, failure: connectionEnded(`open ${originAndPath(address)}`, true, outcome.reason) }
     const abandoned = watcher.abandoned
-    if (abandoned !== undefined) {
-      const current = page.currentUrl()
-      return { ok: false, failure: gaveUp('open', abandoned, current === undefined ? 'the page' : originAndPath(current)) }
-    }
+    if (abandoned !== undefined) return { ok: false, failure: gaveUp('open', abandoned, describeAddress(page.currentUrl())) }
     const unreachable = watcher.unreachable
     if (unreachable !== undefined) return { ok: false, failure: navigationFailed(address, unreachable) }
     return { ok: true, kind: 'goto', url: originAndPath(page.currentUrl() ?? address) }
@@ -96,7 +101,9 @@ export async function reload(page: FirefoxNavigationContext, deadline: Deadline,
       if (started.ok && started.value.navigation !== null) page.opened?.(started.value.navigation)
     } catch (error) {
       if (error instanceof CdpTimeoutError) return notLoaded(current, deadline)
-      throw error
+      const abandoned = givenUp(error, watcher)
+      if (abandoned === undefined) throw error
+      return { ok: false, failure: gaveUp('reload', abandoned, describeAddress(page.currentUrl() ?? current)) }
     }
     return await opened(page, watcher, { kind: 'reload', verb: 'reload', expected: current }, deadline)
   } finally {
@@ -130,7 +137,9 @@ export async function traverse(page: FirefoxNavigationContext, direction: Traver
       }, (answer) => answer)
     } catch (error) {
       if (error instanceof CdpTimeoutError) return notLoaded(page.currentUrl(), deadline)
-      throw error
+      const abandoned = givenUp(error, watcher)
+      if (abandoned === undefined) throw error
+      return { ok: false, failure: gaveUp(back ? 'go back to' : 'go forward to', abandoned, describeAddress(page.currentUrl())) }
     }
     if (!moved) {
       const where = back ? 'back: the page has no earlier' : 'forward: the page has no later'
@@ -169,6 +178,23 @@ function gaveUp(verb: string, asked: string, stayed: string): Failure {
   const shown = originAndPath(URL.parse(asked) ?? new URL('about:blank'))
   const message = `Could not ${verb} ${shown}: the browser sent the request and gave the navigation up without opening a document, as it does for a response with no content or a download. The page stayed on ${stayed}.`
   return { class: 'not_actionable', message, details: { url: shown, inputSent: true } }
+}
+
+// Firefox 158 answers a reload or a move through the history with an error once the browser gave its navigation up
+// (`NS_BINDING_ABORTED`, or `timeout` for a move through the history), where Firefox 133 answered as the move began.
+// The response that opened no document came first, so the watcher already holds the address that was given up.
+function givenUp(error: unknown, watcher: NavigationWatcher): string | undefined {
+  return error instanceof CdpProtocolError ? watcher.abandoned : undefined
+}
+
+function describeAddress(url: URL | undefined): string {
+  return url === undefined ? 'the page' : originAndPath(url)
+}
+
+// A move to `target` stays in the document at `current`: the same address but for a fragment the target names.
+function sameDocument(target: URL, current: URL | undefined): boolean {
+  if (current === undefined || target.hash === '') return false
+  return target.origin === current.origin && target.pathname === current.pathname && target.search === current.search
 }
 
 type Resolved = { ok: true; url: URL } | { ok: false; failure: Failure }
@@ -325,9 +351,13 @@ export class NavigationWatcher {
     }, deadline)
   }
 
-  /** Waits for an error page to commit and show, for a navigation Firefox refused at once; the time it may take is short. */
-  errorPage(deadline: Deadline): Promise<Outcome> {
+  /**
+   * Waits, for a navigation Firefox refused or gave up, for its error page to commit and show, or for its response to
+   * have opened no document; the time it may take is short.
+   */
+  refused(deadline: Deadline): Promise<Outcome> {
     return this.#wait(() => {
+      if (this.abandoned !== undefined) return true
       const latest = this.#committed.at(-1)
       return latest !== undefined && this.#errorPages.has(latest)
     }, deadline)

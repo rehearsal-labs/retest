@@ -13,6 +13,7 @@ import type { Opened } from './browser-pool.ts'
 import { BrowserError } from '../browser/browser-error.ts'
 import { errorMessage, failure } from '../protocol/failures.ts'
 import { failureScreenshotFile, stateFile } from '../protocol/run-folder.ts'
+import { PrivateFolderError } from '../shared/private-file.ts'
 import { bounded } from './bounded.ts'
 import { abortGraceMs } from './running-test.ts'
 import { timerMs } from './timer.ts'
@@ -95,9 +96,11 @@ export async function saveState(context: PagesContext, { app, page, session }: A
   }
   if (captured.status === 'failed') return unsaved(errorMessage(captured.error))
   try {
-    context.store.writeState(stateFile(state, target), captured.value)
+    await context.store.writeState(stateFile(state, target), captured.value)
   } catch (error) {
-    return unsaved(errorMessage(error))
+    // A folder Windows would not keep private says so in a sentence; which tool refused, and how, is its detail.
+    const unsavedState = unsaved(errorMessage(error))
+    return error instanceof PrivateFolderError ? { ...unsavedState, details: { cause: error.detail } } : unsavedState
   }
   context.emit({ type: 'state.saved', testId: context.testId, attemptId: context.attemptId, state, app, target, sessionId: session.sessionId })
   return undefined

@@ -9,11 +9,13 @@ import { mkdtemp } from 'node:fs/promises'
 import { test } from 'node:test'
 import { installMedia } from '../../src/cli/install/media-install.ts'
 import { checkMediaSource, inspectMedia, mediaFolder, mediaNoticePins, mediaPackageRoot } from '../../src/cli/install/media-record.ts'
-import { maximumMediaBinaryBytes, maximumMediaSourceBytes, mediaSourceDigest, mediaTarget, mediaVersion } from '../../src/cli/install/media-pins.ts'
+import { maximumMediaBinaryBytes, maximumMediaSourceBytes, mediaExecutableName, mediaSourceDigest, mediaTarget, mediaVersion } from '../../src/cli/install/media-pins.ts'
 import { rustAtLeast } from '../../src/cli/install/media-tools.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
 import { readRecordText } from '../../src/shared/regular-file.ts'
+import { notAnEncoder, programFileName } from '../../src/media/host.ts'
 import { locateMedia } from '../../src/media/locate.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { unpinnedMedia } from '../support/unpinned-host.ts'
 
 async function recordText(path: string): Promise<string> {
@@ -22,14 +24,21 @@ async function recordText(path: string): Promise<string> {
   return read.text
 }
 
-async function fixture(): Promise<{ home: string; folder: string; env: { HOME: string; PATH: string } }> {
+// The variables the media cache is found from: HOME on macOS and Linux, LOCALAPPDATA on Windows.
+function cacheHome(folder: string): { HOME: string; LOCALAPPDATA: string } {
+  return { HOME: folder, LOCALAPPDATA: folder }
+}
+
+const target = mediaTarget() ?? 'aarch64-apple-darwin'
+const executable = mediaExecutableName(target)
+
+async function fixture(): Promise<{ home: string; folder: string; env: { HOME: string; LOCALAPPDATA: string; PATH: string } }> {
   const home = await mkdtemp(join(tmpdir(), 'retest-media-unit-'))
-  const env = { HOME: home, PATH: '' }
-  const target = mediaTarget() ?? 'aarch64-apple-darwin'
+  const env = { ...cacheHome(home), PATH: '' }
   const folder = mediaFolder(env, target) ?? assert.fail('a cache folder')
   await mkdir(folder, { recursive: true })
   const binary = '#!/bin/sh\nexit 0\n'
-  await writeFile(join(folder, 'retest-media'), binary, { mode: 0o755 })
+  await writeFile(join(folder, executable), binary, { mode: 0o755 })
   const notices = mediaNoticePins()
   for (const notice of notices) await writeFile(join(folder, notice.path), await readFile(join(mediaPackageRoot(), notice.path === 'LICENSE' ? 'LICENSE' : 'src/cli/install/media-notices.txt')))
   await writeFile(join(folder, 'build.json'), JSON.stringify({ schemaVersion: 1, version: mediaVersion, protocol: 2, sourceDigest: mediaSourceDigest, target, method: 'source', rustcVersion: 'rustc 1.88.0 (abc 2025-06-26)', binarySha256: sha256Hex(Buffer.from(binary)), notices, installedAt: '2026-10-06T00:00:00Z', installedBy: '0.1.0' }))
@@ -48,13 +57,15 @@ test('the packaged source allowlist includes a pinned lock and licence texts, an
 
 test('full verification refuses a binary replaced between its descriptor hash and inspection', { skip: unpinnedMedia }, async t => {
   const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
-  const path = join(f.folder, 'retest-media')
+  const path = join(f.folder, executable)
   const replacement = `${path}.replacement`
   await writeFile(replacement, '#!/bin/sh\nexit 99\n', { mode: 0o755 })
   const original = fsPromises.lstat
   let checks = 0
+  // The identity checks read the file's device and inode, as bigints. Windows also looks at the name once a file is
+  // open, without them, to find a link put in its place; that look is not one of the two.
   t.mock.method(fsPromises, 'lstat', async (...args: Parameters<typeof original>) => {
-    if (args[0] === path && ++checks === 2) await fsPromises.rename(replacement, path)
+    if (args[0] === path && args[1]?.bigint === true && ++checks === 2) await fsPromises.rename(replacement, path)
     return original(...args)
   })
   syncBuiltinESMExports()
@@ -67,7 +78,7 @@ test('full verification refuses a binary replaced between its descriptor hash an
 
 test('discovery refuses a cached binary replaced after inspection and before its answer', { skip: unpinnedMedia }, async t => {
   const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
-  const path = join(f.folder, 'retest-media')
+  const path = join(f.folder, executable)
   const replacement = `${path}.replacement`
   await writeFile(replacement, '#!/bin/sh\nexit 99\n', { mode: 0o755 })
   const ffmpeg = join(f.home, 'ffmpeg')
@@ -87,7 +98,7 @@ test('discovery refuses a cached binary replaced after inspection and before its
 
 test('inspection and source verification refuse sparse files past the limits in the media pin', { skip: unpinnedMedia }, async t => {
   const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
-  const binary = await fsPromises.open(join(f.folder, 'retest-media'), 'w')
+  const binary = await fsPromises.open(join(f.folder, executable), 'w')
   try { await binary.truncate(maximumMediaBinaryBytes + 1) } finally { await binary.close() }
   const inspection = await inspectMedia(f.env)
   assert.equal(inspection?.state, 'damaged')
@@ -117,18 +128,21 @@ test('records name the source, target, version, protocol, rustc, binary and lice
   assert.match((await inspectMedia(f.env, { verify: true }))?.problems.join(' ') ?? '', /unrecorded/)
 })
 
-test('damaged binaries, executable modes and licence files never read as installed', { skip: unpinnedMedia }, async (t) => {
+test('a binary without its execute mode or with a set-user-id bit never reads as installed', { skip: unpinnedMedia || unixOnly('a Windows file has no execute or set-user-id mode') }, async (t) => {
   const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
-  await chmod(join(f.folder, 'retest-media'), 0o644)
+  await chmod(join(f.folder, executable), 0o644)
   assert.match((await inspectMedia(f.env))?.problems.join(' ') ?? '', /not executable/)
-  await chmod(join(f.folder, 'retest-media'), 0o4755)
+  await chmod(join(f.folder, executable), 0o4755)
   assert.match((await inspectMedia(f.env))?.problems.join(' ') ?? '', /set-user-id/)
-  await chmod(join(f.folder, 'retest-media'), 0o755)
+})
+
+test('damaged licence files never read as installed', { skip: unpinnedMedia }, async (t) => {
+  const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
   await writeFile(join(f.folder, 'THIRD-PARTY-NOTICES.txt'), 'changed')
   assert.match((await inspectMedia(f.env))?.problems.join(' ') ?? '', /not the recorded/)
 })
 
-test('a linked, oversized, invalid or FIFO record is refused by name without following or waiting', { skip: unpinnedMedia }, async (t) => {
+test('a linked, oversized or invalid record is refused by name without following it', { skip: unpinnedMedia }, async (t) => {
   const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
   const record = join(f.folder, 'build.json')
   const kept = await recordText(record)
@@ -139,6 +153,11 @@ test('a linked, oversized, invalid or FIFO record is refused by name without fol
   assert.match((await inspectMedia(f.env))?.problems.join(' ') ?? '', /more than/)
   await writeFile(record, '{')
   assert.match((await inspectMedia(f.env))?.problems.join(' ') ?? '', /not JSON/)
+})
+
+test('a FIFO record is refused by name without waiting', { skip: unpinnedMedia || unixOnly('a Windows file system has no FIFOs') }, async (t) => {
+  const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
+  const record = join(f.folder, 'build.json')
   await rm(record); execFileSync('/usr/bin/mkfifo', [record])
   assert.match((await inspectMedia(f.env))?.problems.join(' ') ?? '', /a FIFO/)
 })
@@ -164,7 +183,7 @@ test('an intact installation of an earlier source digest is damaged and cannot b
   assert.notEqual(earlierDigest, mediaSourceDigest)
   const earlier = current.replace(mediaSourceDigest, earlierDigest)
   await writeFile(path, earlier)
-  const binary = await readFile(join(f.folder, 'retest-media'))
+  const binary = await readFile(join(f.folder, executable))
   const inspected = await inspectMedia(f.env, { verify: true })
   assert.equal(inspected?.state, 'damaged')
   assert.ok(inspected?.problems.some((problem) => problem.includes(path) && problem.includes('source')))
@@ -177,14 +196,14 @@ test('an intact installation of an earlier source digest is damaged and cannot b
   assert.ok(found.message.includes(path))
   assert.match(found.message, /source/)
   assert.equal(await recordText(path), earlier)
-  assert.deepEqual(await readFile(join(f.folder, 'retest-media')), binary)
-  assert.deepEqual((await fsPromises.readdir(f.folder)).sort(), ['LICENSE', 'THIRD-PARTY-NOTICES.txt', 'build.json', 'retest-media'].sort())
+  assert.deepEqual(await readFile(join(f.folder, executable)), binary)
+  assert.deepEqual((await fsPromises.readdir(f.folder)).sort(), ['LICENSE', 'THIRD-PARTY-NOTICES.txt', 'build.json', executable].sort())
 })
 
 test('prebuilt path and mirror without an exact checksum refuse before reading, requesting or creating a cache', { skip: unpinnedMedia }, async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'retest-media-refusal-')); t.after(() => rm(home, { recursive: true, force: true }))
   for (const source of [{ binary: '/unread/media' }, { mirror: 'http://127.0.0.1:1' }]) {
-    const result = await installMedia({ env: { HOME: home }, signal: new AbortController().signal, version: '0.1.0', report: () => assert.fail('no step before refusal'), ...source })
+    const result = await installMedia({ env: cacheHome(home), signal: new AbortController().signal, version: '0.1.0', report: () => assert.fail('no step before refusal'), ...source })
     assert.equal(result.ok, false)
     if (!result.ok) assert.match(result.message, /No checksum is pinned/)
   }
@@ -193,14 +212,14 @@ test('prebuilt path and mirror without an exact checksum refuse before reading, 
 
 test('a damaged media cache is named and left untouched by a source install', { skip: unpinnedMedia }, async (t) => {
   const f = await fixture(); t.after(() => rm(f.home, { recursive: true, force: true }))
-  await writeFile(join(f.folder, 'retest-media'), 'damaged')
+  await writeFile(join(f.folder, executable), 'damaged')
   const result = await installMedia({ env: f.env, signal: new AbortController().signal, version: '0.1.0', report: () => {}, run: () => assert.fail('no build of damaged cache') })
   assert.equal(result.ok, false)
   if (!result.ok) assert.match(result.message, /Remove .*install media/)
-  assert.equal(await readFile(join(f.folder, 'retest-media'), 'utf8'), 'damaged')
-  const alias = join(f.home, 'explicit-alias')
-  await symlink(join(f.folder, 'retest-media'), alias)
-  const located = await locateMedia({ executable: alias, ffmpeg: '/usr/bin/false', env: f.env })
+  assert.equal(await readFile(join(f.folder, executable), 'utf8'), 'damaged')
+  const alias = join(f.home, programFileName('explicit-alias'))
+  await symlink(join(f.folder, executable), alias)
+  const located = await locateMedia({ executable: alias, ffmpeg: notAnEncoder, env: f.env })
   assert.equal(located.ok, false)
   if (!located.ok) assert.match(located.message, /not the recorded.*Remove .*install media/)
 })
@@ -209,7 +228,7 @@ test('third-party notices name every registry crate and package checksum from th
   const root = mediaPackageRoot()
   const lock = await recordText(join(root, 'media/Cargo.lock'))
   const notices = await readFile(join(root, 'src/cli/install/media-notices.txt'), 'utf8')
-  assert.match(notices, /Lock SHA-256: ded3cee3c32d990f089b0e4fba70222b200d386482869dff46d9987854451ed5/)
+  assert.match(notices, /Lock SHA-256: 43c003fc9a5581ad5439490efd4353fadb3eddd72902d863aa8f3adafcf90f9b/)
   let registryCrates = 0
   for (const entry of lock.split('[[package]]')) {
     if (!entry.includes('source = "registry+')) continue
@@ -226,24 +245,23 @@ test('third-party notices name every registry crate and package checksum from th
 test('the source installer refuses missing cargo, an old rustc and a lock rewritten by a build, preserving no installed binary', { skip: unpinnedMedia }, async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'retest-media-toolchain-')); t.after(() => rm(home, { recursive: true, force: true }))
   const toolFolder = join(home, 'tools'); await mkdir(toolFolder)
-  const missing = await installMedia({ env: { HOME: join(home, 'missing'), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {} })
+  const missing = await installMedia({ env: { ...cacheHome(join(home, 'missing')), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {} })
   assert.equal(missing.ok, false)
   if (!missing.ok) assert.match(missing.message, /cargo is missing.*1.88.*Edition 2024.*1.85/)
-  for (const name of ['cargo', 'rustc']) await writeFile(join(toolFolder, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  for (const name of ['cargo', 'rustc']) await writeFile(join(toolFolder, programFileName(name)), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
   const succeeded = { code: 0, signal: null, stdout: '', stderr: '', timedOut: false, stopped: false, started: true, cleanupProblems: [] } as const
-  const target = mediaTarget() ?? 'aarch64-apple-darwin'
-  const cleanup = await installMedia({ env: { HOME: join(home, 'cleanup'), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {}, run: async (_command, args) => {
+  const cleanup = await installMedia({ env: { ...cacheHome(join(home, 'cleanup')), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {}, run: async (_command, args) => {
     assert.equal(args[0], '--version', 'no build or further tool runs after uncertain cleanup')
     return { ...succeeded, stdout: 'cargo 1.88.0 (abc)', cleanupProblems: ['a tool process could not be confirmed gone'] }
   } })
   assert.equal(cleanup.ok, false)
   if (!cleanup.ok) assert.match(cleanup.message, /cleanup_failed.*not be confirmed gone/)
-  assert.equal((await inspectMedia({ HOME: join(home, 'cleanup') }))?.state, 'missing')
-  const old = await installMedia({ env: { HOME: join(home, 'old'), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {}, run: async (_command, args) => ({ ...succeeded, stdout: args[0] === '--version' ? 'cargo 1.88.0 (abc)' : `rustc 1.85.0 (abc)\nhost: ${target}\n` }) })
+  assert.equal((await inspectMedia(cacheHome(join(home, 'cleanup'))))?.state, 'missing')
+  const old = await installMedia({ env: { ...cacheHome(join(home, 'old')), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {}, run: async (_command, args) => ({ ...succeeded, stdout: args[0] === '--version' ? 'cargo 1.88.0 (abc)' : `rustc 1.85.0 (abc)\nhost: ${target}\n` }) })
   assert.equal(old.ok, false)
   if (!old.ok) assert.match(old.message, /rustc.*older than Rust 1.88/)
   let built = false
-  const changed = await installMedia({ env: { HOME: join(home, 'changed'), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {}, run: async (_command, args) => {
+  const changed = await installMedia({ env: { ...cacheHome(join(home, 'changed')), PATH: toolFolder }, signal: new AbortController().signal, version: '0.1.0', report: () => {}, run: async (_command, args) => {
     if (args[0] === '--version') return { ...succeeded, stdout: 'cargo 1.88.0 (abc)' }
     if (args[0] === '-vV') return { ...succeeded, stdout: `rustc 1.88.0 (abc)\nhost: ${target}\n` }
     assert.ok(args.includes('--locked'))
@@ -255,13 +273,13 @@ test('the source installer refuses missing cargo, an old rustc and a lock rewrit
   assert.equal(built, true)
   assert.equal(changed.ok, false)
   if (!changed.ok) assert.match(changed.message, /build changed the pinned source or Cargo.lock/)
-  assert.equal((await inspectMedia({ HOME: join(home, 'changed') }))?.state, 'missing')
+  assert.equal((await inspectMedia(cacheHome(join(home, 'changed'))))?.state, 'missing')
 })
 
 test('the current generation lock refuses another installer of media by name', { skip: unpinnedMedia }, async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'retest-media-lock-')); t.after(() => rm(home, { recursive: true, force: true }))
-  const env = { HOME: home, PATH: '' }
-  const folder = mediaFolder(env, mediaTarget() ?? 'aarch64-apple-darwin') ?? assert.fail('cache')
+  const env = { ...cacheHome(home), PATH: '' }
+  const folder = mediaFolder(env, target) ?? assert.fail('cache')
   const { mediaLockPath } = await import('../../src/cli/install/media-record.ts')
   const { takeInstallLock } = await import('../../src/cli/install/lock.ts')
   const lock = await takeInstallLock(mediaLockPath(folder))

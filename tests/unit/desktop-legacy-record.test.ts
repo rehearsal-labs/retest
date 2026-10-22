@@ -18,23 +18,27 @@ import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
 import { readProcessTable, systemTools } from '../../src/native/processes.ts'
 import { sweepOwnedFolders } from '../../src/native/temporary-folders.ts'
 import { processRuns } from '../../src/runner/media-leftovers.ts'
+import { readHeldProcess } from '../../src/shared/process-system.ts'
 import { tempProject } from '../support/project.ts'
 import { newRunFolder } from '../support/run-harness.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { unpinnedMedia } from '../support/unpinned-host.ts'
 import { fakeMediaStarter, recordProject } from './runner-recording-fakes.ts'
 
 const desktopOnly = { skip: process.platform === 'darwin' ? false : 'the desktop kernel lock requires macOS' }
+// WebKit and native apps run on macOS only, so their readers' records exist nowhere else Retest runs.
+const macReaders = { skip: unixOnly('WebKit and native apps do not run on Windows') }
 
 async function fixture(t: TestContext, gone: boolean): Promise<{ root: string; process: OwnedProcessIdentity }> {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'retest-record-recovery-'))
-  const child = spawn('/bin/sleep', ['300'], { stdio: 'ignore' })
+  const child = process.platform === 'win32' ? spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300_000)'], { stdio: 'ignore' }) : spawn('/bin/sleep', ['300'], { stdio: 'ignore' })
   const ended = once(child, 'exit')
   assert.ok(child.pid !== undefined)
-  const identity = (await readProcessTable()).find(entry => entry.pid === child.pid)
+  const identity = await identityOf(child.pid)
   assert.ok(identity !== undefined)
   const end = async (): Promise<void> => {
     if (child.exitCode !== null || child.signalCode !== null) return
-    const current = (await readProcessTable()).find(entry => entry.pid === identity.pid)
+    const current = await identityOf(identity.pid)
     assert.ok(current !== undefined && current.startedAt === identity.startedAt && current.command === identity.command)
     child.kill('SIGTERM')
     await ended
@@ -42,6 +46,13 @@ async function fixture(t: TestContext, gone: boolean): Promise<{ root: string; p
   t.after(async () => { await end(); await rm(root, { recursive: true, force: true }) })
   if (gone) await end()
   return { root, process: identity }
+}
+
+// The fixture's process as this platform reads it: `ps` on Unix, retest-supervisor on Windows.
+async function identityOf(pid: number): Promise<OwnedProcessIdentity | undefined> {
+  if (process.platform !== 'win32') return (await readProcessTable()).find(entry => entry.pid === pid)
+  const read = readHeldProcess(pid)
+  return read === undefined ? undefined : { pid: read.pid, parentPid: read.parentPid ?? 0, groupId: 0, startedAt: read.startedAt, command: read.image ?? '' }
 }
 
 for (const marker of [undefined, 1, 2]) {
@@ -102,13 +113,14 @@ for (const gone of [true, false]) {
     await mkdir(join(folder, 'profile'), { recursive: true })
     await writeFile(file, JSON.stringify({ version: 1, owner: { pid: identity.pid, startedAt: 'old-zone start', command: identity.command }, firefox: { pid: identity.pid, startedAt: 'old-zone start', command: identity.command, route: 'spawn' }, profile: join(folder, 'profile') }))
     const signals: number[] = []
-    const report = await sweepOrphanedFirefoxes(root, { read: readProcessTable, kill: pid => { signals.push(pid) } })
+    // Windows reads the launcher through retest-supervisor, and ends no Firefox: its job ended with its runner.
+    const report = process.platform === 'win32' ? await sweepOrphanedFirefoxes(root) : await sweepOrphanedFirefoxes(root, { read: readProcessTable, kill: pid => { signals.push(pid) } })
     assert.deepEqual(signals, [])
     assert.equal(existsSync(folder), !gone)
     if (gone) assert.deepEqual(report.removed, [folder])
     else { assert.ok(report.kept.join(' ').includes(file)); assert.match(report.kept.join(' '), /once no runner is running/) }
   })
-  test(`legacy WebKit record whose recorded PIDs are ${gone ? 'absent is removed' : 'present is retained with its file'}`, async t => {
+  test(`legacy WebKit record whose recorded PIDs are ${gone ? 'absent is removed' : 'present is retained with its file'}`, macReaders, async t => {
     const { root, process: identity } = await fixture(t, gone)
     const folder = join(root, `retest-webkit-${identity.pid}-legacy`)
     const file = join(folder, homeRecordFile)
@@ -118,7 +130,7 @@ for (const gone of [true, false]) {
     assert.equal(existsSync(folder), !gone)
     if (!gone) { assert.ok(notes.join(' ').includes(file)); assert.match(notes.join(' '), /once no runner is running/) }
   })
-  test(`legacy native folder record whose PID is ${gone ? 'absent is removed' : 'present is retained with its file'}`, async t => {
+  test(`legacy native folder record whose PID is ${gone ? 'absent is removed' : 'present is retained with its file'}`, macReaders, async t => {
     const { root, process: identity } = await fixture(t, gone)
     const folder = join(root, 'retest-executor-legacy')
     const file = join(folder, 'retest-owner.json')
@@ -152,7 +164,7 @@ for (const gone of [true, false]) {
 }
 
 for (const reader of ['native', 'firefox', 'webkit', 'media', 'install'] as const) {
-  test(`current ${reader} record with a present PID and mismatched start cannot free anything`, async t => {
+  test(`current ${reader} record with a present PID and mismatched start cannot free anything`, { skip: reader === 'native' || reader === 'webkit' ? macReaders.skip : reader === 'firefox' ? unixOnly('a Windows start is exact, so a present pid with another start is another process and its launcher is gone') : false }, async t => {
     const { root, process: identity } = await fixture(t, false)
     if (reader === 'media') {
       assert.equal(await processRuns({ startTimeVersion: 1, pid: identity.pid, startedAt: 'mismatched start' }), undefined)

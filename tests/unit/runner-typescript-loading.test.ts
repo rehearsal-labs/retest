@@ -12,6 +12,11 @@ import { tempFolder } from '../support/temp-folder.ts'
 // A test file's process, as a run starts it: Node transforms the project's TypeScript, and the project's resolve hook
 // reads its tsconfig paths. The browser is a fake; consumer-loading.test.ts runs the same in Chrome.
 
+// A path inside a pattern: a Windows path's backslashes and a folder's dots are literal.
+function escape(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 const model = `// An enum and parameter properties, which type stripping alone cannot load.
 export enum Control {
   Save = 'save-task',
@@ -142,7 +147,7 @@ test('checks a transformed value', async () => {
     const [alias, missing] = result.files
     assert.deepEqual(alias?.tests.map((entry) => entry.status), ['passed'])
     assert.equal(missing?.collection, 'failed')
-    assert.match(missing?.failure?.message ?? '', new RegExp(`Imports from that file follow ${join(root, 'tests/tsconfig.json')}\\.$`))
+    assert.match(missing?.failure?.message ?? '', new RegExp(`Imports from that file follow ${escape(join(root, 'tests/tsconfig.json'))}\\.$`))
   })
 
   test('a CommonJS JavaScript helper loads as Node loads it, and a CommonJS test file fails naming the construct', async () => {
@@ -160,6 +165,6 @@ test('checks a transformed value', async () => {
     assert.equal(result.exitCode, 2)
     const [file] = result.files
     assert.deepEqual([file?.collection, file?.failure?.class, file?.tests], ['failed', 'usage', []])
-    assert.match(file?.failure?.message ?? '', new RegExp(`^${join(root, 'tsconfig.base.json')} is not valid JSON: `))
+    assert.match(file?.failure?.message ?? '', new RegExp(`^${escape(join(root, 'tsconfig.base.json'))} is not valid JSON: `))
   })
 })

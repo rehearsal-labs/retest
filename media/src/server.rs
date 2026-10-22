@@ -831,12 +831,18 @@ impl Server {
         };
         let output = Path::new(&request.output);
         if !output.is_absolute()
-            || request.output.ends_with('/')
+            || request.output.ends_with(std::path::is_separator)
             || request.output.len() > MAX_PATH_BYTES
         {
             let message = format!(
                 "the output must be an absolute file path without its extension, at most {MAX_PATH_BYTES} bytes"
             );
+            return self
+                .replies
+                .send(&Reply::Leftovers(reply("invalid", Some(message))));
+        }
+        #[cfg(windows)]
+        if let Some(message) = windows_name_problem(output) {
             return self
                 .replies
                 .send(&Reply::Leftovers(reply("invalid", Some(message))));
@@ -1227,16 +1233,51 @@ fn in_range<T: PartialOrd + std::fmt::Display>(
 
 fn check_output(output: &str) -> Result<PathBuf, String> {
     let path = Path::new(output);
-    if !path.is_absolute() || output.ends_with('/') || output.len() > MAX_PATH_BYTES {
+    if !path.is_absolute()
+        || output.ends_with(std::path::is_separator)
+        || output.len() > MAX_PATH_BYTES
+    {
         return Err(format!(
             "the output must be an absolute file path without its extension, at most {MAX_PATH_BYTES} bytes; it is {}",
             output.chars().take(200).collect::<String>()
         ));
     }
+    #[cfg(windows)]
+    if let Some(message) = windows_name_problem(path) {
+        return Err(message);
+    }
     match path.parent() {
         Some(folder) if folder.is_dir() => Ok(path.to_path_buf()),
         _ => Err(format!("the output's folder does not exist: {output}")),
     }
+}
+
+// Why Windows would not take the output's file name as a file of its own: a character it refuses, among them `:`, which
+// names a stream inside another file, or a device name such as `con` or `nul`, with any extension.
+#[cfg(windows)]
+fn windows_name_problem(output: &Path) -> Option<String> {
+    let name = output.file_name()?.to_string_lossy();
+    if name
+        .chars()
+        .any(|character| character < ' ' || "<>:\"|?*".contains(character))
+    {
+        return Some(format!(
+            "the output's file name {name} holds a character Windows refuses in a file name"
+        ));
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        upper.strip_prefix(prefix).is_some_and(|number| {
+            number.chars().count() == 1 && "0123456789\u{b9}\u{b2}\u{b3}".contains(number)
+        })
+    };
+    (["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str()) || numbered("COM") || numbered("LPT"))
+        .then(|| format!("the output's file name {name} is a device name on Windows"))
 }
 
 // The encoder's answer to what it can do, asked once in the background as the process starts. Nothing waits for it
@@ -1553,6 +1594,35 @@ mod tests {
             } else {
                 "release"
             }
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn output_names_windows_refuses_are_refused_by_name() {
+        let folder = std::env::temp_dir();
+        for name in [
+            "con",
+            "NUL",
+            "com1",
+            "Lpt9",
+            "aux.recording",
+            "prn ",
+            "recording:stream",
+            "a?b",
+            "a|b",
+        ] {
+            let refused = check_output(&folder.join(name).to_string_lossy()).expect_err(name);
+            assert!(refused.contains("Windows"), "{refused}");
+        }
+        for name in ["recording-1", "console", "com10", "nullable", "lpt"] {
+            let output = folder.join(name);
+            assert!(check_output(&output.to_string_lossy()).is_ok(), "{name}");
+        }
+        let folder_named = format!("{}\\", folder.join("recording").display());
+        assert!(
+            check_output(&folder_named).is_err(),
+            "a trailing backslash names a folder"
         );
     }
 }

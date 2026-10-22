@@ -1,5 +1,6 @@
 import type { FrameSequence } from '../../src/media/protocol.ts'
 import type { EventBody } from '../../src/protocol/events.ts'
+import type { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -13,11 +14,10 @@ import { defaultRecordingSettings } from '../../src/config/read-recording.ts'
 import { microsecondsSince } from '../../src/media/capture.ts'
 import { defaultAppPixelRules, PixelCapturePolicy } from '../../src/media/policy.ts'
 import { AttemptRecorder, RunMedia, startMediaProcess } from '../../src/runner/run-media.ts'
-import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { launchOwnership } from '../../src/shared/process-system.ts'
 import { ArtifactSequences } from '../../src/store/artifacts.ts'
 import { launch, openPage, scratchFolder, servePages } from './browser-harness.ts'
-import { repositoryRoot } from './cli-harness.ts'
-import { recordingSkip } from './recording-harness.ts'
+import { builtMediaBinary, recordingSkip } from './recording-harness.ts'
 
 // A real capture/runner proof without a judge: the media store is inspected before its frames are released.
 test('a real secret fill withholds its pixels from video and kept frames until a new document', { timeout: 60000, skip: recordingSkip }, async t => {
@@ -44,10 +44,11 @@ test('a real secret fill withholds its pixels from video and kept frames until a
   let queryProblem: string | undefined
   let ownership: OwnedProcessGroup | undefined
   const media = new RunMedia({
-    location: { executable: process.env['RETEST_TEST_MEDIA_BINARY'] ?? join(repositoryRoot, 'media/target/release/retest-media'), ffmpeg: process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg' },
+    location: { executable: process.env['RETEST_TEST_MEDIA_BINARY'] ?? builtMediaBinary, ffmpeg: process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg' },
     start: async (location, timeoutMs) => {
       const process = await startMediaProcess(location, timeoutMs)
-      ownership = new OwnedProcessGroup(process.pid)
+      // Read afresh through the process layer: the media process's group on Unix, the job it was held in on Windows.
+      ownership = launchOwnership(process.pid)
       assert.deepEqual(ownership.capture(), [])
       const release = process.release.bind(process)
       process.release = async (id, budget) => {

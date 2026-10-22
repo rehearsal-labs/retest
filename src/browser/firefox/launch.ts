@@ -102,7 +102,7 @@ export async function launchFirefox(options: FirefoxLaunchOptions, timeoutMs: nu
       ...(socket === undefined ? {} : { socket }),
     })
     const facts = await startSession(client, deadline)
-    if (facts.processId !== firefox.pid) throw new LaunchError(`The Firefox at ${address} names process ${facts.processId}, not the launched ${firefox.pid}, so ending ${firefox.pid} would not end the browser it drives.`)
+    if (!(await firefox.ends(facts.processId, deadline))) throw new LaunchError(`The Firefox at ${address} names process ${facts.processId}, not the launched ${firefox.pid}, so ending ${firefox.pid} would not end the browser it drives.`)
     if (facts.profile !== profile) throw new LaunchError(`The Firefox at ${address} uses the profile ${facts.profile}, not ${profile}.`)
     log(`Firefox ${facts.browserVersion}${facts.buildId === undefined ? '' : ` build ${facts.buildId}`} answered at ${address}`)
     return await FirefoxBrowser.open({ process: firefox, client, executablePath: executable, facts, onListenerError: (error) => log(`a listener failed: ${errorMessage(error)}`) }, deadline)

@@ -6,7 +6,20 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { browserPath, servePages } from './browser-harness.ts'
 import { budgets, configSource, runProject, startRun, writeProject } from './cli-harness.ts'
 import { encoderPid, finishRecordingRun, ownershipOf, recordingSkip } from './recording-harness.ts'
-import { binary, ffmpeg, observationLoader, preserveReport, proofRoot, verifyVideo } from './evidence-support.test.ts'
+import { binary, ffmpeg, importOption, observationLoader, preserveReport, proofRoot, verifyVideo } from './evidence-support.test.ts'
+import { resumeProcess, suspendProcess } from '../support/windows-suspend.ts'
+
+// The encoder is stalled as a stopped process is: SIGSTOP and SIGCONT on macOS and Linux; on Windows, which has no such
+// signal, every thread of it suspended and resumed.
+function stall(pid: number): void {
+  if (process.platform === 'win32') suspendProcess(pid)
+  else process.kill(pid, 'SIGSTOP')
+}
+
+function resume(pid: number): void {
+  if (process.platform === 'win32') resumeProcess(pid)
+  else process.kill(pid, 'SIGCONT')
+}
 
 // Injection sets a supported media-protocol bound, without replacing dispatch, capture, encoding or verdict logic.
 test('a real Chrome recording with a stalled encoder names queue drops and preserves its application pass', {timeout:90000,skip:recordingSkip},async t=>{
@@ -22,7 +35,7 @@ test('a real Chrome recording with a stalled encoder names queue drops and prese
  const site=await servePages(t,{'/':'<body><p data-testid="state">Ready</p><script>let n=0;setInterval(()=>document.body.style.background=(n++%2)?"#0000ff":"#00ff00",20)</script>'})
  const source=`import {expect,test} from '@rehearsal-labs/retest';test('passes with saturated queue',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,6000));await expect(page.getByTestId('state')).toHaveText('Ready')})`
  const root=await writeProject(t,{'retest.config.ts':configSource(`{apps:{web:chromium({executablePath:${JSON.stringify(browserPath())},baseUrl:${JSON.stringify(site.url)}})},recording:{record:true,fps:10,size:{width:320,height:240}}}`),'queue.retest.ts':source})
- const started=await startRun(t,{cwd:root,browser:false,files:['queue.retest.ts'],timeouts:budgets({test:30000,setup:30000,cleanup:15000}),env:{RETEST_MEDIA_BINARY:binary,RETEST_FFMPEG:ffmpeg,NODE_OPTIONS:`--import=${loader}`}})
+ const started=await startRun(t,{cwd:root,browser:false,files:['queue.retest.ts'],timeouts:budgets({test:30000,setup:30000,cleanup:15000}),env:{RETEST_MEDIA_BINARY:binary,RETEST_FFMPEG:ffmpeg,NODE_OPTIONS:importOption(loader)}})
  const media=await started.retest.waitForEvent('media.started')
  await started.retest.waitForEvent('recording.started')
  await started.retest.waitForEvent('action.completed',event=>event.command==='goto')
@@ -30,12 +43,12 @@ test('a real Chrome recording with a stalled encoder names queue drops and prese
  const identity=owner.verifiedIdentity(encoder)
  assert.ok(identity)
  writeFileSync(join(proofRoot,'stalled-encoder.json'),JSON.stringify(identity,null,2))
- process.kill(encoder,'SIGSTOP')
+ stall(encoder)
  try{await delay(2500)}finally{
   const current=owner.verifiedIdentity(encoder)
   assert.ok(current)
   assert.deepEqual([current.pid,current.parentPid,current.groupId,current.startedAt,current.command],[identity.pid,identity.parentPid,identity.groupId,identity.startedAt,identity.command],'only the recorded encoder is resumed')
-  process.kill(encoder,'SIGCONT')
+  resume(encoder)
  }
  const run=await finishRecordingRun(started,owner)
  writeFileSync(join(run.output,'cli-output.json'),JSON.stringify({exit:run.exit,stdout:run.stdout,stderr:run.stderr},null,2))

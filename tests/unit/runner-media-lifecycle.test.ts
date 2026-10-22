@@ -204,7 +204,7 @@ test('a discovery refusal is a named setup failure, starts no media and preserve
   const { discoverMediaLocation } = await import('../../src/runner/run-media.ts')
   const home = await mkdtemp(join(tmpdir(), 'retest-run-damaged-cache-'))
   t.after(() => rm(home, { recursive: true, force: true }))
-  const env = { HOME: home, PATH: '' }
+  const env = { HOME: home, LOCALAPPDATA: home, PATH: '' }
   const folder = mediaFolder(env, mediaTarget() ?? assert.fail('host target')) ?? assert.fail('cache folder')
   await mkdir(folder, { recursive: true })
   await writeFile(join(folder, 'build.json'), '{')

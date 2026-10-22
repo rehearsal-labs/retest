@@ -1,11 +1,12 @@
 import type { RetestEvent } from '../../src/protocol/events.ts'
 import type { FinishedRun } from './cli-harness.ts'
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { eventsFile } from '../../src/protocol/run-folder.ts'
 import { passingRun, resultOf } from '../unit/reporters-fixtures.ts'
-import { assertKilledStdoutIsEventPrefix, assertStdoutIsEvents, readFinishedRun, RetestProcess, scratchFolder } from './cli-harness.ts'
+import { answersAt, appServersOn, assertKilledStdoutIsEventPrefix, assertStdoutIsEvents, freePort, killedExit, readFinishedRun, RetestProcess, scratchFolder, startAppServerFixture, waitFor } from './cli-harness.ts'
 
 const events: RetestEvent[] = [0, 1, 2].map((sequence) => ({
   schemaVersion: 1,
@@ -24,7 +25,7 @@ function lines(events: readonly RetestEvent[]): string {
 }
 
 function killedRun(stdout: string): FinishedRun {
-  return { exit: { code: null, signal: 'SIGKILL' }, stdout, stderr: '', durationMs: 0, output: '/unused', events, result: undefined }
+  return { exit: killedExit, stdout, stderr: '', durationMs: 0, output: '/unused', events, result: undefined, killedOutright: true }
 }
 
 test('a killed JSONL reporter may deliver none, a prefix, or all of its saved events', () => {
@@ -82,7 +83,25 @@ test('prefix delivery is allowed only for a confirmed SIGKILL with no settled re
     assert.throws(() => assertKilledStdoutIsEventPrefix({ ...run, exit }), /fatally killed/)
   }
   assert.throws(() => assertKilledStdoutIsEventPrefix({ ...run, result: resultOf(passingRun('/work')) }), /no settled result/)
+  // A command that crashes exits 1, as one Windows ended does; only a kill this harness made reads as one.
+  assert.throws(() => assertKilledStdoutIsEventPrefix({ ...run, exit: { code: 1, signal: null }, killedOutright: false }), /fatally killed/)
 })
+
+// The command kills itself with SIGKILL on macOS and Linux, at the moment the case is about. Windows has no signal a
+// process can be seen killed by: there the command stops at that moment, and this harness ends it with killOutright.
+const stopHere = process.platform === 'win32' ? 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)' : "process.kill(process.pid, 'SIGKILL')"
+
+// The whole lines the command's events file holds so far.
+function savedLines(output: string): number {
+  const file = join(output, eventsFile)
+  return existsSync(file) ? readFileSync(file, 'utf8').split('\n').length - 1 : 0
+}
+
+async function killedWhere(retest: RetestProcess, stopped: () => boolean): Promise<void> {
+  if (process.platform !== 'win32') return
+  await waitFor('the command to stop where it is killed', stopped)
+  retest.killOutright()
+}
 
 test('settled stdout still requires every durable event and the final newline', () => {
   const saved = passingRun('/work')
@@ -104,9 +123,10 @@ test('a real SIGKILL between the event append and reporter delivery leaves a val
     log.emit({ type: 'app.reused', app: 'delivered', ready: 'http://127.0.0.1:4310/' })
     await log.flush()
     log.emit({ type: 'app.reused', app: 'saved-before-kill', ready: 'http://127.0.0.1:4310/' })
-    process.kill(process.pid, 'SIGKILL')
+    ${stopHere}
   `
   const retest = await RetestProcess.start(t, { args: [], command: [process.execPath, '--conditions=retest-source', '--input-type=module', '-e', source] })
+  await killedWhere(retest, () => savedLines(output) === 2)
   const run = await readFinishedRun({ retest, output })
   assert.equal(run.events.length, 2)
   assert.equal(run.stdout.split('\n').length, 2, 'one event was actually delivered')
@@ -123,9 +143,10 @@ for (const signal of ['SIGKILL', undefined] as const) {
       import { writeFileSync } from 'node:fs'
       writeFileSync(${JSON.stringify(join(output, eventsFile))}, ${JSON.stringify(text)})
       process.stdout.write(${JSON.stringify(stdout)})
-      ${signal === undefined ? '' : `process.kill(process.pid, ${JSON.stringify(signal)})`}
+      ${signal === undefined ? '' : stopHere}
     `
     const retest = await RetestProcess.start(t, { args: [], command: [process.execPath, '--input-type=module', '-e', source] })
+    if (signal !== undefined) await killedWhere(retest, () => existsSync(join(output, eventsFile)) && readFileSync(join(output, eventsFile), 'utf8') === text)
     const reading = readFinishedRun({ retest, output })
     if (signal === undefined) {
       await assert.rejects(reading, /events end with a whole line/)
@@ -136,3 +157,12 @@ for (const signal of ['SIGKILL', undefined] as const) {
     assertKilledStdoutIsEventPrefix(run)
   })
 }
+
+// The checks that an app server was stopped look for it by its port; one left running must be found, or they pass
+// whatever happened.
+test('appServersOn finds an app server while it runs, so a check that it was stopped can fail', { timeout: 30_000 }, async (t) => {
+  const port = await freePort()
+  const { url } = await startAppServerFixture(t, port)
+  assert.equal(await answersAt(url), true)
+  assert.notDeepEqual(await appServersOn(port), [], 'the running server is found by its port')
+})

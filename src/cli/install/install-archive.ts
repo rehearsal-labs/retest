@@ -1,14 +1,16 @@
 import type { ArchivePin, BuildInspection, CacheFolders, InstalledBuildRecord, LicenceReading } from '../../browser/builds.ts'
 import type { NativeTools } from '../../native/processes.ts'
+import type { ChangeOptions, Settled } from './file-changes.ts'
 import type { UnpackTools } from './unpack.ts'
 import { constants } from 'node:fs'
-import { access, lstat, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { access, lstat, mkdir, readdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { buildFolder, describePin, describePlatform, describeTreeProblems, fileSha256, inspectBuild, pinRefusal, readBundledLicence, readFileSha256, readLicences, recordFile, scanTree, treeFolder } from '../../browser/builds.ts'
 import { folderChecksum } from '../../native/executors.ts'
 import { processExists } from '../../native/processes.ts'
 import { isMissingFile } from '../../shared/error-code.ts'
 import { downloadFile, mirroredUrl, shownAddress } from './download.ts'
+import { removePath, renamePath } from './file-changes.ts'
 import { takeInstallLock } from './lock.ts'
 import { licenceLines, mirrorProblem } from './report.ts'
 import { unpackArchive } from './unpack.ts'
@@ -62,7 +64,9 @@ const unpackTimeoutMs = 10 * 60_000
  * bit and links that stay inside it, and where the executable, the pinned files and every licence notice the pin names
  * must be present with their checksums. Only then is the record written and the staging folder renamed into place, so
  * a build folder always holds a finished, checked build, and the archive is deleted. A verified archive whose
- * unpacking failed is kept for the next attempt.
+ * unpacking failed is kept for the next attempt. A rename or removal that does not happen is never thrown: before the
+ * build is in place it ends the install with its reason, and once the build is in place the install stands and what
+ * was left behind is reported. On Windows each is tried again while a program holds a file open (`file-changes.ts`).
  *
  * @example await installArchive({ pin, folders, signal, tools: systemUnpackTools, platform: process.platform, version: retestVersion, report: console.log })
  */
@@ -94,30 +98,63 @@ async function installLocked(options: InstallArchiveOptions, pinnedSha256: strin
   const { pin, folders } = options
   const folder = buildFolder(folders, pin)
   const archive = archivePath(folders, pin)
+  const changes = changeOptions(options)
   const before = await inspectBuild(pin, folders)
   if (before.state === 'installed') {
     // An archive a killed install left after renaming its build into place is of no further use.
-    await rm(archive, { force: true })
+    reportLeftover(options, archive, await removePath(archive, changes))
     return { ok: true, action: 'already_installed', inspection: before }
   }
   if (before.state !== 'missing') return refused(`${describePin(pin)} is in ${folder}, but not as recorded: ${before.problems.join(' ')} Remove ${folder} and run the install again.`)
-  await sweepStaging(folder)
-  await sweepPartials(dirname(archive))
+  await sweepStaging(folder, options)
+  await sweepPartials(dirname(archive), options)
   const obtained = await obtainArchive({ ...options, archive, sha256: pinnedSha256 })
   if (!obtained.ok) return obtained
   const staging = `${folder}${stagingMark}${process.pid}`
-  await rm(staging, { recursive: true, force: true })
+  const cleared = await removePath(staging, changes)
+  if (!cleared.ok) return notChanged(`Retest could not clear its staging folder ${staging}: ${cleared.reason}. Nothing was installed.`, cleared)
+  let placed: Placed
+  let cleanup: Settled
   try {
-    const placed = await unpackAndRecord({ options, archive, staging, obtained })
-    if (!placed.ok) return placed
-    await rename(staging, folder)
+    placed = await placeBuild({ options, archive, staging, obtained }, folder)
   } finally {
-    await rm(staging, { recursive: true, force: true })
+    // A staging folder left behind is said, and never hides how the install itself ended.
+    cleanup = await removePath(staging, changes)
   }
-  await rm(archive, { force: true })
+  if (!placed.ok) return cleanup.ok ? placed : { ...placed, message: `${placed.message} ${leftover(staging, cleanup)}` }
+  // The build is in place from here on: what is left to tidy is said, and the install stands.
+  reportLeftover(options, staging, cleanup)
+  reportLeftover(options, archive, await removePath(archive, changes))
   const after = await inspectBuild(pin, folders)
   if (after.state !== 'installed') return refused(`${describePin(pin)} was unpacked into ${folder}, then did not read as installed: ${after.problems.join(' ')}`)
   return { ok: true, action: 'installed', inspection: after }
+}
+
+type Placed = { readonly ok: true } | InstallResult & { ok: false }
+
+// The unpacked, checked and recorded build, renamed from its staging folder to its own.
+async function placeBuild(placement: Placement, folder: string): Promise<Placed> {
+  const unpacked = await unpackAndRecord(placement)
+  if (!unpacked.ok) return unpacked
+  const moved = await renamePath(placement.staging, folder, changeOptions(placement.options))
+  return moved.ok ? moved : notChanged(`Retest could not move the unpacked build into ${folder}: ${moved.reason}. Nothing was installed.`, moved)
+}
+
+function changeOptions(options: InstallArchiveOptions): ChangeOptions {
+  return { platform: options.platform, signal: options.signal }
+}
+
+// A change that did not happen ends the install, as stopped when the install's signal ended it.
+function notChanged(message: string, settled: Settled & { ok: false }): InstallResult & { ok: false } {
+  return { ok: false, message, stopped: settled.stopped }
+}
+
+function leftover(path: string, settled: Settled & { ok: false }): string {
+  return `Retest could not remove ${path}: ${settled.reason}. Remove it by hand.`
+}
+
+function reportLeftover(options: InstallArchiveOptions, path: string, settled: Settled): void {
+  if (!settled.ok) options.report(leftover(path, settled))
 }
 
 /**
@@ -156,10 +193,15 @@ async function obtainArchive(options: InstallArchiveOptions & { readonly archive
     const size = (await lstat(archive)).size
     return { ok: true, size, sha256, fetchedFrom: 'an earlier attempt' }
   }
-  if (kept.kind !== 'missing') await rm(archive, { recursive: true, force: true })
+  const changes = changeOptions(options)
+  if (kept.kind !== 'missing') {
+    const removed = await removePath(archive, changes)
+    if (!removed.ok) return notChanged(`Retest could not remove ${archive}, which is not the pinned archive: ${removed.reason}. Nothing was installed.`, removed)
+  }
   await mkdir(dirname(archive), { recursive: true })
   const partial = `${archive}${partialMark}${process.pid}`
-  await rm(partial, { force: true })
+  const cleared = await removePath(partial, changes)
+  if (!cleared.ok) return notChanged(`Retest could not clear ${partial} for the download: ${cleared.reason}. Nothing was installed.`, cleared)
   const size = pin.archive.size === undefined ? '' : ` (${formatBytes(pin.archive.size)})`
   options.report(`Downloading ${describePin(pin)} for ${describePlatform(pin.platform)} from ${shownAddress(url)}${size}`)
   const downloaded = await downloadFile({
@@ -175,10 +217,15 @@ async function obtainArchive(options: InstallArchiveOptions & { readonly archive
   })
   if (!downloaded.ok) return { ok: false, message: `${downloaded.message} Nothing was installed.`, stopped: downloaded.stopped }
   if (downloaded.sha256 !== sha256) {
-    await rm(partial, { force: true })
-    return refused(`The archive from ${shownAddress(url)} has SHA-256 ${downloaded.sha256}, not the pinned ${sha256}. It was deleted unread and nothing was installed.`)
+    const removed = await removePath(partial, changes)
+    const deleted = removed.ok ? 'It was deleted unread and nothing was installed.' : `Nothing was installed. ${leftover(partial, removed)}`
+    return refused(`The archive from ${shownAddress(url)} has SHA-256 ${downloaded.sha256}, not the pinned ${sha256}. ${deleted}`)
   }
-  await rename(partial, archive)
+  const named = await renamePath(partial, archive, changes)
+  if (!named.ok) {
+    const removed = await removePath(partial, changes)
+    return notChanged(`Retest could not name the verified download ${archive}: ${named.reason}. Nothing was installed.${removed.ok ? '' : ` ${leftover(partial, removed)}`}`, named)
+  }
   options.report(`Verified: ${downloaded.size} bytes, SHA-256 ${sha256}`)
   // A redirect's query can be a signature, such as the one on a release asset's address, and is never recorded.
   return { ok: true, size: downloaded.size, sha256, fetchedFrom: shownAddress(downloaded.answeredBy) }
@@ -187,15 +234,16 @@ async function obtainArchive(options: InstallArchiveOptions & { readonly archive
 const partialMark = '.partial-'
 
 // Partial downloads left by installs whose process is gone are deleted; one whose process still runs is left to it,
-// and so is one of this process's, which may belong to another install it is running.
-async function sweepPartials(downloads: string): Promise<void> {
+// and so is one of this process's, which may belong to another install it is running. One that cannot be deleted is
+// said and left, since this install downloads to a name of its own.
+async function sweepPartials(downloads: string, options: InstallArchiveOptions): Promise<void> {
   const names = await readdir(downloads).catch((error: unknown) => (isMissingFile(error) ? [] : Promise.reject(error)))
   for (const name of names) {
     const at = name.lastIndexOf(partialMark)
     if (at < 0) continue
     const pid = Number(name.slice(at + partialMark.length))
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid || mayStillRun(pid)) continue
-    await rm(join(downloads, name), { force: true })
+    reportLeftover(options, join(downloads, name), await removePath(join(downloads, name), changeOptions(options)))
   }
 }
 
@@ -219,19 +267,15 @@ async function unpackAndRecord({ options, archive, staging, obtained }: Placemen
   const { pin } = options
   const root = join(staging, treeFolder)
   await mkdir(root, { recursive: true })
-  const problem = await unpackArchive({ archive, format: pin.archive, into: root, platform: options.platform, tools: options.tools, signal: options.signal, timeoutMs: unpackTimeoutMs })
+  const problem = await unpackArchive({ archive, format: pin.archive, into: root, platform: options.platform, tools: options.tools, signal: options.signal, timeoutMs: unpackTimeoutMs, report: options.report })
   if (options.signal.aborted) return { ok: false, message: `The install was stopped while the archive was unpacked. The verified archive is kept at ${archive} for the next attempt.`, stopped: true }
   if (problem !== undefined) return refused(`${problem} The verified archive is kept at ${archive} for the next attempt.`)
   const noticesProblem = await copyBundledLicences(pin, root)
-  if (noticesProblem !== undefined) {
-    await rm(archive, { force: true })
-    return refused(`${noticesProblem} The archive was deleted and nothing was installed.`)
-  }
+  if (noticesProblem !== undefined) return refused(`${noticesProblem} ${await deleteRefusedArchive(options, archive)}`)
   const checked = await checkUnpacked(pin, root)
   if (!checked.ok) {
-    await rm(archive, { force: true })
     const notices = checked.missing === undefined ? {} : { notices: { lead: `${describePin(pin)} lacks these licence notices, so Retest deleted its archive and installed nothing:`, files: checked.missing } }
-    return { ...refused(`${checked.message} The archive was deleted and nothing was installed.`), ...notices }
+    return { ...refused(`${checked.message} ${await deleteRefusedArchive(options, archive)}`), ...notices }
   }
   const record: InstalledBuildRecord = {
     schemaVersion: 1,
@@ -251,8 +295,14 @@ async function unpackAndRecord({ options, archive, staging, obtained }: Placemen
   }
   const temporary = join(staging, `${recordFile}.${process.pid}.tmp`)
   await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`)
-  await rename(temporary, join(staging, recordFile))
-  return { ok: true }
+  const recorded = await renamePath(temporary, join(staging, recordFile), changeOptions(options))
+  return recorded.ok ? recorded : notChanged(`Retest could not write the record of the unpacked build: ${recorded.reason}. Nothing was installed.`, recorded)
+}
+
+// An archive whose build was refused is deleted, and the sentence says whether it was.
+async function deleteRefusedArchive(options: InstallArchiveOptions, archive: string): Promise<string> {
+  const removed = await removePath(archive, changeOptions(options))
+  return removed.ok ? 'The archive was deleted and nothing was installed.' : `Nothing was installed. ${leftover(archive, removed)}`
 }
 
 /** Place only checked notice bytes into the private staging tree, before its licence and tree checks. */
@@ -325,8 +375,9 @@ function describeAbsence(reading: LicenceReading): string {
   return reading.state === 'missing' ? 'missing' : (reading.problem ?? 'not a file')
 }
 
-// Staging folders of installs whose process is gone are removed; one whose process still runs is left to it.
-async function sweepStaging(folder: string): Promise<void> {
+// Staging folders of installs whose process is gone are removed; one whose process still runs is left to it. One that
+// cannot be removed is said and left, since this install stages in a folder of its own.
+async function sweepStaging(folder: string, options: InstallArchiveOptions): Promise<void> {
   const parent = dirname(folder)
   const prefix = `${basename(folder)}${stagingMark}`
   const names = await readdir(parent).catch((error: unknown) => (isMissingFile(error) ? [] : Promise.reject(error)))
@@ -334,7 +385,7 @@ async function sweepStaging(folder: string): Promise<void> {
     if (!name.startsWith(prefix)) continue
     const pid = Number(name.slice(prefix.length))
     if (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid && mayStillRun(pid)) continue
-    await rm(join(parent, name), { recursive: true, force: true })
+    reportLeftover(options, join(parent, name), await removePath(join(parent, name), changeOptions(options)))
   }
 }
 

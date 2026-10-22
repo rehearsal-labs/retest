@@ -1,4 +1,4 @@
-import type { SuiteDifference } from '../integration/engine-expectations.ts'
+import type { ConformanceDifference, SuiteDifference } from '../integration/engine-expectations.ts'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
@@ -12,6 +12,7 @@ import {
   conformanceMessageProblems,
   conformanceProblems,
   declarationProblems,
+  declaredHere,
   filledIn,
   narrowedRun,
   readProofs,
@@ -149,10 +150,19 @@ test('conformance declarations cannot skip a case or replace its message with a 
   }
 })
 
+// A declaration whose message holds the recorded count, as Firefox 133's wheel case A7 was declared.
+const wheel: ConformanceDifference = {
+  engine: 'firefox',
+  case: 'A7',
+  reason: 'Firefox scrolls an element by at most one page for one wheel event, so a 2000 pixel turn moves the terms without reaching their end.',
+  documented: { item: 5, title: 'One wheel event moves at most one page.' },
+  outcome: { status: 'failed', class: 'check_failed', operation: 'toBeEnabled', at: { holding: 'toBeEnabled(' }, message: "getByTestId('accept') is disabled. Looked {looks} times in 1500 ms." },
+  facts: [{ kind: 'deadline', ms: 1500 }],
+}
+
 test('a conformance refusal holds its literal words and class; a count is exactly the failing event count', () => {
   const refusal = conformanceDifferences.find((each) => each.case === 'A5')
-  const wheel = conformanceDifferences.find((each) => each.case === 'A7')
-  assert.ok(refusal !== undefined && wheel !== undefined)
+  assert.ok(refusal !== undefined)
   assert.deepEqual(conformanceMessageProblems(refusal, refusal.outcome.message, undefined), [])
   for (const message of [refusal.outcome.message.slice(1), `${refusal.outcome.message}\n`, 'passed']) {
     assert.equal(conformanceMessageProblems(refusal, message, undefined).length, 1)
@@ -160,6 +170,16 @@ test('a conformance refusal holds its literal words and class; a count is exactl
   const message = "getByTestId('accept') is disabled. Looked 7 times in 1500 ms."
   assert.deepEqual(conformanceMessageProblems(wheel, message, 7), [])
   for (const count of [undefined, 0, 6, 7.5]) assert.equal(conformanceMessageProblems(wheel, message, count).length, 1)
+})
+
+test('a declaration that names systems holds on those alone, and one that names none is refused', () => {
+  assert.equal(declaredHere({ platforms: ['darwin'] }, 'darwin'), true)
+  assert.equal(declaredHere({ platforms: ['darwin'] }, 'win32'), false, 'elsewhere the case is held to Chrome')
+  assert.equal(declaredHere({}, 'win32'), true)
+  const home = suiteDifferences.find((each) => each.engine === 'firefox' && each.case.at(-1) === 'Home then X')
+  assert.deepEqual(home?.platforms, ['darwin'], "Home moves the caret on Windows, as Chrome's does")
+  const nowhere = { engine: 'firefox', suite: 'browser-actions', case: ['a case'], reason: 'A reason.', documented: { item: 1, title: 'Typing is key by key, so a stopped fill names `keydown`.' }, platforms: [] }
+  assert.deepEqual(declarationProblems([nowhere], readProofs()), ['firefox browser-actions › a case names no system it holds on; leave platforms out for every system.'])
 })
 
 test('a word in braces is the value the case passes, and one it does not pass fails by name', () => {

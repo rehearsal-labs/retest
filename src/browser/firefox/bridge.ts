@@ -399,8 +399,9 @@ function protocolMessage(method: string, error: BidiProtocolError): string {
   if (inWorld && (error.error === 'no such frame' || error.error === 'no such node' || error.error === 'no such handle')) return neverRanMessage
   // A call whose document went while it ran is answered with an error about the window's actor going away.
   if (inWorld && error.error === 'unknown error' && /destroyed|AbortError|discarded|unloaded/i.test(error.protocolMessage ?? '')) return destroyedMessage
-  // Firefox names why it refused a navigation, such as a blocked port, in a message of its own words alone.
-  const refused = method === 'browsingContext.navigate' && error.error === 'unknown error' ? /^Error: ([A-Za-z]+)$/.exec(error.protocolMessage ?? '')?.[1] : undefined
+  // Firefox names why it refused or gave up a navigation, such as a blocked port or a response with no content, in a
+  // message of its own words alone: a word on Firefox 133, an NS name such as `NS_BINDING_ABORTED` on Firefox 158.
+  const refused = method === 'browsingContext.navigate' && error.error === 'unknown error' ? /^Error: ([A-Za-z_]+)$/.exec(error.protocolMessage ?? '')?.[1] : undefined
   if (refused !== undefined) return `unknown error: ${refused}`
   return error.error
 }

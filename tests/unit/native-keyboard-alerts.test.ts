@@ -2,6 +2,11 @@ import type { FakeElement } from './native-interaction-fake.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // The iOS software keyboard and basic app alerts against a stand-in executor: the keyboard waited for and dismissed by
 // its return key once, the first-run card named and dismissed through its own button, an alert blocking an action, and
@@ -128,7 +133,7 @@ test('a system alert outside the app\'s tree is read through WebDriverAgent\'s a
   assert.deepEqual(await interaction.readAlert(1000), { ok: true, alert: { open: false } }, 'the alert closed')
 })
 
-test('on macOS, whose runner has no alert routes, a sheet\'s named button is clicked once, resolved exactly inside the sheet', async (t) => {
+test('on macOS, whose runner has no alert routes, a sheet\'s named button is clicked once, resolved exactly inside the sheet', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   app.alert = deleteAlert('macos')
   const button = app.alert.children?.[2]

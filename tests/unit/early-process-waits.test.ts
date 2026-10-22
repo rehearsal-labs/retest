@@ -14,6 +14,7 @@ import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { earlyClock, fullBudget } from './early-waits-clock.ts'
 import { fakeTools, startedProcesses } from './native-fake-tools.ts'
 import { alive } from './native-fake-executor.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
 // No Firefox process is started. The fake ownership system never sends an OS signal.
@@ -47,7 +48,7 @@ test('Firefox Remote Agent readiness sends the final address probe after early t
   }
 })
 
-test('native executor readiness sends its final status probe after early timers', async (t) => {
+test('native executor readiness sends its final status probe after early timers', { skip: unixOnly("the macOS driver's own machinery, whose fake tools are shell scripts, does not run on Windows") }, async (t) => {
   const fake = await fakeTools(t)
   await fake.configure({ executorStart: 'runner-not-ready' })
   const products = join(fake.root, 'derived', 'Build', 'Products')

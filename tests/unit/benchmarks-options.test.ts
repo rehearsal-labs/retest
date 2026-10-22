@@ -1,5 +1,6 @@
 import type { BenchmarkOptions } from '../../benchmarks/options.ts'
 import assert from 'node:assert/strict'
+import { basename, dirname, resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { parseOptions } from '../../benchmarks/options.ts'
 
@@ -27,7 +28,8 @@ describe('parseOptions', () => {
     assert.equal(parsed.playwrightVersion, 'latest')
     assert.equal(parsed.build, true)
     assert.equal(parsed.reinstall, false)
-    assert.match(parsed.output, /^\/work\/\.retest\/benchmarks\/\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/)
+    assert.equal(dirname(parsed.output), resolve('/work', '.retest', 'benchmarks'))
+    assert.match(basename(parsed.output), /^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/)
     assert.equal(parsed.runTimeoutMs, 900_000)
   })
 
@@ -64,7 +66,7 @@ describe('parseOptions', () => {
     assert.equal(parsed.runs, 2)
     assert.equal(parsed.build, false)
     assert.equal(parsed.reinstall, true)
-    assert.equal(parsed.output, '/work/out')
+    assert.equal(parsed.output, resolve('/work', 'out'))
     assert.equal(parsed.playwrightVersion, '1.63.0')
   })
 

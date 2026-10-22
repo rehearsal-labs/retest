@@ -2,7 +2,7 @@ import type { LoadedConfig, LoadedTarget } from '../../src/config/loaded.ts'
 import type { NativeTools } from '../../src/native/processes.ts'
 import assert from 'node:assert/strict'
 import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { buildPlatform } from '../../src/browser/builds.ts'
 import { runChecks } from '../../src/cli/doctor/checks.ts'
@@ -13,6 +13,7 @@ import { BrowserPool } from '../../src/runner/browser-pool.ts'
 import { targetDriver } from '../../src/runner/target-drivers.ts'
 import { fakeLauncher } from '../support/fake-browser.ts'
 import { fakeExecutable, runProject, tempProject } from '../support/project.ts'
+import { unixOnly, windowsOnly } from '../support/platform-skip.ts'
 import { eventsOfType, quickTimeouts } from '../support/run-harness.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { fakeTools } from './native-fake-tools.ts'
@@ -21,6 +22,9 @@ const path = '/work/retest.config.ts'
 
 // Retest runs WebKit on macOS only; on any other host a WebKit target fails its setup for that, whatever build it names.
 const webKitHostRefusal = process.platform === 'darwin' ? undefined : `Retest runs WebKit on macOS only, and this host is ${process.platform}.`
+
+// A run of a native app: on Windows each native app is refused at its setup, by its key, before anything starts for it.
+const nativeApps = { skip: unixOnly('Windows refuses a native app at its setup, before anything starts for it') }
 
 const firefox: LoadedTarget = { name: 'firefox', browser: 'firefox', headless: true }
 const webkit: LoadedTarget = { name: 'webkit', browser: 'webkit', headless: true, executablePath: '/opt/webkit/MiniBrowser' }
@@ -110,13 +114,13 @@ describe('the config accepts targets that have no driver yet', () => {
     assert.deepEqual([...(config.apps.get('browsers')?.targets.values() ?? [])], [
       { name: 'chromium', headless: true, browser: 'chromium' },
       { name: 'firefox', headless: true, browser: 'firefox' },
-      { name: 'webkit', headless: false, browser: 'webkit', executablePath: '/work/webkit/MiniBrowser' },
+      { name: 'webkit', headless: false, browser: 'webkit', executablePath: resolve('/work/webkit/MiniBrowser') },
     ])
     assert.deepEqual([...(config.apps.get('iphone')?.targets.entries() ?? [])], [
-      ['ios-simulator', { name: 'ios-simulator', platform: 'ios-simulator', appPath: '/work/build/Tasks.app', device: 'iPhone 17', runtime: '26.0' }],
+      ['ios-simulator', { name: 'ios-simulator', platform: 'ios-simulator', appPath: resolve('/work/build/Tasks.app'), device: 'iPhone 17', runtime: '26.0' }],
     ])
-    assert.deepEqual([...(config.apps.get('mac')?.targets.entries() ?? [])], [['macos', { name: 'macos', platform: 'macos', appPath: '/work/build/Tasks.app' }]])
-    assert.deepEqual(config.apps.get('mac')?.start, { command: 'node service.ts', ready: 'http://127.0.0.1:4100/', cwd: '/work' })
+    assert.deepEqual([...(config.apps.get('mac')?.targets.entries() ?? [])], [['macos', { name: 'macos', platform: 'macos', appPath: resolve('/work/build/Tasks.app') }]])
+    assert.deepEqual(config.apps.get('mac')?.start, { command: 'node service.ts', ready: 'http://127.0.0.1:4100/', cwd: resolve('/work') })
   })
 
   test('an app whose targets are of two kinds is refused, as is a native app with an address', () => {
@@ -197,7 +201,7 @@ for (const app of ['webkit', 'iphone', 'mac'] as const) {
 
   // Native targets have a driver now: their attempts are not refused at planning. Each takes its lease, then starts its
   // app, which here fails because the project holds no app bundle.
-  test('a native app is not refused at planning: it takes its lease and starts, and an app with no bundle fails its setup by name', () => {
+  test('a native app is not refused at planning: it takes its lease and starts, and an app with no bundle fails its setup by name', nativeApps, () => {
     assert.deepEqual(
       results.slice(2).map((result) => [result.name, result.status, result.failure?.class]),
       [
@@ -213,6 +217,24 @@ for (const app of ['webkit', 'iphone', 'mac'] as const) {
       assert.deepEqual(own, ['resource.acquired', 'lease.taken', 'test.finished'], `${result?.name} took its lease before it ended`)
     }
     assert.deepEqual(eventsOfType(record.events, 'native.started'), [], 'no app was started')
+  })
+
+  // On Windows, where the macOS and iOS drivers do not run, each native attempt is refused at planning by its key, as
+  // WebKit is refused for its host, before its lease; the Chromium test runs.
+  test('on Windows each native attempt is refused at planning by its key, before its lease, and the Chromium test runs', { skip: windowsOnly('the refusal reads the machine it runs on') }, () => {
+    assert.deepEqual(
+      results.map((result) => [result.name, result.status, result.failure?.message]),
+      [
+        ['runs on Chromium', 'passed', undefined],
+        ['runs on webkit', 'not_run', webKitHostRefusal],
+        ['runs on iphone', 'not_run', 'apps.iphone is an iOS simulator app, which Retest runs only on a Mac with Xcode.'],
+        ['runs on mac', 'not_run', 'apps.mac is a macOS app, which Retest runs only on a Mac.'],
+      ],
+    )
+    for (const result of results.slice(2)) {
+      const own = record.events.filter((event) => 'testId' in event && event.testId === result.testId).map((event) => event.type)
+      assert.deepEqual(own, ['test.finished'], `${result.name} ended at planning, before its lease`)
+    }
   })
 
   test('only Chromium launched, and the run is not a pass', () => {
@@ -253,7 +275,7 @@ test('syncs on WebKit', async () => {})
 
   // Native apps are no longer refused, so their start command runs as a web app's does: inside the attempt's lease,
   // before the app it serves, which does not start once its server fails.
-  test('a native app’s start command runs inside its lease, before its app, and a server that never answers is the failure', async () => {
+  test('a native app’s start command runs inside its lease, before its app, and a server that never answers is the failure', nativeApps, async () => {
     const config = `import { defineConfig } from '@rehearsal-labs/retest'
 
 export default defineConfig({
@@ -276,6 +298,39 @@ test('syncs on the Mac', async () => {})
     assert.ok(types.indexOf('lease.taken') >= 0 && types.indexOf('lease.taken') < types.indexOf('app.failed'), types.join(', '))
     assert.deepEqual(eventsOfType(record.events, 'native.started'), [], 'the app never started')
     assert.deepEqual([record.browsers.length, record.result.browser], [0, null])
+  })
+
+  // On Windows the macOS app is refused at planning, so the start command its app names is never run, and a web test of
+  // the same config runs.
+  test('on Windows a native app’s start command never runs: the app is refused by its key, and the web test beside it runs', { skip: windowsOnly('the refusal reads the machine it runs on') }, async () => {
+    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+
+export default defineConfig({
+  apps: {
+    web: chromium({ baseUrl: 'http://127.0.0.1:4173' }),
+    mac: { platform: 'macos', appPath: 'build/Tasks.app', start: { command: '${writesStarted}', ready: 'http://127.0.0.1:9/' } },
+  },
+  defaultApp: 'web',
+})
+`
+    const tests = `import { expect, test } from '@rehearsal-labs/retest'
+
+test('runs on Chromium', async ({ page }) => {
+  await page.goto('/tasks')
+  await expect(page.getByTestId('task-title')).toBeVisible()
+})
+test('syncs on the Mac', { apps: ['mac'] }, async () => {})
+`
+    const root = tempProject({ 'retest.config.ts': config, 'tests/mac.retest.ts': tests })
+    const record = await runProject(root, { files: ['tests/mac.retest.ts'] })
+    const results = record.result.files.flatMap((file) => file.tests)
+    assert.deepEqual(results.map((result) => [result.name, result.status, result.failure?.message]), [
+      ['runs on Chromium', 'passed', undefined],
+      ['syncs on the Mac', 'not_run', 'apps.mac is a macOS app, which Retest runs only on a Mac.'],
+    ])
+    assert.equal(existsSync(join(root, 'started')), false, 'the start command never ran')
+    assert.deepEqual(eventsOfType(record.events, 'app.started'), [], 'no app server started')
+    assert.deepEqual(eventsOfType(record.events, 'native.started'), [])
   })
 
   // WebKit has a driver now, so a test on a web app and a WebKit app readies each in the order the test names them: here
@@ -305,7 +360,7 @@ test('creates on Chromium, checks on WebKit', { apps: ['web', 'webkit'] }, async
 
   // A native app has a driver now, so a test on a web app and a native app takes its lease and makes each app ready in
   // the order the test names them: here Chromium, then the Mac app, whose missing bundle keeps the test from running.
-  test('a test on a web app and a native app takes its lease, then readies each app in turn, and closes the browser it launched', async () => {
+  test('a test on a web app and a native app takes its lease, then readies each app in turn, and closes the browser it launched', nativeApps, async () => {
     const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
 
 export default defineConfig({
@@ -412,7 +467,7 @@ test('syncs on the Mac', { apps: ['web', 'mac'], state: { web: 'signed-in' } }, 
 
   // A native app is not refused, so a test on one needs its setup like any other: the setup starts its server, which here
   // never answers, so the setup and the test that needs it do not run.
-  test('runs for a test on a native app, which is not refused', async () => {
+  test('runs for a test on a native app, which is not refused', nativeApps, async () => {
     const root = tempProject({ 'retest.config.ts': config, 'tests/setup.retest.ts': setup, 'tests/sync.retest.ts': syncOnMac })
     const record = await runProject(root, {
       files: ['tests/setup.retest.ts', 'tests/sync.retest.ts'],
@@ -486,13 +541,22 @@ describe('doctor', () => {
     assert.deepEqual(readdirSync(home), [], 'doctor built, installed and wrote nothing under HOME')
   })
 
-  test('says a native target has no executor cache to read when HOME is not set, and starts nothing', async (t) => {
+  test('says a native target has no executor cache to read when HOME is not set, and starts nothing', nativeApps, async (t) => {
     const { rows, launches } = await doctor({}, (await fakeTools(t)).tools)
     assert.deepEqual(rows.filter(([group]) => group === 'iphone' || group === 'mac'), [
       ['iphone', "{ platform: 'ios-simulator', device: 'iPhone 17', runtime: '26.0' }", false, 'HOME is not set to an absolute folder, so Retest has no cache to read the WebDriverAgent 16.13.6 build from.', ''],
       ['mac', "{ platform: 'macos' }", false, 'HOME is not set to an absolute folder, so Retest has no cache to read the WebDriverAgentMac (appium-mac2-driver) 4.3.6 build from.', ''],
     ])
     assert.deepEqual(rows.filter(([group]) => group === 'builds'), [], 'without HOME no builds row is read either')
+    assert.equal(launches, 1, 'only the Chromium target launched')
+  })
+
+  test('on Windows gives each native target the refusal a run gives it, reads no executor and launches only the Chromium target', { skip: windowsOnly('the refusal reads the machine it runs on') }, async () => {
+    const { rows, launches } = await doctor({})
+    assert.deepEqual(rows.filter(([group]) => group === 'iphone' || group === 'mac'), [
+      ['iphone', "{ platform: 'ios-simulator', device: 'iPhone 17', runtime: '26.0' }", false, 'apps.iphone is an iOS simulator app, which Retest runs only on a Mac with Xcode.', ''],
+      ['mac', "{ platform: 'macos' }", false, 'apps.mac is a macOS app, which Retest runs only on a Mac.', ''],
+    ])
     assert.equal(launches, 1, 'only the Chromium target launched')
   })
 })

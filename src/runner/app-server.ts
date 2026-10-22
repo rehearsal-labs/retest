@@ -15,9 +15,11 @@ import { closeGraceMs } from '../browser/contract.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
 import { errorMessage, failure, withAlso } from '../protocol/failures.ts'
 import { isWebUrl, withoutCredentials } from '../protocol/url.ts'
+import { withoutVariables } from '../shared/environment.ts'
 import { errorCode } from '../shared/error-code.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { OwnedProcessGroup } from '../shared/process-ownership.ts'
+import { consolesDetached, holdLaunch, launchOwnership, prepareOwnedLaunch, serverStopSignal } from '../shared/process-system.ts'
 import { bounded } from './bounded.ts'
 
 export type AppServerOptions = {
@@ -152,7 +154,7 @@ class ServerOwnership {
   constructor(child: ChildProcess, pid: number) {
     this.#child = child
     this.#pid = pid
-    this.#group = new OwnedProcessGroup(pid)
+    this.#group = holdLaunch(child)
   }
 
   get group(): OwnedProcessGroup {
@@ -164,7 +166,7 @@ class ServerOwnership {
     if (this.#settled) return
     this.#settled = true
     if (this.#child.exitCode !== null || this.#child.signalCode !== null) return
-    const settled = new OwnedProcessGroup(this.#pid)
+    const settled = launchOwnership(this.#pid)
     if (settled.capture().length === 0) this.#group = settled
   }
 }
@@ -173,11 +175,13 @@ async function launch({ name, start, logFile, redactor, hiddenVariables }: AppSe
   const folder = checkFolder(name, start.cwd)
   mkdirSync(dirname(logFile), { recursive: true })
   const log = openSync(logFile, 'a')
-  const hidden = new Set(hiddenVariables)
-  const env = Object.fromEntries(Object.entries(process.env).filter(([variable]) => !hidden.has(variable)))
+  const env = withoutVariables(process.env, hiddenVariables)
   let child: ChildProcess
   try {
-    child = spawn(start.command, { shell: true, cwd: folder, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    prepareOwnedLaunch()
+    // windowsHide gives the server, on Windows, a console of its own with no window, which Retest can send Ctrl+C to
+    // without reaching its own; Node ignores it elsewhere.
+    child = spawn(start.command, { shell: true, cwd: folder, env, detached: consolesDetached, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     const problem = failure('setup_failed', `The server for ${name} could not start: ${outputErrorMessage(error, redactor)}`)
     try {
@@ -319,7 +323,7 @@ function outputErrorMessage(error: unknown, redactor: Redactor | undefined): str
 async function stopGroup(server: ServerOwnership, timeoutMs: number): Promise<string[]> {
   server.settle()
   const ownership = server.group
-  const problems = ownership.signal('SIGTERM')
+  const problems = ownership.signal(serverStopSignal)
   let gone = await groupGoneWithin(ownership, timeoutMs)
   if (!gone) {
     problems.push(...ownership.signal('SIGKILL'))

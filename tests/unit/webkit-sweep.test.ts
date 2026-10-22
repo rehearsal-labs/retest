@@ -9,6 +9,9 @@ import { test } from 'node:test'
 import { homeRecordFile, processStartedAt } from '../../src/browser/webkit/process.ts'
 import { sweepWebKitHomes } from '../../src/browser/webkit/sweep.ts'
 import { metadataComplete, metadataFailure, metadataPending, metadataRunning, useMetadataWorkerModule } from '../../src/shared/metadata-process.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+const noWebKit = unixOnly('WebKit has no Windows build, so Retest runs no WebKit there')
 
 const started = 'Mon Oct  5 01:00:00 2026'
 
@@ -239,7 +242,7 @@ test("a home whose Retest process's start was never read is left while any proce
   assert.ok(!existsSync(path))
 })
 
-test("this Retest process's own home with a start that was never read is left by its next launch, read through the host's ps", { timeout: 10_000 }, async (t) => {
+test("this Retest process's own home with a start that was never read is left by its next launch, read through the host's ps", { timeout: 10_000, skip: noWebKit }, async (t) => {
   const parent = await folder(t)
   const path = join(parent, `retest-webkit-${process.pid}-n`)
   await home(parent, `retest-webkit-${process.pid}-n`, { version: 1, startTimeVersion: 1, path, launcher: { pid: process.pid, startedAt: 'unknown' }, processes: [helper] })

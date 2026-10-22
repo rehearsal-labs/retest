@@ -12,10 +12,10 @@ import { profilePrefix } from '../../src/browser/profiles.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { childLogFile, eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
 import { parse } from '../../src/protocol/schema.ts'
-import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { holdLaunch, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { isGoneWithin } from '../support/run-harness.ts'
 import { browserPath, groupExists, openApp, waitForGroupEnd } from './browser-harness.ts'
-import { budgets, childLog, finishRun, onlyEvent, onlyTest, printedPids, profilesIn, resultOf, startRun } from './cli-harness.ts'
+import { budgets, childLog, finishRun, onlyEvent, onlyTest, printedPids, profilesIn, resultOf, sendStop, startRun } from './cli-harness.ts'
 
 const rootDir = fileURLToPath(new URL('../../', import.meta.url))
 const cli = fileURLToPath(new URL('../../src/cli/main.ts', import.meta.url))
@@ -79,12 +79,13 @@ for (const { signal, exitCode, notice } of secondSignals) {
       '--timeouts',
       'assertion=60000',
     ]
-    const retest = spawn(process.execPath, args, { cwd: rootDir, stdio: ['ignore', 'pipe', 'pipe'] })
+    prepareOwnedLaunch()
+    const retest = spawn(process.execPath, args, { cwd: rootDir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     const exited = once(retest, 'exit')
     assert.ok(retest.pid !== undefined, 'retest started')
     // What retest launched is recorded beneath it while it runs. The last resort ends retest through its own handle,
     // then only those recorded processes still there, each checked again first; a browser group left fails by name.
-    const launched = new OwnedProcessGroup(retest.pid)
+    const launched = holdLaunch(retest)
     let browserPid: number | undefined
     t.after(async () => {
       retest.kill('SIGKILL')
@@ -104,9 +105,9 @@ for (const { signal, exitCode, notice } of secondSignals) {
     await stdout((line) => line.includes('"type":"action.completed"') && line.includes('"command":"goto"'))
     assert.equal(groupExists(pid), true, 'the browser is running while the test waits')
 
-    retest.kill(signal)
+    sendStop(retest, signal)
     await stderr((line) => line.startsWith(notice))
-    retest.kill(signal)
+    sendStop(retest, signal)
     const [code, ended] = await exited
     assert.deepEqual([code, ended], [exitCode, null])
 

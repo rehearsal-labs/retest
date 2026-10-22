@@ -56,12 +56,27 @@ export function standInPin(archive: StandInArchive = {}, overrides: Partial<Arch
   }
 }
 
+/**
+ * The environment that makes `home` the user's home folder: HOME, and on Windows, where a user's caches live in the
+ * local application data folder rather than under HOME, that folder inside it as a Windows profile has it.
+ *
+ * @example cacheFolders(homeEnvironment(home))
+ */
+export function homeEnvironment(home: string): Record<string, string> {
+  return process.platform === 'win32' ? { HOME: home, LOCALAPPDATA: join(home, 'AppData', 'Local') } : { HOME: home }
+}
+
 /** A cache under a new home folder of its own. */
 export function temporaryCache(): { readonly home: string; readonly folders: CacheFolders } {
   const home = tempFolder('retest-builds-home-')
-  const folders = cacheFolders({ HOME: home })
+  const folders = cacheFolders(homeEnvironment(home))
   if (folders === undefined) throw new Error(`No cache folders for the home folder ${home}.`)
   return { home, folders }
+}
+
+/** `text` as a regular expression that matches it exactly, such as a path with dots and backslashes in it. */
+export function escapePattern(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /** Writes files under `root`, making their folders, with their modes and links. */

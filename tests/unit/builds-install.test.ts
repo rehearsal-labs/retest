@@ -3,13 +3,14 @@ import type { ArchivePin, CacheFolders } from '../../src/browser/builds.ts'
 import type { NativeTools } from '../../src/native/processes.ts'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
-import { chmod, lstat, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { existsSync, readdirSync, readlinkSync } from 'node:fs'
+import fsPromises, { chmod, lstat, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { syncBuiltinESMExports } from 'node:module'
 import { createServer as createSocketServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { after, before, describe, test } from 'node:test'
+import { after, before, describe, test, type TestContext } from 'node:test'
 import { buildFolder, findPin, installedExecutablePath } from '../../src/browser/builds.ts'
 import { archivePath, checkUnpacked, installArchive } from '../../src/cli/install/install-archive.ts'
 import { installExecutor } from '../../src/cli/install/install-executor.ts'
@@ -17,6 +18,7 @@ import { takeInstallLock } from '../../src/cli/install/lock.ts'
 import { systemUnpackTools } from '../../src/cli/install/unpack.ts'
 import { systemTools } from '../../src/native/processes.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { holdLockInChild, installStandIn, listeningPort, lockState, standInFiles, standInLicence, standInPin, takeWhenFree, temporaryCache, writeEntries } from './builds-fixtures.ts'
 
@@ -50,6 +52,24 @@ function install(folders: { browsers: string; executors: string }, pin = standIn
 // Where the install lock of a build lives: a folder of locks beside the cache's builds, never beside the build itself.
 function lockOf(folders: CacheFolders, pin: ArchivePin): string {
   return join(dirname(folders.browsers), 'locks', `${basename(buildFolder(folders, pin))}.lock`)
+}
+
+// Removals of the paths `refuse` names fail as a disk that cannot be written would, after the times they were asked for.
+function failRemovals(t: TestContext, refuse: (path: string, count: number) => boolean): void {
+  const original = fsPromises.rm
+  const counts = new Map<string, number>()
+  t.mock.method(fsPromises, 'rm', async (...args: Parameters<typeof original>) => {
+    const path = String(args[0])
+    const count = (counts.get(path) ?? 0) + 1
+    counts.set(path, count)
+    if (refuse(path, count)) throw Object.assign(new Error('EIO: the removal was refused'), { code: 'EIO' })
+    return original(...args)
+  })
+  syncBuiltinESMExports()
+  t.after(() => {
+    t.mock.restoreAll()
+    syncBuiltinESMExports()
+  })
 }
 
 function escape(text: string): string {
@@ -112,7 +132,7 @@ describe('installing an archive build', () => {
     await rm(join(folder, 'build/LICENSE'))
     const damaged = await install(folders, pin).done
     assert.equal(damaged.ok, false)
-    assert.match(damaged.ok ? '' : damaged.message, new RegExp(`^Stand-in 1\\.0\\.0 is in ${folder.replaceAll('.', '\\.')}, but not as recorded: .+LICENSE is missing\\. Remove .+ and run the install again\\.$`))
+    assert.match(damaged.ok ? '' : damaged.message, new RegExp(`^Stand-in 1\\.0\\.0 is in ${escape(folder)}, but not as recorded: .+LICENSE is missing\\. Remove .+ and run the install again\\.$`))
     assert.equal(requests.length, before)
   })
 
@@ -210,11 +230,43 @@ describe('installing an archive build', () => {
     assert.equal(requests.length, before, 'the server was never asked')
   })
 
+  test('keeps the refusal of an unpack whose staging folder cannot then be removed, and names the folder left', async (t) => {
+    const { folders } = temporaryCache()
+    const pin = standInPin({ sha256: sha256Hex(served), size: served.length })
+    const staging = `${buildFolder(folders, pin)}.staging-${process.pid}`
+    // The first removal clears the staging folder before the unpack; every later one is refused.
+    failRemovals(t, (path, count) => path === staging && count > 1)
+    const missing = join(tempFolder('retest-no-tools-'), 'missing')
+    const lines: string[] = []
+    const result = await installArchive({ pin, folders, mirror, signal: new AbortController().signal, tools: { ditto: missing, unzip: missing, hdiutil: missing, tar: missing }, platform: process.platform, version: '0.0.0-test', report: (line) => lines.push(line) })
+    assert.equal(result.ok, false)
+    const message = result.ok ? '' : result.message
+    assert.match(message, new RegExp(`^Unpacking .+ The verified archive is kept at ${escape(archivePath(folders, pin))} for the next attempt\\. Retest could not remove ${escape(staging)}: EIO: the removal was refused\\. Remove it by hand\\.$`))
+    assert.equal(result.ok ? undefined : result.stopped, false)
+  })
+
+  test('leaves a build installed as recorded standing when the archive beside it cannot be removed, and says so', async (t) => {
+    const { folders } = temporaryCache()
+    const pin = standInPin({ sha256: sha256Hex('archive') })
+    await installStandIn(folders, pin, { size: 7, sha256: sha256Hex('archive') })
+    const archive = archivePath(folders, pin)
+    await mkdir(dirname(archive), { recursive: true })
+    await writeFile(archive, 'an archive a killed install left')
+    failRemovals(t, (path) => path === archive)
+    const running = install(folders, pin)
+    const result = await running.done
+    assert.equal(result.ok && result.action, 'already_installed')
+    assert.deepEqual(running.lines, [`Retest could not remove ${archive}: EIO: the removal was refused. Remove it by hand.`])
+  })
+
   test('downloads to a name of its own beside the builds', () => {
     const folders = { browsers: '/cache/retest/browsers', executors: '/cache/retest/native-executors' }
     const firefox = findPin('firefox', 'mac-arm64')
     assert.ok(firefox?.kind === 'archive')
-    assert.equal(archivePath(folders, firefox), '/cache/retest/browsers/downloads/firefox-133.0.3-mac-arm64-Firefox 133.0.3.dmg')
+    assert.equal(archivePath(folders, firefox), join('/cache/retest/browsers', 'downloads', 'firefox-158.0.1-mac-arm64-Firefox 158.0.1.dmg'))
+    const windows = findPin('firefox', 'win-x64')
+    assert.ok(windows?.kind === 'archive')
+    assert.equal(archivePath(folders, windows), join('/cache/retest/browsers', 'downloads', 'firefox-158.0.1-win-x64-Firefox Setup 158.0.1.exe'))
   })
 })
 
@@ -243,11 +295,15 @@ describe('checking an unpacked build', () => {
     assert.match(changed.ok ? '' : changed.message, new RegExp(`LICENSE \\(the licence of the stand-in, SHA-256 ${sha256Hex('a different licence\n')}, not the pinned ${sha256Hex(standInLicence)}\\)`))
   })
 
-  test('refuses a build whose executable is missing, other than pinned or not executable', async () => {
+  test('refuses a build whose executable is not executable', { skip: unixOnly('a Windows file has no execute bits to take away') }, async () => {
+    const root = await unpacked()
+    await chmod(join(root, 'Stand-in.app/Contents/MacOS/stand-in'), 0o644)
+    assert.deepEqual(await checkUnpacked(standInPin(), root), { ok: false, message: 'Stand-in.app/Contents/MacOS/stand-in is not executable.' })
+  })
+
+  test('refuses a build whose executable is missing or other than pinned', async () => {
     const root = await unpacked()
     const executable = join(root, 'Stand-in.app/Contents/MacOS/stand-in')
-    await chmod(executable, 0o644)
-    assert.deepEqual(await checkUnpacked(standInPin(), root), { ok: false, message: 'Stand-in.app/Contents/MacOS/stand-in is not executable.' })
     await writeFile(executable, 'other')
     assert.match(JSON.stringify(await checkUnpacked(standInPin(), root)), /stand-in has SHA-256 [0-9a-f]{64}, not the pinned/)
     await rm(executable)
@@ -263,12 +319,18 @@ describe('checking an unpacked build', () => {
   test('refuses a link that leads outside the build, and keeps links inside it', async () => {
     const root = await unpacked({ ...standInFiles, 'Stand-in.app/Contents/Frameworks/Current': { link: 'Versions/A' }, 'Stand-in.app/Contents/Frameworks/Versions/A/lib': 'library' })
     assert.equal((await checkUnpacked(standInPin(), root)).ok, true)
-    await symlink('/etc', join(root, 'Stand-in.app/Contents/Resources/escape'))
-    await symlink('../../../..', join(root, 'Stand-in.app/Contents/Resources/up'))
-    assert.deepEqual(await checkUnpacked(standInPin(), root), { ok: false, message: 'The archive holds links that lead outside the build: Stand-in.app/Contents/Resources/escape -> /etc, Stand-in.app/Contents/Resources/up -> ../../../...' })
+    const escape = join(root, 'Stand-in.app/Contents/Resources/escape')
+    const up = join(root, 'Stand-in.app/Contents/Resources/up')
+    await symlink('/etc', escape)
+    await symlink('../../../..', up)
+    // Each link is named by its path in the build and its target, as this system writes both: Windows writes a link's
+    // target in its own form, a rooted one on the drive of the current folder.
+    const named = (link: string): string => `${join('Stand-in.app', 'Contents', 'Resources', basename(link))} -> ${readlinkSync(link)}`
+    assert.deepEqual(await checkUnpacked(standInPin(), root), { ok: false, message: `The archive holds links that lead outside the build: ${named(escape)}, ${named(up)}.` })
+    if (process.platform !== 'win32') assert.deepEqual([readlinkSync(escape), readlinkSync(up)], ['/etc', '../../../..'])
   })
 
-  test('refuses a FIFO, a socket and a file with a set-id bit, naming each, and reads none of them', async () => {
+  test('refuses a FIFO, a socket and a file with a set-id bit, naming each, and reads none of them', { skip: unixOnly('a Windows file system has no FIFOs, sockets in folders or set-id bits') }, async () => {
     const fifo = await unpacked()
     const pipe = join(fifo, 'Stand-in.app/Contents/Resources/pipe')
     assert.equal(spawnSync('/usr/bin/mkfifo', [pipe]).status, 0, 'mkfifo made the FIFO')

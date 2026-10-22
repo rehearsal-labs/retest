@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util'
 const USAGE = `Usage: node fixtures/app-server/cli.ts --port <port> [options]
   --delay-ms <ms>     wait this long before listening
   --never-listen      start, and never answer
-  --ignore-term       keep running on SIGTERM, so only SIGKILL stops it
+  --ignore-term       keep running on SIGTERM (and Ctrl+C on Windows), so only SIGKILL stops it
   --child             start a child process that stays until its process group is stopped
   --print-env <name>  print an environment variable, as a server that logs its settings would
 `
@@ -55,13 +55,16 @@ const server = createServer((request, response) => {
 `)
 })
 
-process.on('SIGTERM', () => {
-  process.stdout.write(values['ignore-term'] ? 'ignoring SIGTERM\n' : 'stopping on SIGTERM\n')
-  if (values['ignore-term']) return
-  server.closeAllConnections()
-  server.close()
-  process.exit(0)
-})
+// Windows sends a server no SIGTERM: Retest asks it to stop with Ctrl+C on its console, which Node gives as SIGINT.
+for (const signal of process.platform === 'win32' ? (['SIGTERM', 'SIGINT'] as const) : (['SIGTERM'] as const)) {
+  process.on(signal, () => {
+    process.stdout.write(values['ignore-term'] ? `ignoring ${signal}\n` : `stopping on ${signal}\n`)
+    if (values['ignore-term']) return
+    server.closeAllConnections()
+    server.close()
+    process.exit(0)
+  })
+}
 
 if (values['never-listen']) {
   setInterval(() => {}, 60_000)

@@ -56,7 +56,7 @@ export function chromium<const Options extends ChromiumOptions & AppSettings = {
 }
 
 /**
- * Google Chrome, found where its channel installs on macOS and Linux.
+ * Google Chrome, found where its channel installs on macOS, Linux and Windows.
  *
  * @example chrome({ channel: 'beta' })
  */
@@ -67,7 +67,7 @@ export function chrome<const Options extends BrandedOptions & AppSettings = {}>(
 }
 
 /**
- * Microsoft Edge, found where its channel installs on macOS and Linux.
+ * Microsoft Edge, found where its channel installs on macOS, Linux and Windows.
  *
  * @example edge({ channel: 'dev' })
  */

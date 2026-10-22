@@ -8,8 +8,9 @@ import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { FirefoxProcess } from '../../src/browser/firefox/process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
-test('an awaited asynchronous Firefox ownership reading completes in a standalone process with no other live handle', async () => {
+test('an awaited asynchronous Firefox ownership reading completes in a standalone process with no other live handle', { skip: unixOnly('this reading is ps, which Windows does not have; process-supervisor.test.ts makes the same promise of a job reading') }, async () => {
   const module = new URL('../../src/browser/firefox/process-table.ts', import.meta.url).href
   const source = `import { readProcessTableAsync } from ${JSON.stringify(module)}; const entries = await readProcessTableAsync(); process.stdout.write(String(entries.length > 0))`
   const result = await promisify(execFile)(process.execPath, ['--conditions=retest-source', '--input-type=module', '-e', source])

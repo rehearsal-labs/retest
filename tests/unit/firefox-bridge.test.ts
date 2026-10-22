@@ -231,7 +231,7 @@ describe('the Firefox bridge', () => {
     const refused = await made.resolving({ by: 'role', role: 'cell', name: 'Grace Hopper' }, async () => assert.fail('nothing is looked up')).catch((error: unknown) => error)
     assert.ok(refused instanceof BrowserError)
     assert.equal(refused.failure.class, 'unsupported')
-    assert.match(refused.failure.message, /^Could not look up getByRole\('cell', \{ name: 'Grace Hopper' \}\): Chrome names a cell from its text, and Firefox's accessibility tree does not/)
+    assert.match(refused.failure.message, /^Could not look up getByRole\('cell', \{ name: 'Grace Hopper' \}\): on Firefox, Retest does not look up a cell by its name, since it has not checked that Firefox names cells as Chrome does/)
     assert.equal(endpoint.sent.length, 0)
     const any = await made.resolving({ by: 'role', role: 'cell' }, async () => 'looked up')
     assert.equal(any, 'looked up', 'every cell, by no name, is looked up as on Chrome')

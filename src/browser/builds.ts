@@ -4,7 +4,7 @@ import type { FileReading } from '../shared/regular-file.ts'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { access, lstat, readdir, readlink } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { folderChecksum, nativePins, pinKey, readBuildRecord } from '../native/executors.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -23,7 +23,7 @@ export type BuildEngine = 'chromium' | 'firefox' | 'webkit' | 'electron' | 'webd
 export type ArchiveEngine = Exclude<BuildEngine, ExecutorName>
 
 /** A machine a build is pinned for. */
-export type BuildPlatform = 'mac-arm64' | 'linux-x64'
+export type BuildPlatform = 'mac-arm64' | 'linux-x64' | 'win-x64'
 
 /** Every engine, in the order lists show them. */
 export const buildEngines: readonly BuildEngine[] = ['chromium', 'firefox', 'webkit', 'electron', 'webdriveragent', 'mac2']
@@ -51,8 +51,12 @@ export type BuildSourceCode = { repository: string; revision: string; patches: s
 /** What a pin knows of a build's licence notices: the files it must carry, or that nobody has looked yet. */
 export type PinnedLicences = { readonly inspected: true; readonly files: readonly LicenceFile[] } | { readonly inspected: false; readonly reason: string }
 
-/** How a published archive is packed: a zip, or a macOS disk image holding one app bundle that is copied out. */
-export type ArchiveFormat = { readonly format: 'zip' } | { readonly format: 'dmg'; readonly app: string }
+/**
+ * How a published archive is packed: a zip; a macOS disk image holding one app bundle that is copied out; or a Windows
+ * installer that is a 7-Zip self-extracting archive, from which only the folder `folder` is unpacked and nothing of the
+ * installer is run.
+ */
+export type ArchiveFormat = { readonly format: 'zip' } | { readonly format: 'dmg'; readonly app: string } | { readonly format: 'exe'; readonly folder: string }
 
 /** A file of an installed build whose bytes are pinned, beside its executable and licences, and why. */
 export type PinnedFile = { readonly path: string; readonly sha256: string; readonly why: string }
@@ -105,6 +109,8 @@ export type BuildPin = ArchivePin | SourcePin
 const chromiumVersion = '153.0.8010.12'
 const chromeForTesting = 'https://storage.googleapis.com/chrome-for-testing-public'
 const macChrome = 'chrome-mac-arm64/Google Chrome for Testing.app'
+const firefoxReleases = 'https://archive.mozilla.org/pub/firefox/releases'
+const electronReleases = 'https://github.com/electron/electron/releases/download'
 
 // Authorized Linux archive observations, retained beside the pin table without adding unsupported install pins.
 // Firefox 133.0.3: https://archive.mozilla.org/pub/firefox/releases/133.0.3/linux-x86_64/en-US/firefox-133.0.3.tar.bz2
@@ -175,6 +181,7 @@ function executorPin(engine: ExecutorName): SourcePin {
  * The tested set. Chromium is Chrome for Testing, from Google; Firefox is Mozilla's release; WebKit is Playwright's
  * automation build, the only WebKit build with the inspector pipe Retest drives; Electron is the release its fixture app
  * runs on; the two native executors are built from their pinned commits. Only Chromium is pinned for Linux x64; its archive has been inspected, without a Linux browser execution claim.
+ * Windows x64 has Chromium, Firefox and Electron, from the same releases, and no WebKit build.
  */
 export const pinnedBuilds: readonly BuildPin[] = [
   {
@@ -215,21 +222,56 @@ export const pinnedBuilds: readonly BuildPin[] = [
   },
   {
     kind: 'archive',
-    engine: 'firefox',
-    title: 'Firefox',
-    version: '133.0.3',
-    build: '20241209150345',
-    platform: 'mac-arm64',
-    archive: { format: 'dmg', app: 'Firefox.app', url: 'https://archive.mozilla.org/pub/firefox/releases/133.0.3/mac/en-US/Firefox%20133.0.3.dmg', size: 154_008_053, sha256: '9ceb4fa2120228f287e6c654cef7898b4cce0a659270056276b8884581267d3b', checksums: 'https://archive.mozilla.org/pub/firefox/releases/133.0.3/SHA256SUMS' },
-    executable: { path: 'Firefox.app/Contents/MacOS/firefox', sha256: '363eae026f4f5b3a8549f6a9c96a269754094ef12afc5f02cdffbcb4bcbf389c' },
+    engine: 'chromium',
+    title: 'Chrome for Testing',
+    version: chromiumVersion,
+    platform: 'win-x64',
+    archive: { format: 'zip', url: `${chromeForTesting}/${chromiumVersion}/win64/chrome-win64.zip`, size: 205_123_748, sha256: '415968b02065d4a9e2c10b85f0ae9f489b8fba500e94d9d0a7b7c4852a7234c1' },
+    executable: { path: 'chrome-win64/chrome.exe', sha256: '9b07943f834485b43c9d54caea2951c78715f9f07070a80ab6658465ebd3e711' },
     files: [],
     licences: {
       inspected: true,
       files: [
-        { path: 'Firefox.app/Contents/Resources/omni.ja', title: "the archive that holds Firefox's about:license page, chrome/toolkit/content/global/license.html", licence: 'MPL-2.0 and the licences at about:license', sha256: '1ecdc0a4f6de9f562b24417cdaff4d2f17474d51572e65bbc4c7489cf4025c38', published: true },
+        { path: 'chrome-win64/ABOUT', title: "the build's notice, which names chrome://credits, where the licences compiled into the browser are listed", licence: 'BSD-3-Clause and the licences at chrome://credits', sha256: '122b32f3ee3f1e8d65c774f5257fc6cc2127b666148ced0ce2efa3ea57e1d93c', published: true },
       ],
     },
-    provenance: 'Version, build id, executable and omni.ja checksums originally read from the signed en-US Firefox 133.0.3 in /Applications. The Mozilla disk-image download carries the same executable and omni.ja. The image holds Firefox.app at its root, copied to Firefox.app under the installed build. The archive size and checksum pinned above were measured from that download, which unpacked as the pin describes. Mozilla SHA256SUMS was not fetched for this pin.',
+    provenance: 'Archive size and checksum, executable and notice read from the Google publisher download of 21 October 2026, here and on a Windows Server 2025 machine, whose own tar.exe unpacks the same files as unzip and libarchive bsdtar do on macOS. The Windows build carries no Widevine module, so there is no Widevine licence to pin. Windows browser execution and installation remain unverified.',
+  },
+  {
+    kind: 'archive',
+    engine: 'firefox',
+    title: 'Firefox',
+    version: '158.0.1',
+    build: '20261019185856',
+    platform: 'mac-arm64',
+    archive: { format: 'dmg', app: 'Firefox.app', url: `${firefoxReleases}/158.0.1/mac/en-US/Firefox%20158.0.1.dmg`, size: 165_038_147, sha256: '1d7aa96b51fc9110185047de18228ac87238fba5e42bba53c9d696f88878cba6', checksums: `${firefoxReleases}/158.0.1/SHA256SUMS` },
+    executable: { path: 'Firefox.app/Contents/MacOS/firefox', sha256: '0b406e1d7c88d48c13f6389e05f22dedcb6ab99f06e539150a49e4ba995d0386' },
+    files: [],
+    licences: {
+      inspected: true,
+      files: [
+        { path: 'Firefox.app/Contents/Resources/omni.ja', title: "the archive that holds Firefox's about:license page, chrome/toolkit/content/global/license.html", licence: 'MPL-2.0 and the licences at about:license', sha256: 'dbfea026a6155b5c8794f55b2e54b19b0120353379a18e343dad381aa84228f5', published: true },
+      ],
+    },
+    provenance: "Archive size and checksum from Mozilla's download of 22 October 2026, which matched the release's SHA256SUMS. The image holds Firefox.app at its root, copied to Firefox.app under the installed build. Executable and omni.ja checksums read from the mounted image; its application.ini names Firefox 158.0.1 build 20261019185856.",
+  },
+  {
+    kind: 'archive',
+    engine: 'firefox',
+    title: 'Firefox',
+    version: '158.0.1',
+    build: '20261019185856',
+    platform: 'win-x64',
+    archive: { format: 'exe', folder: 'core', url: `${firefoxReleases}/158.0.1/win64/en-US/Firefox%20Setup%20158.0.1.exe`, size: 94_890_968, sha256: '3259a2f8508e58cf2e383b6c99bfc64d6ddc86d1407b7c2f86f660af955b5d10', checksums: `${firefoxReleases}/158.0.1/SHA256SUMS` },
+    executable: { path: 'core/firefox.exe', sha256: '76732d4e43c864194660c671c52ecf4bad89e43b666d9a0acf89cd4b692ced9b' },
+    files: [],
+    licences: {
+      inspected: true,
+      files: [
+        { path: 'core/omni.ja', title: "the archive that holds Firefox's about:license page, chrome/toolkit/content/global/license.html", licence: 'MPL-2.0 and the licences at about:license', sha256: '42f976ac57103698320728a9c134ec8e710ab9a3c48d127ea3e115e1b3b211c3', published: true },
+      ],
+    },
+    provenance: "Archive size and checksum from Mozilla's download of 22 October 2026, which matched the release's SHA256SUMS. Mozilla publishes no zip of a Windows release, only this installer: a 7-Zip archive behind a self-extracting stub that Retest never runs. The archive holds setup.exe and the core folder, which is the whole of Firefox and is unpacked alone. Executable and omni.ja checksums read from that folder as libarchive bsdtar unpacked it on macOS, and the same bytes again after retest install unpacked it with tar.exe on a Windows Server 2025 machine; its application.ini names Firefox 158.0.1 build 20261019185856.",
   },
   {
     kind: 'archive',
@@ -270,6 +312,25 @@ export const pinnedBuilds: readonly BuildPin[] = [
     treeSha256: 'f94a2b748b5f3e41b0ff1938ebd02052bb8af4cf037c2d24d21ffd51c5f7d7b4',
     provenance: "Archive size and checksum from a download of the official release, which matched the release's SHASUMS256.txt; executable, licence and tree checksums read from that archive unpacked with ditto in ~/Library/Caches/retest-proofs/electron/44.5.1.",
   },
+  {
+    kind: 'archive',
+    engine: 'electron',
+    title: 'Electron',
+    version: '44.5.1',
+    platform: 'win-x64',
+    archive: { format: 'zip', url: `${electronReleases}/v44.5.1/electron-v44.5.1-win32-x64.zip`, size: 157_998_329, sha256: '9b382492dcfee91f8f9e92c91f7972550a1b95d2299cac72279dab33a600d7db', checksums: `${electronReleases}/v44.5.1/SHASUMS256.txt` },
+    executable: { path: 'electron.exe', sha256: '49b61a030a520fc36a4b8fa5cce53fb4e935a7bdbbe4b80e9222f598e49cc7fa' },
+    files: [],
+    licences: {
+      inspected: true,
+      files: [
+        { path: 'LICENSE', title: "Electron's licence", licence: 'MIT', sha256: '5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d', published: true },
+        { path: 'LICENSES.chromium.html', title: 'the licences of Chromium and the libraries compiled into it', licence: 'BSD-3-Clause and the licences it lists', sha256: '7b328b8c7463ac9bfc7dc648c751533517c8441a0b5b21047d6c0b2620e60d70', published: true },
+      ],
+    },
+    treeSha256: '0a50669f7461801821ab9d01ee2193748d36f45b6235bcfd648ed9a44a175e30',
+    provenance: "Archive size and checksum from a download of the official release on 21 October 2026, which matched the release's SHASUMS256.txt, here and on a Windows Server 2025 machine. Executable, licence and tree checksums read on that machine from the archive unpacked with its own tar.exe; unzip and libarchive bsdtar on macOS unpack the same files. Windows execution remains unverified.",
+  },
   executorPin('webdriveragent'),
   executorPin('mac2'),
 ]
@@ -282,12 +343,15 @@ export const pinnedBuilds: readonly BuildPin[] = [
 export function buildPlatform(platform: NodeJS.Platform = process.platform, arch: string = process.arch): BuildPlatform | undefined {
   if (platform === 'darwin' && arch === 'arm64') return 'mac-arm64'
   if (platform === 'linux' && arch === 'x64') return 'linux-x64'
+  if (platform === 'win32' && arch === 'x64') return 'win-x64'
   return undefined
 }
 
-/** @example describePlatform('linux-x64') // 'Linux x64' */
+const platformNames: Readonly<Record<BuildPlatform, string>> = { 'mac-arm64': 'macOS arm64', 'linux-x64': 'Linux x64', 'win-x64': 'Windows x64' }
+
+/** @example describePlatform('win-x64') // 'Windows x64' */
 export function describePlatform(platform: BuildPlatform): string {
-  return platform === 'mac-arm64' ? 'macOS arm64' : 'Linux x64'
+  return platformNames[platform]
 }
 
 /**
@@ -297,6 +361,16 @@ export function describePlatform(platform: BuildPlatform): string {
  */
 export function findPin(engine: BuildEngine, platform: BuildPlatform, pins: readonly BuildPin[] = pinnedBuilds): BuildPin | undefined {
   return pins.find((pin) => pin.engine === engine && pin.platform === platform)
+}
+
+/**
+ * Why there is no pin of an engine for a platform, as one sentence for `retest install` to refuse with.
+ *
+ * @example unpinnedMessage('webkit', 'win-x64') // 'Retest does not run WebKit on Windows, so there is no WebKit build to install.'
+ */
+export function unpinnedMessage(engine: BuildEngine, platform: BuildPlatform): string {
+  if (engine === 'webkit' && platform === 'win-x64') return 'Retest does not run WebKit on Windows, so there is no WebKit build to install.'
+  return `Retest pins no ${engine} build for ${describePlatform(platform)}.`
 }
 
 /** @example describePin(findPin('electron', 'mac-arm64')) // 'Electron 44.5.1' */
@@ -380,16 +454,45 @@ export type CacheFolders = { readonly browsers: string; readonly executors: stri
 
 /**
  * The cache folders under the user's cache folder: `~/Library/Caches/retest` on macOS, `$XDG_CACHE_HOME/retest` or
- * `~/.cache/retest` on Linux. Undefined without an absolute `HOME`, since there is then no user cache folder.
+ * `~/.cache/retest` on Linux, `%LOCALAPPDATA%\retest` on Windows. Undefined without an absolute `HOME`, or on Windows
+ * an absolute `LOCALAPPDATA`, since there is then no user cache folder. Paths are written as `platform` writes them.
  *
  * @example cacheFolders({ HOME: '/Users/ada' }, 'darwin')?.browsers // '/Users/ada/Library/Caches/retest/browsers'
+ * @example cacheFolders({ LOCALAPPDATA: 'C:\\Users\\ada\\AppData\\Local' }, 'win32')?.browsers // 'C:\\Users\\ada\\AppData\\Local\\retest\\browsers'
  */
 export function cacheFolders(env: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform = process.platform): CacheFolders | undefined {
+  if (platform === 'win32') {
+    const local = environmentVariable(env, cacheVariable(platform), platform)
+    if (local === undefined || !win32.isAbsolute(local)) return undefined
+    return { browsers: win32.join(local, 'retest', 'browsers'), executors: win32.join(local, 'retest', 'native-executors') }
+  }
   const home = env['HOME']
-  if (home === undefined || !isAbsolute(home)) return undefined
+  if (home === undefined || !posix.isAbsolute(home)) return undefined
   const xdg = env['XDG_CACHE_HOME']
-  const root = platform === 'darwin' ? join(home, 'Library', 'Caches') : xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, '.cache')
-  return { browsers: join(root, 'retest', 'browsers'), executors: join(root, 'retest', 'native-executors') }
+  const root = platform === 'darwin' ? posix.join(home, 'Library', 'Caches') : xdg !== undefined && posix.isAbsolute(xdg) ? xdg : posix.join(home, '.cache')
+  return { browsers: posix.join(root, 'retest', 'browsers'), executors: posix.join(root, 'retest', 'native-executors') }
+}
+
+/**
+ * The variable `cacheFolders` finds the user's cache folder from, for a message to name when it is not set.
+ *
+ * @example cacheVariable('win32') // 'LOCALAPPDATA'
+ */
+export function cacheVariable(platform: NodeJS.Platform = process.platform): 'HOME' | 'LOCALAPPDATA' {
+  return platform === 'win32' ? 'LOCALAPPDATA' : 'HOME'
+}
+
+/**
+ * An environment variable as the system reads it: by its exact name, and on Windows, where names differ only in case
+ * for the same variable, by any spelling of it. `process.env` already reads so on Windows; a copy of it does not.
+ *
+ * @example environmentVariable({ ProgramFiles: 'C:\\Program Files' }, 'PROGRAMFILES', 'win32') // 'C:\\Program Files'
+ */
+export function environmentVariable(env: Readonly<Record<string, string | undefined>>, name: string, platform: NodeJS.Platform = process.platform): string | undefined {
+  const exact = env[name]
+  if (exact !== undefined || platform !== 'win32') return exact
+  const wanted = name.toUpperCase()
+  return Object.entries(env).find(([key]) => key.toUpperCase() === wanted)?.[1]
 }
 
 /**
@@ -443,7 +546,7 @@ const installedRecordSchema: Schema<InstalledBuildRecord> = s.object({
   schemaVersion: s.literal(1),
   engine: s.enum(['chromium', 'firefox', 'webkit', 'electron']),
   version: s.string(),
-  platform: s.enum(['mac-arm64', 'linux-x64']),
+  platform: s.enum(['mac-arm64', 'linux-x64', 'win-x64']),
   source: s.string(),
   sourceCode: s.optional(s.object({ repository: s.string(), revision: s.string(), patches: s.string() })),
   fetchedFrom: s.string(),
@@ -640,7 +743,7 @@ export type InstalledBuildOptions = { readonly platform?: BuildPlatform | undefi
  * `retest install` refuses. The message names the folder, what is wrong and how to fix it. Nothing is downloaded,
  * and nothing is thrown: a folder that cannot be read is damaged.
  *
- * @example await installedBuild('firefox', process.env) // { state: 'damaged', message: 'Firefox 133.0.3 … in … is not usable: …' }
+ * @example await installedBuild('firefox', process.env) // { state: 'damaged', message: 'Firefox 158.0.1 … in … is not usable: …' }
  */
 export async function installedBuild(engine: ArchiveEngine, env: Readonly<Record<string, string | undefined>>, options: InstalledBuildOptions = {}): Promise<InstalledBuild> {
   const platform = 'platform' in options ? options.platform : buildPlatform()
@@ -668,7 +771,7 @@ export type InstalledBuild = { readonly state: 'installed'; readonly executableP
  * installed as its pin and record say; undefined otherwise, which a damaged build is too. A driver that must tell a
  * damaged build from a missing one asks `installedBuild`. A target's own `executablePath` always wins over it.
  *
- * @example await installedExecutable('firefox', process.env) // '/Users/ada/Library/Caches/retest/browsers/firefox-133.0.3-mac-arm64/build/Firefox.app/Contents/MacOS/firefox'
+ * @example await installedExecutable('firefox', process.env) // '/Users/ada/Library/Caches/retest/browsers/firefox-158.0.1-mac-arm64/build/Firefox.app/Contents/MacOS/firefox'
  */
 export async function installedExecutable(engine: ArchiveEngine, env: Readonly<Record<string, string | undefined>>, options: InstalledBuildOptions = {}): Promise<string | undefined> {
   const build = await installedBuild(engine, env, options)

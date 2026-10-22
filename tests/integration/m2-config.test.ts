@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { test } from 'node:test'
 import { openApp } from './browser-harness.ts'
 import {
@@ -58,7 +58,9 @@ test('an invalid config is a usage error that names the file and each key at fau
   assert.deepEqual(run.events, [], 'no run started')
   assert.equal(existsSync(run.output), false, 'no run folder was made')
   const lines = run.stderr.split('\n')
-  assert.match(lines[0] ?? '', /^error: \/.+\/retest\.config\.ts has 4 problems:$/)
+  // The config is named by its absolute path, as this platform writes one.
+  const named = /^error: (.+) has 4 problems:$/.exec(lines[0] ?? '')?.[1]
+  assert.ok(named !== undefined && isAbsolute(named) && basename(named) === 'retest.config.ts', lines[0])
   assert.deepEqual(lines.slice(1, 5).sort(), [
     '  apps.admin.emulate: expected one of "Pixel 9", "Galaxy S24", "iPhone 17", "iPad Pro 11" or object, received "Pixel 99"',
     '  apps.web.baseUrl: expected an http or https URL, received "ftp://tasks.example"',

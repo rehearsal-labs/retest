@@ -30,8 +30,9 @@ import { firefoxPath, testFirefoxRoute } from './engines.ts'
 // the firefox-*.test.ts wrappers.
 
 const execFileAsync = promisify(execFile)
-const onFirefoxHost = process.platform === 'darwin' && process.arch === 'arm64'
-const skip = onFirefoxHost ? false : 'Retest runs Firefox on macOS on Apple silicon only'
+// Windows runs these on the pinned Firefox the setup names.
+const onFirefoxHost = (process.platform === 'darwin' && process.arch === 'arm64') || (process.platform === 'win32' && (process.env['RETEST_TEST_FIREFOX'] ?? '') !== '')
+const skip = onFirefoxHost ? false : 'Retest runs Firefox on macOS on Apple silicon, and on Windows x64 with RETEST_TEST_FIREFOX naming the pinned build'
 
 // Posts to /pressed with a synchronous request, so the server knows the press arrived, then never returns.
 const FREEZE_ON_PRESS = `<!doctype html><button data-testid="freeze" style="width: 200px; height: 60px">Freeze</button><script>
@@ -71,7 +72,10 @@ async function firefox(t: TestContext): Promise<FirefoxBrowser> {
 }
 
 async function commandLine(pid: number): Promise<string | undefined> {
-  const { stdout } = await execFileAsync('/bin/ps', ['-ww', '-o', 'args=', '-p', String(pid)]).catch(() => ({ stdout: '' }))
+  // Windows has no `ps`; its own process list gives the command line through PowerShell.
+  const { stdout } = process.platform === 'win32'
+    ? await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`]).catch(() => ({ stdout: '' }))
+    : await execFileAsync('/bin/ps', ['-ww', '-o', 'args=', '-p', String(pid)]).catch(() => ({ stdout: '' }))
   const line = stdout.trim()
   return line === '' ? undefined : line
 }
@@ -286,7 +290,7 @@ test("the collector hears the page's requests and a failed one, hears no console
   collection.stop()
 })
 
-test('the sweep ends a Firefox whose launcher was killed outright, with its folder, and leaves a live launch alone', { skip }, async (t) => {
+test('the sweep ends a Firefox whose launcher was killed outright, with its folder, and leaves a live launch alone', { skip: skip || (process.platform === 'win32' ? "on Windows a launcher's job ends its Firefox with it however it ends, so none outlives it; firefox-orphans.test.ts reads the sweep there" : false) }, async (t) => {
   const root = await scratchFolder(t)
   const script = join(root, 'launch-and-hold.ts')
   const source = `import { launchFirefox } from ${JSON.stringify(join(repositoryRoot, 'src/browser/firefox/launch.ts'))}

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { join, resolve } from 'node:path'
 import { describe, test } from 'node:test'
+import { pathToFileURL } from 'node:url'
 import { failureFrom, fromEarlierTest, RetestError } from '../../src/api/failure.ts'
 import { callerLocation, describeLine, errorLocation } from '../../src/api/source-location.ts'
 import { failure } from '../../src/protocol/failures.ts'
@@ -24,10 +26,15 @@ describe('source locations', () => {
   })
 
   test('stack frames with and without a function name are read', () => {
-    const stack = ['Error: x', '    at named (file:///work/tests/a.retest.ts:3:7)', '    at /work/tests/b.retest.ts:9:2'].join('\n')
-    assert.deepEqual(errorLocation(Object.assign(new Error('x'), { stack }), '/work'), { file: 'tests/a.retest.ts', line: 3, column: 7 })
-    const bare = ['Error: x', '    at /work/tests/b.retest.ts:9:2'].join('\n')
-    assert.deepEqual(errorLocation(Object.assign(new Error('x'), { stack: bare }), '/work'), { file: 'tests/b.retest.ts', line: 9, column: 2 })
+    // A root that is absolute as this platform writes it: /work, or \work on the current drive on Windows, where a
+    // frame names its script by a file URL or by a drive path.
+    const work = resolve('/work')
+    const named = pathToFileURL(join(work, 'tests', 'a.retest.ts')).href
+    const unnamed = join(work, 'tests', 'b.retest.ts')
+    const stack = ['Error: x', `    at named (${named}:3:7)`, `    at ${unnamed}:9:2`].join('\n')
+    assert.deepEqual(errorLocation(Object.assign(new Error('x'), { stack }), work), { file: 'tests/a.retest.ts', line: 3, column: 7 })
+    const bare = ['Error: x', `    at ${unnamed}:9:2`].join('\n')
+    assert.deepEqual(errorLocation(Object.assign(new Error('x'), { stack: bare }), work), { file: 'tests/b.retest.ts', line: 9, column: 2 })
   })
 
   test('paths are POSIX and relative', () => {

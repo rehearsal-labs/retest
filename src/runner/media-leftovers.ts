@@ -1,5 +1,6 @@
 import type { Dirent } from 'node:fs'
 import type { RetestEvent } from '../protocol/events.ts'
+import type { JobLaunches } from '../shared/process-system.ts'
 import { lstatSync, readdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { retestEventSchema } from '../protocol/events.ts'
@@ -7,9 +8,13 @@ import { eventsFile, resultFile } from '../protocol/run-folder.ts'
 import { parse } from '../protocol/schema.ts'
 import { readMetadataProcessAsync } from '../shared/metadata-process.ts'
 import { readProcessTableAsync } from '../shared/process-ownership.ts'
+import { heldLaunches } from '../shared/process-system.ts'
 import { createArtifactFolder, readArtifactFile, referenceProblem, resolveReference } from '../store/artifacts.ts'
 
-/** A Retest process, by pid and start time as `ps` prints it, so a pid used again by another process is never taken for it. */
+/**
+ * A Retest process, by pid and start time as `ps` prints it, or on Windows as its creation time in 100 ns intervals, so a
+ * pid used again by another process is never taken for it.
+ */
 export type ProcessMark = { readonly startTimeVersion?: number; readonly pid: number; readonly startedAt?: string | undefined }
 
 /**
@@ -57,17 +62,20 @@ export function unfinishedRuns(runFolder: string): UnfinishedRun[] {
 }
 
 /**
- * Whether the process a mark names still runs: true for a confirmed current start, false only when a whole table
- * shows its pid absent; undefined for a present legacy or mismatched start, or an unreadable host. Unknowns stay alone.
+ * Whether the process a mark names still runs: true for a confirmed current start, false only when a whole table, or on
+ * Windows retest-supervisor's reading of the pid, shows it absent; undefined for a present legacy or mismatched start, or
+ * an unreadable host. Unknowns stay alone.
  *
  * @example await processRuns({ pid: 4242, startedAt: 'Mon Oct  6 10:00:01 2026' }) // false
  */
 export async function processRuns(mark: ProcessMark): Promise<boolean | undefined> {
   try {
-    const found = (await readProcessTableAsync()).find(entry => entry.pid === mark.pid)
-    if (found === undefined) return false
+    const launches = heldLaunches()
+    // Windows has no process table to read; retest-supervisor reads the one pid, and answers none when nothing runs under it.
+    const startedAt = launches !== undefined ? await heldStart(launches, mark.pid) : (await readProcessTableAsync()).find(entry => entry.pid === mark.pid)?.startedAt
+    if (startedAt === undefined) return false
     if (mark.startTimeVersion !== 1) return undefined
-    return mark.startedAt === undefined || mark.startedAt === found.startedAt.replace(/\s+/g, ' ') ? true : undefined
+    return mark.startedAt === undefined || mark.startedAt === startedAt.replace(/\s+/g, ' ') ? true : undefined
   } catch {
     return undefined
   }
@@ -78,7 +86,22 @@ export async function processRuns(mark: ProcessMark): Promise<boolean | undefine
  * Undefined when the host could not be read.
  */
 export async function ownStartTime(): Promise<string | undefined> {
-  return (await processStartTimes([process.pid]))?.get(process.pid)
+  const launches = heldLaunches()
+  if (launches === undefined) return (await processStartTimes([process.pid]))?.get(process.pid)
+  try {
+    return await heldStart(launches, process.pid)
+  } catch {
+    return undefined
+  }
+}
+
+// When the process under `pid` started, as retest-supervisor reads it without holding this thread, or undefined when
+// nothing runs under the pid. Throws when the runner is not held or the reading fails.
+async function heldStart(launches: JobLaunches, pid: number): Promise<string | undefined> {
+  launches.prepare()
+  const supervisor = launches.supervisor
+  if (supervisor === undefined) throw new Error('The runner was not held, so no process could be read.')
+  return (await supervisor.processAsync(pid)).process?.startedAt
 }
 
 // One reading for the pids asked; this process is always among those read, so `ps` succeeds when the others are gone.

@@ -25,6 +25,7 @@ import {
   resultOf,
   runRetest,
   scenario,
+  scratchFolder,
   startRun,
 } from './cli-harness.ts'
 
@@ -79,10 +80,16 @@ test('reporter integrity: a reader that closes stderr leaves the report on stdou
 })
 
 // A run caught while its assertion waits on a save the app answers only after a minute.
+// The command's temporary folder, where its browser profiles go. The harness gives it as TMPDIR, which Node's tmpdir()
+// reads on macOS and Linux; on Windows it reads TEMP and TMP, so the cases that look for a profile give it as those too.
+function temporaryFolder(tmp: string): { tmp: string; env: Record<string, string> } {
+  return { tmp, env: process.platform === 'win32' ? { TEMP: tmp, TMP: tmp } : {} }
+}
+
 async function startMidTest(t: TestContext): Promise<StartedRun & { browserPid: number }> {
   const app = await openApp(t, { mode: 'delayed', delayMs: 60_000 })
   const timeouts = budgets({ assertion: 30_000, test: 40_000 })
-  const started = await startRun(t, { files: [exampleFile], baseUrl: app.url, timeouts })
+  const started = await startRun(t, { files: [exampleFile], baseUrl: app.url, timeouts, ...temporaryFolder(join(await scratchFolder(t), 'tmp')) })
   const browser = await started.retest.waitForEvent('browser.started')
   await started.retest.waitForEvent('action.completed', (event) => event.command === 'click')
   return { ...started, browserPid: browser.pid }
@@ -120,7 +127,7 @@ test('report interruption: the profile a killed run left is retained when the ne
   const retained = profilesIn(killed.tmp)
   assert.ok(retained.length > 0)
   const app = await openApp(t)
-  const started = await startRun(t, { files: [exampleFile], baseUrl: app.url, tmp: killed.tmp })
+  const started = await startRun(t, { files: [exampleFile], baseUrl: app.url, ...temporaryFolder(killed.tmp) })
   const next = await readFinishedRun(started)
   await waitForGroupEnd(started.retest.pid, 5000)
   for (const browser of eventsOf(next.events, 'browser.started')) await waitForGroupEnd(browser.pid, 5000)

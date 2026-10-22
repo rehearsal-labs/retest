@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { TLSSocket } from 'node:tls'
 import { openApp } from './browser-harness.ts'
-import { budgets, filesHolding, installPacked, packRetest, resultOf, runProgram, runRetest, testNamed, textHolds } from './cli-harness.ts'
+import { budgets, filesHolding, installedRetest, installPacked, packRetest, resultOf, runNpm, runProgram, runRetest, testNamed, textHolds } from './cli-harness.ts'
 
 // The optional AI SDK adapter, from the packed package, in projects outside this checkout. Without the SDK installed,
 // a judge that names the adapter fails its setup by the package's name. With ai, @ai-sdk/anthropic, @ai-sdk/openai and
@@ -190,7 +190,7 @@ describe('the AI SDK adapter from the packed package', () => {
       const folder = await consumer('with-sdk', {})
       const env = { ...process.env, npm_config_cache: sdkCache, npm_config_update_notifier: 'false' }
       const packages = Object.entries(pins).map(([name, version]) => `${name}@${version}`)
-      const installed = await runProgram('npm', ['install', '--prefer-offline', '--no-audit', '--no-fund', ...packages], folder, env)
+      const installed = await runNpm(['install', '--prefer-offline', '--no-audit', '--no-fund', ...packages], folder, env)
       return installed.code === 0 ? { folder } : { problem: installed.stderr.trim().split('\n').at(-1) ?? `npm exited with ${installed.code}` }
     })()
     // Each caller gets a promise of its own. The test runner names the test an error came from by its async context, and
@@ -203,7 +203,7 @@ describe('the AI SDK adapter from the packed package', () => {
   }
 
   function run(t: TestContext, folder: string, env: Record<string, string>): Promise<FinishedRun> {
-    return runRetest(t, { files: [], cwd: folder, browser: false, command: [join(folder, 'node_modules/.bin/retest')], env, timeouts: budgets({ test: 90_000 }) })
+    return runRetest(t, { files: [], cwd: folder, browser: false, command: installedRetest(folder), env, timeouts: budgets({ test: 90_000 }) })
   }
 
   test('without the SDK installed, a judge that names the adapter fails its setup by the package name, and ordinary tests run', async (t) => {

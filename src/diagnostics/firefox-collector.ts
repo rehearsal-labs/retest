@@ -20,23 +20,24 @@ export type FirefoxCollectorOptions = {
 }
 
 /**
- * Why a Firefox capture holds no console messages or runtime errors. Firefox 133 sends both through one event,
+ * Why a Firefox capture holds no console messages or runtime errors. Firefox sends both through one event,
  * `log.entryAdded`. Strings, numbers, plain data objects and a DOM node left the probe's marker untouched, but logged
  * objects with enumerable getters changed the page's title before the entry arrived, including nested getters.
  * Firefox ignores extra serialization fields on subscriptions and session.new, and rejects serialization
  * capabilities. Filtering delivered entries for primitive arguments is too late to prevent that mutation.
- * A depth limit avoids the probed object's getters in script results, not in log events.
+ * A depth limit avoids the probed object's getters in script results, not in log events. Firefox 133 and 158 both
+ * behave so (`tests/integration/firefox-diagnostics.test.ts`).
  */
-export const firefoxConsoleUnavailable = "Firefox 133's console source runs the page's own enumerable getters when it serializes logged objects, before Retest can filter an entry. The log subscription ignores serialization options and offers no primitive-only filter, so Retest does not subscribe and records no console message or runtime error on Firefox."
+export const firefoxConsoleUnavailable = "Firefox's console source runs the page's own enumerable getters when it serializes logged objects, before Retest can filter an entry. The log subscription ignores serialization options and offers no primitive-only filter, so Retest does not subscribe and records no console message or runtime error on Firefox."
 
 /**
- * What Firefox's WebDriver BiDi network events cover for a tab, from what Retest exercised on Firefox 133: the tab's
- * document and the frames inside it, of its own site and of others, each request named by the browsing context that
- * made it. A request a dedicated worker makes is named by the page that started the worker, so it cannot be told from
- * the page's own; workers' requests are not claimed, and the reason says they may appear as the page's. Firefox names
- * no resource type: a request is a document only when Firefox ties it to a navigation. A response Firefox served from
- * its cache says so without naming which cache, so none is named. Console messages and runtime errors are not
- * captured at all (`firefoxConsoleUnavailable`).
+ * What Firefox's WebDriver BiDi network events cover for a tab, from what Retest exercised on Firefox 133 and 158: the
+ * tab's document and the frames inside it, of its own site and of others, each request named by the browsing context
+ * that made it. A request a dedicated worker makes is named by the page that started the worker, so it cannot be told
+ * from the page's own; workers' requests are not claimed, and the reason says they may appear as the page's. Firefox
+ * Retest reads no resource type from Firefox: a request is a document only when Firefox ties it to a navigation. A
+ * response Firefox served from its cache says so without naming which cache, so none is named. Console messages and
+ * runtime errors are not captured at all (`firefoxConsoleUnavailable`).
  */
 export const firefoxScope: DiagnosticScope = {
   engine: 'firefox',
@@ -49,7 +50,7 @@ export const firefoxScope: DiagnosticScope = {
     covered: ['top_level_document', 'same_process_frames', 'out_of_process_frames'],
     notCovered: ['dedicated_workers', 'shared_workers', 'service_workers'],
   },
-  reason: `${firefoxConsoleUnavailable} Firefox names each request by the browsing context that made it, so a dedicated worker's request is recorded as its page's, and it names no resource type beyond a navigation's document.`,
+  reason: `${firefoxConsoleUnavailable} Firefox names each request by the browsing context that made it, so a dedicated worker's request is recorded as its page's, and Retest reads no resource type from it beyond a navigation's document.`,
 }
 
 const events = ['network.beforeRequestSent', 'network.responseStarted', 'network.responseCompleted', 'network.fetchError'] as const
@@ -182,6 +183,9 @@ export class FirefoxCollector implements DiagnosticCollection {
   // response completed.
   #requestSent({ context, navigation, redirectCount, timestamp, request }: Sent): void {
     if (!this.#inTab(context)) return
+    // Firefox 158 tells a request for a data: address, such as a page's `<link rel="icon" href="data:,">`, which reaches
+    // no network; Firefox 133 and Chrome tell none, and none is recorded.
+    if (/^data:/i.test(request.url)) return
     const previous = this.#hops.get(request.request)
     if (previous === undefined && this.#hops.size >= this.#maxTrackedRequests) {
       if (this.#sink.limited !== undefined) this.#sink.limited('network.beforeRequestSent', 1)

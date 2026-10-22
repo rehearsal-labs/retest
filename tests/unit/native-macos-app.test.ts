@@ -22,6 +22,11 @@ import { Deadline } from '../../src/protocol/deadline.ts'
 import { controlledClock } from '../support/controlled-clock.ts'
 import { alive, readApps, readJsonFile, readRequests } from './native-fake-executor.ts'
 import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, processStart, startedProcesses } from './native-fake-tools.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // A macOS desktop needs a Mac: it refuses to start elsewhere, and its lock stands on the kernel lock /usr/bin/lockf takes.
 const darwinOnly = { skip: process.platform === 'darwin' ? false : 'the macOS desktop runs only on macOS' }
@@ -692,7 +697,7 @@ test('a window capture given less than a whole capture\'s time keeps the grace b
   assert.deepEqual(stats.problems, [late], 'no capture was asked for with too little time left to finish')
 })
 
-test('the window route\'s readings keep the default grace: one that ignores SIGTERM is killed only once that grace has passed', async (t) => {
+test('the window route\'s readings keep the default grace: one that ignores SIGTERM is killed only once that grace has passed', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-macos-stubborn-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const stubborn = join(folder, 'stubborn')
@@ -714,7 +719,7 @@ test('the window route\'s readings keep the default grace: one that ignores SIGT
   }
 })
 
-test('a window list or process list that ran out of its time is told from one that could not be read', async (t) => {
+test('a window list or process list that ran out of its time is told from one that could not be read', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-macos-readings-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const slow = join(folder, 'slow')

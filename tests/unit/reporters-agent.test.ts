@@ -1,6 +1,7 @@
 import type { RetestEvent } from '../../src/protocol/events.ts'
 import type { RunResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import {
@@ -41,7 +42,7 @@ describe('agent reporter', () => {
         "  check_failed toHaveText getByTestId('saved-task')",
         '  expected "Release checklist" received "Saving…" waited 5003ms for toHaveText, looked 14 times, limit 5000ms',
         `  compared ${comparison}`,
-        `  screenshot ${runFolder}/artifacts/saves-a-task-failure.png`,
+        `  screenshot ${join(runFolder, 'artifacts/saves-a-task-failure.png')}`,
         `next: npx retest inspect ${runFolder} --test "examples/task.retest.ts > saves a task" --json`,
         '',
       ].join('\n'),

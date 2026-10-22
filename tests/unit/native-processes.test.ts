@@ -21,6 +21,11 @@ import { makeOwnedFolder, sweepOwnedFolders } from '../../src/native/temporary-f
 import { metadataComplete, metadataOutputLimit, metadataSuccess, processTableOutputLimit, readMetadataProcess } from '../../src/shared/metadata-process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { endedPid, processStart } from './native-fake-tools.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // A start reading as `ps` prints it, for stand-in `ps` scripts, and as Retest records it, one-spaced.
 const shownStart = 'Mon Oct  5 09:00:00 2026'
@@ -113,14 +118,14 @@ async function grandchildPid(pidFile: string): Promise<number> {
   throw new Error('the grandchild never started')
 }
 
-test('successful malformed process listings are unreadable rather than empty', async (t) => {
+test('successful malformed process listings are unreadable rather than empty', macDriver, async (t) => {
   for (const line of ['not a process', '42', '42   ', `42 ${shownStart}`, '42 /no/start', `9007199254740992 ${shownStart} /unsafe/pid`]) {
     const { tools } = await scriptedPs(t, `printf '%s\\n' '7 ${shownStart} /valid/process' '${line}'`)
     await assert.rejects(listProcesses(tools, 5000), /ps returned an unreadable process entry/)
   }
 })
 
-test('a timed out command ends only its launched and recorded processes', async (t) => {
+test('a timed out command ends only its launched and recorded processes', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const pidFile = join(folder, 'grandchild')
@@ -132,7 +137,7 @@ test('a timed out command ends only its launched and recorded processes', async 
   assert.equal(processExists(grandchild), false, 'the grandchild went with the group')
 })
 
-test('a short command stopped by its signal is ended, and one stopped before it starts never runs', async (t) => {
+test('a short command stopped by its signal is ended, and one stopped before it starts never runs', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const pidFile = join(folder, 'grandchild')
@@ -169,7 +174,7 @@ test('a command that cannot start answers exit 127 and is not started', async ()
   assert.deepEqual([result.code, result.started], [127, false])
 })
 
-test('a synchronous process-start failure answers exit 127 without claiming ownership or starting input', async (t) => {
+test('a synchronous process-start failure answers exit 127 without claiming ownership or starting input', macDriver, async (t) => {
   const before = process.listenerCount('exit')
   t.mock.method(childProcess, 'spawn', () => { throw new Error('spawn ENOMEM') })
   syncBuiltinESMExports()
@@ -179,7 +184,7 @@ test('a synchronous process-start failure answers exit 127 without claiming owne
   assert.equal(process.listenerCount('exit'), before, 'a process that never started has no ownership exit hook')
 })
 
-test('a long-running process stops its recorded descendants, and its exit hook goes with them', async (t) => {
+test('a long-running process stops its recorded descendants, and its exit hook goes with them', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const pidFile = join(folder, 'grandchild')
@@ -193,7 +198,7 @@ test('a long-running process stops its recorded descendants, and its exit hook g
   assert.equal(process.listenerCount('exit'), before)
 })
 
-test('a tool sees neither hidden variables nor an inherited TEST_RUNNER_ variable, and sees what it is given', async (t) => {
+test('a tool sees neither hidden variables nor an inherited TEST_RUNNER_ variable, and sees what it is given', macDriver, async (t) => {
   process.env['RETEST_FAKE_JUDGE_KEY'] = 'judge-key-value'
   process.env['TEST_RUNNER_USE_PORT'] = '9999'
   t.after(() => {
@@ -206,7 +211,7 @@ test('a tool sees neither hidden variables nor an inherited TEST_RUNNER_ variabl
   assert.match(result.stdout, /^TEST_RUNNER_USE_IP=127\.0\.0\.1$/m)
 })
 
-test('a long-running process sees neither hidden variables nor an inherited TEST_RUNNER_ variable', async (t) => {
+test('a long-running process sees neither hidden variables nor an inherited TEST_RUNNER_ variable', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
   process.env['RETEST_FAKE_JUDGE_KEY'] = 'judge-key-value'
   process.env['TEST_RUNNER_MJPEG_SERVER_PORT'] = '9100'
@@ -232,7 +237,7 @@ test('an inherited SIMCTL_CHILD_ variable never reaches a tool, so simctl passes
   assert.doesNotMatch(result.stdout, /SIMCTL_CHILD_RETEST_FAKE/)
 })
 
-test('an exit-hook kill ends a recorded process with SIGKILL only while its command line is the recorded one', async (t) => {
+test('an exit-hook kill ends a recorded process with SIGKILL only while its command line is the recorded one', macDriver, async (t) => {
   const child = spawn('/bin/sleep', ['601'], { stdio: 'ignore' })
   t.after(() => child.kill('SIGKILL'))
   const pid = child.pid ?? 0
@@ -247,7 +252,7 @@ test('an exit-hook kill ends a recorded process with SIGKILL only while its comm
   assert.equal(processExists(pid), false)
 })
 
-test('the exit-hook kill runs ps without the hidden variables', async (t) => {
+test('the exit-hook kill runs ps without the hidden variables', macDriver, async (t) => {
   const { tools, folder } = await scriptedPs(t, 'env > "$FOLDER/env.txt"\nexec /bin/ps "$@"')
   process.env['RETEST_FAKE_JUDGE_KEY'] = 'judge-key-value'
   t.after(() => {
@@ -260,7 +265,7 @@ test('the exit-hook kill runs ps without the hidden variables', async (t) => {
   assert.equal(processExists(process.pid), true)
 })
 
-test('reading a pid tells a running process, a free pid and a reading that failed apart', async (t) => {
+test('reading a pid tells a running process, a free pid and a reading that failed apart', macDriver, async (t) => {
   const child = spawn('/bin/sleep', ['602'], { stdio: 'ignore' })
   t.after(() => child.kill('SIGKILL'))
   await sleep(100)
@@ -273,7 +278,7 @@ test('reading a pid tells a running process, a free pid and a reading that faile
   assert.equal(reading.state, 'unreadable', 'a ps that fails is not taken for a free pid')
 })
 
-test('a recorded process is not sent SIGKILL when its pid runs another command line after the grace period', async (t) => {
+test('a recorded process is not sent SIGKILL when its pid runs another command line after the grace period', macDriver, async (t) => {
   const child = stubbornChild(t)
   await sleep(150)
   const recorded = await commandOf(systemTools, child.pid)
@@ -288,7 +293,7 @@ test('a recorded process is not sent SIGKILL when its pid runs another command l
   assert.equal(processExists(child.pid), true, 'the process now under the pid was sent no SIGKILL')
 })
 
-test('a recorded process that ignores SIGTERM is sent SIGKILL while its command line is still the recorded one', async (t) => {
+test('a recorded process that ignores SIGTERM is sent SIGKILL while its command line is still the recorded one', macDriver, async (t) => {
   const child = stubbornChild(t)
   await sleep(150)
   const recorded = await commandOf(systemTools, child.pid)
@@ -297,7 +302,7 @@ test('a recorded process that ignores SIGTERM is sent SIGKILL while its command 
   assert.equal(await Promise.race([child.signal, sleep(5000, 'still running')]), 'SIGKILL')
 })
 
-test('a process group that ends on its own takes its exit hook with it', async (t) => {
+test('a process group that ends on its own takes its exit hook with it', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const before = process.listenerCount('exit')
@@ -343,7 +348,7 @@ test('exit-hook matching output from a failed ps never authorizes a signal', asy
   assert.equal(kill.mock.callCount(), 0)
 })
 
-test('an unanswered metadata child whose command changed is left running without any timeout signal', async (t) => {
+test('an unanswered metadata child whose command changed is left running without any timeout signal', macDriver, async (t) => {
   const fixture = await unansweredMetadata(t, false)
   assert.throws(() => readMetadataProcess({ command: fixture.path, args: [], environment: {}, timeoutMs: 1000 }), /did not answer before its deadline/)
   const pid = Number(await readFile(join(fixture.folder, 'pid'), 'utf8'))
@@ -354,7 +359,7 @@ test('an unanswered metadata child whose command changed is left running without
   assert.equal(readMetadataProcess({ command: '/bin/echo', args: ['read'], environment: { PATH: '/usr/bin:/bin' }, timeoutMs: 1000 }), 'read\n', 'a later reading is still taken while the unanswered child runs')
 })
 
-test('exit-hook matching output from an unanswered ps never authorizes a signal or ends the metadata child', async (t) => {
+test('exit-hook matching output from an unanswered ps never authorizes a signal or ends the metadata child', macDriver, async (t) => {
   const fixture = await unansweredMetadata(t, false)
   const realKill = process.kill.bind(process)
   const signals: { pid: number; signal: NodeJS.Signals | number | undefined }[] = []
@@ -369,7 +374,7 @@ test('exit-hook matching output from an unanswered ps never authorizes a signal 
   await assert.rejects(readFile(join(fixture.folder, 'term'), 'utf8'), { code: 'ENOENT' })
 })
 
-test('exit-hook matching stdout with overflowing stderr never authorizes a signal or ends the metadata child', async (t) => {
+test('exit-hook matching stdout with overflowing stderr never authorizes a signal or ends the metadata child', macDriver, async (t) => {
   const fixture = await unansweredMetadata(t, true)
   const realKill = process.kill.bind(process)
   const signals: { pid: number; signal: NodeJS.Signals | number | undefined }[] = []
@@ -385,7 +390,7 @@ test('exit-hook matching stdout with overflowing stderr never authorizes a signa
 })
 
 for (const refused of ['SIGTERM', 'SIGKILL'] as const) {
-  test(`a refused ${refused} is a cleanup failure while the recorded process still exists`, async (t) => {
+  test(`a refused ${refused} is a cleanup failure while the recorded process still exists`, macDriver, async (t) => {
     const record = { pid: 424242, command: '/recorded/process', startedAt: recordedStart }
     const { tools } = await scriptedPs(t, `echo "${shownStart} /recorded/process"`)
     const realKill = process.kill.bind(process)
@@ -580,7 +585,7 @@ test('an unrecorded orphan retains native process and temporary-output ownership
   assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8').catch(() => 'absent'), 'absent')
 })
 
-test('an unexpected liveness error remains unreadable after a recorded SIGTERM', async (t) => {
+test('an unexpected liveness error remains unreadable after a recorded SIGTERM', macDriver, async (t) => {
   const record = { pid: 424242, command: '/recorded/process', startedAt: recordedStart }
   const { tools } = await scriptedPs(t, `echo "${shownStart} /recorded/process"`)
   const realKill = process.kill.bind(process)
@@ -614,7 +619,7 @@ test('executor watching reports a failed liveness reading without inventing an e
 // A process is identified by its pid and start; a command line `ps` can read must agree, and one it cannot read, as
 // while the process exits, is neither a match nor a difference.
 
-test('an app ps shows by its short name while it exits is still the recorded process: it is ended, never taken for another', async (t) => {
+test('an app ps shows by its short name while it exits is still the recorded process: it is ended, never taken for another', macDriver, async (t) => {
   const child = stubbornChild(t)
   await sleep(150)
   const start = processStart(child.pid)
@@ -624,7 +629,7 @@ test('an app ps shows by its short name while it exits is still the recorded pro
   assert.equal(await Promise.race([child.signal, sleep(5000, 'still running')]), 'SIGKILL', 'the exiting process was the recorded one and was ended')
 })
 
-test('a record without a start leaves a process ps shows by its short name undecided, and sends it nothing', async (t) => {
+test('a record without a start leaves a process ps shows by its short name undecided, and sends it nothing', macDriver, async (t) => {
   const record = { pid: 424242, command: '/Applications/TaskDesk.app/Contents/MacOS/TaskDesk' }
   const { tools } = await scriptedPs(t, `echo "${shownStart} (TaskDesk)"`)
   const realKill = process.kill.bind(process)
@@ -640,7 +645,7 @@ test('a record without a start leaves a process ps shows by its short name undec
   assert.deepEqual(signals, [])
 })
 
-test('a pid another process took under the identical command line is left alone, by its start', async (t) => {
+test('a pid another process took under the identical command line is left alone, by its start', macDriver, async (t) => {
   const child = stubbornChild(t)
   await sleep(150)
   const recorded = await commandOf(systemTools, child.pid)
@@ -650,7 +655,7 @@ test('a pid another process took under the identical command line is left alone,
   assert.equal(processExists(child.pid), true, 'a process of another start under the recorded pid is sent nothing')
 })
 
-test('an exit-hook kill leaves a pid another process took under the identical command line, and kills the recorded one', async (t) => {
+test('an exit-hook kill leaves a pid another process took under the identical command line, and kills the recorded one', macDriver, async (t) => {
   const child = spawn('/bin/sleep', ['603'], { stdio: 'ignore' })
   t.after(() => child.kill('SIGKILL'))
   const pid = child.pid ?? 0
@@ -663,7 +668,7 @@ test('an exit-hook kill leaves a pid another process took under the identical co
   assert.equal(await Promise.race([ended, sleep(5000, 'still running')]), 'SIGKILL')
 })
 
-test('every process listed carries its start', async (t) => {
+test('every process listed carries its start', macDriver, async (t) => {
   const child = spawn('/bin/sleep', ['604'], { stdio: 'ignore' })
   t.after(() => child.kill('SIGKILL'))
   await sleep(100)
@@ -702,7 +707,7 @@ async function wideReadings(children: readonly ChildProcess[]): Promise<{ readon
   }
 }
 
-test('ownership readings take a whole process table larger than 4 MiB, and still read a pid again before signalling it', async (t) => {
+test('ownership readings take a whole process table larger than 4 MiB, and still read a pid again before signalling it', macDriver, async (t) => {
   const children = await widenTable(t)
   const { table, listed } = await wideReadings(children)
   for (const child of children) {
@@ -722,7 +727,7 @@ test('ownership readings take a whole process table larger than 4 MiB, and still
   assert.deepEqual(group.readProblems, [])
 })
 
-test('a process list longer than a command\'s output limit is refused, never read as a shorter command', async (t) => {
+test('a process list longer than a command\'s output limit is refused, never read as a shorter command', macDriver, async (t) => {
   const { tools } = await scriptedPs(t, `printf '7 ${shownStart} /valid/process\\n9 ${shownStart} /cut/'; head -c 17000000 /dev/zero | tr '\\0' x; printf '\\n'`)
   await assert.rejects(listProcesses(tools, 30_000), /ps listed more than the 16777216 characters Retest reads of one command, so the list may be cut/)
 })
@@ -739,7 +744,7 @@ function blockingReadings(t: TestContext): { count(): number; callers(): readonl
   return { count: () => callers.length, callers: () => [...callers] }
 }
 
-test('a short command takes its ownership readings without blocking the main thread', async (t) => {
+test('a short command takes its ownership readings without blocking the main thread', macDriver, async (t) => {
   const readings = blockingReadings(t)
   const result = await runCommand('/bin/echo', ['ready'], { timeoutMs: 5000 })
   assert.equal(result.stdout, 'ready\n')
@@ -747,7 +752,7 @@ test('a short command takes its ownership readings without blocking the main thr
   assert.equal(readings.count(), 0, 'no reading waited on the main thread')
 })
 
-test('a long-running process takes no blocking ownership reading while it runs', async (t) => {
+test('a long-running process takes no blocking ownership reading while it runs', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const readings = blockingReadings(t)
@@ -778,7 +783,7 @@ test('a long-running process takes no blocking ownership reading while it runs',
   assert.equal(readings.count(), 0, 'no ownership reading during start, watch or stop blocks the main thread')
 })
 
-test('a child the executor starts after its own start is still found and ended at the stop', async (t) => {
+test('a child the executor starts after its own start is still found and ended at the stop', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const pidFile = join(folder, 'grandchild')
@@ -808,14 +813,14 @@ test('the exit hook deletes the temporary output even while members of the group
   assert.equal(await readFile(join(fake.temporary, 'fixture'), 'utf8').catch(() => 'absent'), 'absent')
 })
 
-test('a new run folder names this process as its maker, by pid and start, readable by its owner alone', async (t) => {
+test('a new run folder names this process as its maker, by pid and start, readable by its owner alone', macDriver, async (t) => {
   const folder = await makeOwnedFolder('retest-executor-', systemTools)
   t.after(() => rm(folder, { recursive: true, force: true }))
   assert.deepEqual(JSON.parse(await readFile(join(folder, 'retest-owner.json'), 'utf8')), { startTimeVersion: 1, pid: process.pid, startedAt: processStart(process.pid) })
   assert.equal((await stat(join(folder, 'retest-owner.json'))).mode & 0o777, 0o600)
 })
 
-test('a sweep deletes only absent makers\' folders and retains live makers with matching or mismatched starts', async (t) => {
+test('a sweep deletes only absent makers\' folders and retains live makers with matching or mismatched starts', macDriver, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'retest-native-sweep-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const live = spawn('/bin/sleep', ['605'], { stdio: 'ignore' })
@@ -845,7 +850,7 @@ test('a sweep deletes only absent makers\' folders and retains live makers with 
   assert.equal((await stat(join(root, 'retest-executor-link'))).isDirectory(), true, 'a link is never followed or deleted')
 })
 
-test('a sweep keeps a folder whose maker cannot be read', async (t) => {
+test('a sweep keeps a folder whose maker cannot be read', macDriver, async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'retest-native-sweep-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, 'retest-executor-held'))
@@ -856,7 +861,7 @@ test('a sweep keeps a folder whose maker cannot be read', async (t) => {
   assert.equal((await stat(join(root, 'retest-executor-held'))).isDirectory(), true)
 })
 
-test('a start runs the selected Xcode\'s own xcodebuild, never the shim that execs it under the same pid', async (t) => {
+test('a start runs the selected Xcode\'s own xcodebuild, never the shim that execs it under the same pid', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-xcrun-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const xcrun = join(folder, 'xcrun')
@@ -958,7 +963,7 @@ async function stubbornTool(t: TestContext): Promise<string> {
   return script
 }
 
-test('a command that ignores SIGTERM is killed once the grace it is given has passed, the default one unless it is given another', async (t) => {
+test('a command that ignores SIGTERM is killed once the grace it is given has passed, the default one unless it is given another', macDriver, async (t) => {
   const script = await stubbornTool(t)
   // The timeout leaves the shell time to set its trap before SIGTERM comes, even on a loaded machine.
   const timeoutMs = 500

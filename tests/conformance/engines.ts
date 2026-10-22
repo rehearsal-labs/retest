@@ -8,10 +8,11 @@ import { browserPath } from '../support/test-browser.ts'
 
 // Which engines this machine runs the conformance cases on. Chrome always, from RETEST_TEST_BROWSER or Google Chrome
 // where macOS installs it. On macOS, Firefox from RETEST_TEST_FIREFOX or where macOS installs it, as the Firefox
-// driver's tests find it, and WebKit from RETEST_TEST_WEBKIT or the pinned WebKit build 2359. 0.1.0 supports
-// Firefox and WebKit on macOS only, so elsewhere they are not run, and say why. On macOS a missing browser fails the
-// gate, unless RETEST_CONFORMANCE_OPT_OUT names its engine; such an engine is reported as not verified, by name, and
-// never counted as passing.
+// driver's tests find it, and WebKit from RETEST_TEST_WEBKIT or the pinned WebKit build 2359. On Windows x64, Firefox
+// from RETEST_TEST_FIREFOX, which names the pinned build there, since Windows has no place it is looked for. Elsewhere
+// Firefox and WebKit are not run, and say why. Where an engine runs, a missing browser fails the gate, unless
+// RETEST_CONFORMANCE_OPT_OUT names its engine; such an engine is reported as not verified, by name, and never counted
+// as passing.
 
 export { engines, type Engine } from '../../fixtures/conformance/config.ts'
 
@@ -73,7 +74,8 @@ export function engineSetup(engine: Engine): EngineSetup {
       return { available: false, reason: error instanceof Error ? error.message : String(error), excused: false }
     }
   }
-  if (process.platform !== 'darwin') return { available: false, reason: `${engineNames[engine]} is supported on macOS only in 0.1.0, and this is ${process.platform}.`, excused: true }
+  const unsupported = platformProblem(engine)
+  if (unsupported !== undefined) return { available: false, reason: unsupported, excused: true }
   const missing = (reason: string): EngineSetup => ({ available: false, reason: `${reason} Set ${optOutVariable}=${engine} to leave it unverified by name.`, excused: false })
   const driver = join(repositoryRoot, 'src/browser', engine)
   if (!existsSync(driver) || !readdirSync(driver).some((name) => name.endsWith('.ts'))) return missing(`No ${engineNames[engine]} driver: src/browser/${engine}/ holds no driver.`)
@@ -85,6 +87,17 @@ export function engineSetup(engine: Engine): EngineSetup {
   const executable = named !== undefined && named !== '' ? named : known
   const started = engine === 'firefox' ? firefoxStart() : { environment: {}, notes: [] }
   return { available: true, executable, ...started }
+}
+
+// Why the cases do not run on `engine` on this machine, or undefined where they do.
+function platformProblem(engine: Exclude<Engine, 'chrome'>): string | undefined {
+  if (process.platform === 'darwin') return undefined
+  if (engine === 'webkit') return `WebKit runs on macOS only, and this is ${process.platform}.`
+  if (process.platform === 'win32' && process.arch === 'x64') {
+    if ((process.env[executableVariables.firefox] ?? '') !== '') return undefined
+    return `Firefox runs on Windows x64 here when ${executableVariables.firefox} names the pinned build, and it names none.`
+  }
+  return `Firefox runs on macOS and on Windows x64, and this is ${process.platform} ${process.arch}.`
 }
 
 /**

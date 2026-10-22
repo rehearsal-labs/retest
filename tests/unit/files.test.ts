@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { readInputFiles } from '../../src/api/files.ts'
 import { describeCommand, pageCommandSchema } from '../../src/protocol/commands.ts'
@@ -62,10 +62,20 @@ test('files are written as the test wrote them: a path, a file by its name, and 
 })
 
 test('a file the parent cannot give is refused as usage, and a good one passes', () => {
-  assert.equal(inputFilesProblem([{ path: './a.png', folder: '/work' }, { name: 'a.txt', mimeType: 'text/plain', base64: 'aGk=' }], 'setInputFiles'), undefined)
-  const refused = (file: Parameters<typeof inputFilesProblem>[0][number]) => inputFilesProblem([file], 'setInputFiles')?.message
+  assert.equal(inputFilesProblem([{ path: './a.png', folder: '/work' }, { name: 'a.txt', mimeType: 'text/plain', base64: 'aGk=' }], 'setInputFiles', 'darwin'), undefined)
+  const refused = (file: Parameters<typeof inputFilesProblem>[0][number], platform: NodeJS.Platform = 'darwin') => inputFilesProblem([file], 'setInputFiles', platform)?.message
+  const cannotResolve = 'setInputFiles() received the path "./a.png" with a folder Retest cannot resolve it against.'
   assert.equal(refused({ path: '', folder: '/work' }), 'setInputFiles() takes a path to a file, received an empty path.')
-  assert.equal(refused({ path: './a.png', folder: 'tests' }), 'setInputFiles() received the path "./a.png" with a folder Retest cannot resolve it against.')
+  assert.equal(refused({ path: './a.png', folder: 'tests' }), cannotResolve)
+  // The folder is the calling file's, as the test file's process writes it: from the root on macOS and Linux, where a
+  // Windows drive or share is a name in the working folder; a drive or a share on Windows, where a root with no drive and
+  // a drive with no separator are read against the working folder.
+  for (const folder of ['C:\\work\\tests', '\\\\server\\share\\tests', 'tests']) assert.equal(refused({ path: './a.png', folder }, 'linux'), cannotResolve, folder)
+  for (const folder of ['C:\\work\\tests', 'D:/work/tests', '\\\\server\\share\\tests']) assert.equal(refused({ path: '../fixtures/report.pdf', folder }, 'win32'), undefined, folder)
+  for (const folder of ['C:tests', '\\tests', '/tests', '\\\\\\tests', 'tests']) assert.equal(refused({ path: './a.png', folder }, 'win32'), cannotResolve, folder)
+  // A folder as this machine writes one is one the test file's process gives.
+  const folder = join(tmpdir(), 'tests')
+  assert.deepEqual(readInputFiles('../fixtures/report.pdf', folder, 'setInputFiles'), { files: [{ path: '../fixtures/report.pdf', folder }], list: false })
   assert.equal(refused({ name: 'a/b.txt', base64: '' }), `setInputFiles() takes a file's name without a folder, such as 'notes.txt', received "a/b.txt".`)
   assert.equal(refused({ name: '..', base64: '' }), `setInputFiles() takes a file's name without a folder, such as 'notes.txt', received "..".`)
   assert.equal(refused({ name: 'a.txt', mimeType: 'plain', base64: '' }), `setInputFiles() takes mimeType as a type such as 'text/plain', received "plain".`)
@@ -73,7 +83,8 @@ test('a file the parent cannot give is refused as usage, and a good one passes',
 })
 
 test('the files argument is read whatever a JavaScript caller passed, and what is wrong is said', () => {
-  assert.deepEqual(readInputFiles('./a.png', '/work/tests', 'setInputFiles'), { files: [{ path: './a.png', folder: '/work/tests' }], list: false })
+  const tests = resolve('/work/tests')
+  assert.deepEqual(readInputFiles('./a.png', tests, 'setInputFiles'), { files: [{ path: './a.png', folder: tests }], list: false })
   assert.deepEqual(readInputFiles([], '/work/tests', 'setInputFiles'), { files: [], list: true })
   assert.deepEqual(readInputFiles({ name: 'a.bin', content: new Uint8Array([1, 2, 3]) }, '/work', 'setFiles'), { files: [{ name: 'a.bin', base64: 'AQID' }], list: false })
   assert.deepEqual(readInputFiles([{ name: 'n.txt', mimeType: 'text/plain', content: 'hello', extra: undefined }], '/work', 'setFiles'), { files: [{ name: 'n.txt', mimeType: 'text/plain', base64: 'aGVsbG8=' }], list: true })

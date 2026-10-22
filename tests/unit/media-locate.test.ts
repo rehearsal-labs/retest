@@ -6,12 +6,13 @@ import { test } from 'node:test'
 import { ffmpegLicence, ffmpegRoutes, mediaDoctorRows } from '../../src/cli/install/media-doctor.ts'
 import { mediaFolder } from '../../src/cli/install/media-record.ts'
 import { mediaTarget } from '../../src/cli/install/media-pins.ts'
+import { programFileName } from '../../src/media/host.ts'
 import { locateFfmpeg, locateMedia } from '../../src/media/locate.ts'
 import { unpinnedMedia } from '../support/unpinned-host.ts'
 
 test('ffmpeg settings take precedence over the variable and PATH, and a missing explicit setting refuses', async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-ffmpeg-')); t.after(() => rm(folder, { recursive: true, force: true }))
-  const path = join(folder, 'ffmpeg'); await writeFile(path, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  const path = join(folder, programFileName('ffmpeg')); await writeFile(path, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
   const env = { PATH: folder, RETEST_FFMPEG: '/missing-variable' }
   assert.equal((await locateFfmpeg({ ffmpeg: path, env })).ok, true)
   assert.equal((await locateFfmpeg({ ffmpeg: '/missing-setting', env })).ok, false)
@@ -42,7 +43,7 @@ test('doctor names raw input, both codec and muxer routes, and encoded image pre
 test('doctor names both Rust minima and host ffmpeg with accepted fixes when recording tools are missing', async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-media-doctor-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
-  const rows = await mediaDoctorRows({ HOME: folder, PATH: '' }, new AbortController().signal)
+  const rows = await mediaDoctorRows({ HOME: folder, LOCALAPPDATA: folder, PATH: '' }, new AbortController().signal)
   assert.deepEqual(rows.map((row) => row.subject), ['retest-media', 'cargo', 'rustc', 'ffmpeg'])
   assert.ok(rows.every((row) => !row.ok))
   for (const name of ['cargo', 'rustc']) {
@@ -75,7 +76,7 @@ test('discovery resolves executable and ffmpeg without launching the executable'
 test('discovery refuses a damaged checked cache by name without probing it', { skip: unpinnedMedia }, async t => {
   const home = await mkdtemp(join(tmpdir(), 'retest-media-cache-'))
   t.after(() => rm(home, { recursive: true, force: true }))
-  const env = { HOME: home, PATH: '' }
+  const env = { HOME: home, LOCALAPPDATA: home, PATH: '' }
   const folder = mediaFolder(env, mediaTarget() ?? assert.fail('host media target')) ?? assert.fail('cache folder')
   await mkdir(folder, { recursive: true })
   await writeFile(join(folder, 'build.json'), '{')

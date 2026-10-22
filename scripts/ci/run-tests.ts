@@ -25,6 +25,8 @@ const environment = { ...process.env }
 // This wrapper may itself be exercised by node:test. Each selected file must start a real, independent test runner.
 delete environment['NODE_TEST_CONTEXT']
 
+const ctrlCOn = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class RetestKeys { [DllImport("kernel32.dll")] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add); }'; [RetestKeys]::SetConsoleCtrlHandler([IntPtr]::Zero, $false) | Out-Null`
+
 let current: ChildProcess | undefined
 let stoppedBy: NodeJS.Signals | undefined
 let executionFailed = false
@@ -46,7 +48,12 @@ try {
     process.stdout.write(`::group::${file}\n`)
     const started = performance.now()
     const outcome = await new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-      current = spawn(process.execPath, ['--conditions=retest-source', '--test', '--test-concurrency=1', '--test-reporter=tap', file], { stdio: 'inherit', env: environment })
+      const node = [process.execPath, '--conditions=retest-source', '--test', '--test-concurrency=1', '--test-reporter=tap', file]
+      // A CI step's processes inherit Ctrl+C turned off, so on Windows each file runs under a PowerShell that turns it
+      // on first; every process below it then gets Ctrl+C as it would from an interactive console.
+      current = process.platform === 'win32'
+        ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${ctrlCOn}; & ${node.map((word) => `'${word.replaceAll("'", "''")}'`).join(' ')}; exit $LASTEXITCODE`], { stdio: 'inherit', env: environment })
+        : spawn(process.execPath, node.slice(1), { stdio: 'inherit', env: environment })
       current.once('error', reject)
       current.once('close', (exitCode, signal) => resolve({ exitCode, signal }))
     })

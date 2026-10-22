@@ -5,12 +5,12 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { byRole, closeMs, observe, openPage, scratchFolder, servePages, setupMs } from './browser-harness.ts'
-import { firefoxPath, testFirefoxRoute } from './engines.ts'
+import { firefoxHostSkip, firefoxPath, testFirefoxRoute } from './engines.ts'
 
 // What Firefox refuses by name where the shared suites expect Chrome's answer, each asserted as the refusal it is, so a
 // refusal that quietly turns into a different answer fails here. Each names the shared case it stands beside.
 
-const skip = process.platform === 'darwin' && process.arch === 'arm64' ? false : 'Firefox requires macOS on Apple silicon'
+const skip = firefoxHostSkip()
 
 // A one-pixel PNG, which loads.
 const loaded = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='

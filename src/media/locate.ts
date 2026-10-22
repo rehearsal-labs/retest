@@ -3,6 +3,7 @@ import type { MediaInspection } from '../cli/install/media-record.ts'
 import type { Hello } from './protocol.ts'
 import type { FileIdentity } from '../shared/regular-file.ts'
 import { lstat, realpath } from 'node:fs/promises'
+import { sep } from 'node:path'
 import { Deadline } from '../protocol/deadline.ts'
 import { inspectMedia } from '../cli/install/media-record.ts'
 import { mediaTarget } from '../cli/install/media-pins.ts'
@@ -13,7 +14,7 @@ export type MediaLocationOptions = { readonly executable?: string; readonly ffmp
 export type LocatedMedia = { readonly ok: true; readonly executable: string; readonly executableIdentity: FileIdentity; readonly ffmpeg: string; readonly source: 'setting' | 'environment' | 'cache'; readonly inspection?: MediaInspection; readonly hello: Hello } | { readonly ok: false; readonly message: string }
 export type DiscoveredMedia = Omit<Extract<LocatedMedia, { ok: true }>, 'hello'> | Extract<LocatedMedia, { ok: false }>
 export type LocatedFfmpeg = { readonly ok: true; readonly path: string; readonly source: 'setting' | 'environment' | 'PATH' } | { readonly ok: false; readonly message: string }
-export const ffmpegFix: string = 'Install ffmpeg with your host package manager, for example brew install ffmpeg on macOS or sudo apt-get install ffmpeg on Debian, then set RETEST_FFMPEG to its executable or put it on PATH. Retest ships and downloads no ffmpeg.'
+export const ffmpegFix: string = 'Install ffmpeg with your host package manager, for example brew install ffmpeg on macOS, sudo apt-get install ffmpeg on Debian or winget install Gyan.FFmpeg on Windows, then set RETEST_FFMPEG to its executable or put it on PATH. Retest ships and downloads no ffmpeg.'
 
 /** An explicit setting, then RETEST_FFMPEG, then PATH. An unusable explicit name never falls through. */
 export async function locateFfmpeg(options: Pick<MediaLocationOptions, 'ffmpeg' | 'env'> = {}): Promise<LocatedFfmpeg> {
@@ -61,7 +62,7 @@ async function discoverLocation(options: MediaLocationOptions, deadline: Deadlin
   if (interrupted()) return stopped()
   const env = options.env ?? process.env
   const target = mediaTarget()
-  if (target === undefined) return { ok: false, message: `Media discovery has no host target for ${process.platform} ${process.arch}. macOS arm64 is exercised; Linux x64 is unverified.` }
+  if (target === undefined) return { ok: false, message: `Media discovery has no host target for ${process.platform} ${process.arch}. macOS arm64 is exercised; Linux x64 and Windows x64 are unverified.` }
   const given = options.executable ?? env['RETEST_MEDIA_BINARY']
   let executable: string
   let source: 'setting' | 'environment' | 'cache'
@@ -78,7 +79,7 @@ async function discoverLocation(options: MediaLocationOptions, deadline: Deadlin
     const canonical = await realpath(executable).catch(() => undefined)
     if (canonical === undefined) return { ok: false, message: `${executable} disappeared or cannot be read after discovery. Run npx retest install media, or name a readable release binary.` }
     const cachedFolder = inspection === undefined ? undefined : await realpath(inspection.folder).catch(() => undefined)
-    const fromCache = inspection !== undefined && (executable === inspection.executablePath || executable.startsWith(`${inspection.folder}/`) || (cachedFolder !== undefined && canonical.startsWith(`${cachedFolder}/`)))
+    const fromCache = inspection !== undefined && (executable === inspection.executablePath || executable.startsWith(`${inspection.folder}${sep}`) || (cachedFolder !== undefined && canonical.startsWith(`${cachedFolder}${sep}`)))
     if (fromCache && inspection !== undefined && inspection.state !== 'installed') return { ok: false, message: `${inspection.problems.join(' ')} Remove ${inspection.folder} and run npx retest install media.` }
     if (!fromCache) inspection = undefined
     const leaf = await lstat(executable).catch(() => undefined)

@@ -33,10 +33,23 @@ function readingStopped(options: FileReadControl): string | undefined {
   return options.deadline?.reached === true ? 'the reading deadline was reached' : undefined
 }
 
+// Windows has no O_NOFOLLOW, so an open there follows a link put in the file's place. The name is looked at again once
+// the file is open, and a link there reads as replaced, as the refused open reads elsewhere.
+const openFollowsLinks = process.platform === 'win32'
+
+async function becameLink(path: string): Promise<boolean> {
+  if (!openFollowsLinks) return false
+  try {
+    return (await lstat(path)).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
 /**
  * Opens a file only once an `lstat` shows a regular file. Something put in its place after the `lstat` is neither
- * followed (`O_NOFOLLOW`, a link then reads as replaced) nor waited on (`O_NONBLOCK`), and the opened file must be the
- * one the `lstat` saw. The caller closes the handle.
+ * followed (`O_NOFOLLOW`, a link then reads as replaced; on Windows the name is looked at again once open) nor waited
+ * on (`O_NONBLOCK`), and the opened file must be the one the `lstat` saw. The caller closes the handle.
  *
  * @example const opened = await openRegularFile('/…/build.json'); if (opened.kind === 'opened') await opened.handle.close()
  */
@@ -62,6 +75,10 @@ export async function openRegularFile(path: string, hooks: ReadHooks = {}, attem
   } catch (error) {
     await handle.close()
     return { kind: 'unreadable', problem: errorMessage(error) }
+  }
+  if (await becameLink(path)) {
+    await handle.close()
+    return { kind: 'replaced' }
   }
   if (opened.isFile() && opened.ino === stats.ino && opened.dev === stats.dev) {
     if (opened.size > BigInt(Number.MAX_SAFE_INTEGER)) {

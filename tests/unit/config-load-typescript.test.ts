@@ -10,6 +10,11 @@ import { tempProject } from '../support/project.ts'
 // The config loads in Retest's own process, which Node does not start with its TypeScript transformer, so these load
 // it through the hooks that call the transformer themselves.
 
+// A path inside a pattern: a Windows path's backslashes and a folder's dots are literal.
+function escape(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 const everydayConfig = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
 import { Budget, Target } from '@config/budgets'
 import { port } from './settings/port'
@@ -79,7 +84,7 @@ describe('loadConfig with TypeScript beyond type stripping', () => {
     assert.ok(typeof helper === 'object' && helper !== null && 'stackHere' in helper && typeof helper.stackHere === 'function')
     const stack: unknown = helper.stackHere()
     assert.equal(typeof stack, 'string')
-    assert.match(String(stack), new RegExp(`at (?:Module\\.)?stackHere \\(${join(realpathSync(root), 'support/stack.ts')}:6:10\\)`), String(stack))
+    assert.match(String(stack), new RegExp(`at (?:Module\\.)?stackHere \\(${escape(join(realpathSync(root), 'support/stack.ts'))}:6:10\\)`), String(stack))
   })
 
   test('a CommonJS config, a JSX line and a decorator each fail naming the construct and the file', async () => {
@@ -142,7 +147,7 @@ describe('loadConfig with TypeScript beyond type stripping', () => {
     const loaded = await loadConfig(join(root, configFileName))
     assert.ok(!loaded.ok)
     assert.equal(loaded.failure.class, 'usage')
-    assert.match(loaded.failure.message, new RegExp(`^${join(realpathSync(root), 'tsconfig.json')} is not valid JSON: `))
+    assert.match(loaded.failure.message, new RegExp(`^${escape(join(realpathSync(root), 'tsconfig.json'))} is not valid JSON: `))
     assert.equal(existsSync(join(root, 'imported')), false)
   })
 })

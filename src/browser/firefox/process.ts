@@ -16,11 +16,13 @@ import { Deadline } from '../../protocol/deadline.ts'
 import { defaultTimeouts } from '../../protocol/timeouts.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { s, parse } from '../../protocol/schema.ts'
+import { withoutVariables } from '../../shared/environment.ts'
 import { describeExit } from '../../shared/process-exit.ts'
 import { OwnedProcessGroup, unverifiedMembersProblem } from '../../shared/process-ownership.ts'
+import { holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../shared/process-system.ts'
 import { closeGraceMs, LaunchError } from '../contract.ts'
 import { writeRedactedLog } from '../redacted-log.ts'
-import { ownerIdentityAsync, writeOwnerRecord } from './profile.ts'
+import { ownerIdentityAsync, ownerStartVersion, writeOwnerRecord } from './profile.ts'
 import { isRunning, readProcessTable, readProcessIdentityAsync, readProcessIdentity, readProcessLivenessAsync, readProcessTableAsync } from './process-table.ts'
 
 export type FirefoxStart = {
@@ -125,7 +127,7 @@ export class FirefoxProcess {
     const started = options.route === 'spawn' ? await spawnFirefox(options) : await openFirefox(options)
     const record = started.identity
     try {
-      await writeOwnerRecord(options.folder, { version: 1, startTimeVersion: 1, owner, firefox: { pid: record.pid, startedAt: record.startedAt, command: record.command, route: options.route }, profile: options.profile })
+      await writeOwnerRecord(options.folder, { version: 1, startTimeVersion: ownerStartVersion, owner, firefox: { pid: record.pid, startedAt: record.startedAt, command: record.command, route: options.route }, profile: options.profile })
     } catch (error) {
       const problems = await started.stop(0)
       throw new LaunchError(`Could not record the launched Firefox in ${options.folder}: ${errorMessage(error)}.${problems.length === 0 ? '' : ` Cleaning up also failed: ${problems.join(' ')}`}`, { cause: error, failureClass: problems.length === 0 ? 'setup_failed' : 'cleanup_failed' })
@@ -141,6 +143,17 @@ export class FirefoxProcess {
   /** True once the main process has exited. */
   get mainGone(): boolean {
     return this.#mainGone
+  }
+
+  /**
+   * Whether ending this process ends `pid`: when it is this process, or, where a job holds the launch, a process in that
+   * job, as the browser the Windows launcher starts and waits for is.
+   */
+  async ends(pid: number, deadline?: Deadline): Promise<boolean> {
+    if (pid === this.pid) return true
+    if (!this.#ownership.heldByJob) return false
+    await this.recordDescendants(deadline)
+    return this.#ownership.verifiedIdentity(pid) !== undefined
   }
 
   /**
@@ -165,6 +178,12 @@ export class FirefoxProcess {
     this.expectExit()
     const deadline = new Deadline(timeoutMs)
     const problems: string[] = []
+    // A job ends every process at once, so none can start another meanwhile, and Windows has no stopped state to wait for.
+    if (this.#ownership.heldByJob) {
+      problems.push(...this.#ownership.signalNow('SIGKILL', deadline))
+      if (problems.length > 0) throw new Error(problems.join(' '))
+      return
+    }
     try {
       await this.#stopForCrash(deadline)
       // The Remote Agent ends before content, so a lost input cannot receive a content-process protocol error.
@@ -382,15 +401,20 @@ async function spawnFirefox(options: FirefoxStart): Promise<Started> {
   const log = await openLog(logFile)
   let logHandedOn = false
   try {
-    const hidden = new Set(options.hiddenVariables)
-    const environment = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !hidden.has(name))), ...crashReporterOff }
+    const environment = { ...withoutVariables(process.env, options.hiddenVariables), ...crashReporterOff }
     // Output to redact comes through Retest; any other goes straight to the log.
     const redacting = redact !== undefined || redactStream !== undefined
+    try {
+      prepareOwnedLaunch()
+    } catch (error) {
+      throw new LaunchError(`Cannot start ${executable}: ${errorMessage(error)}`, { cause: error })
+    }
     const child = spawn(executable, firefoxArguments(profile, options.headless), { env: environment, detached: true, stdio: ['ignore', redacting ? 'pipe' : log.fd, redacting ? 'pipe' : log.fd] })
     await once(child, 'spawn').catch((error: unknown) => {
       throw new LaunchError(`Cannot start ${executable}: ${errorMessage(error)}`, { cause: error })
     })
-    const { ownership, table } = await claimOwnership(child.pid ?? 0, process.pid)
+    // Where a job holds the launch, its own process list is the table; the process table `ps` reads exists only on Unix.
+    const { ownership, table } = launchesHeldByJob ? { ownership: holdLaunch(child), table: undefined } : await claimOwnership(child.pid ?? 0, process.pid)
     const ownershipProblems = ownership.capture()
     // Without redaction Firefox writes to the log itself, until it exits.
     let output: Promise<string[]> = child.exitCode !== null || child.signalCode !== null ? Promise.resolve([]) : new Promise((resolve) => child.once('exit', () => resolve([])))
@@ -402,7 +426,7 @@ async function spawnFirefox(options: FirefoxStart): Promise<Started> {
       cancelOutput = writer.cancel
       logHandedOn = true
     }
-    const firefox = new FirefoxProcess({ pid: child.pid ?? 0, route: 'spawn', folder, profile, ownership, table, child, output, ...(cancelOutput === undefined ? {} : { cancelOutput }) })
+    const firefox = new FirefoxProcess({ pid: child.pid ?? 0, route: 'spawn', folder, profile, ownership, child, output, ...(table === undefined ? {} : { table }), ...(cancelOutput === undefined ? {} : { cancelOutput }) })
     if (!redacting) {
       logHandedOn = true
       await log.close().catch(() => undefined)

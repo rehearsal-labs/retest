@@ -81,10 +81,11 @@ export function roleWantsOf(locators: readonly LocatorRecipe[]): Map<AriaRole, R
 }
 
 /**
- * The refusal of a lookup that asks for a table cell by name, which Firefox cannot answer as Chrome does: Chrome names
- * a cell from its text, and Firefox's accessibility tree gives a cell no name, so such a lookup would find nothing on
- * Firefox that Chrome finds, and a check that the cell is gone would pass. Column and row headers, grid cells and
- * tooltips Firefox names, and they are looked up as on Chrome.
+ * The refusal of a lookup that asks for a table cell by name. Chrome names a cell from its text; Firefox 133 gave a
+ * cell no name, so such a lookup found nothing on Firefox that Chrome finds, and a check that the cell is gone passed.
+ * Firefox 158 names the team table's cells from their text, but cell names have not been compared with Chrome's
+ * across the role pages, so the lookup stays refused. Column and row headers, grid cells and tooltips Firefox names,
+ * and they are looked up as on Chrome.
  *
  * @example unnamedCellRefusal({ by: 'role', role: 'cell', name: 'Ada' })?.class // 'unsupported'
  */
@@ -95,7 +96,7 @@ export function lookupRefusal(locator: LocatorRecipe): Failure | undefined {
   if (step.role !== 'cell') return refusal(locator, step.role, `Firefox's accessibility locator gives a different set or name for ${step.role} than Chrome does`)
   return {
     class: 'unsupported',
-    message: `Could not look up ${describeLocator(locator)}: Chrome names a cell from its text, and Firefox's accessibility tree does not, so Retest refuses the lookup rather than find less on Firefox. Find it with getByText() or getByTestId(), or by its position with nth().`,
+    message: `Could not look up ${describeLocator(locator)}: on Firefox, Retest does not look up a cell by its name, since it has not checked that Firefox names cells as Chrome does. Find it with getByText() or getByTestId(), or by its position with nth().`,
     details: { role: 'cell' },
   }
 }
@@ -164,7 +165,11 @@ export const markupRefusalFunction: string = String.raw`function markupRefusal(r
   };
   if (['table', 'cell', 'row', 'columnheader', 'rowheader'].includes(role) && elements.some((element) => visible(element) && element.localName === 'table' && !dataTable(element))) return 'native tables can be layout tables in Chrome and data tables in Firefox';
   if (['row', 'columnheader', 'rowheader'].includes(role) && elements.some((element) => visible(element) && element.getAttribute('role') === role && element.parentElement?.closest('[role="grid"], [role="treegrid"], [role="table"]') === null)) return 'a row or header outside a table or grid has different accessibility membership';
-  if (role === 'option' && elements.some((element) => visible(element) && element.getAttribute('role') === 'option' && element.parentElement?.closest('[role="listbox"], [role="combobox"]') === null)) return 'an option outside a listbox or combobox has different accessibility membership';
+  // Firefox 158 counts an option that no listbox holds, directly in a combobox among them, and a tree item or list
+  // item outside its tree or list, where Chrome counts none.
+  if (role === 'option' && elements.some((element) => visible(element) && element.getAttribute('role') === 'option' && element.parentElement?.closest('[role="listbox"]') === null)) return 'an option outside a listbox has different accessibility membership';
+  if (role === 'treeitem' && elements.some((element) => visible(element) && element.getAttribute('role') === 'treeitem' && element.parentElement?.closest('[role="tree"], [role="treegrid"]') === null)) return 'a tree item outside a tree has different accessibility membership';
+  if (role === 'listitem' && elements.some((element) => visible(element) && element.getAttribute('role') === 'listitem' && element.parentElement?.closest('[role="list"], ul, ol, menu') === null)) return 'a list item outside a list has different accessibility membership';
   if (role === 'tab' && elements.some((element) => visible(element) && element.getAttribute('role') === 'tab' && element.parentElement?.closest('[role="tablist"]') === null)) return 'a tab outside a tablist has different accessibility membership';
   if (['menuitem', 'menuitemcheckbox', 'menuitemradio'].includes(role) && elements.some((element) => visible(element) && element.getAttribute('role') === role && element.parentElement?.closest('[role="menu"], [role="menubar"]') === null)) return 'a menu item outside a menu has different accessibility membership';
   if (role === 'heading' && elements.some((element) => visible(element) && element.isContentEditable)) return 'an editable heading can be named differently';

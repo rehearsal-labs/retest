@@ -9,6 +9,7 @@ import { describe, test } from 'node:test'
 import { takeInstallLock } from '../../src/cli/install/lock.ts'
 import { readMachine, startReader } from '../../src/cli/install/process-start.ts'
 import { systemTools } from '../../src/native/processes.ts'
+import { unixOnly, windowsOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { holdLockInChild, lockHolderScript, lockState, takeWhenFree } from './builds-fixtures.ts'
 
@@ -19,6 +20,11 @@ import { holdLockInChild, lockHolderScript, lockState, takeWhenFree } from './bu
 const machine = await readMachine({ platform: process.platform })
 assert.ok(machine.ok, machine.ok ? '' : machine.problem)
 const readStart = startReader({ platform: process.platform, tools: systemTools })
+// On Windows a holder is told alive by the file it holds open, not by its start, so there a generation names no start
+// and a gone holder leaves that file closed.
+const windows = process.platform === 'win32'
+const heldFileStart: ProcessStart = { clock: 'held-file', value: 0 }
+const startReading = unixOnly('a Windows holder is told alive by the file it holds open, and its start is never read')
 
 function escape(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -37,6 +43,7 @@ function gonePid(): number {
 }
 
 async function startOf(pid: number): Promise<ProcessStart> {
+  if (windows) return heldFileStart
   const reading = await readStart(pid)
   assert.ok(reading.state === 'present', `the start of pid ${pid} was read`)
   return reading.start
@@ -47,13 +54,14 @@ function writeGeneration(lock: string, holder: { readonly pid: number; readonly 
   mkdirSync(lock, { recursive: true })
   const generation = lockState(lock).generation + 1
   const record = { version: 2, token: randomBytes(16).toString('hex'), machine: holder.machine ?? (machine.ok ? machine.machine.id : ''), host: holder.host ?? 'this machine', pid: holder.pid, start: holder.start, since: '2026-10-05T00:00:00.000Z', command: 'a stand-in installer' }
+  if (holder.start.clock === 'held-file') writeFileSync(join(lock, `${generation}.${record.token}.held`), '')
   writeFileSync(join(lock, `${generation}.json`), JSON.stringify(record))
   return generation
 }
 
-// The files of a lock that are not hidden.
+// The files of a lock that are not hidden, and not the file a holder on Windows holds open.
 function visible(lock: string): string[] {
-  return readdirSync(lock).filter((name) => !name.startsWith('.')).sort()
+  return readdirSync(lock).filter((name) => !name.startsWith('.') && !name.endsWith('.held')).sort()
 }
 
 // The most installers that held the lock at one moment, from their `enter` and `leave` lines. A leave and an enter at
@@ -115,7 +123,8 @@ describe('the install lock', () => {
       assert.equal(entered, 6, `every installer held the lock once in round ${round}:\n${text}`)
       assert.equal(most, 1, `one installer at a time in round ${round}:\n${text}`)
       const refusals = text.split('\n').filter((line) => line.startsWith('refused '))
-      for (const refusal of refusals) assert.match(refusal, new RegExp(`holds the install lock ${escape(lock)}`), 'each refusal names the lock')
+      // Each refusal line is `refused <pid> <message as JSON>`, so its message is read back before it is matched.
+      for (const refusal of refusals) assert.match(JSON.parse(refusal.slice(refusal.indexOf('"'))), new RegExp(`holds the install lock ${escape(lock)}`), 'each refusal names the lock')
       const after = lockState(lock)
       assert.ok(after.generation >= left + 6 && after.released, `the gone holder was passed over, and every generation after it was let go, in round ${round}: ${JSON.stringify(after)}`)
     }
@@ -189,7 +198,7 @@ describe('the install lock', () => {
   })
 
   // A different start is unconfirmed while the PID is present. Only whole-table absence frees the generation.
-  test('refuses a present holder with either start mismatch or an unreadable identity, and takes it only after its pid is absent', async () => {
+  test('refuses a present holder with either start mismatch or an unreadable identity, and takes it only after its pid is absent', { skip: startReading }, async () => {
     const lock = newLock()
     await withStandIn(async (pid) => {
       const real = await startOf(pid)
@@ -247,7 +256,7 @@ describe('the install lock', () => {
     assert.equal(existsSync(join(lock, `.${ours}-${pid}-abcdef.tmp`)), false, "this machine's gone writer's hidden file is removed")
   })
 
-  test('a release frees only its own generation: one made again under its number, after the folder was removed, stays held', async () => {
+  test('a release frees only its own generation: one made again under its number, after the folder was removed, stays held', { skip: unixOnly('Windows removes no lock folder while its holder holds a file in it open, so none is made again meanwhile') }, async () => {
     const lock = newLock()
     const first = await takeInstallLock(lock)
     assert.ok(first.ok, first.ok ? '' : first.message)
@@ -263,7 +272,7 @@ describe('the install lock', () => {
     }
   })
 
-  test('a folder that cannot be read, or a gone writer\'s file that cannot be removed, is a refusal by name, not a thrown error', async () => {
+  test('a folder that cannot be read, or a gone writer\'s file that cannot be removed, is a refusal by name, not a thrown error', { skip: unixOnly('Windows gives a folder no mode that refuses reading or removing what is in it') }, async () => {
     const lock = newLock()
     mkdirSync(lock)
     chmodSync(lock, 0o000)
@@ -304,7 +313,7 @@ describe('the install lock', () => {
     }
   })
 
-  test('keeps only the newest two generations however many installs there were, and a slow taker never holds a generation made again under an old number', { timeout: 30_000 }, async () => {
+  test('keeps only the newest two generations however many installs there were, and a slow taker never holds a generation made again under an old number', { timeout: 30_000, skip: startReading }, async () => {
     const lock = newLock()
     for (let round = 1; round <= 12; round += 1) {
       const taken = await takeInstallLock(lock)
@@ -339,5 +348,38 @@ describe('the install lock', () => {
       assert.equal(next.ok, false, 'nobody else holds it beside the slow taker')
       await slow.release()
     })
+  })
+})
+
+describe('the install lock on Windows', { skip: windowsOnly('a holder that holds a file open, which Windows lets no other process open, exists only on Windows') }, () => {
+  test('passes over a holder whose held file nobody holds, whatever process has its pid now', async () => {
+    const lock = newLock()
+    await withStandIn(async (pid) => {
+      writeGeneration(lock, { pid, start: heldFileStart })
+      const taken = await takeInstallLock(lock)
+      assert.ok(taken.ok, taken.ok ? '' : taken.message)
+      assert.deepEqual(lockState(lock), { generation: 2, released: false }, 'the live process under the pid did not hold the lock')
+      await taken.release()
+    })
+  })
+
+  test('refuses a generation whose held file is missing, since nothing then tells whether its holder runs', async () => {
+    const lock = newLock()
+    writeGeneration(lock, { pid: gonePid(), start: { clock: 'utc-seconds', value: 1 } })
+    const refused = await takeInstallLock(lock)
+    assert.match(refused.ok ? '' : refused.message, new RegExp(`^Retest could not read whether the process holding the install lock ${escape(lock)} \\(pid \\d+, since 2026-10-05T00:00:00\\.000Z\\) still runs \\(its held file .+ is missing\\), so it leaves that lock alone\\.`))
+    assert.deepEqual(visible(lock), ['1.json'], 'no other generation was made')
+  })
+
+  test('keeps only the newest two generations however many installs there were', { timeout: 30_000 }, async () => {
+    const lock = newLock()
+    for (let round = 1; round <= 12; round += 1) {
+      const taken = await takeInstallLock(lock)
+      assert.ok(taken.ok, taken.ok ? '' : taken.message)
+      await taken.release()
+    }
+    assert.deepEqual(lockState(lock), { generation: 12, released: true })
+    assert.deepEqual(visible(lock).map((name) => name.split('.')[0]), ['11', '11', '12', '12'], 'two generations and their marks are left')
+    assert.deepEqual(readdirSync(lock).filter((name) => name.endsWith('.held')).map((name) => name.split('.')[0]).sort(), ['11', '12'], 'and their held files, closed')
   })
 })

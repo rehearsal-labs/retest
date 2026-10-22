@@ -1,10 +1,11 @@
 import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { resultFile } from '../../src/protocol/run-folder.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { launchesHeldByJob } from '../../src/shared/process-system.ts'
 import { openApp, waitForGroupEnd } from './browser-harness.ts'
 import {
   answersAt,
@@ -32,6 +33,7 @@ import {
   waitFor,
   writeProject,
 } from './cli-harness.ts'
+import { killBrowserFromOutside } from './outside-kill.ts'
 
 // Acceptance check 16: milestone 1's guarantees hold for runs from a config, with several apps, targets, app
 // servers and saved states: honest outcomes and exit codes, no repeated action, timeouts, lost browsers and
@@ -66,7 +68,8 @@ test('outcomes stay honest: a pass exits 0, a failed check 1, and a target whose
   const [chrome, absent] = resultsNamed(missing, 'saves a task')
   assert.deepEqual([chrome?.variantKey, chrome?.status], ['web=chrome', 'passed'])
   assert.deepEqual([absent?.variantKey, absent?.status, absent?.failure?.class], ['web=missing', 'not_run', 'setup_failed'])
-  assert.match(absent?.failure?.message ?? '', /No browser at \/nonexistent\/chromium/)
+  // The config reads executablePath against its own folder, so on Windows the path is on that folder's drive.
+  assert.ok(absent?.failure?.message.includes(`No browser at ${resolve(root, '/nonexistent/chromium')}`), absent?.failure?.message)
   assert.deepEqual([resultOf(missing).status, resultOf(missing).complete], ['error', false])
 
   // One save for each run that reached the button, and none for the target with no browser.
@@ -136,12 +139,16 @@ test('needs the lost browser again', { apps: ['frozen'] }, async ({ frozen }) =>
   const browser = await started.retest.waitForEvent('browser.started', (event) => event.app === 'frozen')
   await waitFor('the frozen page to count its save', () => frozen.submissions() === 1)
   // The browser is lost from outside, as a crash would lose it. It is killed through the record of what the command
-  // launched, as the harness ends what it recorded, each process checked against its record first.
-  const launched = new OwnedProcessGroup(started.retest.pid)
-  launched.capture()
-  const lostBrowser = launched.groupFor(browser.pid)
-  assert.ok(lostBrowser !== undefined, 'the frozen browser is recorded as one the run launched')
-  assert.deepEqual(lostBrowser.signalReport('SIGKILL').problems, [], 'every process of the frozen browser was killed after its identity was checked')
+  // launched, as the harness ends what it recorded, each process checked against its record first. On Windows that record
+  // is the job the harness holds the command in, and the browser's helpers end with its main process.
+  if (launchesHeldByJob) killBrowserFromOutside(started.retest.pid, browser.pid)
+  else {
+    const launched = new OwnedProcessGroup(started.retest.pid)
+    launched.capture()
+    const lostBrowser = launched.groupFor(browser.pid)
+    assert.ok(lostBrowser !== undefined, 'the frozen browser is recorded as one the run launched')
+    assert.deepEqual(lostBrowser.signalReport('SIGKILL').problems, [], 'every process of the frozen browser was killed after its identity was checked')
+  }
   const run = await finishRun(started)
   assertStdoutIsEvents(run)
 
@@ -265,10 +272,11 @@ test('waits for text that never comes', async ({ page }) => {
   assert.deepEqual(run.exit, { code: null, signal: 'SIGKILL' })
   assert.equal(existsSync(join(run.output, resultFile)), false)
   for (const browser of eventsOf(run.events, 'browser.started')) await waitForGroupEnd(browser.pid, 5000)
-  // Nothing of a killed process runs: the saved state it held stays in its run folder, and nothing stops the
-  // server it started. The harness stops that server after the test.
+  // Nothing of a killed process runs: the saved state it held stays in its run folder. On macOS and Linux nothing stops
+  // the server it started, and the harness stops it after the test; on Windows nothing Retest starts outlives it, so
+  // the server ended with it.
   assert.notDeepEqual(statesLeftIn(run.output), [])
-  assert.equal(await answersAt(served), true)
+  assert.equal(await answersAt(served), !launchesHeldByJob)
 
   const inspected = await inspectJson(t, run.output)
   assert.equal(inspected.exit.code, 0, inspected.stderr)

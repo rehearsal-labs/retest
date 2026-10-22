@@ -1,5 +1,6 @@
 import type { StorageState } from '../../src/protocol/storage-state.ts'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { emulationSchema } from '../../src/protocol/emulation.ts'
@@ -96,7 +97,7 @@ describe('JSON Schema files', () => {
     assert.equal(eventSchemaFileName, 'event-v1.schema.json')
     assert.equal(resultSchemaFileName, 'result-v1.schema.json')
     const root = fileURLToPath(new URL('../../', import.meta.url))
-    assert.equal(fileURLToPath(eventSchemaUrl), `${root}dist/schemas/event-v1.schema.json`)
-    assert.equal(fileURLToPath(resultSchemaUrl), `${root}dist/schemas/result-v1.schema.json`)
+    assert.equal(fileURLToPath(eventSchemaUrl), join(root, 'dist', 'schemas', 'event-v1.schema.json'))
+    assert.equal(fileURLToPath(resultSchemaUrl), join(root, 'dist', 'schemas', 'result-v1.schema.json'))
   })
 })

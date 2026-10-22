@@ -2,12 +2,13 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { TEAM } from '../../fixtures/task-app/workflow-lists-page.ts'
+import { firefoxPlatformProblem } from '../../src/browser/firefox/executable.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
 import { byRole, closeMs, goto, groupExists, observe, openApp, openPage, scratchFolder, setupMs } from './browser-harness.ts'
 import { firefoxPath, testFirefoxRoute } from './engines.ts'
 
-const skip = process.platform === 'darwin' && process.arch === 'arm64' ? false : 'Firefox requires macOS on Apple silicon'
+const skip = firefoxPlatformProblem() ?? false
 let nextId = 1_000_000
 
 async function raw(socket: WebSocket, method: string, params: object): Promise<Record<string, unknown>> {
@@ -28,7 +29,7 @@ async function raw(socket: WebSocket, method: string, params: object): Promise<R
   })
 }
 
-test('Firefox reads every team-table row and header while refusing the absent text-named cell', { skip }, async (t) => {
+test('Firefox reads every team-table row and header, and Retest refuses the cell looked up by its text', { skip }, async (t) => {
   const app = await openApp(t)
   const folder = await scratchFolder(t)
   let socket: WebSocket | undefined
@@ -51,7 +52,8 @@ test('Firefox reads every team-table row and header while refusing the absent te
   assert.equal(await locate('row'), 7)
   assert.equal(await locate('cell'), 24)
   assert.equal(await locate('columnheader', 'Role'), 1)
-  assert.equal(await locate('cell', 'Grace Hopper'), 0)
+  // Firefox 158 names a cell from its text, as Chrome does; Firefox 133 gave it no name. Retest's lookup stays refused.
+  assert.equal(await locate('cell', 'Grace Hopper'), 1)
   const rows = await observe(page, byRole('row'))
   assert.equal(rows.count, 7)
   assert.deepEqual(rows.items.map((item) => item.text), ['Name Email Role Open tasks', ...TEAM.map((member) => `${member.name} ${member.email} ${member.role} ${member.tasks}`)])
@@ -61,7 +63,7 @@ test('Firefox reads every team-table row and header while refusing the absent te
   const cell = await page.execute({ kind: 'observe', locator: byRole('cell', 'Grace Hopper') }, setupMs)
   assert.deepEqual(cell, { ok: false, failure: {
     class: 'unsupported',
-    message: "Could not look up getByRole('cell', { name: 'Grace Hopper' }): Chrome names a cell from its text, and Firefox's accessibility tree does not, so Retest refuses the lookup rather than find less on Firefox. Find it with getByText() or getByTestId(), or by its position with nth().",
+    message: "Could not look up getByRole('cell', { name: 'Grace Hopper' }): on Firefox, Retest does not look up a cell by its name, since it has not checked that Firefox names cells as Chrome does. Find it with getByText() or getByTestId(), or by its position with nth().",
     details: { role: 'cell' },
   } })
 })

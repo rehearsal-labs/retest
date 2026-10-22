@@ -5,8 +5,10 @@
 //! recording's kept frames for an interval, and sends a live view of a recording's newest frame. The protocol is in
 //! `protocol.rs`.
 
-#[cfg(not(unix))]
-compile_error!("retest-media runs on Unix: it verifies each encoder process before stopping it");
+#[cfg(not(any(unix, windows)))]
+compile_error!(
+    "retest-media runs on Unix and Windows: it verifies each encoder process before stopping it"
+);
 
 #[cfg(feature = "allocation-counts")]
 mod allocations;
@@ -16,7 +18,10 @@ mod jobs;
 mod ledger;
 mod live;
 mod place;
+#[cfg(unix)]
 mod process_ownership;
+#[cfg(windows)]
+mod process_ownership_windows;
 mod protocol;
 mod queue;
 mod recording;
@@ -24,6 +29,11 @@ mod replies;
 mod server;
 mod store;
 mod timeline;
+
+// Windows has no `ps` and no signals: an encoder is witnessed by a job of its own, and each process in it by its own
+// handle.
+#[cfg(windows)]
+use process_ownership_windows as process_ownership;
 
 use std::ffi::OsString;
 use std::io::{self, BufReader};
@@ -54,6 +64,14 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // A media process started in its runner's console would end at the first Ctrl+C typed there, before the runner
+    // could finish its recordings. As on Unix, where it is not in the terminal's process group, the runner ends it.
+    // Its encoders and finalizers have consoles of their own and hear no Ctrl+C either.
+    #[cfg(windows)]
+    // SAFETY: a null handler with TRUE only sets this process's own flag to ignore Ctrl+C.
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
+    }
     let replies = match replies::stdout_pipe().and_then(|output| Replies::new(Box::new(output))) {
         Ok(replies) => replies,
         Err(error) => {

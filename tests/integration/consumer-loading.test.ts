@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { realpathSync } from 'node:fs'
 import { cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { testTsconfigFile, testTsconfigSource } from '../../src/cli/init/templates.ts'
 import { transformTypeScript } from '../../src/loader/transform.ts'
@@ -11,6 +11,7 @@ import {
   assertSucceeded,
   childLog,
   compilers,
+  installedRetest,
   installPacked,
   linkNodeTypes,
   onlyEvent,
@@ -53,8 +54,9 @@ describe('consumer projects load through the packed package', () => {
     if (root !== '') await rm(root, { recursive: true, force: true })
   })
 
-  // The installed command line, so nothing from this checkout's source runs.
-  const retest = (project: string): string[] => [join(project, 'node_modules/.bin/retest')]
+  // The installed command line, so nothing from this checkout's source runs: on Windows, the package's bin file under
+  // this Node, as npm's batch file runs it.
+  const retest = (project: string): string[] => installedRetest(project)
 
   // A copy of the everyday project whose base tsconfig declares paths without baseUrl, sharing its installed packages.
   const typeScript7Variant = async (name = 'everyday-typescript-7'): Promise<string> => {
@@ -89,7 +91,9 @@ describe('consumer projects load through the packed package', () => {
     const throwSite = await locate(projects.everyday, 'support/failures.ts', 'new Error(')
     assert.deepEqual(thrown.failure?.location, throwSite)
     const stack = childLog(run, 'tests/locations.retest.ts')
-    assert.match(stack, new RegExp(`at Thrower\\.fail \\(\\S*/support/failures\\.ts:${throwSite.line}:${throwSite.column}\\)`), stack)
+    // V8 names the frame's file by its path, with the platform's separator.
+    const separator = sep.replace('\\', '\\\\')
+    assert.match(stack, new RegExp(`at Thrower\\.fail \\(\\S*${separator}support${separator}failures\\.ts:${throwSite.line}:${throwSite.column}\\)`), stack)
     // Both lines sit elsewhere in what Node ran, so the locations above are the source map's work, not the transformer's.
     assert.notEqual(await transformedLine(projects.everyday, 'support/task-page.ts', 'toHaveText(title)'), check.failure?.location?.line)
     assert.notEqual(await transformedLine(projects.everyday, 'support/failures.ts', 'new Error('), throwSite.line)

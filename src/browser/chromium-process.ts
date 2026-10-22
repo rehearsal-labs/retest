@@ -12,9 +12,11 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { Deadline } from '../protocol/deadline.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { errorMessage } from '../protocol/failures.ts'
+import { withoutVariables } from '../shared/environment.ts'
 import { errorCode } from '../shared/error-code.ts'
 import { onlyUnreaped, procStats } from '../shared/unreaped-group.ts'
 import { OwnedProcessGroup, unverifiedMembersProblem } from '../shared/process-ownership.ts'
+import { holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../shared/process-system.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { writeRedactedLog } from './redacted-log.ts'
 
@@ -292,6 +294,19 @@ export function stillThereMessage(groupId: number, stats: () => readonly string[
  * @example signalGroup(browser.pid, 0) // true while any browser process is still there
  */
 export function signalGroup(pgid: number, signal: NodeJS.Signals | 0): boolean {
+  // Windows has no process group to send signal 0 to: a launch held here is asked through its job, and one held by
+  // another process only by its own pid.
+  if (signal === 0 && launchesHeldByJob) {
+    const owner = ownedGroups.get(pgid)
+    if (owner !== undefined) return owner.remains()
+    try {
+      process.kill(pgid, 0)
+      return true
+    } catch (error) {
+      if (errorCode(error) === 'ESRCH') return false
+      throw error
+    }
+  }
   if (signal !== 0) {
     const owner = ownedGroups.get(pgid)
     if (owner === undefined) throw new Error(`Process group ${pgid} has no recorded launch ownership in this process, so it was not signaled.`)
@@ -324,18 +339,22 @@ async function spawnInGroup(options: StartOptions): Promise<ChromiumProcess> {
   const log = await openLog(options.logFile)
   let logHandedOn = false
   try {
-    const hidden = new Set(options.hiddenVariables)
     // Output to redact comes through Retest; any other goes straight to the log.
     const outputMode = redact === undefined && redactStream === undefined ? log.fd : 'pipe'
+    try {
+      prepareOwnedLaunch()
+    } catch (error) {
+      throw new LaunchError(`Cannot start ${options.executable}: ${errorMessage(error)}`, { cause: error })
+    }
     const child = spawn(options.executable, options.args, {
-      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !hidden.has(name))),
+      env: withoutVariables(process.env, options.hiddenVariables),
       detached: true,
       stdio: ['ignore', outputMode, outputMode, 'pipe', 'pipe'],
     })
     await once(child, 'spawn').catch((error: unknown) => {
       throw new LaunchError(`Cannot start ${options.executable}: ${errorMessage(error)}`, { cause: error })
     })
-    const ownership = new OwnedProcessGroup(child.pid ?? 0)
+    const ownership = holdLaunch(child)
     const ownershipProblems = ownership.capture()
     const [, , , writable, readable] = child.stdio
     if (!(writable instanceof Writable) || !(readable instanceof Readable)) {
@@ -459,9 +478,27 @@ function killAtExit(ownership: OwnedProcessGroup, profile: string | undefined): 
   try {
     const deadline = new Deadline(closeGraceMs)
     ownership.signalNow('SIGKILL', deadline)
-    if (profile !== undefined && groupEndsNow(ownership, deadline)) rmSync(profile, { recursive: true, force: true, maxRetries: 3 })
+    if (profile === undefined || !groupEndsNow(ownership, deadline)) return
+    if (launchesHeldByJob) removeOnceFree(profile, deadline)
+    else rmSync(profile, { recursive: true, force: true, maxRetries: 3 })
   } catch {
     // Throwing here would replace the exit code Retest chose.
+  }
+}
+
+// On Windows a folder whose files processes just ended were using refuses removal for a moment after they left their
+// job, and the synchronous removal does not wait; it is asked again, a poll apart, until the deadline.
+function removeOnceFree(folder: string, deadline: Deadline): void {
+  const pause = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+  for (;;) {
+    try {
+      rmSync(folder, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const code = errorCode(error)
+      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY') || deadline.expired) throw error
+      Atomics.wait(pause, 0, 0, Math.min(pollMs, deadline.remainingMs))
+    }
   }
 }
 

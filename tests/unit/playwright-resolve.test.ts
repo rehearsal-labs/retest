@@ -1,19 +1,23 @@
 import type { ResolveFnOutput, ResolveHookContext } from 'node:module'
 import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
 import { describe, test } from 'node:test'
+import { pathToFileURL } from 'node:url'
 import { playwrightSpecifiers, projectResolver } from '../../src/loader/resolve.ts'
 
 const own = 'file:///opt/retest/dist/loader/project.js'
 const ownFolderUrl = 'file:///opt/retest/dist/'
 const compatibility = '@rehearsal-labs/retest/playwright'
-const context: ResolveHookContext = { conditions: ['node', 'import'], importAttributes: {}, parentURL: 'file:///work/tests/tasks.spec.ts' }
+// The test file and where the stand-in resolver finds what it knows, as file URLs this platform can read.
+const context: ResolveHookContext = { conditions: ['node', 'import'], importAttributes: {}, parentURL: pathToFileURL(resolve('/work/tests/tasks.spec.ts')).href }
+const resolvedFolder = `${pathToFileURL(resolve('/resolved')).href}/`
 
 /** A resolver that knows `known` specifiers and answers the rest as Node does a missing module. */
 function resolving(known: readonly string[], code = 'ERR_MODULE_NOT_FOUND') {
   const asked: [string, Partial<ResolveHookContext> | undefined][] = []
   const next = (specifier: string, given?: Partial<ResolveHookContext>): ResolveFnOutput => {
     asked.push([specifier, given])
-    if (known.includes(specifier)) return { url: `file:///resolved/${specifier}` }
+    if (known.includes(specifier)) return { url: `${resolvedFolder}${specifier}` }
     throw Object.assign(new Error(`Cannot find module ${specifier}`), { code })
   }
   return { asked, next }
@@ -24,7 +28,7 @@ describe("the project resolver's Playwright mapping and imports without an exten
     const hook = projectResolver({ ownUrl: own, ownFolderUrl, playwright: compatibility })
     const { asked, next } = resolving([compatibility, 'node:fs'])
     assert.deepEqual([...playwrightSpecifiers], ['@playwright/test', 'playwright/test'])
-    for (const specifier of playwrightSpecifiers) assert.equal(hook(specifier, context, next).url, `file:///resolved/${compatibility}`)
+    for (const specifier of playwrightSpecifiers) assert.equal(hook(specifier, context, next).url, `${resolvedFolder}${compatibility}`)
     hook('node:fs', context, next)
     assert.deepEqual(asked, [
       [compatibility, { ...context, parentURL: own }],
@@ -36,10 +40,10 @@ describe("the project resolver's Playwright mapping and imports without an exten
   test('a relative import without its extension resolves to the file, then to the folder index, in that order', () => {
     const hook = projectResolver({ ownUrl: own, ownFolderUrl, playwright: compatibility })
     const file = resolving(['./helper.ts'])
-    assert.equal(hook('./helper', context, file.next).url, 'file:///resolved/./helper.ts')
+    assert.equal(hook('./helper', context, file.next).url, `${resolvedFolder}./helper.ts`)
     assert.deepEqual(file.asked.map(([specifier]) => specifier), ['./helper', './helper.ts'])
     const folder = resolving(['../pages/index.ts'], 'ERR_UNSUPPORTED_DIR_IMPORT')
-    assert.equal(hook('../pages', context, folder.next).url, 'file:///resolved/../pages/index.ts')
+    assert.equal(hook('../pages', context, folder.next).url, `${resolvedFolder}../pages/index.ts`)
     // TSX and JSX candidates are asked for too, so a JSX source is refused by name before a JavaScript sibling can load.
     assert.deepEqual(folder.asked.map(([specifier]) => specifier), ['../pages', '../pages.ts', '../pages.tsx', '../pages.js', '../pages.jsx', '../pages.mts', '../pages.mjs', '../pages/index.ts'])
   })

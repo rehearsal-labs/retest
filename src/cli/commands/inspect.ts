@@ -20,7 +20,7 @@ import { CliError, UsageError } from '../errors.ts'
 import { readTestDiagnostics, renderTestDiagnostics } from '../inspect/diagnostics.ts'
 import { renderTimeline } from '../inspect/test-timeline.ts'
 import { suggest } from '../suggest.ts'
-import { shouldUseColor } from '../terminal.ts'
+import { shouldUseColor, terminalMarks } from '../terminal.ts'
 
 /**
  * What `inspect --test <id> --json` prints: the test's result and its events, in order, and each session's diagnostics
@@ -100,7 +100,7 @@ function writeTest(request: TestRequest, dependencies: CliDependencies): void {
     stdout.write(`${JSON.stringify(report, null, 2)}\n`)
     return
   }
-  const style = createStyle(shouldUseColor(stdout, dependencies.env))
+  const style = createStyle(shouldUseColor(stdout, dependencies.env), terminalMarks(stdout, dependencies.env))
   const targets = runTargets(record, folder.result)
   stdout.write(`\n${renderTimeline(test, events, { style, runFolder: shown, targets })}`)
   stdout.write(renderTestDiagnostics(diagnostics, events, { style, runFolder: shown }))
@@ -115,6 +115,7 @@ function writeRun(folder: RunFolder, shown: string, dependencies: CliDependencie
     stdout: dependencies.stdout,
     stderr: dependencies.stderr,
     color: shouldUseColor(dependencies.stdout, dependencies.env),
+    marks: terminalMarks(dependencies.stdout, dependencies.env),
     runFolder: shown,
   })
   for (const event of folder.events) reporter.onEvent(event)

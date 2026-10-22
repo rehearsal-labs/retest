@@ -86,12 +86,44 @@ describe('quoteRecorded', () => {
 
 describe('commands', () => {
   test('quotes for a shell only as much as needed', () => {
-    assert.equal(shellQuote('examples/task.retest.ts'), 'examples/task.retest.ts')
-    assert.equal(shellQuote('http://127.0.0.1:4173/app'), 'http://127.0.0.1:4173/app')
-    assert.equal(shellQuote('examples/task.retest.ts > saves a task'), '"examples/task.retest.ts > saves a task"')
-    assert.equal(shellQuote(''), '""')
-    assert.equal(shellQuote('costs $5'), "'costs $5'")
-    assert.equal(shellQuote(`it's "quoted" \\ !`), `'it'\\''s "quoted" \\ !'`)
+    assert.equal(shellQuote('examples/task.retest.ts', 'darwin'), 'examples/task.retest.ts')
+    assert.equal(shellQuote('http://127.0.0.1:4173/app', 'darwin'), 'http://127.0.0.1:4173/app')
+    assert.equal(shellQuote('examples/task.retest.ts > saves a task', 'darwin'), '"examples/task.retest.ts > saves a task"')
+    assert.equal(shellQuote('', 'darwin'), '""')
+    assert.equal(shellQuote('costs $5', 'darwin'), "'costs $5'")
+    assert.equal(shellQuote(`it's "quoted" \\ !`, 'darwin'), `'it'\\''s "quoted" \\ !'`)
+    assert.equal(shellQuote('runs\\finished', 'darwin'), "'runs\\finished'")
+  })
+
+  // PowerShell reads a bare comma as its array operator and a leading @ as splatting; Git Bash reads a backslash as an
+  // escape. Single quotes keep each of these as written in both.
+  test('on Windows, quotes what PowerShell or Git Bash would read apart: a comma, a leading @ and a backslash', () => {
+    assert.equal(shellQuote('action=500,test=3000', 'win32'), '"action=500,test=3000"')
+    assert.equal(shellQuote('action=500,test=3000', 'darwin'), 'action=500,test=3000')
+    assert.equal(shellQuote('@scope/app', 'win32'), '"@scope/app"')
+    assert.equal(shellQuote('user@host', 'win32'), 'user@host')
+    assert.equal(shellQuote('.retest\\runs\\2026-09-30T09-15-00.000Z', 'win32'), "'.retest\\runs\\2026-09-30T09-15-00.000Z'")
+    assert.equal(shellQuote('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'win32'), "'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'")
+    assert.equal(shellQuote('examples/task.retest.ts > saves a task', 'win32'), '"examples/task.retest.ts > saves a task"')
+    assert.equal(shellQuote('costs $5', 'win32'), "'costs $5'")
+    assert.equal(shellQuote(`it's "quoted"`, 'win32'), `'it''s "quoted"'`)
+    assert.equal(shellQuote('', 'win32'), '""')
+  })
+
+  // PowerShell reads “ ” „ as a double quote and ‘ ’ ‚ ‛ as a single quote; elsewhere they are characters like any other.
+  test('on Windows, a typographic quote never ends the quoted value in PowerShell', () => {
+    assert.equal(shellQuote('the checks are the parent’s', 'win32'), '"the checks are the parent’s"')
+    assert.equal(shellQuote('says “saved”', 'win32'), "'says “saved”'")
+    assert.equal(shellQuote('says “saved”', 'darwin'), '"says “saved”"')
+    assert.equal(shellQuote('the parent’s $5', 'win32'), "'the parent’’s $5'")
+    assert.equal(shellQuote('the parent’s $5', 'darwin'), "'the parent’s $5'")
+  })
+
+  // cmd.exe, PowerShell and Git Bash all hand a forward slash to the program as it is, and Windows reads it as a separator.
+  test('on Windows, the inspect command names the run folder with forward slashes, bare where it has no space', () => {
+    assert.equal(formatInspectCommand({ runFolder: '.retest\\runs\\2026-09-30T09-15-00.000Z', testId: 'tests/a.retest.ts > saves' }, 'win32'), 'npx retest inspect .retest/runs/2026-09-30T09-15-00.000Z --test "tests/a.retest.ts > saves"')
+    assert.equal(formatInspectCommand({ runFolder: 'C:\\Users\\Ada Lovelace\\run', json: true }, 'win32'), 'npx retest inspect "C:/Users/Ada Lovelace/run" --json')
+    assert.equal(formatInspectCommand({ runFolder: '.retest/runs/a' }, 'darwin'), 'npx retest inspect .retest/runs/a')
   })
 
   test('rerun repeats the file, browser, base URL and changed timeouts', () => {

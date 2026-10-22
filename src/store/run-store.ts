@@ -11,6 +11,7 @@ import { diagnosticsFolder, eventsFile, logsFolder, resultFile, statesFolder } f
 import { parse } from '../protocol/schema.ts'
 import { storageStateSchema } from '../protocol/storage-state.ts'
 import { errorCode } from '../shared/error-code.ts'
+import { keepFolderToUser, PrivateFolderError } from '../shared/private-file.ts'
 
 /** Thrown when the run folder cannot be created or already holds another run. */
 export class RunFolderError extends Error {
@@ -34,6 +35,7 @@ export class RunStore {
   #resultWritten = false
   #closed = false
   #removeStatesOnExit: (() => void) | undefined
+  #statesReady: Promise<void> | undefined
   // Where the run's clock stands at zero on the host's monotonic clock, as the events written so far place it.
   #clockZero: number | undefined
   #clock: (() => number) | undefined
@@ -146,16 +148,43 @@ export class RunStore {
 
   /**
    * Saves a sign-in state where only this user can read it, never over another. States hold session cookies, so
-   * they are removed when the run ends, and when the process exits before it could.
+   * they are removed when the run ends, and when the process exits before it could. Their folder is made, by this
+   * process alone, and kept to this user before any state is in it (on Windows, whose files take their folder's access
+   * list, that is when its list is replaced); each state is then made exclusively and written through the descriptor
+   * that made it, so nothing written ever follows a link or lands in a file someone else made.
    */
-  writeState(path: string, state: StorageState): void {
+  async writeState(path: string, state: StorageState): Promise<void> {
     const target = this.#path(path)
-    mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
+    await this.#statesFolder(dirname(target))
     if (this.#removeStatesOnExit === undefined) {
       this.#removeStatesOnExit = () => this.removeStates()
       process.once('exit', this.#removeStatesOnExit)
     }
-    writeFileSync(target, JSON.stringify(state), { flag: 'wx', mode: 0o600 })
+    const descriptor = openSync(target, 'wx', 0o600)
+    try {
+      writeAll(descriptor, JSON.stringify(state))
+    } catch (error) {
+      closeSync(descriptor)
+      throw withLeftover(error, target, () => rmSync(target, { force: true }))
+    }
+    closeSync(descriptor)
+  }
+
+  // The states folder, made once per run by this process: a folder already there is refused, so no one else's folder
+  // ever holds a state. It is kept to this user before anything is made in it; a folder that cannot be is removed.
+  #statesFolder(folder: string): Promise<void> {
+    this.#statesReady ??= (async () => {
+      mkdirSync(folder, { mode: 0o700 })
+      try {
+        await keepFolderToUser(folder)
+      } catch (error) {
+        throw withLeftover(error, folder, () => rmSync(folder, { recursive: true, force: true }))
+      }
+    })().catch((error: unknown) => {
+      this.#statesReady = undefined
+      throw error
+    })
+    return this.#statesReady
   }
 
   /** Reads a state `writeState` saved, checked against its schema. */
@@ -169,6 +198,7 @@ export class RunStore {
   removeStates(): void {
     if (this.#removeStatesOnExit !== undefined) process.removeListener('exit', this.#removeStatesOnExit)
     this.#removeStatesOnExit = undefined
+    this.#statesReady = undefined
     rmSync(this.#path(statesFolder), { recursive: true, force: true })
   }
 
@@ -203,6 +233,18 @@ function claim(directory: string): number {
   } catch (error) {
     if (errorCode(error) === 'EEXIST') throw new RunFolderError(occupied(directory), { cause: error })
     throw new RunFolderError(`Retest could not write to the run folder ${directory}: ${errorMessage(error)}`, { cause: error })
+  }
+}
+
+// The failure as it was, with what its cleanup could not remove added to it, so a cleanup that fails never replaces it.
+function withLeftover(error: unknown, path: string, remove: () => void): unknown {
+  try {
+    remove()
+    return error
+  } catch (removal) {
+    const leftover = `${path} is still there: ${errorMessage(removal)}`
+    if (error instanceof PrivateFolderError) return new PrivateFolderError(error.message, `${error.detail}; ${leftover}`)
+    return new Error(`${errorMessage(error)} ${leftover}`, { cause: error })
   }
 }
 

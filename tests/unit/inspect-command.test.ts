@@ -8,6 +8,7 @@ import { describe, test } from 'node:test'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
 import { parse } from '../../src/protocol/schema.ts'
+import { commandPath, shellQuote } from '../../src/reporters/commands.ts'
 import { fakeCli, writeRunFolder } from './cli-fixtures.ts'
 import {
   failingRun,
@@ -44,7 +45,12 @@ function shown(folder: string): string {
   return relative(root, folder)
 }
 
-async function inspect(args: string[], options: { isTTY?: boolean } = {}) {
+// A path inside a pattern: a Windows path's backslashes and a file's dots are literal.
+function escape(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+async function inspect(args: string[], options: { isTTY?: boolean; env?: Readonly<Record<string, string>> } = {}) {
   const fake = fakeCli({ cwd: root, ...options })
   const code = await fake.cli(['inspect', ...args])
   return { code, stdout: fake.stdout.text, stderr: fake.stderr.text }
@@ -93,11 +99,11 @@ describe('inspect a finished run', () => {
     assert.match(stdout, /✗ saves a task {2}5\.6s/)
     assert.match(stdout, /Check failed {5}toHaveText/)
     assert.match(stdout, /› 7 │ {3}await expect/)
-    assert.match(stdout, new RegExp(`Screenshot {7}${shown(finished)}/artifacts/saves-a-task-failure\\.png`))
+    assert.match(stdout, new RegExp(`Screenshot {7}${escape(join(shown(finished), 'artifacts', 'saves-a-task-failure.png'))}`))
     assert.match(
       stdout,
       new RegExp(
-        `Inspect {10}npx retest inspect ${shown(finished)} --test "examples/task\\.retest\\.ts > saves a task"`,
+        `Inspect {10}npx retest inspect ${escape(shellQuote(commandPath(shown(finished))))} --test "examples/task\\.retest\\.ts > saves a task"`,
       ),
     )
     assert.match(stdout, /\n {2}Exit {4}1\n/)
@@ -113,8 +119,10 @@ describe('inspect a finished run', () => {
     assert.equal(parsed.value.failure?.class, 'setup_failed')
   })
 
+  // A terminal that names itself draws the glyphs, so colour is all that differs; a bare Windows console draws marks its
+  // fonts have, as the terminalMarks cases show.
   test('colours a terminal', async () => {
-    const { stdout } = await inspect([shown(finished)], { isTTY: true })
+    const { stdout } = await inspect([shown(finished)], { isTTY: true, env: { TERM: 'xterm-256color' } })
     assert.ok(stdout.includes('\u001b['))
     assert.equal(plain(stdout), (await inspect([shown(finished)])).stdout)
   })
@@ -228,7 +236,7 @@ describe('inspect one test', () => {
       "fill getByTestId('task-title'), 17 characters  8 ms",
       "click getByTestId('save-task')  9 ms",
       "✗ toHaveText getByTestId('saved-task')  5s, 14 looks  check_failed",
-      `screenshot ${shown(finished)}/artifacts/saves-a-task-failure.png`,
+      `screenshot ${join(shown(finished), 'artifacts', 'saves-a-task-failure.png')}`,
       'failed  5.6s',
       'Check failed     toHaveText',
       '- Expected       "Release checklist"',

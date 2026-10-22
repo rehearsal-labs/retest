@@ -12,12 +12,16 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { AppServerError, probeReady, startAppServer } from '../../src/runner/app-server.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { isGoneWithin, isRunning } from '../support/run-harness.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
 const serverScript = fileURLToPath(new URL('../support/http-server.ts', import.meta.url))
 const node = JSON.stringify(process.execPath)
 const started: AppServerHandle[] = []
+// A shell that replaces itself with its command is a POSIX shell's `exec`; cmd.exe always runs the command as its own
+// child, so on Windows the first case, a shell and its server ended together, is the whole story.
+const replacingShell = unixOnly('cmd.exe never replaces itself with the command it runs, so its pid is never the server')
 
 after(async () => {
   for (const server of started) await server.stop(1000)
@@ -141,7 +145,7 @@ describe('startAppServer', () => {
 
   // A shell replaces itself with a single command at once, too fast to catch at launch; here it first waits, so the
   // launch is recorded while it is still the shell and the server later holds the shell's pid under its own command.
-  test('a shell that replaces itself with the server after the launch is recorded still has its server stopped', async (t) => {
+  test('a shell that replaces itself with the server after the launch is recorded still has its server stopped', { skip: replacingShell }, async (t) => {
     const port = await freePort()
     const logFile = logIn('replaced')
     const server = await startAppServer({ name: 'web', start: startOf(`sleep 0.3 && exec ${serverCommand(port)}`, port), logFile }, 5000)
@@ -154,7 +158,7 @@ describe('startAppServer', () => {
     assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 500), false)
   })
 
-  test('a shell that became the server is still stopped when the server never answers', async (t) => {
+  test('a shell that became the server is still stopped when the server never answers', { skip: replacingShell }, async (t) => {
     const port = await heldPort(t)
     const logFile = logIn('replaced-slow')
     const start = startOf(`sleep 0.3 && exec ${serverCommand(port, 60_000)}`, port)
