@@ -1,6 +1,6 @@
 # Basic workflow cases
 
-The fixed list of basic workflow cases for ten families of everyday web work: four or five cases each, from opening a page to waiting for a slow list. Each case runs on Chromium through the command line, against real Chrome and the task app. The [conformance run](conformance.md) runs the same cases on Firefox and WebKit, and lists where an engine ends one otherwise. It is not a coverage percentage: every case here must behave as written, and nothing is promised about a share of a larger set.
+The fixed list of basic workflow cases for ten families of everyday web work: four or five cases each, from opening a page to waiting for a slow list. Each case runs on Chromium through the command line, against real Chrome and the task app. The ten integration files also pass on Windows x64, against the Google Chrome of GitHub's Windows Server 2025 runner. The [conformance run](conformance.md) runs the same cases on Firefox and WebKit, and lists where an engine ends one otherwise. It is not a coverage percentage: every case here must behave as written, and nothing is promised about a share of a larger set.
 
 Every case has an ordinary passing path or a variation that matters, and every family has at least one case that must fail. A failing case counts only when it fails in its named step, at the line of its check, with the class and message below. Each integration file runs one project with all of its family's cases, with a 1.5 second assertion budget, and expects exit code 1 because of its failing cases.
 

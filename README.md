@@ -25,7 +25,7 @@ There is no Playwright, Puppeteer or Selenium underneath. Retest is early, and t
 
 ## Quick start
 
-You need Node.js 24.12 or later, on macOS or Linux.
+You need Node.js 24.12 or later, on macOS, Linux or Windows x64. Windows also needs Retest's process supervisor, which [the guide](docs/guide.md#windows) says how to install.
 
 ```sh
 npm install --save-dev @rehearsal-labs/retest typescript @types/node
@@ -72,16 +72,16 @@ npx retest install --list     # what is pinned for this machine; downloads nothi
 npx retest install firefox    # also chromium, webkit and electron
 ```
 
-On macOS on Apple silicon, Retest pins Chrome for Testing, Firefox 133, Playwright's WebKit build 2359 and Electron 44.5.1. On Linux x64 it pins Chrome for Testing only. A Firefox target finds the installed build by itself. Give a Chromium, WebKit or Electron target the path that `retest install` prints.
+On macOS on Apple silicon, Retest pins Chrome for Testing, Firefox 158.0.1, WebKit build 2359 and Electron 44.5.1. On Windows x64 it pins Chrome for Testing, Firefox 158.0.1 and Electron 44.5.1. On Linux x64 it pins Chrome for Testing only. A Firefox target finds the installed build by itself. Give a Chromium, WebKit or Electron target the path that `retest install` prints.
 
 ## What runs today
 
 | | |
 | --- | --- |
-| Browsers | Chrome and Chromium. Firefox 133 and WebKit build 2359 on macOS on Apple silicon |
+| Browsers | Chrome and Chromium. Firefox 158.0.1 on macOS on Apple silicon and on Windows x64. WebKit build 2359 on macOS on Apple silicon |
 | iOS simulator apps | Find, tap, fill and check elements through WebDriverAgent, built on your Mac from a pinned commit |
 | macOS apps | Find, click, fill and check elements through the macOS runner of appium-mac2-driver |
-| Electron apps | The app's first window, driven like a Chrome page. Checked with Electron 44.5.1 on macOS |
+| Electron apps | The app's first window, driven like a Chrome page. Checked with Electron 44.5.1 on macOS and Windows |
 | One test across platforms | An iOS simulator app, a macOS app and web apps in the same test |
 | AI checks | `test.evaluate` asks a judge you choose whether a screenshot, text or recorded frames meet a requirement |
 | Layout checks | Overlapping elements, cut-off text, an element past the viewport's right edge and sideways scroll, each measured in pixels. Checked on Chrome on macOS |
@@ -92,8 +92,9 @@ On macOS on Apple silicon, Retest pins Chrome for Testing, Firefox 133, Playwrig
 | Mocked responses and drag | Answer a request with your own response or refuse it; drag an element onto another. Checked on Chrome on macOS |
 | Playwright test files | `retest run --playwright` runs `.spec.ts` files unchanged, for the methods [the guide](docs/guide.md#run-playwright-test-files) lists |
 | Linux | Chrome and Chromium only, checked inside Docker |
+| Windows x64 | Chrome, Chromium, Firefox and Electron, with recordings on Chrome. Nothing a run starts outlives Retest. Checked on Windows Server 2025 on GitHub's runner |
 
-Not yet: Android apps, Windows, Safari, and real phones or tablets.
+Not yet: Android apps, Safari, and real phones or tablets. [The guide](docs/guide.md#windows) says what Windows does not run yet.
 
 ## One test across platforms
 

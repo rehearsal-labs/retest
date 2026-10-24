@@ -4,7 +4,7 @@ This page covers setup, the checks to run, and the rules every change keeps.
 
 ## Set up
 
-You need Node.js 24.12 or later, on macOS or Linux. Windows does not work, because Retest relies on POSIX process groups.
+You need Node.js 24.12 or later, on macOS, Linux or Windows x64. On Windows, Retest also needs its process supervisor, as the integration files below say.
 
 ```sh
 git clone https://github.com/rehearsal-labs/retest
@@ -32,7 +32,8 @@ The integration tests launch real browsers and never skip a missing one:
 
 - `RETEST_TEST_BROWSER` is the first browser, or Google Chrome where macOS installs it.
 - `RETEST_TEST_SECOND_BROWSER` is a second, different Chromium build, such as Chrome for Testing.
-- The Firefox and WebKit files need Firefox 133.0.3 and Playwright's WebKit build 2359, on macOS. They read `RETEST_TEST_FIREFOX` and `RETEST_TEST_WEBKIT`, or look where each browser installs. `node dist/cli/main.js install firefox webkit` fetches both and prints their paths.
+- The Firefox files need Firefox 158.0.1, on macOS or Windows x64, and the WebKit files WebKit build 2359, on macOS. They read `RETEST_TEST_FIREFOX` and `RETEST_TEST_WEBKIT`, or look where each browser installs. On macOS, `node dist/cli/main.js install firefox webkit` fetches both and prints their paths. On Windows, `node dist/cli/main.js install supervisor firefox` builds the supervisor, then fetches Firefox and prints its path.
+- On Windows, the integration files also need the supervisor: run `node dist/cli/main.js install supervisor`, or set `RETEST_SUPERVISOR_BINARY` to a build of `supervisor/`.
 - The iOS simulator and macOS files need Xcode, the simulator runtime, Automation Mode and Screen Recording. They put windows on your screen, so leave the desktop alone while they run.
 
 Run one file with:
@@ -41,7 +42,7 @@ Run one file with:
 node --conditions=retest-source --test tests/integration/<file>.test.ts
 ```
 
-Run the integration files your change touches, and name them in your pull request. On Linux, `docker/linux/run.sh` builds the Docker image the Linux checks run in, and runs every check inside it. The full lists run on Linux and macOS before each release.
+Run the integration files your change touches, and name them in your pull request. On Linux, `docker/linux/run.sh` builds the Docker image the Linux checks run in, and runs every check inside it. The full lists run on Linux, macOS and Windows before each release.
 
 For CI debugging, choose `suite=unit` or `suite=integration`, a platform and the exact test paths. [The release guide](docs/releasing.md#run-the-gates-by-hand) has the command. Full CI assigns every file to a shard and runs one file at a time on each machine; focused runs do not establish release coverage.
 

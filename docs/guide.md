@@ -4,7 +4,7 @@ How to set up, run and read Retest, in detail: the config, the test API, the com
 
 Retest runs TypeScript test files against Chromium-family browsers, through its own runner and its own CDP client, and against Playwright's WebKit build on macOS, through a client of its own for WebKit's inspector. A project has a config with named apps, several browser targets, emulated devices, secrets, tags and sign-in state. Retest has no runtime dependencies, and it downloads a browser only when `retest install` is asked to.
 
-Retest has been exercised on macOS arm64 and in Docker on Linux x64 and arm64. The hosted release gates run on all three platforms and require every lane to pass the same commit. See [Releasing Retest](releasing.md) for the gate setup and prerequisites.
+Retest has been exercised on macOS arm64, in Docker on Linux x64 and arm64, and on Windows x64 on GitHub's Windows Server 2025 runner. The hosted release gates run on all four platforms and require every lane to pass the same commit. See [Releasing Retest](releasing.md) for the gate setup and prerequisites.
 
 Some rules on this page were checked only in unit tests with the fake browser, not on Chrome: a finder after a step that keeps several elements; `first().nth()` refusing; the modifier rules of `press` beyond the shortcuts the Chrome checks press, `Shift+Tab` among them; the macOS editing commands other than `Meta+A`, and several of them, `Alt+Delete`, `Meta+ArrowUp` and `Meta+ArrowDown` among them, appear in no test at all; `check` on a `switch`, `menuitemcheckbox`, `menuitemradio` or `aria-checked="mixed"`; a wheel another element takes; `getByLabel` on a `slider`, `spinbutton` or `switch`; `toContainText` with a `RegExp`; `.not.toBeChecked()` on an element that cannot be checked; `.not.toHaveText()` on no match; and the 65,536-character limit and the "could not judge" negation, which are checked as functions alone.
 
@@ -14,7 +14,7 @@ The npm package name is `@rehearsal-labs/retest`; see [the naming check](naming.
 
 - Node.js 24.12 or later. Retest loads `.ts` files with Node's own TypeScript transformer, so TypeScript is needed only to check types; see [TypeScript and imports](#typescript-and-imports).
 - An installed Chromium, Google Chrome or Microsoft Edge, or a pinned build that `retest install` put in Retest's cache; see [Pinned browser builds](#pinned-browser-builds). Nothing is downloaded unless you ask. Where a path is asked for, give the executable itself, not a macOS app bundle.
-- macOS or Linux. Linux was exercised inside Docker, on x64 and arm64; see [Run in a container](#run-in-a-container). Retest relies on POSIX process groups, so Windows does not work.
+- macOS, Linux or Windows x64. Linux was exercised inside Docker, on x64 and arm64; see [Run in a container](#run-in-a-container). Windows also needs Retest's process supervisor; see [Windows](#windows).
 
 ## Install and build
 
@@ -38,9 +38,9 @@ npx retest --help
 
 ### Media recording prerequisites and installation
 
-Recording needs `retest-media` and a host-installed ffmpeg. Retest ships no ffmpeg. The source build path is exercised on macOS arm64 and Linux x64 with the GNU Rust host target. Hosted Linux x64 checks also build the npm package's source offline into a fresh target and cache, and verify its protocol and recorded checksum. No media build path is provided for Windows, macOS x64 or Linux arm64.
+Recording needs `retest-media` and a host-installed ffmpeg. Retest ships no ffmpeg. The source build path is exercised on macOS arm64, on Linux x64 with the GNU Rust host target, and on Windows x64 with the MSVC Rust host target. Hosted Linux x64 checks also build the npm package's source offline into a fresh target and cache, and verify its protocol and recorded checksum. No media build path is provided for macOS x64, Linux arm64 or Windows on Arm.
 
-The crate uses Rust edition 2024, which requires Rust 1.85 or later. Its pinned image dependency and the crate itself require Rust 1.88 or later. Put both `cargo` and `rustc` from a matching host toolchain on `PATH`. Install ffmpeg with the host's package manager, such as `brew install ffmpeg` on macOS or `sudo apt-get install ffmpeg` on Debian. ffmpeg must provide the rawvideo demuxer and either libx264 with the MP4 muxer or libvpx with the WebM muxer. The optional encoded input route also needs image2pipe and the PNG or MJPEG decoder. The media process's own probe decides which route is available.
+The crate uses Rust edition 2024, which requires Rust 1.85 or later. Its pinned image dependency and the crate itself require Rust 1.88 or later. Put both `cargo` and `rustc` from a matching host toolchain on `PATH`. On Windows that toolchain is `x86_64-pc-windows-msvc`, which links with the Visual Studio Build Tools. Install ffmpeg with the host's package manager, such as `brew install ffmpeg` on macOS, `sudo apt-get install ffmpeg` on Debian or `winget install Gyan.FFmpeg` on Windows. ffmpeg must provide the rawvideo demuxer and either libx264 with the MP4 muxer or libvpx with the WebM muxer. The optional encoded input route also needs image2pipe and the PNG or MJPEG decoder. The media process's own probe decides which route is available.
 
 ```sh
 npx retest install media
@@ -52,7 +52,7 @@ npx retest install media --offline
 
 `install media` explicitly builds the source carried in the package. No install script runs it automatically. It checks the shipped crate, lock and notices against their source pin, builds with `cargo build --release --locked` in fresh staging and target folders, refuses a changed lock, checks the release binary's version and protocol, and records its source digest, target triple, rustc version and binary SHA-256. Cargo may fetch only the dependencies selected by the pinned lock. Offline mode needs those crates cached already. The package does not vendor crates.
 
-The binary goes under `~/Library/Caches/retest/media` on macOS or `$XDG_CACHE_HOME/retest/media` or `~/.cache/retest/media` on Linux. It uses the same generation lock as the browser installer. A damaged or unverifiable folder is named and left alone; remove that named folder only after its install has ended, then install again. `--list` checks the binary and licence hashes without launching anything; `--verify` also refuses unrecorded entries.
+The binary goes under `~/Library/Caches/retest/media` on macOS, `$XDG_CACHE_HOME/retest/media` or `~/.cache/retest/media` on Linux, and `%LOCALAPPDATA%\retest\media` on Windows, where it is `retest-media.exe`. It uses the same generation lock as the browser installer. A damaged or unverifiable folder is named and left alone; remove that named folder only after its install has ended, then install again. `--list` checks the binary and licence hashes without launching anything; `--verify` also refuses unrecorded entries.
 
 The media discovery function checks the caller's explicit executable setting first, then `RETEST_MEDIA_BINARY`, then the checked cache record. `RETEST_FFMPEG` names ffmpeg when the caller gives none; otherwise `PATH` is searched. An explicit but unusable name refuses setup. No Cargo target folder is searched. To use a developer build, set `RETEST_MEDIA_BINARY` to its release binary. A run that requests no recording needs neither tool. When the config asks for recording, doctor reports the binary, protocol and checksum, Rust build tools when needed, ffmpeg's version and licence line, and the input, encoder and muxer requirements with fixes.
 
@@ -62,7 +62,7 @@ ffmpeg's licence depends on its build. The Homebrew build exercised here reports
 
 ### Pinned browser builds
 
-Retest pins the builds it was tested with: Chrome for Testing 153.0.8010.12 for macOS arm64 and Linux x64, and for macOS arm64 also Firefox 133.0.3, Playwright's WebKit build 2359 (WebKit 26.6), Electron 44.5.1 and the two native executors, WebDriverAgent 16.13.6 and the macOS runner of appium-mac2-driver 4.3.6. `retest install` puts a pinned build into Retest's cache, and only the ones you name:
+Retest pins the builds it was tested with. Chrome for Testing 153.0.8010.12 is pinned for macOS arm64, Linux x64 and Windows x64. Firefox 158.0.1 and Electron 44.5.1 are pinned for macOS arm64 and Windows x64. macOS arm64 also has WebKit build 2359 (WebKit 26.6) and the two native executors, WebDriverAgent 16.13.6 and the macOS runner of appium-mac2-driver 4.3.6. `retest install` puts a pinned build into Retest's cache, and only the ones you name:
 
 ```sh
 retest install --list             # what is pinned for this machine and what the cache holds; downloads nothing
@@ -70,7 +70,7 @@ retest install --list --verify    # also reads every file of each installed buil
 retest install electron           # downloads, checks and records the pinned Electron
 ```
 
-- The cache is `~/Library/Caches/retest` on macOS, and `$XDG_CACHE_HOME/retest` or `~/.cache/retest` on Linux. Each build has a folder of its own, named after its engine, version and platform, with the unpacked build in `build/` and its record in `build.json`: where it came from, the archive's size and SHA-256, the checksums of its executable, its pinned files and its licence notices, and one checksum of the whole build.
+- The cache is `~/Library/Caches/retest` on macOS, `$XDG_CACHE_HOME/retest` or `~/.cache/retest` on Linux, and `%LOCALAPPDATA%\retest` on Windows. Each build has a folder of its own, named after its engine, version and platform, with the unpacked build in `build/` and its record in `build.json`: where it came from, the archive's size and SHA-256, the checksums of its executable, its pinned files and its licence notices, and one checksum of the whole build.
 - Retest downloads the archive beside the builds and keeps it under a temporary name until its size and SHA-256 match the pin. It deletes one that does not match without unpacking it. Then it unpacks the build into a staging folder and checks it: the executable is there and can run, the pinned files and licence notices are there with their checksums, no link leads outside the build, and the build holds nothing but folders, files and links, with no file that would run as its owner or group. Only then does it write the record, move the build into place and delete the archive. If unpacking fails, it keeps the verified archive, and the next install uses it.
 - One install of a build runs at a time on one machine. Another process holding that build's install lock makes the install stop with the lock's path and that process named; the lock goes when its holder ends, however it ends. Retest does not coordinate installs between machines or containers that share a cache, through a network home or a mounted folder: while one of them holds the lock, an install from another is refused. Give each its own cache.
 - `--list` and `doctor` report a build as installed only when it is one `retest install` installs and it reads as its pin says. A folder in the cache for a build that `retest install` refuses is listed as not installed by Retest, with the folder to remove; nothing in it is read, and no run launches it.
@@ -81,6 +81,34 @@ retest install electron           # downloads, checks and records the pinned Ele
 - `RETEST_DOWNLOAD_MIRROR` fetches from a mirror instead of each publisher. The pinned address's host becomes the first folder under the mirror, as in `https://mirror.example.com/github.com/electron/electron/releases/download/v44.5.1/electron-v44.5.1-darwin-arm64.zip`, and the checksums still apply. Downloads go over https, or over http only from this machine. Retest refuses a mirror address with a user name, password, query or fragment in it, and prints and records only the origin and path of any address.
 - `--list --json` prints one document with each pin, its state, where it is installed, and the install command or why it is refused.
 - Exit codes: 0 when every engine named is installed; 2 when one is not, or when `--list` finds a build that no longer matches its record or a folder for a build Retest does not install; 130 and 143 when stopped.
+
+### Windows
+
+Retest runs on Windows x64. It was checked on Windows Server 2025, on GitHub's `windows-2025` runner. It needs Node.js 24.12 or later, as everywhere, and one program of its own, the process supervisor:
+
+```sh
+npx retest install supervisor chromium firefox electron media
+```
+
+- Only Windows needs `supervisor`. Elsewhere `retest install supervisor` refuses and exits 2, so leave it out of a script that also runs on macOS or Linux. Retest holds every process a run starts in a Job Object through it, so nothing a run starts outlives Retest. Without it, Retest starts no process and says how to install it.
+- `retest install supervisor` builds `retest-supervisor.exe` from the source in the package, as `install media` builds `retest-media.exe`. Both need Rust 1.88 or later for `x86_64-pc-windows-msvc`, with the Visual Studio Build Tools, and `cargo` and `rustc` on `PATH`. Retest builds the supervisor first, whatever order the command names it in, since the other installs run their tools through it.
+- Recordings also need ffmpeg on `PATH`, such as from `winget install Gyan.FFmpeg`.
+- Retest killed outright, as by `taskkill /F`, leaves nothing it started running: no browser, app server, test file process or helper.
+- When the run ends, Retest names a helper a test left running as a cleanup failure. The helper ends when Retest exits. Start a program that must outlive the run outside Retest.
+- The cache is `%LOCALAPPDATA%\retest`.
+- Mozilla publishes Firefox for Windows only as an installer. Retest never runs it. It unpacks Firefox from the archive inside with Windows' own `tar.exe`, which must read LZMA. The `tar.exe` 3.8.9 of Windows Server 2025 does. Retest refuses one that cannot by name, and the `tar.exe` of an older Windows is unverified.
+- `chrome()` and `edge()` look for the browser under `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%LOCALAPPDATA%`, in that order.
+- An app server's `command` runs in `cmd.exe`. Write it for `cmd.exe`, not for `sh`.
+- Ctrl+C stops a run with exit 130. Windows sends a console program no SIGTERM, so Ctrl+Break stops a run with exit 143.
+- The commands Retest prints, such as a failure card's rerun line, are quoted for PowerShell and Git Bash. Git Bash misreads one kind of value: one that holds a single quote beside a backslash, `$`, `"`, a backtick or `!`. Paste the commands into either shell, not into `cmd.exe`.
+- In a Windows console where none of `WT_SESSION`, `TERM_PROGRAM` and `TERM` is set, the report shows `√` and `×` in place of `✓` and `✗`.
+
+Not in this release:
+
+- A WebKit target fails its setup on Windows, and `retest install webkit` says there is no build to install.
+- Retest pins no browser for Windows on Arm and builds no supervisor for it.
+- Retest has no driver for native Windows apps.
+- A run on Windows refuses each iOS simulator or macOS target at its setup, naming its key.
 
 ## Tests
 
@@ -95,7 +123,8 @@ The core browser integration tests need two Chromium browsers. Platform, media a
 
 - The first is `RETEST_TEST_BROWSER`, or `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` when that exists. Config runs find Google Chrome by themselves, through `chrome()`.
 - The second is `RETEST_TEST_SECOND_BROWSER`, or Chrome for Testing where Playwright unpacks it on macOS: `~/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`. It is a plain browser build. No Playwright code runs.
-- The two must be different builds. The matrix checks read each one's version with `--version` and tell them apart by it.
+- The two must be different builds. The matrix checks read each one's version and tell them apart by it. They read it with `--version`, or on Windows from the executable file, since Chrome there prints nothing for `--version` and keeps running.
+- On Windows the integration files also need the supervisor: the one `retest install supervisor` built, or a developer build that `RETEST_SUPERVISOR_BINARY` names.
 
 The tests start their own fixture servers and browsers with temporary profiles, and stop only those.
 
@@ -215,7 +244,7 @@ The config accepts Firefox and WebKit targets with `{ browser: 'firefox' }` or `
 
 ### WebKit
 
-A WebKit target runs Playwright's WebKit build 2359 on macOS, over the build's inspector pipe, through Retest's own client. Playwright itself is never loaded.
+A WebKit target runs WebKit build 2359 on macOS, over the build's inspector pipe, through Retest's own client. On any other system, Windows included, a WebKit target fails its setup, naming the system.
 
 ```ts
 export default defineConfig({
@@ -241,7 +270,7 @@ Where WebKit differs from Chrome, Retest reports what WebKit does, or refuses by
 
 ### Firefox
 
-A Firefox target runs Firefox 133 on macOS on Apple silicon, over WebDriver BiDi, through Retest's own client. No WebDriver server or Playwright is involved.
+A Firefox target runs Firefox 158.0.1 on macOS on Apple silicon and on Windows x64, over WebDriver BiDi, through Retest's own client. No WebDriver server is involved. Every rule below was checked on macOS and on Windows.
 
 ```ts
 export default defineConfig({
@@ -249,11 +278,11 @@ export default defineConfig({
 })
 ```
 
-- `executablePath` names the Firefox binary explicitly; its reported version and build are recorded even when they differ from the tested build. Without it, Retest uses an intact pinned cache build, or the system app only when its version and build match Firefox 133.0.3 build 20241209150345. A damaged cache or a different system build fails setup by name, without falling back. Retest downloads nothing. On any other platform a Firefox target fails setup by name.
-- `doctor` reads the binary's version and build from the app's own files without starting it: "Firefox 133.0.3 build 20241209150345 found; a run starts it".
-- The default route starts Firefox as a child process. This route has never started a real Firefox in the recorded checks; its process lifecycle is exercised with a stand-in executable that speaks BiDi. All real Firefox checks use Launch Services. A host app that may not read `~/Library/Application Support/Firefox` cannot start a child Firefox. Set `RETEST_FIREFOX_ROUTE=launch-services` on such a machine.
+- `executablePath` names the Firefox binary explicitly; its reported version and build are recorded even when they differ from the tested build. Without it, Retest uses an intact pinned cache build, or the system's Firefox only when its version and build match Firefox 158.0.1 build 20261019185856. It looks for that one in `/Applications` on macOS, and in `Mozilla Firefox` under `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%LOCALAPPDATA%` on Windows. A damaged cache or a different system build fails setup by name, without falling back. Retest downloads nothing. On any other platform a Firefox target fails setup by name.
+- `doctor` reads the binary's version and build from the app's own files without starting it: "Firefox 158.0.1 build 20261019185856 found; a run starts it".
+- The default route starts Firefox as a child process. It is the route the CI checks take on macOS and on Windows, and the only one Windows has. A macOS host app that may not read `~/Library/Application Support/Firefox` cannot start a child Firefox. Set `RETEST_FIREFOX_ROUTE=launch-services` on such a Mac.
 - Each launch gets a fresh profile in a temporary folder, which Retest removes when the browser closes. Firefox allows one WebDriver BiDi session per browser, so every test's page opens in a user context of its own, with its own cookies and storage, inside that one session.
-- Firefox keeps running when the Retest process that started it is killed outright. The launch records the Firefox it started, and the next launch ends a recorded Firefox whose launcher is gone, with its folder, and nothing else.
+- On macOS, Firefox keeps running when the Retest process that started it is killed outright. The launch records the Firefox it started, and the next launch ends a recorded Firefox whose launcher is gone, with its folder, and nothing else.
 - `browser.started` names the engine `firefox`, the product `Firefox`, its version and its reported build.
 - A Firefox target takes a viewport and pixel ratio. A mobile layout, a touch screen, a user agent, `tap` or a proxy fails by name. A layout matcher fails as `unsupported`.
 
@@ -261,14 +290,14 @@ Where Firefox differs from Chrome, Retest reports what Firefox does, or refuses 
 
 - `fill` types its text key by key, and the input guard counts each key. Text holding a code point WebDriver reserves for a named key, U+E000 to U+E05D, is refused before any key is sent. When the page moves the focus away as the fill starts, the failure names `keydown` as the event Retest stopped, where Chrome names `beforeinput`.
 - `select()` on a `<select multiple>` that needs keyboard input is refused before any key is sent, also for a single option. The refusal comes as soon as Retest finds the list, without waiting for it to show or stand still. A list of several options is refused before Retest looks for the list at all, even one the list already holds. One option the list already holds alone sends no input and succeeds. Firefox does not expose its native focused option, so Retest cannot verify a move before Space toggles that option. Run a test that changes options of a multiple select on Chrome or WebKit.
-- An uppercase letter or a shifted symbol is typed with Shift held, so the page also hears the Shift key go down and up. On macOS, Home follows the system's key bindings and leaves the caret where it was: typing `abcd`, then Home, then X gives `abcdX`. Shift+Home still selects to the start of the field.
-- A scroll is one trusted wheel event carrying the whole delta, as on Chrome, and Firefox moves at most one page for it. A delta larger than a page scrolls less on Firefox than on Chrome, so a scroll meant to reach the end of a long text stops short. To reach the end, scroll several times, each by no more than the box's height.
+- An uppercase letter or a shifted symbol is typed with Shift held, so the page also hears the Shift key go down and up. On macOS, Home follows the system's key bindings and leaves the caret where it was: typing `abcd`, then Home, then X gives `abcdX`. Shift+Home still selects to the start of the field. On Windows, Home moves the caret to the start, as on Chrome.
+- One wheel event scrolls a box as far as on Chrome, which Firefox 133 did not.
 - A refused connection is `not_actionable` with a message ending `connectionFailure.` and `errorText: 'connectionFailure'`, rather than Chrome's `net::ERR_CONNECTION_REFUSED`. Assert Firefox's own error text. A raw title keeps ESC, for example `\x9BBell tab \x1B[2J`; Chrome reads `\x9BBell tab [2J`. Assert that exact raw title when checking `toHaveTitle`.
-- A page's own script cannot use the Navigation API, which Firefox 133 lacks. Check for that API before listening for `navigateerror`; that event cannot confirm a cancellation here. In the shared fixture, a page that starts a fetch and immediately leaves for another document loses the request on Firefox. Await a required request before navigating, and verify delivery at the server.
-- `getByRole` confirms Firefox's names against Retest's whitespace normalization. Every lookup carries its own requested names. Loose and pattern names require Firefox to confirm the candidate names; a source it cannot confirm is refused by name. Password fields use their labelling markup, with hidden, nested or generated label content refused. Roles whose membership differs from Chrome, and known differing native markup, are refused by name rather than returning another set silently. These include generic, caption, presentation, rowgroup and gridcell lookups; named cells and figures; failed images; and the differing date, datalist and editable controls. Native tables with a visible caption or header of their own, or an explicit table, grid or treegrid role, permit row, unnamed-cell and header lookups. A visible native table without those cues still refuses table roles because the engines may disagree about layout tables. A cell looked up by name remains refused: Firefox's accessibility locator does not name it from its text. Use `getByText()`, `getByTestId()` or an unnamed cell's position with `nth()`. An `img` lookup is refused when an image that did not load could answer it.
+- In the shared fixture, a page that starts a fetch and immediately leaves for another document loses the request on Firefox. Await a required request before navigating, and verify delivery at the server.
+- `getByRole` confirms Firefox's names against Retest's whitespace normalization. Every lookup carries its own requested names. Loose and pattern names require Firefox to confirm the candidate names; a source it cannot confirm is refused by name. Password fields use their labelling markup, with hidden, nested or generated label content refused. Roles whose membership differs from Chrome, and known differing native markup, are refused by name rather than returning another set silently. These include generic, caption, presentation, rowgroup and gridcell lookups; named cells and figures; failed images; and the differing date, datalist and editable controls. Firefox also counts three things Chrome does not: an option directly in a combobox, a tree item outside a tree and a list item outside a list. A lookup of such a role is refused on a page that holds one. Native tables with a visible caption or header of their own, or an explicit table, grid or treegrid role, permit row, unnamed-cell and header lookups. A visible native table without those cues still refuses table roles because the engines may disagree about layout tables. A cell looked up by name stays refused in this release, although Firefox 158 names a cell from its text. Use `getByText()`, `getByTestId()` or an unnamed cell's position with `nth()`. An `img` lookup is refused when an image that did not load could answer it.
 - `frame()` returns one PNG of the page. There is no live frame source.
 - A `getByRole` or `getByLabel` step is refused by name when an open shadow root in its search could hold a match, since Firefox's accessibility locator stops at shadow roots. Test ids, text, placeholders and CSS look through open roots as on Chrome. A locator inside a frame fails as `unsupported`.
-- Diagnostics record the network only. On Firefox 133.0.3, the console subscription runs enumerable getters in logged objects, including nested objects, before Retest receives the entry. The tested strings, numbers, plain data object and DOM node ran no getter. Subscription serialization options do not prevent object getters, and filtering received entries for primitive arguments is too late. Retest therefore keeps console `unavailable`; a strict console or runtime-error rule fails as "could not judge". Requests of the page and its frames, of its own site or another, are recorded with their responses, redirects, failures and pending ends, as on Chrome. A request a dedicated worker makes is recorded as its page's, since Firefox names only the browsing context, and only a navigation's request has a resource type, `Document`.
+- Diagnostics record the network only. On Firefox 158.0.1, as on 133.0.3 before it, the console subscription runs enumerable getters in logged objects, including nested objects, before Retest receives the entry. The tested strings, numbers, plain data object and DOM node ran no getter. Subscription serialization options do not prevent object getters, and filtering received entries for primitive arguments is too late. Retest therefore keeps console `unavailable`; a strict console or runtime-error rule fails as "could not judge". Requests of the page and its frames, of its own site or another, are recorded with their responses, redirects, failures and pending ends, as on Chrome. A request a dedicated worker makes is recorded as its page's, since Firefox names only the browsing context, and only a navigation's request has a resource type, `Document`.
 
 ### Native apps
 
@@ -298,6 +327,8 @@ const config = defineConfig({
 
 `appPath` is relative to the config. iOS needs a simulator build, an installed device type and runtime, the pinned Xcode and the pinned executor sources or builds. macOS needs the native executor and Automation Mode already enabled without a prompt, and its window capture needs Screen Recording for the terminal or agent that runs Retest, which `retest doctor` checks. A prompt is a refusal; Retest does not accept it. A native target takes no `baseUrl`, viewport, browser emulation, proxy or saved browser state. An app's targets must share one kind.
 
+On Windows, a run refuses an iOS simulator or macOS target at its setup, before anything starts for it. Its one sentence names the target's key, as in "apps.desk is a macOS app, which Retest runs only on a Mac." The run's other tests go on, and `doctor` shows the same sentence.
+
 `arguments` and `environment` are optional. Retest refuses its own debugging and data-folder switches by name, executor environment names and malformed settings. Argument and environment values are excluded from execution settings: those settings retain their counts and SHA-256 hashes. Variables that supply secrets or host credentials are withheld from native tools and the launched app, including an attempted explicit environment override.
 
 After registering the config's type, a test gets native handles under the app names:
@@ -322,7 +353,7 @@ A native secret destination is the exact bundle identifier in `secretOrigins`, s
 
 `native.started` records the app bundle, build, checksum, OS, executor pin and Xcode beside the session id. `native.ended` keeps unresolved action outcomes. Result files and `inspect --test` retain native sessions and named capture sources. iOS executor-screen capture was exercised through the runner. A macOS app's window capture takes the app's own window by its window number, so another app's window over it is neither in the image nor a reason to refuse it, and it needs Screen Recording for the terminal or agent that runs Retest. Capture writers use the run's clock; older store callers retain the clock inferred from events as a fallback. Events remain at `schemaVersion: 1`; old strict readers refuse the new event types and fields.
 
-Retest finds Chrome and Edge where they install: on macOS in `/Applications` and `~/Applications`, and on Linux in the standard paths. A browser that is not there is a setup failure that lists the paths it tried, before any test that needs it. Only `chrome()` stable and `chromium({ executablePath })` were run. Edge and the other Chrome channels were not installed on the machine Retest was checked on.
+Retest finds Chrome and Edge where they install: on macOS in `/Applications` and `~/Applications`, on Linux in the standard paths, and on Windows under `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%LOCALAPPDATA%`. A browser that is not there is a setup failure that lists the paths it tried, before any test that needs it. Only `chrome()` stable and `chromium({ executablePath })` were run. No check has run `edge()` or another Chrome channel.
 
 `headless` defaults to true. `--headed` shows every browser. Nobody has run a browser with a window yet.
 
@@ -342,14 +373,14 @@ export default defineConfig({
 })
 ```
 
-- `executablePath` is the Electron binary. On macOS it is the file inside `Electron.app/Contents/MacOS`. `appPath` is the app's folder, which holds its `package.json`, or its entry file. Both are relative to the config's folder.
+- `executablePath` is the Electron binary. On macOS it is the file inside `Electron.app/Contents/MacOS`, and on Windows it is `electron.exe`. `appPath` is the app's folder, which holds its `package.json`, or its entry file. Both are relative to the config's folder.
 - `args` reach the app after its path. Retest sets the debugging pipe and the data folder itself, so an argument that starts with `--remote-debugging-` or names `--user-data-dir` is refused. A secret never goes in `args`: give it through `secrets`. Each attempt's record keeps the arguments as their count and the SHA-256 of their list, never their text, so a change to them changes the configuration fingerprint. A short secret could still be guessed from that hash.
 - An Electron app has no address. It takes no `baseUrl`, and no `headless`, `emulate`, `viewport` or `proxy`. An app's targets are all Electron apps or none. It may carry `start`, for a server the app talks to.
 - No two Electron targets may name the same `userDataDir`. The config is refused, naming both, since each target's launches would wait on the other's.
 
 How a test runs:
 
-- Each test launches the app afresh, in a process group of its own, and quits it when the test ends. Retest closes the app's debugging pipe, which Electron quits on, waits up to one second for the app's processes to end, and kills any that are left.
+- Each test launches the app afresh, in a process group of its own, or a Job Object of its own on Windows, and quits it when the test ends. Retest closes the app's debugging pipe, which Electron quits on, waits up to one second for the app's processes to end, and kills any that are left.
 - The first window the app opens is the test's page. What Retest's own checks ran there: `getByTestId`, `getByRole`, `getByLabel` and `getByText` with `first()` and `nth()`; `fill`, `click`, `press` and `check`; `toHaveText`, `toHaveCount`, `toBeChecked`, `.not.toBeChecked()`, `toBeVisible`, `toHaveTitle` and `toHaveURL`; `page.url()`, `reload()`, `goBack()` and `goForward()`. The rest of the page API goes to the window as it goes to a Chrome page, and was not run on Electron.
 - Without `userDataDir`, each launch gets a new data folder in the temporary folder, as a browser's profile does. Retest removes it, with whatever the app stored in it, after confirming the app's processes have ended. A folder left by a run that was killed outright is retained: a later run cannot prove it is still disposable.
 - With `userDataDir`, every launch uses that folder, so the app keeps its data from one test to the next. Retest leaves the folder as the app left it, and each attempt's record says the app's storage was reused, not fresh. Launches of the target take turns on the folder, each starting once every process of the one before it has gone.
@@ -381,7 +412,7 @@ Console and network diagnostics come from the first window, and they are always 
 
 An Electron app can be one of several apps in a test, as a browser can. Retest's own check names two apps, an Electron target and a Chrome target, in one test. The test creates a task in the Electron window and reads its id from the window's address. It then opens that task by its id on the web, marks it done there, and waits until the Electron window shows it done. When the service never passes changes on to the web, the same test fails at the web's check, which names the task's id, and nothing after that check runs.
 
-Checked with Electron 44.5.1 on macOS arm64, from the official release. Linux, Windows and packaged apps were not run.
+Checked with Electron 44.5.1 from the official release, on macOS arm64 and on Windows x64. Linux and packaged apps were not run.
 
 ### Proxy
 
@@ -440,11 +471,13 @@ On a touch screen, `click()` is sent as a tap and recorded as a tap.
 An app with `start: { command, ready, cwd?, timeoutMs? }` gets its server started when a test first needs it:
 
 1. Retest asks `ready` with an HTTP GET. Any HTTP answer counts, whatever its status.
-2. If something answers, Retest uses that server and never stops it.
-3. Otherwise it runs `command` in a shell, as a process group of its own, with its output in `logs/app-<name>.log`. It waits for `ready` within `timeoutMs`, or the setup budget.
-4. When the run ends, it sends the group SIGTERM, then SIGKILL after one second.
+2. If the port at `ready` takes the connection, a server is already there, however slowly it answers. Retest uses that server and never stops it. It waits for the server's answer within `timeoutMs`, or the setup budget. A server that never answers is a setup failure that says Retest found it there and started nothing.
+3. If the connection is refused, or neither opens nor is refused within a second, Retest runs `command` in a shell, as a process group of its own, with its output in `logs/app-<name>.log`. The shell is `sh` on macOS and Linux and `cmd.exe` on Windows, where the server gets a console of its own with no window. It waits for `ready` within `timeoutMs`, or the setup budget.
+4. When the run ends, it sends the group SIGTERM, then SIGKILL after one second. On Windows it presses Ctrl+C on the server's console, then ends everything the server started one second later.
 
-A server that exits early, or never answers, is a setup failure for every test that needs it: they do not run. The server's output is in its log, and the failure says where. If Retest itself is killed with SIGKILL, nothing is left to stop a server it started.
+On Windows, a server that handles Ctrl+C stops cleanly, and any other is ended a second later. A Node server hears Ctrl+C as SIGINT, not SIGTERM. A Retest started with Ctrl+C turned off, as an SSH session or a service starts it, passes that on to its servers, and they do not hear the Ctrl+C.
+
+A server that exits early, or never answers, is a setup failure for every test that needs it: they do not run. The server's output is in its log, and the failure says where. If Retest itself is killed with SIGKILL on macOS or Linux, nothing is left to stop a server it started. On Windows a server ends with Retest, however Retest ends.
 
 ### Locks
 
@@ -580,7 +613,8 @@ test('shows the account', { state: 'signed-in' }, async ({ page }) => {
 - A test with `state` gets a new context with the state restored before its body runs. A test without it starts signed out.
 - A setup that fails makes every test that needs it `not_run`, with the setup's failure as the reason.
 - A state no setup saves is a collection error. When you run only some files, Retest looks for a missing setup in the other `.retest.ts` files under the root, in path order, and runs only the setups the chosen tests need. The report says so, as in "ran setup signed-in from tests/sign-in.retest.ts for tests/roles.retest.ts".
-- The saved state is a file in `<run>/states/` while the run goes on. It holds session cookies, so Retest deletes it when the run ends, even after Ctrl+C. Only a run killed with SIGKILL leaves it behind. Events say a state was saved or restored, never what it holds.
+- The saved state is a file in `<run>/states/` while the run goes on. It holds session cookies, so Retest deletes it when the run ends, even after Ctrl+C. Only a run killed outright, with SIGKILL or with `taskkill /F` on Windows, leaves it behind. Events say a state was saved or restored, never what it holds.
+- The file is readable by this user only, on Windows as on macOS and Linux.
 - `sessionStorage` is not saved.
 
 ### Locators
@@ -757,7 +791,7 @@ Action events record the key in `key`, as the test wrote it. Reports write a pre
 - A select whose own `change` takes it off the page, or opens another page, cannot be read afterwards. Retest reads what it holds as its `input` or `change` event arrives, before the page's listeners run, and it passes if that was the selection asked for. A select still on the page is read as it stands, so one whose listener puts another option back fails.
 - Every key of a select goes to the select in the document Retest planned it in. Once a key has made the page set off for another document, Retest types no more, even into a select of the same locator on the next page. The select then passes if it held the options asked for when the last key arrived, and otherwise fails `not_actionable`, saying how many of its keys went and what the select held, with `details.inputSent: true`.
 - An option no key reaches, such as one with no label to type, or a hidden option a list must change, fails `unsupported` at once, and nothing is typed.
-- Only macOS was run. The modifier a list takes on Linux, Control, was never run.
+- Lists were run on Chrome on macOS, with Meta, and on Linux and Windows, with Control.
 
 `check()` and `uncheck()`:
 
@@ -1024,7 +1058,7 @@ await expect(page).toHaveScreenshot('settings', { maxDiffPixelRatio: 0.001, thre
 - A run with `--update-screenshots` writes a picture only once it has stayed the same for a whole second, so a loading state that lasts less than that never becomes the baseline. A state that lasts longer can, so wait for the page's content before the check.
 - A page that never stops moving fails as not settled. Retest does not stop animations or hide the text caret.
 
-- The baseline sits beside the test file, in `__screenshots__/<test file name>/<name>-<engine>-<platform>.png`. For `tests/tasks.retest.ts` on Chrome on an Apple silicon Mac, that is `tests/__screenshots__/tasks.retest.ts/dashboard-chromium-darwin-arm64.png`. Pixels differ between engines and platforms, so each one has its own baseline. Targets on one engine share it.
+- The baseline sits beside the test file, in `__screenshots__/<test file name>/<name>-<engine>-<platform>.png`. For `tests/tasks.retest.ts` on Chrome on an Apple silicon Mac, that is `tests/__screenshots__/tasks.retest.ts/dashboard-chromium-darwin-arm64.png`, and on Windows x64 it is `dashboard-chromium-win32-x64.png` beside it. Pixels differ between engines and platforms, so each one has its own baseline. Targets on one engine share it.
 - A name is lowercase letters, digits, dots, dashes and underscores. A `.png` at its end is left off.
 - A pixel differs when its two colours are further apart than `threshold`, from 0 to 1, and 0.2 when left out. The colour distance and the test for an anti-aliased edge are adapted from pixelmatch 7.2.0, and count the same pixels it counts on pictures with no transparency.
 - A pixel that looks like part of an anti-aliased edge is not counted, whatever its colour. So a line one pixel wide between two flat colours can change colour, even to red, and the check still passes.
@@ -1048,7 +1082,7 @@ Retest's own process takes every picture and keeps its pixels. The test file's p
 
 A picture is a capture, so [the pixel policy](#what-may-be-captured-as-pixels) applies to it unchanged. A config that sets `screenshots: 'never'` for an app refuses the check, and so does a stretch in which a secret may be on screen. Either fails as `unsupported` with the policy's sentence.
 
-Pictures of a page were compared on Chrome, Firefox 133 and WebKit build 2359, on macOS. Pictures of one element and the device scale factor are Chromium's. On Firefox and WebKit an element's check fails as `unsupported`, and a page's baseline records no scale. A popup the test opened with `page.popup()` is compared as a page, on Chrome. An Electron window and a native app's screen are refused by name.
+Pictures of a page were compared on Chrome, Firefox 158.0.1 and WebKit build 2359 on macOS, and on Chrome and Firefox 158.0.1 on Windows x64. Pictures of one element and the device scale factor are Chromium's. On Firefox and WebKit an element's check fails as `unsupported`, and a page's baseline records no scale. A popup the test opened with `page.popup()` is compared as a page, on Chrome. An Electron window and a native app's screen are refused by name.
 
 ### Secrets
 
@@ -1057,7 +1091,7 @@ await page.getByLabel('Password').fill(secret('password'))
 ```
 
 - `secret(name)` names a secret from the config. However it is printed, it reads `{{password}}`.
-- The test file's process never holds the value. It sends the secret's name, and Retest's own process types the value. The environment variable an `env` source reads is removed from the test process's environment.
+- The test file's process never holds the value. It sends the secret's name, and Retest's own process types the value. The environment variable an `env` source reads is removed from the test process's environment. On Windows it is removed whatever the case of its name, since Windows reads `TASK_APP_PASSWORD` and `Task_App_Password` as one variable.
 - An `env(name)` source is read once, when the run starts. A variable that is missing, empty or shorter than four characters stops the run with exit 2 before any test starts, naming it.
 - A function source is called each time a `fill` uses the secret, since values such as one-time codes change. If it throws, rejects or gives no text, that fill fails `setup_failed`, naming the secret.
 - The function is called with `{ signal }`. Retest aborts that `AbortSignal` once it stops waiting for the value: when the fill runs out of time, or when the test or the run is stopped. Pass it on, as to `fetch`, so the work stops too. `SecretContext` is its type.
@@ -1428,7 +1462,7 @@ WebKit's records differ from Chrome's as follows. A field WebKit does not give i
 - `console.count` is recorded at the debug level, as WebKit reports it.
 - A message or a repeat that comes without WebKit's own time is counted as unread, so the console capture is partial. Retest never stamps it with its own clock.
 
-On Firefox, Retest records no console message and no runtime error. Firefox 133.0.3 runs enumerable getters while serializing logged objects before delivery. Its log subscription ignores `serializationOptions: { maxObjectDepth: 0 }`, although that option works on script results. A primitive-only filter after delivery cannot prevent those side effects, so Retest does not subscribe. Each page's console is `unavailable`, with that reason. A probe on the real browser found getters run in nested objects too, while strings, numbers, a plain data object and a DOM node ran none. Playwright's Firefox console uses its patched build's own protocol, not WebDriver BiDi, so its console capture does not establish a safe route for this Firefox build. Firefox requests are recorded, with these differences from Chrome:
+On Firefox, Retest records no console message and no runtime error. Firefox 158.0.1, like 133.0.3 before it, runs enumerable getters while serializing logged objects before delivery. Its log subscription ignores `serializationOptions: { maxObjectDepth: 0 }`, although that option works on script results. A primitive-only filter after delivery cannot prevent those side effects, so Retest does not subscribe. Each page's console is `unavailable`, with that reason. A probe on the real browser found getters run in nested objects too, while strings, numbers, a plain data object and a DOM node ran none. Firefox requests are recorded, with these differences from Chrome:
 
 - A request a dedicated worker makes is recorded as the page's, since Firefox names it by the page.
 - A request has a resource type only when it is a navigation's document.
@@ -1596,7 +1630,7 @@ A test declared with `test.skip` counts as chosen but does not run. A run whose 
 - `--headed` shows every browser window. Nobody has run it yet.
 - `--agent` and `--no-agent`. Retest prints the short agent report when `CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CURSOR_AGENT`, `GEMINI_CLI`, `AGENT` or `AI_AGENT` is set, unless you pick `--reporter` or `--no-agent`.
 
-The human report labels each variant, as in `phone=pixel (emulated)`, and ends with a line for each target when there is more than one. A failure card's rerun command names the test by `file:line` and its variant by `--target`.
+The human report labels each variant, as in `phone=pixel (emulated)`, and ends with a line for each target when there is more than one. A failure card's rerun command names the test by `file:line` and its variant by `--target`. On Windows, a card's commands are quoted for PowerShell and Git Bash, with the one exception [Windows](#windows) names.
 
 ### Budgets
 
@@ -1611,7 +1645,7 @@ Every wait answers to one of these budgets. The defaults are collection 10000, s
 Two fixed graces of one second sit on top:
 
 - A test file's process has one second to stop once asked. Then Retest kills it.
-- A browser that has not closed within the cleanup budget, or an app server still running one second after SIGTERM, is killed with its process group. Retest then waits one second more for it to go.
+- A browser that has not closed within the cleanup budget is killed with its process group. So is an app server still running one second after SIGTERM, or after Ctrl+C on Windows. On Windows, the process group is everything it started. Retest then waits one second more for it to go.
 
 ## Run Playwright test files
 
@@ -2172,7 +2206,7 @@ await host.close()
 - The host holds the secrets. A `fill` of `{ secret: 'password' }` types only on the session's base URL origin and the origins the host lists for it. An open may name the secrets its session may type, as `secrets: ['password']`; a fill of any other is refused and that secret is not read. Every text an answer holds, looks, failures and addresses included, is redacted.
 - An agent session writes no events and no run folder.
 
-Run on macOS arm64 with Google Chrome 154, Firefox 133 and Playwright's WebKit build 2359. Everything above passed on Chrome, Firefox and WebKit, with a live frame source on Chrome only and element identity on Chrome and Firefox. Four sessions typing at once on Firefox once answered as sent while text did not reach every field; that was a defect of the Firefox driver, now fixed. Firefox 133 runs a preload script twice in a new window's first document, and the copy without an input guard stopped the keys.
+Run on macOS arm64 with Google Chrome 154, Firefox 133 and WebKit build 2359, then again with Firefox 158.0.1 on macOS, and with Chrome and Firefox 158.0.1 on Windows x64. Everything above passed on Chrome, Firefox and WebKit, with a live frame source on Chrome only and element identity on Chrome and Firefox. Four sessions typing at once on Firefox once answered as sent while text did not reach every field; that was a defect of the Firefox driver, now fixed. Firefox 133 ran a preload script twice in a new window's first document, and the copy without an input guard stopped the keys.
 
 ### Preparing an attempt's state
 
@@ -2276,7 +2310,7 @@ One process may call `runFiles` again before the first call ends, with another r
 
 ### A host-style run
 
-[examples/host](../examples/host) is a host. `host.ts` builds its config in memory and gives the password and a one-time code as functions. It writes [checkout.retest.ts](../examples/host/checkout.retest.ts) into a new folder of its own under the system's temporary folder, with no `node_modules`, and makes that folder the run's root. It sends Chrome for Testing through a proxy, adds three host checks keyed by the file, gives the test process only `CANARY`, and writes no `last-run.json`. Its reporter prints each event as a JSON line as it arrives. At the end it reads its run folder back with `readRunFolder`, and says whether the folder holds the same result and events it got from memory. SIGTERM makes it stop the run with a `Failure` that says the host is shutting down.
+[examples/host](../examples/host) is a host. `host.ts` builds its config in memory and gives the password and a one-time code as functions. It writes [checkout.retest.ts](../examples/host/checkout.retest.ts) into a new folder of its own under the system's temporary folder, with no `node_modules`, and makes that folder the run's root. It sends Chrome for Testing through a proxy, adds three host checks keyed by the file, gives the test process only `CANARY`, and writes no `last-run.json`. Its reporter prints each event as a JSON line as it arrives. At the end it reads its run folder back with `readRunFolder`, and says whether the folder holds the same result and events it got from memory. SIGTERM makes it stop the run with a `Failure` that says the host is shutting down. Windows sends a program no SIGTERM, so there the host also listens for Ctrl+Break, which Node gives as SIGBREAK. A host of your own that does not listen for SIGBREAK is ended by Ctrl+Break, with no result.
 
 The test signs in with a code, follows the account page's link to its tasks, saves a task, and prints which of `CANARY`, `HOST_TOKEN` and `HOST_PASSWORD` it can see. The page the host checks was opened by that link, so its last navigation says `cause: 'action'`.
 
@@ -2299,26 +2333,28 @@ The first two commands run from this repository. The app refuses every request w
 - 130: interrupted with Ctrl+C, or stopped by a program with a `Failure` as the reason.
 - 143: stopped by SIGTERM, as a CI runner does on cancel.
 
-SIGINT and SIGTERM take the same path: the running test stops, the run records `interrupted`, writes `result.json`, closes the browsers, stops the servers it started and deletes saved state. A second signal of either kind quits at once, and its exit hooks still end the browsers and servers and delete saved state.
+Windows sends a console program no SIGTERM. There Ctrl+C gives 130 and Ctrl+Break gives 143. A Retest started with Ctrl+C turned off, as a service or an SSH session can start it, does not hear Ctrl+C.
+
+SIGINT and SIGTERM take the same path. The running test stops, and the run records `interrupted`, writes `result.json`, closes the browsers, stops the servers it started and deletes saved state. On Windows, Ctrl+C and Ctrl+Break take that path. A second signal of either kind quits at once, and its exit hooks still end the browsers and servers and delete saved state.
 
 130 and 143 win over everything. 2 for a run that cannot be trusted as a whole, one no test ran in, one whose output or a file's process failed, or one with a host check it could not run, wins over 1. Otherwise a failed test gives 1 before anything else: a test that errored, was not run or was left undecided beside a failed test still exits 1, and 2 only when no test failed.
 
 ## What Retest does not do yet
 
-- Browsers: Chromium, Chrome and Edge, and Playwright's WebKit build 2359 and Firefox 133 on macOS. Firefox has no phone, touch or pixel ratio emulation and no proxy, and no AI check has judged a Firefox screenshot yet. WebKit has no phone or touch emulation and no proxy, its recorded frames cannot be AI evidence yet, and no AI check has judged a WebKit screenshot yet. iOS simulator and macOS apps run through the runner, one macOS app and one app per simulator in a test, with their swipe, keyboard and alert helpers run only against a stand-in executor. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
-- Exercised on macOS arm64 and in hosted Docker gates on Linux x64 and arm64. Linux outside a container, Edge, and Chrome beta, dev and canary remain unverified. Windows cannot work.
+- Browsers: Chromium, Chrome and Edge; Firefox 158.0.1 on macOS and on Windows x64; and WebKit build 2359 on macOS. Firefox has no phone or touch emulation and no proxy, and no AI check has judged a Firefox screenshot yet. WebKit has no phone or touch emulation and no proxy, its recorded frames cannot be AI evidence yet, and no AI check has judged a WebKit screenshot yet. iOS simulator and macOS apps run through the runner, one macOS app and one app per simulator in a test, with their swipe, keyboard and alert helpers run only against a stand-in executor. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
+- Exercised on macOS arm64, in hosted Docker gates on Linux x64 and arm64, and on Windows Server 2025 x64 on GitHub's runner. Linux outside a container, Windows 10 and 11, Edge, and Chrome beta, dev and canary remain unverified. Unpacking Firefox with the `tar.exe` of Windows 10, or of Windows 11 before 24H2, is unverified.
 - The keyboard presses one key or one shortcut at a time: no key held down across actions, and no text typed key by key. `fill` types text. On macOS, only the shortcuts in Retest's table edit a field, and no shortcut was run on Linux.
-- `select` chooses with the keyboard, and was run on macOS only. `scroll` is one wheel event, also on a touch screen: no swipe.
+- `select` chooses with the keyboard, and was run on macOS, Linux and Windows. `scroll` is one wheel event, also on a touch screen: no swipe.
 - Host checks are given only by a program, through `runFiles`. They read the final page, not the steps to it, and not frames or shadow roots. A navigation's `cause` says what opened that page, and nothing about the steps before.
 - Retest does not sign in to a proxy. Only an `http` proxy was run.
 - `--headed`, and `headless: false` in a config, were never run.
 - Locators see nothing inside a closed shadow root. Frames work on Chrome and Chromium only: on Firefox, WebKit and in an Electron window a locator inside a frame is refused. In a frame, `setInputFiles` and a screenshot of an element are refused. On Firefox and WebKit, a role or label lookup is refused when an open shadow root in its search could hold a match. No `filter()`, `and()`, `or()`, `getByAltText()` or `getByTitle()`, and no XPath.
 - No uploads, file picker, downloads, dialogs or popups on Firefox and WebKit, where a JavaScript dialog fails the command as unsupported. No popup in an Electron app.
 - No drag and drop or mocked responses on Firefox and WebKit, and no mocked responses in an Electron app. A route answers no frame of another site and no request a service worker answers, and was not run against a dedicated worker's requests.
-- Layout matchers measure Chrome and Chromium pages only, and were run on macOS only. They measure the elements a test names, and do not search the page for layout problems.
+- Layout matchers measure Chrome and Chromium pages only, and were run on macOS, Linux and Windows. They measure the elements a test names, and do not search the page for layout problems.
 - Screenshot comparison takes the viewport or one element inside it: no full-page picture, no masked region, and no animation stopped first. A picture of one element is Chromium's. An Electron window and a native app's screen are not compared, and nothing was compared on Linux. Targets on one engine and platform share a baseline.
 - No retries, watch mode, custom fixtures or `test.extend`, and no `test.skip()` called inside a test with a condition. Files run on workers; the tests of one file do not. A lock lasts one run and is not shared with another process.
-- `retest install` installs the pinned Chrome for Testing, Firefox, WebKit and Electron on macOS arm64, and builds the native executors and the media process. On Linux x64 it pins Chrome for Testing only, and installing it there was not run.
+- `retest install` installs the pinned Chrome for Testing, Firefox, WebKit and Electron on macOS arm64, and builds the native executors and the media process. On Linux x64 it pins Chrome for Testing only, and installing it there was not run. On Windows x64 it installs the pinned Chrome for Testing, Firefox and Electron, and builds the process supervisor and the media process.
 - No `toMeet` or `test.eval`. The agent session API writes no events. AI checks judge text, screenshots and recorded frames: a screenshot cannot be cropped to a region or masked, and no live judge's accuracy has been measured on the labelled corpus; only the fake judges have run it. The Azure AI SDK adapter has been exercised against a live deployment.
 - Test files are loaded more than once: once to plan the run, and again for each visit that runs them. Top-level code runs each time.
 - Screenshots are not redacted. A secret the page shows appears in its screenshot.
@@ -2326,7 +2362,7 @@ SIGINT and SIGTERM take the same path: the running test stops, the run records `
 - Locators match the page's text as it shows it, not redacted. Retest refuses a locator that holds a whole secret value, but a locator that holds part of one, with the text beside it, can still match it.
 - A page that moves the keyboard focus into a frame of another site as the text arrives can receive the text there. Retest reports `outcome_unknown` and names the frame; it cannot stop typing inside a frame it is not attached to.
 - Diagnostics come from browser pages only, within the scope above, and Firefox records requests but no console messages: no request or response body or header, no WebSocket message, and nothing from a frame of another site, a service worker or a shared worker. Network observation does not wait on or replay a request. A request `page.route()` answers is recorded as mocked.
-- SIGKILL stops Retest without a result. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is retained, since a later run cannot prove it is still disposable. Nothing stops a server it started, and saved state, with its session cookies, stays in its run folder.
+- SIGKILL stops Retest without a result, and so does `taskkill /F` on Windows. `inspect` reads the folder as incomplete. On Linux, the last line of `events.jsonl` can be cut off; `inspect` leaves it out and says so. The browser profile it left is retained, since a later run cannot prove it is still disposable. On macOS and Linux nothing stops a server it started. On Windows everything it started ends with it. Saved state, with its session cookies, stays in its run folder.
 - `list --json` has no published JSON Schema. Events and results do.
 
 ## Project documents
