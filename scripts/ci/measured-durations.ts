@@ -29,8 +29,8 @@ export type RefreshedDurations = {
 const testPath = /^tests\/(?:unit|integration)\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.test\.ts$/
 
 // The artifact names ci.yml gives each shard's results: unit-<platform>-<shard>-<attempt>,
-// integration-<linux platform>-<shard>-<attempt> and integration-macos-<lane>-<shard>-<attempt>.
-const artifactPlatform = /^(?:unit-(macos-arm64|linux-x64|linux-arm64|windows-x64)|integration-(linux-x64|linux-arm64)|integration-(macos)-(?:web|native))-\d+-\d+$/
+// integration-<linux or windows platform>-<shard>-<attempt> and integration-macos-<lane>-<shard>-<attempt>.
+const artifactPlatform = /^(?:unit-(macos-arm64|linux-x64|linux-arm64|windows-x64)|integration-(linux-x64|linux-arm64|windows-x64)|integration-(macos)-(?:web|native))-\d+-\d+$/
 
 function ordered(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0

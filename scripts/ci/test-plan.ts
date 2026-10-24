@@ -10,13 +10,13 @@ export type Scope = 'all' | 'fast' | 'checks' | 'unit' | 'integration'
 export type Inventory = { unit: readonly string[]; integration: readonly string[] }
 export type CheckJob = { platform: Platform; runner: string }
 export type TestJob = CheckJob & { lane: 'unit' | 'web' | 'native'; shard: number; total: number; files: string[]; estimatedSeconds: number; targetSeconds: number }
-export type TestPlan = { full: boolean; checks: CheckJob[]; unit: TestJob[]; linux: TestJob[]; macos: TestJob[] }
+export type TestPlan = { full: boolean; checks: CheckJob[]; unit: TestJob[]; linux: TestJob[]; macos: TestJob[]; windows: TestJob[] }
 
 /**
  * Seconds of tests, by the recorded durations, that each shard of a lane is packed to. A lane gets as many shards as
  * its files' total needs at this target, so a slower suite gets more machines rather than longer jobs.
  */
-export type ShardTargets = { readonly unit: number; readonly linuxWeb: number; readonly macosWeb: number; readonly macosNative: number }
+export type ShardTargets = { readonly unit: number; readonly linuxWeb: number; readonly macosWeb: number; readonly macosNative: number; readonly windowsWeb: number }
 export type PlanOptions = {
   inventory: Inventory
   scope: Scope
@@ -26,7 +26,7 @@ export type PlanOptions = {
   targets?: Partial<ShardTargets>
 }
 
-export const defaultShardTargets: ShardTargets = { unit: 150, linuxWeb: 300, macosWeb: 360, macosNative: 360 }
+export const defaultShardTargets: ShardTargets = { unit: 150, linuxWeb: 300, macosWeb: 360, macosNative: 360, windowsWeb: 300 }
 
 /** The fast suite runs only the integration files whose recorded duration is under this many seconds, on macOS. */
 export const fastFileLimitSeconds = 60
@@ -34,8 +34,8 @@ export const fastFileLimitSeconds = 60
 /** Every platform CI runs on, in the order test-durations.json lists them. */
 export const platformNames: readonly Platform[] = ['macos-arm64', 'linux-x64', 'linux-arm64', 'windows-x64']
 
-/** The platforms with an integration lane. Windows runs build, types and unit files until the browsers run there. */
-export const integrationPlatforms: ReadonlySet<Platform> = new Set<Platform>(['linux-x64', 'linux-arm64', 'macos-arm64'])
+/** The platforms with an integration lane: every platform. Windows got its lane with the browsers that run there. */
+export const integrationPlatforms: ReadonlySet<Platform> = new Set<Platform>(['linux-x64', 'linux-arm64', 'macos-arm64', 'windows-x64'])
 
 /** Whether CI assigns a test file to a platform: every platform runs the unit files. */
 export function assignedTo(platform: Platform, file: string): boolean {
@@ -145,7 +145,7 @@ export function makeTestPlan(options: PlanOptions): TestPlan {
   const fast = scope === 'fast'
   const unit = scope === 'all' || fast || scope === 'unit' ? inventory.unit.filter((file) => selected.has(file)) : []
   const integration = scope === 'all' || fast || scope === 'integration' ? inventory.integration.filter((file) => selected.has(file)) : []
-  const plan: TestPlan = { full: scope === 'all' && platform === 'all' && files.length === 0, checks: [...checks], unit: [], linux: [], macos: [] }
+  const plan: TestPlan = { full: scope === 'all' && platform === 'all' && files.length === 0, checks: [...checks], unit: [], linux: [], macos: [], windows: [] }
   for (const job of checks) {
     plan.unit.push(...split(unit, job, 'unit', targets.unit, weights))
     if (job.platform === 'macos-arm64') {
@@ -155,7 +155,9 @@ export function makeTestPlan(options: PlanOptions): TestPlan {
       const nativeJobs = split(macosFiles.filter((file) => nativeFiles.has(file)), job, 'native', targets.macosNative, weights)
       assertCoverage(macosFiles, [...browserJobs, ...nativeJobs].flatMap((part) => part.files))
       plan.macos.push(...browserJobs, ...nativeJobs)
-    } else if (!fast && integrationPlatforms.has(job.platform)) {
+    } else if (!fast && job.platform === 'windows-x64') {
+      plan.windows.push(...split(integration, job, 'web', targets.windowsWeb, weights))
+    } else if (!fast) {
       plan.linux.push(...split(integration, job, 'web', targets.linuxWeb, weights))
     }
   }

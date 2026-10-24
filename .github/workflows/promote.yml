@@ -128,7 +128,7 @@ jobs:
             printf 'Commit `%s`, started by %s.\n' "$COMMIT" "$GITHUB_ACTOR"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Every gate, on Linux and macOS, against the commit. The gates are ci.yml as it is on main; the code is the commit.
+  # Every gate, on Linux, macOS and Windows, against the commit. The gates are ci.yml as it is on main; the code is the commit.
   gates:
     name: Gates
     needs: verify
