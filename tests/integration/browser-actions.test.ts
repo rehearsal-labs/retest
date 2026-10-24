@@ -420,12 +420,22 @@ test('a disabled button is not clicked, and the failure names it', async (t) => 
 test('an element that keeps moving is not clicked', async (t) => {
   const { page } = await customPage(
     t,
-    `<style>@keyframes slide { from { margin-left: 0 } to { margin-left: 300px } }</style>
-    <button data-testid="moving" style="animation: slide 400ms linear infinite alternate">Moving</button>
+    `<button data-testid="moving" style="position: relative">Moving</button>
     <p data-testid="status">none</p>
-    <script>document.querySelector('[data-testid="moving"]').addEventListener('click', () => {
-      document.querySelector('[data-testid="status"]').textContent = 'clicked'
-    })</script>`,
+    <script>
+      // A step on every frame, never back to where it stood the frame before, so no two frames see one box.
+      const moving = document.querySelector('[data-testid="moving"]')
+      let left = 0
+      const step = () => {
+        left = (left + 7) % 300
+        moving.style.left = left + 'px'
+        requestAnimationFrame(step)
+      }
+      requestAnimationFrame(step)
+      moving.addEventListener('click', () => {
+        document.querySelector('[data-testid="status"]').textContent = 'clicked'
+      })
+    </script>`,
   )
   const failure = failureOf(await click(page, 'moving', 500))
   assert.equal(failure.class, 'not_actionable')

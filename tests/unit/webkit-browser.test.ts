@@ -14,6 +14,9 @@ import { WebKitProcess } from '../../src/browser/webkit/process.ts'
 import { defaultScreen } from '../../src/browser/webkit/screen.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { scriptedBuild } from './webkit-scripted-inspector.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+const noWebKit = unixOnly('WebKit has no Windows build, so Retest runs no WebKit there')
 
 // How a WebKit browser hands each page its own setup, against a scripted build on the far end of the connection. The
 // process is a stand-in this test starts, which waits on its inspector pipe and ends when the test closes it.
@@ -62,7 +65,7 @@ async function nextCreatePage(build: ScriptedBuild): Promise<ReceivedCommand> {
 
 // W-9: a page announced while a createPage of its context was on its way once took the next queued setup, whichever
 // page it was: a popup could take a side page's empty-document setup, or a test page's viewport.
-test("each page takes the setup of the createPage that named it, a popup announced first takes the default screen, and a page's first target stays paused until its setup is there", { timeout: 10_000 }, async (t) => {
+test("each page takes the setup of the createPage that named it, a popup announced first takes the default screen, and a page's first target stays paused until its setup is there", { timeout: 10_000, skip: noWebKit }, async (t) => {
   const build = scriptedBuild(t, { timeoutMs: 3000 })
   answerPages(build)
   const browser = await browserOn(t, build)

@@ -51,6 +51,7 @@ import { defaultAppPixelRules, PixelCapturePolicy } from '../media/policy.ts'
 import { elapsedMs, monotonicClock } from '../protocol/deadline.ts'
 import { retestEventSchema } from '../protocol/events.ts'
 import { formatSessionId } from '../protocol/evidence.ts'
+import { withoutVariables } from '../shared/environment.ts'
 import { sha256Hex } from '../shared/sha256.ts'
 import { attemptEnding, canonicalJson, withFinalBundle } from '../protocol/execution.ts'
 import { errorMessage, failure, withAlso } from '../protocol/failures.ts'
@@ -59,6 +60,7 @@ import { appLogFile, browserLogFile, childLogFile, stateFile, targetBrowserLogFi
 import { originOf, withoutCredentials } from '../protocol/url.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { relativePosixPath } from '../shared/posix-path.ts'
+import { runnerStrayProblems } from '../shared/process-system.ts'
 import { applyRetention, recordingArtifactReferences, ArtifactSequences, downloadsFolder, inventoryArtifacts, planRetention } from '../store/artifacts.ts'
 import { retestVersion } from '../version.ts'
 import { AppServers } from './app-servers.ts'
@@ -92,7 +94,7 @@ import { attemptKey, phasesOf, scheduleRun } from './schedule.ts'
 import { AttemptScreenshots, pictureApp, ScreenshotBaselines } from './screenshot-baselines.ts'
 import { SecretFiller, secretValuesProblem, secretVariables } from './secrets.ts'
 import { emptySelectionFailure, selectionProblem, testSelected, variantSelected } from './selection.ts'
-import { acquireResources, hostResources, leasePart, partFree, resourceNeeds, sessionResource } from './resources.ts'
+import { acquireResources, hostResources, leasePart, partFree, recordedPart, resourceNeeds, sessionResource } from './resources.ts'
 import { sessionOptionsProblem } from './sessions.ts'
 import { searchSetups } from './setup-search.ts'
 import { skippedCheckFailures } from './skipped-checks.ts'
@@ -422,7 +424,7 @@ export class RunSession {
       ? new RunMedia({
           location: startMedia !== undefined && discoverMedia === undefined && options.media !== undefined ? options.media : signal => (discoverMedia ?? discoverMediaLocation)(options.media, process.env, timeouts.setup, signal),
           start: startMedia ?? startMediaProcess,
-          env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !this.#hiddenVariables.includes(name))),
+          env: withoutVariables(process.env, this.#hiddenVariables),
           signal: options.signal,
           emit: (body) => void this.#events.emit(body),
           timeouts: { start: timeouts.setup, close: timeouts.cleanup, leftovers: timeouts.cleanup },
@@ -824,7 +826,7 @@ export class RunSession {
       return
     }
     if (stage.kind === 'resources') {
-      const resources = stage.needs.map((need) => ({ ...leasePart(need), name: redact(need.name) }))
+      const resources = stage.needs.map((need) => recordedPart({ ...leasePart(need), name: redact(need.name) }))
       const holders = { ...(stage.heldBy.length === 0 ? {} : { heldBy: [...stage.heldBy] }), ...(stage.heldElsewhere === 0 ? {} : { heldElsewhere: stage.heldElsewhere }) }
       this.#emitFor(described, { type: 'resource.acquired', testId, attemptId, resources, waitedMs: stage.waitedMs, ...holders })
       return
@@ -843,7 +845,7 @@ export class RunSession {
     const { testId, attemptId } = described
     this.#emitFor(described, { type: 'lease.taken', testId, attemptId, lease: record })
     lease.onExpired((expiry) => {
-      const parts = (needs: readonly ResourceNeed[]): LeasePart[] => needs.map((need) => ({ ...leasePart(need), name: redact(need.name) }))
+      const parts = (needs: readonly ResourceNeed[]): LeasePart[] => needs.map((need) => recordedPart({ ...leasePart(need), name: redact(need.name) }))
       this.#emitFor(described, { type: 'lease.expired', testId, attemptId, lease: record, held: parts(expiry.held), released: parts(expiry.released) })
     })
   }
@@ -1865,6 +1867,8 @@ export class RunSession {
   // reporter failure is part of the event record as well as result.json.
   async #finish(files: FileResult[]): Promise<RunResult> {
     await this.#events.flush()
+    // On Windows, what Retest's own job still holds that no launch's job does, by pid and name; empty elsewhere.
+    for (const problem of await runnerStrayProblems()) this.#events.reportFailure(failure('cleanup_failed', problem))
     const browsers = this.#browsers.started.map((started) => started.info)
     const evidence = this.#recordsApps ? { evidenceStatus: runEvidence(files.flatMap((file) => file.tests), [], this.#recording.required) } : {}
     const facts: ResultFacts = {

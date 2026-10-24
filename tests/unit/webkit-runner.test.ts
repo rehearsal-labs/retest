@@ -15,6 +15,9 @@ import { targetDriver } from '../../src/runner/target-drivers.ts'
 import { fakeLauncher } from '../support/fake-browser.ts'
 import { fakeExecutable } from '../support/project.ts'
 import { quickTimeouts } from '../support/run-harness.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+const noWebKit = unixOnly('WebKit has no Windows build, so Retest runs no WebKit there')
 
 const webkit: LoadedTarget = { name: 'webkit', browser: 'webkit', headless: true, executablePath: '/cache/webkit-2359' }
 
@@ -46,7 +49,7 @@ test("a WebKit target's build is the path it names, or RETEST_WEBKIT_BUILD, and 
   assert.deepEqual(missing, { ok: false, failure: { class: 'setup_failed', message: 'A WebKit target needs a build. Give its executablePath, or set RETEST_WEBKIT_BUILD, to an unpacked Playwright WebKit build 2359, the folder or the executable inside it.' } })
 })
 
-test('a path to the executable inside a build names the build folder, and the folder name gives the revision', { timeout: 10_000 }, () => {
+test('a path to the executable inside a build names the build folder, and the folder name gives the revision', { timeout: 10_000, skip: noWebKit }, () => {
   assert.equal(buildFolderOf('/cache/webkit-2359/Playwright.app/Contents/MacOS/Playwright'), '/cache/webkit-2359')
   assert.equal(buildFolderOf('/cache/webkit-2359/'), '/cache/webkit-2359')
   assert.equal(buildFolderOf('/cache/other/MacOS/Playwright'), '/cache/other/MacOS/Playwright')

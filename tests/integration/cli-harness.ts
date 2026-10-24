@@ -2,6 +2,7 @@ import type { ChildProcess, ExecFileException } from 'node:child_process'
 import type { TestContext } from 'node:test'
 import type { RetestEvent } from '../../src/protocol/events.ts'
 import type { RunResult, TestResult } from '../../src/protocol/result.ts'
+import type { SupervisedProcess } from '../../src/shared/process-supervisor.ts'
 import type { Timeouts } from '../../src/protocol/timeouts.ts'
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawn } from 'node:child_process'
@@ -13,14 +14,19 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { agentVariables } from '../../src/cli/agent-detection.ts'
+import { locateSupervisor } from '../../src/cli/install/supervisor-locate.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
 import { childLogFile, eventsFile, resultFile, statesFolder } from '../../src/protocol/run-folder.ts'
 import { parse, type Schema } from '../../src/protocol/schema.ts'
 import { errorCode } from '../../src/shared/error-code.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { consoleHost } from '../../src/shared/process-supervisor.ts'
+import { heldLaunches, holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { readEvents as readInterruptedEvents } from '../../src/store/read-run-folder.ts'
+import { npmCommand } from '../support/npm-command.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { browserPath, groupExists, processesUsing, waitForGroupEnd } from './browser-harness.ts'
 import { engineUnderTest, type TestEngine } from './engines.ts'
@@ -70,6 +76,24 @@ export async function waitFor(what: string, condition: () => boolean, timeoutMs 
 
 export type Exit = { code: number | null; signal: NodeJS.Signals | null }
 
+/**
+ * How a command `RetestProcess.killOutright` ended exits: by SIGKILL on macOS and Linux. Windows has no signal to kill
+ * with; retest-supervisor's terminate ends the process with its exit code for an ended process, 137, as a shell reports
+ * a SIGKILL, and Node reports no signal for a process it did not end through its own handle.
+ */
+export const killedExit: Exit = process.platform === 'win32' ? { code: 137, signal: null } : { code: null, signal: 'SIGKILL' }
+
+const sigkilled: Exit = { code: null, signal: 'SIGKILL' }
+
+/**
+ * Whether a run was killed outright, as observed: the system reported SIGKILL, which on Windows it does for a kill
+ * through Node's own handle; or, on Windows, this harness ended it with `killOutright` and it exited 137, as that ends
+ * one. The code alone is never taken for a kill: the harness's record of the kill goes with it.
+ */
+export function wasKilledOutright(run: { readonly exit: Exit; readonly killedOutright?: boolean }): boolean {
+  return isDeepStrictEqual(run.exit, sigkilled) || (run.killedOutright === true && isDeepStrictEqual(run.exit, killedExit))
+}
+
 export type EventType = RetestEvent['type']
 export type EventOf<Type extends EventType> = Extract<RetestEvent, { type: Type }>
 
@@ -80,7 +104,9 @@ const releaseWaitMs = 5000
 /** A temporary folder removed after the test, even when it fails, under the test process's own root. */
 export async function scratchFolder(t: TestContext, prefix = 'retest-cli-'): Promise<string> {
   const folder = tempFolder(prefix)
-  t.after(() => rm(folder, { recursive: true, force: true }))
+  // On Windows a file in the folder can still be held for a moment after the command and what it started have ended,
+  // and refuses removal meanwhile (EBUSY), so the removal is asked again then.
+  t.after(() => rm(folder, { recursive: true, force: true, ...(process.platform === 'win32' ? { maxRetries: 10 } : {}) }))
   return folder
 }
 
@@ -116,6 +142,11 @@ export class RetestProcess {
   #partialLine = ''
   #stderr = ''
   #durationMs: number | undefined
+  // On Windows, the job this harness holds the command in, which holds everything the command starts, its own jobs
+  // nested inside; and what that job held besides the command as the command printed the end of its run.
+  readonly #held: string | undefined
+  #atRunEnd: { readonly commandRunning: boolean; readonly others: readonly SupervisedProcess[] } | undefined
+  #killedOutright = false
 
   private constructor(child: ChildProcess, tmp: string) {
     const { pid } = child
@@ -123,6 +154,10 @@ export class RetestProcess {
     this.pid = pid
     this.tmp = tmp
     this.#child = child
+    if (launchesHeldByJob) {
+      assert.deepEqual(holdLaunch(child).capture(), [], 'this harness holds the command it starts')
+      this.#held = heldLaunches()?.launchOf(pid)?.job
+    }
     child.stdout?.setEncoding('utf8').on('data', (text: string) => this.#read(text))
     child.stderr?.setEncoding('utf8').on('data', (text: string) => {
       this.#stderr += text
@@ -140,10 +175,13 @@ export class RetestProcess {
     const tmp = options.tmp ?? join(await scratchFolder(t), 'tmp')
     await mkdir(tmp, { recursive: true })
     const [executable = process.execPath, ...leading] = options.command ?? sourceCommand
+    if (launchesHeldByJob) prepareOwnedLaunch()
+    // On Windows the command runs on a console of its own with no window, which Ctrl+C and Ctrl+Break can be pressed on.
     const child = spawn(executable, [...leading, ...options.args], {
       cwd: options.cwd ?? repositoryRoot,
       env: environment(tmp, options.env ?? {}),
-      detached: true,
+      detached: !launchesHeldByJob,
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const retest = new RetestProcess(child, tmp)
@@ -165,9 +203,37 @@ export class RetestProcess {
     return this.#durationMs
   }
 
-  /** Sends a signal to the retest process alone, not to its children. */
+  /**
+   * Sends a signal to the retest process alone, not to its children. Windows has signals for no process: there SIGINT is
+   * Ctrl+C and SIGTERM is Ctrl+Break, each pressed on the command's own console, which a person stops a console program
+   * with, and any other signal ends the command outright, as `taskkill /F` does. Ctrl+C reaches a command only while it
+   * has Ctrl+C turned on, which a command started from a service, as an SSH session or a CI step is, inherits turned off.
+   */
   signal(signal: NodeJS.Signals): void {
-    this.#child.kill(signal)
+    sendStop(this.#child, signal)
+  }
+
+  /**
+   * Ends the command outright, as a crash would, and records that this harness did. On macOS and Linux it is SIGKILL
+   * through the command's own handle. On Windows it is retest-supervisor's terminate, in the job this harness holds the
+   * command in, which ends the process only while it is the one that started then, and answers that it did.
+   */
+  killOutright(): void {
+    const supervisor = heldLaunches()?.supervisor
+    if (this.#held === undefined || supervisor === undefined) {
+      this.#killedOutright = true
+      this.#child.kill('SIGKILL')
+      return
+    }
+    const running = supervisor.process(this.pid).process
+    assert.ok(running !== undefined, `retest ${this.pid} is running as this harness kills it`)
+    assert.equal(supervisor.terminate(this.#held, this.pid, running.startedAt), 'terminated', 'retest-supervisor ended the command')
+    this.#killedOutright = true
+  }
+
+  /** Whether `killOutright` ended the command. */
+  get killedOutright(): boolean {
+    return this.#killedOutright
   }
 
   /** Stops reading stdout, as a reader that went away would. */
@@ -190,6 +256,31 @@ export class RetestProcess {
     this.#recordLaunched()
   }
 
+  /**
+   * On Windows, every process the job this harness holds the command in holds now, the command included: everything
+   * the command started and has not ended. Empty elsewhere.
+   */
+  heldNow(): readonly SupervisedProcess[] {
+    const supervisor = heldLaunches()?.supervisor
+    if (this.#held === undefined || supervisor === undefined) return []
+    try {
+      return supervisor.members(this.#held)
+    } catch {
+      // A job nothing holds any more holds no process.
+      return []
+    }
+  }
+
+  /**
+   * On Windows, what the command's job held besides the command, its own questions to retest-supervisor and console
+   * hosts as the command printed the `run.finished` of the last run it had started, read before the command ended,
+   * while its own job could still hide nothing; and whether the command was still running then. Undefined elsewhere, or
+   * before the end of every run was printed.
+   */
+  get heldAtRunEnd(): { readonly commandRunning: boolean; readonly others: readonly SupervisedProcess[] } | undefined {
+    return this.#atRunEnd
+  }
+
   /** Resolves with the first event of this type on stdout, as the JSONL reporter prints it. */
   waitForEvent<Type extends EventType>(type: Type, matches: (event: EventOf<Type>) => boolean = () => true): Promise<EventOf<Type>> {
     const { promise, resolve, reject } = Promise.withResolvers<EventOf<Type>>()
@@ -200,7 +291,7 @@ export class RetestProcess {
         resolve(found)
       } else if (this.#durationMs !== undefined) {
         this.#waiters.delete(check)
-        reject(new Error(`retest exited without printing ${type}. stderr:\n${this.#stderr}`))
+        reject(new Error(`retest exited without printing ${type}. ${this.#endingSaid()} stderr:\n${this.#stderr}`))
       }
     }
     this.#waiters.add(check)
@@ -217,6 +308,7 @@ export class RetestProcess {
       const parsed = parse(retestEventSchema, parseJson(line))
       if (!parsed.ok) continue
       this.#printed.push(parsed.value)
+      if (parsed.value.type === 'run.finished' && this.#held !== undefined && this.#atRunEnd === undefined && this.#everyRunFinished()) this.#atRunEnd = this.#readAtRunEnd()
       for (const { pid, what } of reportedProcesses([parsed.value])) this.ownGroup(pid, what)
     }
     this.#notify()
@@ -226,10 +318,50 @@ export class RetestProcess {
     for (const check of [...this.#waiters]) check()
   }
 
+  // What the run printed about its own end, for a failure that has only stdout to go on: the JSONL reporter writes
+  // nothing to stderr.
+  #endingSaid(): string {
+    const finished = eventsOf(this.#printed, 'run.finished')[0]
+    if (finished === undefined) return 'It printed no run.finished.'
+    const failed = eventsOf(this.#printed, 'test.finished').flatMap((event) => event.failure === undefined ? [] : [`${event.testId}: ${event.failure.class} ${event.failure.message}`])
+    return `Its run.finished: ${JSON.stringify({ status: finished.status, exitCode: finished.exitCode, failure: finished.failure })}.${failed.length === 0 ? '' : ` Its failed tests: ${failed.join('; ')}.`}`
+  }
+
+  // A host may hold several runs at once, each printing its own events; until the last of them has ended, what the
+  // command's job holds includes the processes of a run still going.
+  #everyRunFinished(): boolean {
+    const finished = new Set(eventsOf(this.#printed, 'run.finished').map((event) => event.runId))
+    return eventsOf(this.#printed, 'run.started').every((event) => finished.has(event.runId))
+  }
+
+  #readAtRunEnd(): { readonly commandRunning: boolean; readonly others: readonly SupervisedProcess[] } {
+    const held = this.heldNow()
+    // The command's own: a question it is asking retest-supervisor. A console host, the command's or one beside a test
+    // file's process that has just ended, is its console's programs' own, as the run's end reads it.
+    const asking = (entry: SupervisedProcess): boolean => entry.parentPid === this.pid && entry.image?.toLowerCase().endsWith('\\retest-supervisor.exe') === true
+    return { commandRunning: held.some((entry) => entry.pid === this.pid), others: held.filter((entry) => entry.pid !== this.pid && !asking(entry) && !consoleHost(entry)) }
+  }
+
+  // On Windows, each process the job this harness holds the command in still holds once the command has ended, given
+  // `timeoutMs` to go: something the command's own job did not hold, since that job ended everything it held with the
+  // command. Named by pid and executable, without command lines.
+  async #heldLeft(timeoutMs: number): Promise<string[]> {
+    const end = performance.now() + timeoutMs
+    let held = this.heldNow()
+    while (held.length > 0 && performance.now() < end) {
+      await delay(50)
+      held = this.heldNow()
+    }
+    return held.map((entry) => `Process ${entry.pid} (${entry.image ?? 'unnamed'}), started under the command, is still running after the test.`)
+  }
+
   // Records the command and what it has launched since the last record, only while Node has not reaped it, so its pid
   // cannot yet belong to anything else. The command is first recorded once it reports something, by when a launcher
   // such as `/usr/bin/env` has long been replaced by the program the record must hold.
   #recordLaunched(): void {
+    // Windows has no `ps` to record from. There the command's own job holds what it launched and ends it with the
+    // command, which `#release` ends through its own handle.
+    if (process.platform === 'win32') return
     if (this.#child.exitCode !== null || this.#child.signalCode !== null) return
     this.#ownership ??= new OwnedProcessGroup(this.pid)
     this.#ownership.capture()
@@ -247,7 +379,7 @@ export class RetestProcess {
     }
     const ownership = this.#ownership
     const report = ownership?.remains() === true ? ownership.signalReport('SIGKILL') : { problems: [], identityRefusals: [] }
-    const left = await groupsLeft(new Map([[this.pid, 'the command with its test file processes'], ...this.#groups]), releaseWaitMs)
+    const left = this.#held === undefined ? await groupsLeft(new Map([[this.pid, 'the command with its test file processes'], ...this.#groups]), releaseWaitMs) : await this.#heldLeft(releaseWaitMs)
     if (left.length === 0) return
     const message = [...left, 'The harness ends only what it recorded beneath the command, each process checked against its record.', ...report.problems, ...report.identityRefusals].join('\n')
     t.diagnostic(message)
@@ -279,6 +411,12 @@ async function groupsLeft(groups: ReadonlyMap<number, string>, timeoutMs: number
   for (const [group, what] of groups) {
     while (groupExists(group) && performance.now() < end) await delay(20)
     if (!groupExists(group)) continue
+    // Windows has neither process groups nor `ps`; a command this harness holds is read from its job instead
+    // (`#heldLeft`), and a group named here is one process.
+    if (process.platform === 'win32') {
+      left.push(`Process ${group}, ${what}, is still there after the test.`)
+      continue
+    }
     const listed = await runProgram('/bin/ps', ['-ax', '-o', 'pid=,pgid=,comm='], repositoryRoot)
     const members = listed.stdout.split('\n').map((line) => line.trim().split(/\s+/)).filter(([, pgid]) => pgid === String(group))
     const named = members.map(([pid, , ...name]) => `${pid} ${name.join(' ')}`).join(', ')
@@ -288,9 +426,27 @@ async function groupsLeft(groups: ReadonlyMap<number, string>, timeoutMs: number
 }
 
 function environment(tmp: string, extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: tmp }
+  // Node's tmpdir() reads TMPDIR on macOS and Linux and TEMP and TMP on Windows; the command gets its folder as each.
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: tmp, ...(process.platform === 'win32' ? { TEMP: tmp, TMP: tmp } : {}), ...supervisorNamed() }
   for (const name of agentVariables) delete env[name]
   return { ...env, ...extra }
+}
+
+// On Windows every process Retest starts goes through retest-supervisor, which the CLI finds from
+// RETEST_SUPERVISOR_BINARY or else in the cache under LOCALAPPDATA. A check that gives the CLI under test a home of its
+// own gives it a LOCALAPPDATA with no supervisor in it, so the one this harness finds is named to the CLI by its path; a
+// check can still name another, or none, in its own variables. Where none is found the CLI says how to install one.
+let supervisorFound: Record<string, string> | undefined
+
+function supervisorNamed(): Record<string, string> {
+  if (process.platform !== 'win32') return {}
+  if (supervisorFound !== undefined) return supervisorFound
+  try {
+    supervisorFound = { RETEST_SUPERVISOR_BINARY: locateSupervisor(process.env).command }
+  } catch {
+    supervisorFound = {}
+  }
+  return supervisorFound
 }
 
 export type RunRequest = {
@@ -306,6 +462,24 @@ export type RunRequest = {
 } & Omit<StartOptions, 'args'>
 
 export type StartedRun = { retest: RetestProcess; output: string }
+
+/**
+ * Sends a signal to a command this test started through the seam (`prepareOwnedLaunch`, then `holdLaunch`) on a console
+ * of its own (`windowsHide`), as `RetestProcess` starts one. On Windows SIGINT is Ctrl+C and SIGTERM is Ctrl+Break,
+ * pressed on that console, and any other signal ends the command outright; elsewhere it is the signal itself.
+ *
+ * @example sendStop(retest, 'SIGTERM')
+ */
+export function sendStop(child: ChildProcess, signal: NodeJS.Signals): void {
+  const supervisor = heldLaunches()?.supervisor
+  const { pid } = child
+  const job = pid === undefined ? undefined : heldLaunches()?.launchOf(pid)?.job
+  if (pid === undefined || job === undefined || supervisor === undefined || (signal !== 'SIGINT' && signal !== 'SIGTERM')) {
+    child.kill(signal)
+    return
+  }
+  supervisor.interrupt(job, { pid, key: signal === 'SIGINT' ? 'c' : 'break' })
+}
 
 /** Starts `retest run` with a new output folder. */
 export async function startRun(t: TestContext, request: RunRequest): Promise<StartedRun> {
@@ -351,6 +525,8 @@ export type FinishedRun = {
   events: RetestEvent[]
   /** `result.json`, validated, when the run wrote it. */
   result: RunResult | undefined
+  /** Whether this harness ended the command with `RetestProcess.killOutright`. */
+  killedOutright?: boolean
 }
 
 /** Waits for the run to end, reads its folder, and checks that it left no process, profile, server or state behind. */
@@ -372,13 +548,14 @@ export async function runRetest(t: TestContext, request: RunRequest): Promise<Fi
 export async function readFinishedRun({ retest, output }: StartedRun): Promise<FinishedRun> {
   const exit = await retest.exited
   const hasResult = existsSync(join(output, resultFile))
-  const read = exit.signal === 'SIGKILL' && !hasResult ? readKilledEvents : readEvents
+  const { killedOutright } = retest
+  const read = wasKilledOutright({ exit, killedOutright }) && !hasResult ? readKilledEvents : readEvents
   const events = existsSync(join(output, eventsFile)) ? read(readFileSync(join(output, eventsFile), 'utf8')) : []
   for (const { pid, what } of reportedProcesses(events)) retest.ownGroup(pid, what)
   assertJudged(events)
   const result = hasResult ? readResult(readFileSync(join(output, resultFile), 'utf8')) : undefined
   const { stdout, stderr, durationMs } = retest
-  return { exit, stdout, stderr, durationMs, output, events, result }
+  return { exit, stdout, stderr, durationMs, output, events, result, killedOutright }
 }
 
 /**
@@ -432,6 +609,11 @@ export function assertJudged(events: readonly RetestEvent[]): void {
  */
 export async function assertReleased(retest: RetestProcess, events: readonly RetestEvent[], output?: string): Promise<void> {
   await waitForGroupEnd(retest.pid, releaseWaitMs)
+  // On Windows the command's job, read as it printed the end of its run, holds nothing it started; and once it has
+  // ended, nothing it started is left in the job this harness holds it in.
+  const atRunEnd = retest.heldAtRunEnd
+  if (atRunEnd?.commandRunning === true) assert.deepEqual(atRunEnd.others.map((entry) => `${entry.pid} ${entry.image ?? ''}`), [], 'nothing the command started was still running as its run ended')
+  if (launchesHeldByJob) assert.deepEqual(retest.heldNow().filter((entry) => !consoleHost(entry)).map((entry) => `${entry.pid} ${entry.image ?? ''}`), [], 'nothing the command started is left once it has ended')
   assert.deepEqual(retestEntriesIn(retest.tmp), [], 'no browser profile or other Retest folder is left in the temporary folder')
   assert.deepEqual(await processesUsing(retest.tmp), [], 'no process uses the run temporary folder')
   for (const group of reportedGroups(events)) await waitForGroupEnd(group, releaseWaitMs)
@@ -692,13 +874,16 @@ export function secondBrowserPath(): string {
 const versions = new Map<string, string>()
 
 /**
- * The version a browser gives for itself with `--version`, such as `154.0.8037.92`. It is read without Retest,
- * so a check can hold what Retest reports against it, whichever builds the machine has.
+ * The version a browser gives for itself with `--version`, such as `154.0.8037.92`, or on Windows, where Chrome prints
+ * nothing for that switch, the version its executable file carries. It is read without Retest, so a check can hold
+ * what Retest reports against it, whichever builds the machine has.
  */
 export function browserVersion(executablePath: string): string {
   const known = versions.get(executablePath)
   if (known !== undefined) return known
-  const printed = execFileSync(executablePath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 })
+  const printed = process.platform === 'win32'
+    ? execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Item -LiteralPath '${executablePath.replaceAll("'", "''")}').VersionInfo.ProductVersion`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 })
+    : execFileSync(executablePath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 })
   const version = /\b\d+\.\d+\.\d+\.\d+\b/.exec(printed)?.[0]
   assert.ok(version !== undefined, `${executablePath} --version printed no version: ${printed}`)
   versions.set(executablePath, version)
@@ -759,7 +944,7 @@ export function assertStdoutIsEvents(run: FinishedRun): void {
 
 /** A killed reporter may stop delivering after a durable event, including midway through its final stdout line. */
 export function assertKilledStdoutIsEventPrefix(run: FinishedRun): void {
-  assert.deepEqual(run.exit, { code: null, signal: 'SIGKILL' }, 'the runner was fatally killed')
+  assert.ok(wasKilledOutright(run), `the runner was fatally killed, not ended with ${JSON.stringify(run.exit)}${run.killedOutright === true ? '' : ' by a kill this harness made'}`)
   assert.equal(run.result, undefined, 'the killed runner wrote no settled result')
   const printed = readKilledEvents(run.stdout)
   assert.deepEqual(printed, run.events.slice(0, printed.length), 'stdout carries an uninterrupted prefix of the saved events')
@@ -832,14 +1017,27 @@ function appServerArgs(port: number, flags: AppServerFlags): string[] {
   ]
 }
 
-/** The shell command that starts `fixtures/app-server` on `port`, for a config's `start.command`. */
+/**
+ * The shell command that starts `fixtures/app-server` on `port`, for a config's `start.command`: quoted for `sh`, or on
+ * Windows for `cmd.exe`, which runs an app's start command there and reads only double quotes.
+ */
 export function appServerCommand(port: number, flags: AppServerFlags = {}): string {
-  return [process.execPath, ...appServerArgs(port, flags)].map((word) => `'${word.replaceAll("'", `'\\''`)}'`).join(' ')
+  const words = [process.execPath, ...appServerArgs(port, flags)]
+  if (process.platform === 'win32') {
+    for (const word of words) assert.ok(!word.includes('"'), `${word} holds a double quote, which cmd.exe has no way to quote`)
+    return words.map((word) => `"${word}"`).join(' ')
+  }
+  return words.map((word) => `'${word.replaceAll("'", `'\\''`)}'`).join(' ')
 }
 
-/** The lines of `ps` for `fixtures/app-server` on `port`, and for the child process it starts with `--child`. */
+/**
+ * The lines of `ps` for `fixtures/app-server` on `port`, and for the child process it starts with `--child`. The server's
+ * command line names the port as `--port 4310`, or on Windows, where `appServerCommand` quotes every word for cmd.exe,
+ * as `"--port" "4310"`; its child's, which Node quotes only where a word needs it, as `--port 4310` everywhere.
+ */
 export async function appServersOn(port: number): Promise<string[]> {
-  return (await processesUsing(`--port ${port}`)).filter((line) => line.includes('app-server'))
+  const named = new RegExp(`(?:--port |"--port" ")${port}(?:"|\\s|$)`)
+  return (await processesUsing('--port')).filter((line) => line.includes('app-server') && named.test(line))
 }
 
 /**
@@ -847,11 +1045,13 @@ export async function appServersOn(port: number): Promise<string[]> {
  * It is killed after the test if it is still there, through the record this test made of its launch.
  */
 export async function startAppServerFixture(t: TestContext, port: number): Promise<{ pid: number; url: string }> {
+  // On Windows the server is held in a job of this test's own, which its record is read from; `ps` exists elsewhere.
+  if (launchesHeldByJob) prepareOwnedLaunch()
   const child = spawn(process.execPath, appServerArgs(port, {}), { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
   await once(child, 'spawn')
   const { pid } = child
   assert.ok(pid !== undefined, 'the app server did not start')
-  const ownership = new OwnedProcessGroup(pid)
+  const ownership = launchesHeldByJob ? holdLaunch(child) : new OwnedProcessGroup(pid)
   ownership.capture()
   t.after(() => {
     if (ownership.remains()) assert.deepEqual(ownership.signalReport('SIGKILL').problems, [], 'the app server this test started was ended')
@@ -875,6 +1075,12 @@ export function runProgram(file: string, args: readonly string[], cwd: string, e
       resolve({ code, stdout, stderr })
     })
   })
+}
+
+/** Runs npm with `args` in `cwd`, as `npmCommand` starts it on this platform. */
+export function runNpm(args: readonly string[], cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<ProgramRun> {
+  const [npm, ...before] = npmCommand(env)
+  return runProgram(npm, [...before, ...args], cwd, env)
 }
 
 export function assertSucceeded(result: ProgramRun, what: string): void {
@@ -902,17 +1108,33 @@ export async function packRetest(folder: string): Promise<Packed> {
   const pack = join(folder, 'pack')
   await mkdir(pack, { recursive: true })
   const npmEnv = { ...process.env, npm_config_cache: join(folder, 'npm-cache'), npm_config_update_notifier: 'false' }
-  assertSucceeded(await runProgram('npm', ['run', 'build'], repositoryRoot, npmEnv), 'npm run build')
-  assertSucceeded(await runProgram('npm', ['pack', '--pack-destination', pack], repositoryRoot, npmEnv), 'npm pack')
+  assertSucceeded(await runNpm(['run', 'build'], repositoryRoot, npmEnv), 'npm run build')
+  assertSucceeded(await runNpm(['pack', '--pack-destination', pack], repositoryRoot, npmEnv), 'npm pack')
   const [tarball, ...others] = readdirSync(pack)
   assert.ok(tarball !== undefined && others.length === 0, 'npm pack made one tarball')
   return { tarball: join(pack, tarball), npmEnv }
 }
 
+/**
+ * The command that runs the Retest a project installed: its `node_modules/.bin/retest` on macOS and Linux. On Windows
+ * npm writes that entry as a shell script and a batch file, and Node starts a batch file only through a shell, so the
+ * package's own bin file runs under this Node, as the batch file runs it.
+ *
+ * @example const [retest, ...before] = installedRetest(project); runProgram(retest, [...before, 'init', '--yes'], project)
+ */
+export function installedRetest(project: string, platform: NodeJS.Platform = process.platform): [string, ...string[]] {
+  if (platform !== 'win32') return [join(project, 'node_modules/.bin/retest')]
+  const installed = join(project, 'node_modules', '@rehearsal-labs', 'retest')
+  const manifest: unknown = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'))
+  const bin = typeof manifest === 'object' && manifest !== null && 'bin' in manifest && typeof manifest.bin === 'object' && manifest.bin !== null && 'retest' in manifest.bin ? manifest.bin.retest : undefined
+  assert.ok(typeof bin === 'string', `${installed} names its retest bin`)
+  return [process.execPath, join(installed, bin)]
+}
+
 /** Installs the packed tarball into a project with no network. */
 export async function installPacked(project: string, packed: Packed): Promise<void> {
   const install = ['install', '--offline', '--no-audit', '--no-fund', packed.tarball]
-  assertSucceeded(await runProgram('npm', install, project, packed.npmEnv), 'npm install --offline')
+  assertSucceeded(await runNpm(install, project, packed.npmEnv), 'npm install --offline')
 }
 
 /**

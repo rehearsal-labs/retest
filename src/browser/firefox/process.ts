@@ -7,7 +7,7 @@ import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { rmSync } from 'node:fs'
 import { appendFile, mkdir, open, readFile, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, win32 } from 'node:path'
 import { Readable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { waitBeforeRead } from '../../assertions/wait-before-read.ts'
@@ -16,11 +16,15 @@ import { Deadline } from '../../protocol/deadline.ts'
 import { defaultTimeouts } from '../../protocol/timeouts.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { s, parse } from '../../protocol/schema.ts'
+import { withoutVariables } from '../../shared/environment.ts'
+import { listWords } from '../../shared/list-words.ts'
 import { describeExit } from '../../shared/process-exit.ts'
 import { OwnedProcessGroup, unverifiedMembersProblem } from '../../shared/process-ownership.ts'
+import { holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../shared/process-system.ts'
+import { exitRemovalMs, groupEndsNow, outputWithin, removeOnceFree } from '../chromium-process.ts'
 import { closeGraceMs, LaunchError } from '../contract.ts'
 import { writeRedactedLog } from '../redacted-log.ts'
-import { ownerIdentityAsync, writeOwnerRecord } from './profile.ts'
+import { ownerIdentityAsync, ownerStartVersion, writeOwnerRecord } from './profile.ts'
 import { isRunning, readProcessTable, readProcessIdentityAsync, readProcessIdentity, readProcessLivenessAsync, readProcessTableAsync } from './process-table.ts'
 
 export type FirefoxStart = {
@@ -40,6 +44,8 @@ export type FirefoxStart = {
 }
 
 const pollMs = 20
+// How long what Firefox's main process leaves is waited for once it exited, as Chromium's group is.
+const exitedGroupLimitMs = 5 * closeGraceMs
 // How often the Launch Services route reads the process table for a Firefox whose connection still stands. The
 // connection's end is the usual sign that the browser went; this rare look, taken without holding the thread, is for a
 // Firefox that went without closing it, and a look every `pollMs * 5` follows once the connection ended.
@@ -73,6 +79,8 @@ export class FirefoxProcess {
   readonly #lastResort: () => void
   readonly #outputClosed: Promise<string[]>
   readonly #cancelOutput: (() => void) | undefined
+  readonly #finishOutput: (() => void) | undefined
+  readonly #outputWritersRemain: (() => boolean) | undefined
   readonly #copyOutput: (() => Promise<string[]>) | undefined
   readonly #table: ProcessTable
   readonly #startedAt: string | undefined
@@ -93,6 +101,8 @@ export class FirefoxProcess {
     this.#outputClosed = fields.output
     this.#copyOutput = fields.copyOutput
     this.#cancelOutput = fields.cancelOutput
+    this.#finishOutput = fields.finishOutput
+    this.#outputWritersRemain = fields.outputWritersRemain
     this.#table = fields.table ?? { readAsync: readProcessTableAsync }
     this.#startedAt = fields.startedAt
     const { child } = fields
@@ -125,7 +135,7 @@ export class FirefoxProcess {
     const started = options.route === 'spawn' ? await spawnFirefox(options) : await openFirefox(options)
     const record = started.identity
     try {
-      await writeOwnerRecord(options.folder, { version: 1, startTimeVersion: 1, owner, firefox: { pid: record.pid, startedAt: record.startedAt, command: record.command, route: options.route }, profile: options.profile })
+      await writeOwnerRecord(options.folder, { version: 1, startTimeVersion: ownerStartVersion, owner, firefox: { pid: record.pid, startedAt: record.startedAt, command: record.command, route: options.route }, profile: options.profile })
     } catch (error) {
       const problems = await started.stop(0)
       throw new LaunchError(`Could not record the launched Firefox in ${options.folder}: ${errorMessage(error)}.${problems.length === 0 ? '' : ` Cleaning up also failed: ${problems.join(' ')}`}`, { cause: error, failureClass: problems.length === 0 ? 'setup_failed' : 'cleanup_failed' })
@@ -141,6 +151,17 @@ export class FirefoxProcess {
   /** True once the main process has exited. */
   get mainGone(): boolean {
     return this.#mainGone
+  }
+
+  /**
+   * Whether ending this process ends `pid`: when it is this process, or, where a job holds the launch, a process in that
+   * job, as the browser the Windows launcher starts and waits for is.
+   */
+  async ends(pid: number, deadline?: Deadline): Promise<boolean> {
+    if (pid === this.pid) return true
+    if (!this.#ownership.heldByJob) return false
+    await this.recordDescendants(deadline)
+    return this.#ownership.verifiedIdentity(pid) !== undefined
   }
 
   /**
@@ -165,6 +186,12 @@ export class FirefoxProcess {
     this.expectExit()
     const deadline = new Deadline(timeoutMs)
     const problems: string[] = []
+    // A job ends every process at once, so none can start another meanwhile, and Windows has no stopped state to wait for.
+    if (this.#ownership.heldByJob) {
+      problems.push(...this.#ownership.signalNow('SIGKILL', deadline))
+      if (problems.length > 0) throw new Error(problems.join(' '))
+      return
+    }
     try {
       await this.#stopForCrash(deadline)
       // The Remote Agent ends before content, so a lost input cannot receive a content-process protocol error.
@@ -219,17 +246,40 @@ export class FirefoxProcess {
     }
   }
 
-  /** Settles once the main process has exited, no recorded process is left and its output is in the log. */
+  /**
+   * Settles once the main process has exited, no recorded process is left and its output is in the log. Rejects, naming
+   * what still ran, when the rest is not gone `exitedGroupLimitMs` after the main process exited.
+   */
   gone(): Promise<void> {
-    this.#gone ??= this.#awaitGone()
+    if (this.#gone === undefined) {
+      this.#gone = this.#awaitGone()
+      // Marks the rejection handled for a browser nobody waits on; every caller that awaits `gone` still receives it.
+      this.#gone.catch(() => undefined)
+    }
     return this.#gone
   }
 
+  // The main process can run as long as its browser is used, so its exit is awaited as it comes. What it leaves is given
+  // the bound Chromium's processes get, so a process that never ends is a cleanup failure, never a wait without end.
   async #awaitGone(): Promise<void> {
     await this.exited
+    const deadline = new Deadline(exitedGroupLimitMs)
+    // Each reading keeps its own bound, as before, so the limit cuts no reading short into a failed one.
     await this.recordDescendants()
-    while (!(await this.#helpersGone())) await sleep(pollMs * 5, undefined, { ref: false })
-    await this.outputSettled
+    // What the newest reading that succeeded found still running, and why the readings after it failed, if they did: a
+    // process is named as still running only once a reading showed it.
+    let shown: readonly OwnedProcessIdentity[] | undefined
+    let failed: string | undefined
+    while (!(await this.#helpersGone())) {
+      const look = this.#ownership.lastLook
+      if (look !== undefined && 'running' in look) [shown, failed] = [look.running, undefined]
+      else if (look !== undefined) failed = look.problem
+      if (deadline.reached) throw new Error(stillRunning(this.pid, shown, failed))
+      await sleep(Math.min(pollMs * 5, deadline.remainingMs), undefined, { ref: false })
+    }
+    if (await settlesWithin(this.outputSettled, deadline)) return
+    // The Launch Services route copies its output into the log as it stops, which its stop reports on.
+    if (this.#copyOutput === undefined) throw new Error(`Firefox's output did not close within ${exitedGroupLimitMs} ms after its main process ${this.pid} exited.`)
   }
 
   /**
@@ -257,11 +307,13 @@ export class FirefoxProcess {
     } catch (error) {
       problems.push(`Could not end Firefox's process group ${this.pid}: ${errorMessage(error)}`)
     }
-    if (!(await settlesWithin(this.#outputClosed, new Deadline(closeGraceMs)))) {
-      problems.push("Firefox's output did not close within the cleanup bound.")
-      this.#cancelOutput?.()
-    }
-    problems.push(...(await this.#outputClosed))
+    // The output's bound follows the launch's confirmed end, as a Chromium browser's does: once its close bound passes,
+    // waiting I/O is read, and once nothing can write to the output, or nothing of the launch is left, Retest's own
+    // writing of what it read gets a bound of its own.
+    const finishReading = this.#finishOutput
+    const writersRemain = this.#outputWritersRemain
+    const output = { closed: this.#outputClosed, cancel: () => this.#cancelOutput?.(), ...(finishReading === undefined ? {} : { finishReading }), ...(writersRemain === undefined ? {} : { writersRemain }) }
+    problems.push(...(await outputWithin(output, closeGraceMs, async () => this.#mainGone && !(await this.#ownership.remainsAsync(deadline)))))
     if (this.#copyOutput !== undefined) problems.push(...(await this.#copyOutput()))
     this.#settleCopied()
     if (!(await this.#ownership.remainsAsync(deadline))) {
@@ -338,6 +390,30 @@ export type ProcessTable = {
   endedAsync?(): Promise<boolean>
 }
 
+// What still ran of a Firefox whose main process exited, by pid and the name of its program, never its arguments, as the
+// newest look that succeeded showed it, or that Retest could not look: every look after the exit failed.
+function stillRunning(pid: number, shown: readonly OwnedProcessIdentity[] | undefined, failed: string | undefined): string {
+  if (shown === undefined) return `Retest could not look for what Firefox ${pid} left running after it exited.`
+  const named = shown.filter((entry) => entry.pid !== pid).map((entry) => `${entry.pid} (${programName(entry.command)})`)
+  if (named.length === 0) return `Firefox ${pid} still has processes running ${exitedGroupLimitMs / 1000} seconds after it exited.`
+  const listed = named.length <= 3 ? listWords(named, 'and') : `${named.slice(0, 3).join(', ')} and ${named.length - 3} more`
+  const subject = `Firefox process${named.length === 1 ? '' : 'es'} ${listed}`
+  if (failed !== undefined) return `${subject} ${named.length === 1 ? 'was' : 'were'} still running when Retest could last look.`
+  return `${subject} ${named.length === 1 ? 'is' : 'are'} still running ${exitedGroupLimitMs / 1000} seconds after Firefox ${pid} exited.`
+}
+
+/**
+ * The program a process runs, by its executable's own name. On Windows a reading gives the image's own path, spaces and
+ * all, and `ps` gives a command line, whose first word, or its quoted first part, is the program.
+ *
+ * @example programName('C:\\Program Files\\Mozilla Firefox\\firefox.exe') // 'firefox.exe'
+ */
+export function programName(command: string): string {
+  if (/^(?:[A-Za-z]:)?\\/.test(command)) return win32.basename(command)
+  const quoted = /^"([^"]+)"/.exec(command)?.[1]
+  return win32.basename(quoted ?? command.split(' ')[0] ?? command)
+}
+
 // Whether `promise` settles before the deadline passes.
 async function settlesWithin(promise: Promise<unknown>, deadline: Deadline): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined
@@ -364,6 +440,10 @@ type ClaimedFirefox = {
   /** Copies output the route left in a file of its own into the log, once the process is gone. */
   copyOutput?: () => Promise<string[]>
   cancelOutput?: () => void
+  /** Stops reading output whose launch was shown ended, keeping what was read; the spawn route's redacted output has it. */
+  finishOutput?: () => void
+  /** Whether a process outside Retest, inside the launch or not, can still write to the output Retest reads. */
+  outputWritersRemain?: () => boolean
   /** The process table the Launch Services route watches; the host's own unless a test gives one. */
   table?: ProcessTable
   /** When the claimed process started, as the launch recorded it, which tells it from a later process with its pid. */
@@ -382,27 +462,34 @@ async function spawnFirefox(options: FirefoxStart): Promise<Started> {
   const log = await openLog(logFile)
   let logHandedOn = false
   try {
-    const hidden = new Set(options.hiddenVariables)
-    const environment = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !hidden.has(name))), ...crashReporterOff }
+    const environment = { ...withoutVariables(process.env, options.hiddenVariables), ...crashReporterOff }
     // Output to redact comes through Retest; any other goes straight to the log.
     const redacting = redact !== undefined || redactStream !== undefined
+    try {
+      prepareOwnedLaunch()
+    } catch (error) {
+      throw new LaunchError(`Cannot start ${executable}: ${errorMessage(error)}`, { cause: error })
+    }
     const child = spawn(executable, firefoxArguments(profile, options.headless), { env: environment, detached: true, stdio: ['ignore', redacting ? 'pipe' : log.fd, redacting ? 'pipe' : log.fd] })
     await once(child, 'spawn').catch((error: unknown) => {
       throw new LaunchError(`Cannot start ${executable}: ${errorMessage(error)}`, { cause: error })
     })
-    const { ownership, table } = await claimOwnership(child.pid ?? 0, process.pid)
+    // Where a job holds the launch, its own process list is the table; the process table `ps` reads exists only on Unix.
+    // The folder's name is in the command line of the browser a Windows launcher starts, which may be in a job of its own.
+    const { ownership, table } = launchesHeldByJob ? { ownership: holdLaunch(child, { marker: basename(folder) }), table: undefined } : await claimOwnership(child.pid ?? 0, process.pid)
     const ownershipProblems = ownership.capture()
     // Without redaction Firefox writes to the log itself, until it exits.
     let output: Promise<string[]> = child.exitCode !== null || child.signalCode !== null ? Promise.resolve([]) : new Promise((resolve) => child.once('exit', () => resolve([])))
-    let cancelOutput: (() => void) | undefined
+    let reading: { cancelOutput: () => void; finishOutput: () => void; outputWritersRemain: () => boolean } | undefined
     if (redacting) {
       const streams = [child.stdout, child.stderr].flatMap((stream) => (stream instanceof Readable ? [stream] : []))
       const writer = writeRedactedLog(streams, log, redact ?? ((text) => text), redactStream)
       output = writer.closed
-      cancelOutput = writer.cancel
+      // A pipe reaches its end only once every process holding its write end, inside the launch or not, has let go.
+      reading = { cancelOutput: writer.cancel, finishOutput: writer.finishReading, outputWritersRemain: () => streams.some((stream) => !stream.readableEnded && !stream.destroyed) }
       logHandedOn = true
     }
-    const firefox = new FirefoxProcess({ pid: child.pid ?? 0, route: 'spawn', folder, profile, ownership, table, child, output, ...(cancelOutput === undefined ? {} : { cancelOutput }) })
+    const firefox = new FirefoxProcess({ pid: child.pid ?? 0, route: 'spawn', folder, profile, ownership, child, output, ...(table === undefined ? {} : { table }), ...reading })
     if (!redacting) {
       logHandedOn = true
       await log.close().catch(() => undefined)
@@ -546,8 +633,17 @@ function parseJson(text: string): unknown {
 // is why every launch first ends the Firefoxes of launchers that are gone.
 function killAtExit(ownership: OwnedProcessGroup, folder: string): void {
   try {
-    ownership.signalNow('SIGKILL')
-    if (!ownership.remains()) rmSync(folder, { recursive: true, force: true, maxRetries: 3 })
+    if (!launchesHeldByJob) {
+      ownership.signalNow('SIGKILL')
+      if (!ownership.remains()) rmSync(folder, { recursive: true, force: true, maxRetries: 3 })
+      return
+    }
+    // On Windows the end also reads and ends what the launch's parent holds, each step a run of retest-supervisor that
+    // holds the exiting thread, so the end and its confirmation get the bound Chromium's exit gets, and the removal,
+    // which the folder refuses for a moment after its processes left their job, gets one of its own.
+    const deadline = new Deadline(closeGraceMs)
+    ownership.signalNow('SIGKILL', deadline)
+    if (groupEndsNow(ownership, deadline)) removeOnceFree(folder, new Deadline(exitRemovalMs))
   } catch {
     // Throwing here would replace the exit code Retest chose.
   }

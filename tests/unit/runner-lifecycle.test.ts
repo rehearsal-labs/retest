@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -414,9 +415,9 @@ describe('reporters', () => {
   })
 })
 
-// The first test of stray-error.retest.ts leaves a listener behind that throws on SIGUSR2. `set` sends the
-// signal and resolves once the process is gone. Node reports a child's exit as it reaps it, so by then the
-// runner has seen the process end.
+// The first test of stray-error.retest.ts leaves a listener behind that throws on SIGUSR2, or on Windows, which has
+// no such signal, on a connection to the port it prints. `set` sets it off and resolves once the process is gone. Node
+// reports a child's exit as it reaps it, so by then the runner has seen the process end.
 function strayError(): { onOutput: (chunk: ChildOutput) => void; set: () => Promise<void> } {
   const pid = Promise.withResolvers<number>()
   let printed = ''
@@ -428,7 +429,9 @@ function strayError(): { onOutput: (chunk: ChildOutput) => void; set: () => Prom
     },
     set: async () => {
       const child = await pid.promise
-      process.kill(child, 'SIGUSR2')
+      const port = /port (\d+)\n/.exec(printed)?.[1]
+      if (port === undefined) process.kill(child, 'SIGUSR2')
+      else connect(Number(port), '127.0.0.1').on('error', () => undefined)
       assert.ok(await isGoneWithin(child, 5000), 'the process ended')
     },
   }

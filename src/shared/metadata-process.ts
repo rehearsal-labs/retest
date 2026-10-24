@@ -31,6 +31,11 @@ export type MetadataProcessRequest = {
 
 export const metadataOutputLimit: number = 4 * 1024 * 1024
 /**
+ * The variable each metadata process finds the time its query is given up at in, as milliseconds since the epoch, for a
+ * program that must change nothing once its answer can no longer be heard, as the stand-in supervisor the tests run.
+ */
+export const metadataDeadlineVariable = 'RETEST_METADATA_DEADLINE_MS'
+/**
  * The bound a whole process table is read under. A `ps -ww` table passed 4 MiB on a busy Mac (4.53 MB with about 3,600
  * processes), and a table refused for its size leaves every ownership decision without a reading, so nothing could be
  * started or ended. At that 1.3 KB a line, a table of kern.maxproc's 9,000 processes is under 12 MiB. A larger table is
@@ -48,6 +53,9 @@ export const metadataFailure: number = 1
 
 const queryLimitMs = 5000
 const workerAllowanceMs = 1000
+// How many fresh workers one query is asked of after workers it was posted to ended by themselves before answering
+// anything, as one whose module cannot load does, which would otherwise be replaced as fast as each one ends.
+const workerRetries = 2
 // One spare of each production capacity. Only a completed query can return its buffer: an abandoned worker may
 // still be writing, and a concurrent query must hold a different buffer until its completion signal is consumed.
 const spareOutputs = new Map<number, SharedArrayBuffer>()
@@ -55,6 +63,10 @@ const spareOutputs = new Map<number, SharedArrayBuffer>()
 // leaving each to wait out its whole bound for an answer that cannot come.
 const inFlight = new Set<Query>()
 let bridge: Worker | undefined
+// Workers that answered a query, and workers ended here for a query other than the one asking again; an ending of
+// either says nothing against the next worker.
+const answered = new WeakSet<Worker>()
+const endedForAnother = new WeakSet<Worker>()
 let workerModule: URL = new URL(import.meta.url.endsWith('.ts') ? './metadata-process-worker.ts' : './metadata-process-worker.js', import.meta.url)
 
 /**
@@ -73,7 +85,7 @@ export function readMetadataProcess(options: MetadataProcessOptions): string {
       if (state === metadataComplete) return answer(query)
       if (state === metadataWorkerEnded) {
         settle(query)
-        query = submit(options)
+        query = askAgain(query, options)
         continue
       }
       const remaining = query.deadline - performance.now()
@@ -109,7 +121,7 @@ export async function readMetadataProcessAsync(options: MetadataProcessOptions):
       if (state === metadataComplete) return answer(query)
       if (state === metadataWorkerEnded) {
         settle(query)
-        query = submit(options)
+        query = askAgain(query, options)
         continue
       }
       const remaining = query.deadline - performance.now()
@@ -133,9 +145,19 @@ function checkCaller(query: Query, deadline: Deadline | undefined): void {
   throw new Error('The metadata query was not confirmed before its caller deadline ended or was cancelled.')
 }
 
-type Query = { readonly worker: Worker; readonly control: Int32Array; readonly output: SharedArrayBuffer; readonly deadline: number }
+type Query = { readonly worker: Worker; readonly control: Int32Array; readonly output: SharedArrayBuffer; readonly deadline: number; readonly retries: number }
 
-function submit(options: MetadataProcessOptions): Query {
+// A query whose worker ended is asked again of a fresh worker, within its own caller's deadline. Only a worker that
+// ended by itself before it answered anything counts towards the query's few retries; a worker ended for another
+// query, or one that had answered, is replaced as before.
+function askAgain(query: Query, options: MetadataProcessOptions): Query {
+  const broken = !answered.has(query.worker) && !endedForAnother.has(query.worker)
+  if (!broken) return submit(options, query.retries)
+  if (query.retries >= workerRetries) throw new Error('The metadata worker ended before it answered the query.')
+  return submit(options, query.retries + 1)
+}
+
+function submit(options: MetadataProcessOptions, retries = 0): Query {
   if (options.deadline?.signal?.aborted === true || options.deadline?.reached === true) throw new Error('The metadata query was not started because its caller deadline ended or was cancelled.')
   const timeoutMs = options.timeoutMs ?? queryLimitMs
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > queryLimitMs) throw new RangeError('A metadata query needs a timeout between 1 and 5000 milliseconds.')
@@ -158,7 +180,7 @@ function submit(options: MetadataProcessOptions): Query {
     discardWorker(worker)
     throw new Error('The metadata worker could not receive the query.')
   }
-  const query = { worker, control, output, deadline: Math.min(performance.now() + timeoutMs + workerAllowanceMs, request.deadline === undefined ? Infinity : request.deadline - performance.timeOrigin) }
+  const query = { worker, control, output, deadline: Math.min(performance.now() + timeoutMs + workerAllowanceMs, request.deadline === undefined ? Infinity : request.deadline - performance.timeOrigin), retries }
   inFlight.add(query)
   return query
 }
@@ -186,6 +208,7 @@ function abandoned(query: Query): boolean {
     const latest = Atomics.load(query.control, 0)
     if (latest === metadataComplete) return false
     if (Atomics.compareExchange(query.control, 0, latest, metadataAbandoned) !== latest) continue
+    endedForAnother.add(query.worker)
     discardWorker(query.worker)
     return true
   }
@@ -199,6 +222,7 @@ function releaseOutput(query: Query): void {
 }
 
 function answer(query: Query): string {
+  answered.add(query.worker)
   const length = Atomics.load(query.control, 2)
   if (length < 0 || length > query.output.byteLength) {
     discardWorker(query.worker)
@@ -221,10 +245,10 @@ function answer(query: Query): string {
 export function useMetadataWorkerModule(file: URL): () => void {
   const previous = workerModule
   workerModule = file
-  if (bridge !== undefined) discardWorker(bridge)
+  if (bridge !== undefined) retire(bridge)
   return () => {
     workerModule = previous
-    if (bridge !== undefined) discardWorker(bridge)
+    if (bridge !== undefined) retire(bridge)
   }
 }
 
@@ -246,6 +270,12 @@ function metadataWorker(): Worker {
   worker.unref()
   bridge = worker
   return worker
+}
+
+// A worker set aside for a module swapped in, which says nothing against the worker after it.
+function retire(worker: Worker): void {
+  endedForAnother.add(worker)
+  discardWorker(worker)
 }
 
 // The query that met the failure reports it; the next one starts a fresh worker, and the others it held are asked again.

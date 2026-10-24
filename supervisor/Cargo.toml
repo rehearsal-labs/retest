@@ -1,0 +1,22 @@
+[package]
+name = "retest-supervisor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+description = "Retest's process supervisor on Windows: holds everything a run starts in job objects, so nothing outlives it, and reads and ends each launch's job."
+repository = "https://github.com/rehearsal-labs/retest"
+publish = false
+
+[[bin]]
+name = "retest-supervisor"
+path = "src/main.rs"
+
+# Only the Windows build calls Win32. macOS and Linux build the same program as a stub that refuses to run.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Wdk_System_Threading", "Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

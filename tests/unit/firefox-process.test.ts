@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
-import { FirefoxProcess } from '../../src/browser/firefox/process.ts'
+import { FirefoxProcess, programName } from '../../src/browser/firefox/process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
-test('an awaited asynchronous Firefox ownership reading completes in a standalone process with no other live handle', async () => {
+test('an awaited asynchronous Firefox ownership reading completes in a standalone process with no other live handle', { skip: unixOnly('this reading is ps, which Windows does not have; process-supervisor.test.ts makes the same promise of a job reading') }, async () => {
   const module = new URL('../../src/browser/firefox/process-table.ts', import.meta.url).href
   const source = `import { readProcessTableAsync } from ${JSON.stringify(module)}; const entries = await readProcessTableAsync(); process.stdout.write(String(entries.length > 0))`
   const result = await promisify(execFile)(process.execPath, ['--conditions=retest-source', '--input-type=module', '-e', source])
@@ -164,6 +165,92 @@ test('a Firefox helper first seen after its parent exited is left alone and its 
   entries = []
   assert.deepEqual(await firefox.stop(0), [], 'a fresh empty group settles the earlier unverified-member refusal')
   assert.deepEqual(signals, [], 'no signal was sent to the helper whose launch could not be traced')
+})
+
+// The output's bound follows the launch's confirmed end, as a Chromium browser's does: on a busy host the output of a
+// Firefox shown ended can still be open past its close bound, held by a process outside the launch, or still being
+// written to the log by Retest itself.
+for (const [held, name] of [[true, 'a process outside it still holds its output open, which Retest then reads no further'], [false, "Retest's own writing of its output outlasts the output's close bound"]] as const) {
+  test(`a Firefox shown ended stops clean when ${name}`, async () => {
+    const { ChildProcess } = await import('node:child_process')
+    const child = new ChildProcess()
+    Object.defineProperty(child, 'pid', { value: firefoxPid })
+    let entries: OwnedProcessIdentity[] = [firefoxEntry]
+    const ownership = new OwnedProcessGroup(firefoxPid, 1, { read: () => entries, readAsync: async () => entries, signal: () => {} })
+    assert.deepEqual(ownership.capture(), [])
+    const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-output-'))
+    const output = Promise.withResolvers<string[]>()
+    let finished = 0
+    const finishOutput = (): void => {
+      finished += 1
+      output.resolve([])
+    }
+    const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'spawn', folder, profile: join(folder, 'profile'), ownership, child, output: output.promise, cancelOutput: () => output.resolve(['cancelled']), finishOutput, outputWritersRemain: () => held })
+    entries = []
+    child.emit('exit', 0, null)
+    if (!held) setTimeout(() => output.resolve([]), 1500)
+    assert.deepEqual(await firefox.stop(0), [])
+    assert.equal(finished, held ? 1 : 0, held ? 'the output is read no further once nothing of the launch is left' : 'the output closed by itself')
+  })
+}
+
+test('a process left running is named by its program: the image a Windows reading gives, spaces and all, or the first part of a command line', () => {
+  assert.equal(programName('C:\\Program Files\\Mozilla Firefox\\firefox.exe'), 'firefox.exe')
+  assert.equal(programName('C:\\PROGRA~1\\MOZILL~1\\firefox.exe'), 'firefox.exe')
+  assert.equal(programName('\\\\?\\C:\\Program Files\\Mozilla Firefox\\plugin-container.exe'), 'plugin-container.exe')
+  assert.equal(programName('/Applications/Firefox.app/Contents/MacOS/plugin-container -contentproc 7 tab'), 'plugin-container')
+  assert.equal(programName('"C:\\Program Files\\Mozilla Firefox\\firefox.exe" -contentproc 7 tab'), 'firefox.exe')
+  assert.equal(programName('(unreadable)'), '(unreadable)')
+})
+
+test('what Firefox leaves after its main process exited is waited for a bounded time, then named, never waited for without end', async () => {
+  const { ChildProcess } = await import('node:child_process')
+  const child = new ChildProcess()
+  Object.defineProperty(child, 'pid', { value: firefoxPid })
+  const helper: OwnedProcessIdentity = { ...firefoxEntry, pid: firefoxPid + 1, parentPid: firefoxPid, command: '/Applications/Firefox.app/Contents/MacOS/plugin-container -contentproc 7 tab' }
+  let entries: OwnedProcessIdentity[] = [firefoxEntry, helper]
+  const ownership = new OwnedProcessGroup(firefoxPid, 1, { read: () => entries, readAsync: async () => entries, signal: () => {} })
+  assert.deepEqual(ownership.capture(), [])
+  const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-left-'))
+  const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'spawn', folder, profile: join(folder, 'profile'), ownership, child, output: Promise.resolve([]) })
+  entries = [helper]
+  const started = performance.now()
+  child.emit('exit', null, 'SIGKILL')
+  await assert.rejects(firefox.gone(), { message: `Firefox process ${helper.pid} (plugin-container) is still running 5 seconds after Firefox ${firefoxPid} exited.` })
+  const waited = performance.now() - started
+  assert.ok(waited >= 4900 && waited < 8000, `the bound is the one Chromium's group gets: ${Math.round(waited)} ms`)
+  entries = []
+})
+
+// Once the main process exits, a look either shows what is left or fails; a process is named as still running only once
+// a look showed it, and looks that all failed say only that Retest could not look. After the exit, the first
+// reading records what the main process left and the waiting ones follow; `succeed` readings show the helper.
+test('what Firefox leaves is named only from a reading that showed it, and readings that failed say so', async () => {
+  const { ChildProcess } = await import('node:child_process')
+  const helper: OwnedProcessIdentity = { ...firefoxEntry, pid: firefoxPid + 1, parentPid: firefoxPid, command: '/Applications/Firefox.app/Contents/MacOS/plugin-container -contentproc 7 tab' }
+  const said = await Promise.all([0, 2].map(async (succeed) => {
+    const child = new ChildProcess()
+    Object.defineProperty(child, 'pid', { value: firefoxPid })
+    let exited = false
+    let readings = 0
+    const read = (): OwnedProcessIdentity[] => {
+      if (!exited) return [firefoxEntry, helper]
+      readings += 1
+      if (readings <= succeed) return [helper]
+      throw new Error('The metadata process could not run (ENOENT).')
+    }
+    const ownership = new OwnedProcessGroup(firefoxPid, 1, { read, readAsync: async () => read(), signal: () => {} })
+    assert.deepEqual(ownership.capture(), [])
+    const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-unread-'))
+    const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'spawn', folder, profile: join(folder, 'profile'), ownership, child, output: Promise.resolve([]) })
+    exited = true
+    child.emit('exit', null, 'SIGKILL')
+    return firefox.gone().then(() => 'settled', (error: unknown) => (error instanceof Error ? error.message : String(error)))
+  }))
+  assert.deepEqual(said, [
+    `Retest could not look for what Firefox ${firefoxPid} left running after it exited.`,
+    `Firefox process ${helper.pid} (plugin-container) was still running when Retest could last look.`,
+  ])
 })
 
 /** A machine whose Firefox is alive until `end()`, counting how often each kind of reading was taken. */

@@ -6,16 +6,18 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
 import { profilePrefix } from '../../src/browser/profiles.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { childLogFile, eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
 import { parse } from '../../src/protocol/schema.ts'
-import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { consoleHost } from '../../src/shared/process-supervisor.ts'
+import { heldLaunches, holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { isGoneWithin } from '../support/run-harness.ts'
 import { browserPath, groupExists, openApp, waitForGroupEnd } from './browser-harness.ts'
-import { budgets, childLog, finishRun, onlyEvent, onlyTest, printedPids, profilesIn, resultOf, startRun } from './cli-harness.ts'
+import { budgets, childLog, finishRun, onlyEvent, onlyTest, printedPids, profilesIn, resultOf, sendStop, startRun } from './cli-harness.ts'
 
 const rootDir = fileURLToPath(new URL('../../', import.meta.url))
 const cli = fileURLToPath(new URL('../../src/cli/main.ts', import.meta.url))
@@ -56,6 +58,27 @@ const secondSignals = [
   { signal: 'SIGTERM', exitCode: 143, notice: 'Stopping on SIGTERM.' },
 ] as const
 
+// Waits for a job to hold nothing but console hosts, which Windows ends with their programs, and fails naming what it
+// still holds after `timeoutMs`. A job nobody holds any more holds nothing.
+async function assertJobEmptied(job: string | undefined, timeoutMs: number): Promise<void> {
+  const supervisor = heldLaunches()?.supervisor
+  assert.ok(job !== undefined && supervisor !== undefined, 'the command was held in a job of its own')
+  const members = (): string[] => {
+    try {
+      return supervisor.members(job).filter((entry) => !consoleHost(entry)).map((entry) => `${entry.pid} ${entry.image ?? ''}`)
+    } catch {
+      return []
+    }
+  }
+  const end = performance.now() + timeoutMs
+  let left = members()
+  while (left.length > 0 && performance.now() < end) {
+    await delay(50)
+    left = members()
+  }
+  assert.deepEqual(left, [], 'nothing the command started, the browser and its helpers among them, is left once it has ended')
+}
+
 for (const { signal, exitCode, notice } of secondSignals) {
   test(`a second ${signal} during a real run exits at once and still takes the browser group and its profile`, { timeout: 60_000 }, async (t) => {
     const app = await startTaskApp()
@@ -79,12 +102,15 @@ for (const { signal, exitCode, notice } of secondSignals) {
       '--timeouts',
       'assertion=60000',
     ]
-    const retest = spawn(process.execPath, args, { cwd: rootDir, stdio: ['ignore', 'pipe', 'pipe'] })
+    prepareOwnedLaunch()
+    const retest = spawn(process.execPath, args, { cwd: rootDir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     const exited = once(retest, 'exit')
     assert.ok(retest.pid !== undefined, 'retest started')
     // What retest launched is recorded beneath it while it runs. The last resort ends retest through its own handle,
     // then only those recorded processes still there, each checked again first; a browser group left fails by name.
-    const launched = new OwnedProcessGroup(retest.pid)
+    const launched = holdLaunch(retest)
+    // On Windows the job this test holds the command in, which holds everything the command starts.
+    const job = heldLaunches()?.launchOf(retest.pid)?.job
     let browserPid: number | undefined
     t.after(async () => {
       retest.kill('SIGKILL')
@@ -104,13 +130,16 @@ for (const { signal, exitCode, notice } of secondSignals) {
     await stdout((line) => line.includes('"type":"action.completed"') && line.includes('"command":"goto"'))
     assert.equal(groupExists(pid), true, 'the browser is running while the test waits')
 
-    retest.kill(signal)
+    sendStop(retest, signal)
     await stderr((line) => line.startsWith(notice))
-    retest.kill(signal)
+    sendStop(retest, signal)
     const [code, ended] = await exited
     assert.deepEqual([code, ended], [exitCode, null])
 
     await waitForGroupEnd(pid, 5000)
+    // On Windows the browser's helpers have no process group to look for: the command's job holds them, and every one
+    // must be gone, as the whole group must be on macOS and Linux, before cleanup could end what is left.
+    if (launchesHeldByJob) await assertJobEmptied(job, 5000)
     const events = (await readFile(join(output, eventsFile), 'utf8')).split('\n').filter((line) => line !== '').map(readEvent)
     assert.ok(
       !events.some((event) => event?.type === 'run.finished'),

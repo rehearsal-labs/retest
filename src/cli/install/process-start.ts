@@ -12,9 +12,10 @@ import { errorCode } from '../../shared/error-code.ts'
 /**
  * When a process started. On Linux, the kernel's clock ticks from boot to its start, as /proc keeps them, which a step
  * of the wall clock does not move; on macOS, the second `ps` prints, read in UTC so it is the same whatever time zone
- * the reader runs in.
+ * the reader runs in. On Windows a holder is told alive by the file it holds open, not by its start, and records
+ * `held-file`, which compares to no other start.
  */
-export type ProcessStart = { readonly clock: 'boot-ticks' | 'utc-seconds'; readonly value: number }
+export type ProcessStart = { readonly clock: 'boot-ticks' | 'utc-seconds' | 'held-file'; readonly value: number }
 
 /** A process's start as read now: there, with its start; no process under that pid; or why it could not be read. */
 export type StartReading = { readonly state: 'present'; readonly start: ProcessStart } | { readonly state: 'absent' } | { readonly state: 'unreadable'; readonly problem: string }
@@ -152,6 +153,9 @@ async function readMachineOnce(options: MachineOptions): Promise<MachineReading>
       if (result.code !== 0 || !/^[0-9A-F-]{36}$/i.test(session)) return { ok: false, problem: `Retest could not read this Mac's boot session: ${describeCommand('sysctl', result)}.` }
       return { ok: true, machine: { id: `macos boot ${session}`, host } }
     }
+    // A Windows holder is told alive by the file it holds open, which Windows closes when it ends, at a reboot too, so no
+    // pid or boot is compared there; the name keeps another machine's lock in a shared cache from being judged.
+    if (options.platform === 'win32') return { ok: true, machine: { id: `windows ${host.toLowerCase()}`, host } }
   } catch (error) {
     return { ok: false, problem: `Retest could not read which machine this is: ${errorMessage(error)}.` }
   }

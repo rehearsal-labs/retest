@@ -7,20 +7,25 @@ import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { agentVariables } from '../../src/cli/agent-detection.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { consoleHost } from '../../src/shared/process-supervisor.ts'
+import { heldLaunches, holdLaunch, launchesHeldByJob, launchOwnership, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { processesUsing, waitForGroupEnd } from '../integration/browser-harness.ts'
-import { assertJudged, eventsOf, readEvents, readResult, retestEntriesIn, statesLeftIn } from '../integration/cli-harness.ts'
+import { assertJudged, eventsOf, readEvents, readResult, retestEntriesIn, sendStop, statesLeftIn } from '../integration/cli-harness.ts'
 import { killBrowserFromOutside } from '../integration/outside-kill.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
 // One conformance run as a process of its own: `retest run`, or a host program that calls `runFiles`, started as the
 // leader of its own process group with a temporary folder of its own, as the CLI harness starts one. Each process the
 // run launches is recorded beneath it through the ownership layer while the run lives, as the CLI harness records
-// them, and only a recorded process is ever signalled, after a fresh reading shows it is still the one recorded.
+// them, and only a recorded process is ever signalled, after a fresh reading shows it is still the one recorded. On
+// Windows the run is held in a job of this process's own and runs on a console of its own, as the CLI harness holds
+// one: the job is what records what it launches, and SIGINT and SIGTERM are Ctrl+C and Ctrl+Break on that console.
 
 const releaseWaitMs = 5000
 
@@ -76,15 +81,23 @@ export class RunProcess {
     const tmp = join(tempFolder('retest-conformance-'), 'tmp')
     await mkdir(tmp, { recursive: true })
     const [executable = process.execPath, ...leading] = request.command
-    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: tmp }
+    // Node's tmpdir() reads TMPDIR on macOS and Linux and TEMP and TMP on Windows; the run gets its folder as each.
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: tmp, ...(process.platform === 'win32' ? { TEMP: tmp, TMP: tmp } : {}) }
     for (const name of agentVariables) delete env[name]
+    if (launchesHeldByJob) prepareOwnedLaunch()
     const child = spawn(executable, [...leading, ...request.args], {
       cwd: request.cwd,
       env: { ...env, ...request.env },
-      detached: true,
+      detached: !launchesHeldByJob,
+      windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    return new RunProcess(child, tmp)
+    const run = new RunProcess(child, tmp)
+    if (launchesHeldByJob) {
+      run.#ownership = holdLaunch(child)
+      assert.deepEqual(run.#ownership.capture(), [], 'this module holds the run it starts')
+    }
+    return run
   }
 
   get stdout(): string {
@@ -102,16 +115,34 @@ export class RunProcess {
 
   /** Sends a signal to the run's own process alone, as a person's Ctrl+C reaches it. */
   signal(signal: NodeJS.Signals): void {
-    this.#child.kill(signal)
+    sendStop(this.#child, signal)
   }
 
   /**
    * Ends the run's whole process group, the test file processes in it included, while the run's own process has not
-   * been reaped: until then its pid, which leads the group, cannot belong to anything else.
+   * been reaped: until then its pid, which leads the group, cannot belong to anything else. On Windows the run's own
+   * process is ended through Node's handle on it, and its job, which holds the rest, ends everything with it.
    */
   endGroup(): void {
     if (this.#exit !== undefined || this.#child.exitCode !== null || this.#child.signalCode !== null) return
-    process.kill(-this.pid, 'SIGKILL')
+    if (launchesHeldByJob) this.#child.kill('SIGKILL')
+    else process.kill(-this.pid, 'SIGKILL')
+  }
+
+  /**
+   * On Windows, what the job this module holds the run in still holds, console hosts left out: everything the run
+   * started that has not ended. Empty elsewhere.
+   */
+  heldNow(): readonly string[] {
+    const supervisor = heldLaunches()?.supervisor
+    const job = heldLaunches()?.launchOf(this.pid)?.job
+    if (supervisor === undefined || job === undefined) return []
+    try {
+      return supervisor.members(job).filter((entry) => !consoleHost(entry)).map((entry) => `${entry.pid} ${entry.image ?? ''}`)
+    } catch {
+      // A job nothing holds any more holds no process.
+      return []
+    }
   }
 
   /** Whether the run exits within `limitMs`. */
@@ -170,9 +201,10 @@ export class RunProcess {
   #record(event: RetestEvent): void {
     if (event.type !== 'browser.started' && event.type !== 'app.started') return
     if (this.#child.exitCode !== null || this.#child.signalCode !== null) return
-    this.#ownership ??= new OwnedProcessGroup(this.pid)
+    this.#ownership ??= launchesHeldByJob ? launchOwnership(this.pid) : new OwnedProcessGroup(this.pid)
     this.#ownership.capture()
-    if (event.type !== 'browser.started' || this.#ownership.verifiedIdentity(event.pid) !== undefined) return
+    // Windows has no Launch Services: everything the run launches is in the job that holds it.
+    if (event.type !== 'browser.started' || launchesHeldByJob || this.#ownership.verifiedIdentity(event.pid) !== undefined) return
     const reading = readProcess(event.pid)
     if (reading !== undefined && reading.command.includes(this.tmp) && reading.command.includes(event.executablePath)) this.#launchedElsewhere.set(event.pid, reading)
   }
@@ -257,6 +289,13 @@ export function reportedGroups(events: readonly RetestEvent[]): number[] {
  */
 export async function assertNothingLeft(run: RunProcess, ended: EndedRun): Promise<void> {
   await waitForGroupEnd(run.pid, releaseWaitMs)
+  // On Windows nothing the run started is left in the job this module holds it in once it has ended: the run's own job
+  // ended it all as the run ended, given the same moments to go as a group is given elsewhere.
+  if (launchesHeldByJob) {
+    const end = performance.now() + releaseWaitMs
+    while (run.heldNow().length > 0 && performance.now() < end) await delay(50)
+    assert.deepEqual(run.heldNow(), [], 'nothing the run started is left once it has ended')
+  }
   assert.deepEqual(retestEntriesIn(run.tmp), [], 'no browser profile or other Retest folder is left in the temporary folder')
   assert.deepEqual(await processesUsing(run.tmp), [], 'no process uses the run temporary folder')
   for (const group of reportedGroups(ended.events)) await waitForGroupEnd(group, releaseWaitMs)

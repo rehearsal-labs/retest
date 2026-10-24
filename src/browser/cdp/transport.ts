@@ -42,18 +42,19 @@ export class PipeTransport implements Transport {
   constructor({ readable, writable }: PipeStreams) {
     this.#readable = readable
     this.#writable = writable
+    // A pipe that closes without Retest closing it means the browser went, whichever of its two ends Node hears of first,
+    // so a killed browser is told of in one sentence however the ends race.
     readable.on('end', () => this.#end('the browser closed the pipe'))
     readable.on('close', () => this.#end('the browser closed the pipe'))
     readable.on('error', (error) => this.#end(`reading from the browser failed: ${error.message}`))
-    writable.on('close', () => this.#end('the pipe to the browser closed'))
+    writable.on('close', () => this.#end('the browser closed the pipe'))
     writable.on('error', (error) => this.#end(`writing to the browser failed: ${error.message}`))
     writable.on('drain', () => {
       this.#blocked = false
       this.#flush()
     })
     // A stream that ended before this point never emits its events again.
-    if (readable.destroyed || readable.readableEnded) this.#end('the browser closed the pipe')
-    else if (writable.destroyed || writable.writableEnded) this.#end('the pipe to the browser closed')
+    if (readable.destroyed || readable.readableEnded || writable.destroyed || writable.writableEnded) this.#end('the browser closed the pipe')
   }
 
   /** Starts reading. Nothing is read before this, so no message can arrive unheard. */

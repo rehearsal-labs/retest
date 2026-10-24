@@ -11,6 +11,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { closeGraceMs } from '../../src/browser/contract.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { homePrefix, parseLaunchdServices, parseProcessStart, processStartedAt, WebKitProcess, webKitArguments, webKitEnvironment } from '../../src/browser/webkit/process.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+const noWebKit = unixOnly('WebKit has no Windows build, so Retest runs no WebKit there')
 
 test("reads the services launchd started for the browser, keeping those with a running pid", () => {
   const text = [
@@ -41,7 +44,7 @@ test('the browser starts on the inspector pipe with no startup window, headless 
   assert.deepEqual(webKitArguments(false), ['--inspector-pipe', '--no-startup-window'])
 })
 
-test("the browser's environment is set in full: nothing of Retest's own passes through, and its home is the temporary one", () => {
+test("the browser's environment is set in full: nothing of Retest's own passes through, and its home is the temporary one", { skip: noWebKit }, () => {
   process.env['RETEST_TEST_SECRET_FOR_WEBKIT'] = 'hunter2'
   try {
     const environment = webKitEnvironment({ directory: '/cache/webkit-2359' }, '/tmp/retest-webkit-1-ab')
@@ -66,7 +69,7 @@ test("a home's name says which Retest process made it", () => {
 // Held from the WebKit lane's record, one conformance run ended cleanup_failed: "The browser's output did not finish
 // writing and closing within 1000 ms." A timer was racing an output close that needs several turns of the event loop,
 // and a busy main thread lets the timer win; Chrome's twin of this code showed it on 8 of 8 healthy closes.
-test("a WebKit browser's output that closes while the main thread is busy is not reported as left open", { timeout: 20_000 }, async (t) => {
+test("a WebKit browser's output that closes while the main thread is busy is not reported as left open", { timeout: 20_000, skip: noWebKit }, async (t) => {
   const folder = await realpath(await mkdtemp(join(tmpdir(), 'retest-webkit-output-close-')))
   t.after(() => rm(folder, { recursive: true, force: true }))
   // A stand-in for the build's executable: it writes, reads one command from the inspector pipe, writes again and ends.
@@ -90,7 +93,7 @@ test("a WebKit browser's output that closes while the main thread is busy is not
 
 // The same race made certain: the browser and everything that could write its output are gone, and Retest's own log
 // writing finishes after the bound, as it did on a busy host. Only output something still holds is a problem.
-test("a WebKit browser's output whose writers are gone but whose writing finishes after the bound is not reported, and one still held is", { timeout: 30_000 }, async (t) => {
+test("a WebKit browser's output whose writers are gone but whose writing finishes after the bound is not reported, and one still held is", { timeout: 30_000, skip: noWebKit }, async (t) => {
   const folder = await realpath(await mkdtemp(join(tmpdir(), 'retest-webkit-output-late-')))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const started = async (output: { closed: Promise<string[]>; cancel(): void; writersRemain(): boolean }, name: string) => {
@@ -126,7 +129,7 @@ test('a start time reading tells a process that is not there from a reading that
   assert.throws(() => parseProcessStart(`  812\n${own}`, 812, 700), /not a pid and a start time/)
 })
 
-test("the host's start time reading gives a running process its start and one that has ended none", { timeout: 10_000 }, async () => {
+test("the host's start time reading gives a running process its start and one that has ended none", { timeout: 10_000, skip: noWebKit }, async () => {
   assert.match(processStartedAt(process.pid) ?? '', /^[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4}$/)
   const child = spawn('/bin/sh', ['-c', 'exit 0'], { stdio: 'ignore' })
   await once(child, 'exit')
@@ -136,7 +139,7 @@ test("the host's start time reading gives a running process its start and one th
   assert.throws(() => processStartedAt(0), RangeError)
 })
 
-test('WebKit cleanup shares one helper snapshot for 100 dead helpers and checks only its live root before signalling', async () => {
+test('WebKit cleanup shares one helper snapshot for 100 dead helpers and checks only its live root before signalling', { skip: noWebKit }, async () => {
   const { ChildProcess } = await import('node:child_process')
   const child = new ChildProcess()
   const pid = 6101

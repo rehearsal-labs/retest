@@ -5,6 +5,7 @@ import type { AriaRole } from '../../src/protocol/aria-role.ts'
 import type { CommandResult, Observation } from '../../src/protocol/commands.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
+import type { SupervisedProcess } from '../../src/shared/process-supervisor.ts'
 import type { TaskApp, TaskAppOptions } from '../../fixtures/task-app/server.ts'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
@@ -23,6 +24,7 @@ import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
+import { heldLaunches, launchesHeldByJob } from '../../src/shared/process-system.ts'
 import { engineUnderTest } from './engines.ts'
 
 /** The budgets these tests give opening a page and closing the browser. */
@@ -33,10 +35,25 @@ import { browserPath } from '../support/test-browser.ts'
 
 export { browserPath }
 
-/** A folder for one test's files, removed after it. */
+// Each test's scratch folders, by the test that made them. A test closes what it started, such as a browser that logs
+// into its folder, in hooks it adds after it made the folder, and Node runs a test's hooks in the order they were added
+// and skips the rest after one that fails. So the folders are removed once the file's tests and all their hooks have
+// run, by the file's own last hook, where a removal that fails skips no close and is still a failure.
+const scratchFolders: { readonly folder: string; readonly test: string }[] = []
+after(async () => {
+  const failed: string[] = []
+  for (const { folder, test } of scratchFolders.splice(0)) {
+    await rm(folder, { recursive: true, force: true, maxRetries: 3 }).catch((error: unknown) => {
+      failed.push(`${folder} of "${test}": ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+  assert.deepEqual(failed, [], 'every scratch folder is removed once the tests that used it have closed what they started')
+})
+
+/** A folder for one test's files, removed once the file's tests, and every hook that closes what they started, have run. */
 export async function scratchFolder(t: TestContext): Promise<string> {
   const folder = await mkdtemp(join(tmpdir(), 'retest-browser-test-'))
-  t.after(() => rm(folder, { recursive: true, force: true }))
+  scratchFolders.push({ folder, test: t.fullName })
   return folder
 }
 
@@ -317,7 +334,11 @@ export async function timed<T>(work: Promise<T>): Promise<{ value: T; ms: number
   return { value, ms: performance.now() - start }
 }
 
-/** Reports whether any process of a group this test started is still there, reaped or not. */
+/**
+ * Reports whether any process of a group this test started is still there, reaped or not. On Windows, which has no
+ * groups, a launch this process holds is read from its job, and any other pid, such as one a command under test
+ * reported, only as that one process: what it started is the command's own to confirm ended, and ends with its job.
+ */
 export function groupExists(pgid: number): boolean {
   return signalGroup(pgid, 0)
 }
@@ -356,16 +377,135 @@ export async function waitForGroupEnd(pgid: number, timeoutMs = 5000): Promise<v
   }
 }
 
+// Windows has no `ps`; its own process list gives each process's command line through PowerShell.
+async function windowsCommandLines(filter: string): Promise<string> {
+  const { stdout } = await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process ${filter} | ForEach-Object { "$($_.ProcessId) 0 $($_.CommandLine)" }`], { maxBuffer: 256 * 1024 * 1024 })
+  return stdout
+}
+
+function stillRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The process group of each line `processesUsing` gave: its own field on macOS and Linux; on Windows, which has no
+ * groups, the pid of the launch held by this process that holds that process, in its job or by its parent, or 0 for
+ * none. A process that ended after it was listed is left out.
+ */
+export function groupsOf(lines: readonly string[]): string[] {
+  const pidOf = (line: string): number => Number(line.trim().split(/\s+/)[0])
+  if (!launchesHeldByJob) return lines.map((line) => line.trim().split(/\s+/)[1] ?? '')
+  const holder = launchHoldings()
+  // The launches are read after the lines were listed: a process listed that has ended since was the browser's while it
+  // ran, but nothing is left of it to read, so it has no group; one still running outside every launch reads as 0.
+  return lines.flatMap((line) => {
+    const pid = pidOf(line)
+    const root = holder.get(pid)
+    if (root !== undefined) return [String(root)]
+    return stillRunning(pid) ? ['0'] : []
+  })
+}
+
+// What this harness found each launch held by its parents at its last look there, by job, with when it looked: its own
+// record, never the launch's, which a reading here would change.
+const looks = new Map<string, { readonly at: number; readonly held: ReadonlyMap<number, string> }>()
+// The bound within which a look counts what a browser gone since its last look started, as the launch's own reading does.
+const lateMs = 10_000
+
+// Each process a launch holds, by the pid of the launch that holds it, read with the supervisor itself and judged here
+// by the rule the launch's own readings follow, written again apart from them so a run on Windows checks it: its job's
+// members, and, while it holds processes by their parents, what the runner's job shows of them by their starts on
+// record, what names the launch's folder as a whole part of a path, and what a process of the launch running in the same
+// reading, or a browser it held that was running at the look a moment before, started after it. A claim that rests on
+// a folder or on such a browser leaves alone what another launch holds.
+function launchHoldings(): Map<number, number> {
+  const supervisor = heldLaunches()?.supervisor
+  const holder = new Map<number, number>()
+  if (supervisor === undefined) return holder
+  const launches = supervisor.launches
+  const members = new Map(launches.map((launch) => [launch.job, supervisor.members(launch.job)]))
+  let runnerJob: readonly SupervisedProcess[] | undefined
+  for (const launch of launches) {
+    const own = members.get(launch.job) ?? []
+    for (const member of own) holder.set(member.pid, launch.root.pid)
+    const last = looks.get(launch.job)
+    const record = last?.held ?? new Map(launch.byParent.map((entry) => [entry.pid, entry.startedAt]))
+    if (record.size === 0) continue
+    runnerJob ??= supervisor.members(supervisor.runnerJob)
+    const now = performance.now()
+    const late = last === undefined || now - last.at > lateMs ? new Set<number>() : new Set(launch.byParent.filter((entry) => record.get(entry.pid) === entry.startedAt).map((entry) => entry.pid))
+    let found = heldThrough({ record, members: own, reading: runnerJob, markers: launch.markers, late, elsewhere: new Set() })
+    if (found.weak) {
+      const elsewhere = new Set(launches.flatMap((other) => other.job === launch.job ? [] : [...(members.get(other.job) ?? []), ...other.byParent].map((entry) => entry.pid)))
+      found = heldThrough({ record, members: own, reading: runnerJob, markers: launch.markers, late, elsewhere })
+    }
+    looks.set(launch.job, { at: now, held: found.held })
+    for (const pid of found.held.keys()) holder.set(pid, launch.root.pid)
+  }
+  return holder
+}
+
+function heldThrough(options: { readonly record: ReadonlyMap<number, string>; readonly members: readonly SupervisedProcess[]; readonly reading: readonly SupervisedProcess[]; readonly markers: readonly string[]; readonly late: ReadonlySet<number>; readonly elsewhere: ReadonlySet<number> }): { readonly held: ReadonlyMap<number, string>; readonly weak: boolean } {
+  const { record, reading, elsewhere } = options
+  const shown = new Map(reading.map((entry) => [entry.pid, entry.startedAt]))
+  const memberPids = new Set(options.members.map((entry) => entry.pid))
+  const running = new Map(options.members.filter((entry) => shown.get(entry.pid) === entry.startedAt).map((entry) => [entry.pid, entry.startedAt]))
+  const gone = new Map([...record].filter(([pid]) => options.late.has(pid) && !shown.has(pid)))
+  const held = new Map<number, string>()
+  let weak = false
+  const open = (entry: SupervisedProcess): boolean => !memberPids.has(entry.pid) && !running.has(entry.pid) && !elsewhere.has(entry.pid)
+  const take = (entry: SupervisedProcess): void => {
+    running.set(entry.pid, entry.startedAt)
+    held.set(entry.pid, entry.startedAt)
+  }
+  for (const entry of reading) {
+    if (!open(entry)) continue
+    if (record.get(entry.pid) === entry.startedAt) take(entry)
+    else if (options.markers.some((marker) => namesFolderHere(entry.commandLine ?? '', marker))) {
+      take(entry)
+      weak = true
+    }
+  }
+  for (let grew = true; grew;) {
+    grew = false
+    for (const entry of reading) {
+      if (!open(entry) || entry.parentPid === undefined) continue
+      const parent = running.get(entry.parentPid) ?? gone.get(entry.parentPid)
+      if (parent === undefined || BigInt(parent) > BigInt(entry.startedAt)) continue
+      weak ||= !running.has(entry.parentPid)
+      take(entry)
+      grew = true
+    }
+  }
+  return { held, weak }
+}
+
+// Whether a command line names the folder `marker` as a whole part of a path, whatever its case.
+function namesFolderHere(commandLine: string, marker: string): boolean {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`[\\\\/]${escaped}(?=$|[\\\\/"'\\s])`, 'i').test(commandLine)
+}
+
 /** The profile folder a running browser was started with, read from its command line. */
 export async function profileOf(pid: number): Promise<string> {
-  const { stdout } = await promisify(execFile)('ps', ['-ww', '-o', 'command=', '-p', String(pid)])
+  const { stdout } = process.platform === 'win32' ? { stdout: await windowsCommandLines(`-Filter "ProcessId=${pid}"`) } : await promisify(execFile)('ps', ['-ww', '-o', 'command=', '-p', String(pid)])
   const match = /--user-data-dir=(\S+)/.exec(stdout)
   assert.ok(match?.[1] !== undefined, `pid ${pid} has no --user-data-dir`)
   return match[1]
 }
 
-/** Lines of `ps` that mention a path, which every browser process carries in its command line. */
+/**
+ * Lines of `ps` that mention a path, which every browser process carries in its command line. On Windows each line is
+ * `<pid> 0 <command line>`, the 0 standing for a process group, which Windows does not have.
+ */
 export async function processesUsing(path: string): Promise<string[]> {
+  // Windows lists a process that has ended while anything still holds it open; only a running one is in use.
+  if (process.platform === 'win32') return (await windowsCommandLines('')).split(/\r?\n/).filter((line) => line.includes(path) && stillRunning(Number(line.trim().split(/\s+/)[0])))
   // Every process's whole command line: on a busy machine the table runs to megabytes, past execFile's default buffer.
   const { stdout } = await promisify(execFile)('ps', ['-axww', '-o', 'pid=,pgid=,command='], { maxBuffer: 256 * 1024 * 1024 })
   return stdout.split('\n').filter((line) => line.includes(path))

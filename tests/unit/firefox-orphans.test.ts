@@ -1,5 +1,6 @@
 import type { OwnedProcessIdentity } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -7,6 +8,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, test } from 'node:test'
 import { sweepOrphanedFirefoxes } from '../../src/browser/firefox/orphans.ts'
 import { ownerRecordFile } from '../../src/browser/firefox/profile.ts'
+import { readHeldProcess } from '../../src/shared/process-system.ts'
+import { windowsOnly } from '../support/platform-skip.ts'
 
 // The sweep ends only the Firefoxes launches recorded, when their launcher is gone and the process is still exactly
 // the one recorded, and never anything else.
@@ -241,4 +244,31 @@ test('a late orphan candidate snapshot authorises no folder release even when it
   assert.deepEqual(report.removed, [], 'absence read after the deadline is unconfirmed')
   assert.match(report.problems.join(' '), /cleanup deadline/)
   assert.equal(existsSync(folder), true)
+})
+
+// On Windows a launcher's job ends its Firefox with it, however the launcher ends, so the sweep only tells whether the
+// launcher is gone, by its exact start, and removes its folder; it ends nothing.
+describe('the Firefox sweep on Windows', { skip: windowsOnly('a launcher whose job ends its Firefox exists only on Windows') }, () => {
+  async function heldFolder(ownerPid: number, recorded: string | undefined): Promise<string> {
+    const folder = join(root, `retest-firefox-${ownerPid}-abc${Math.random().toString(36).slice(2, 8)}`)
+    await mkdir(join(folder, 'profile'), { recursive: true })
+    if (recorded !== undefined) await writeFile(join(folder, ownerRecordFile), JSON.stringify({ version: 1, startTimeVersion: 2, owner: { pid: ownerPid, startedAt: recorded, command: process.execPath }, firefox: { pid: 5001, startedAt: '1', command: 'firefox.exe', route: 'spawn' }, profile: join(folder, 'profile') }))
+    return folder
+  }
+
+  test('keeps the folder of a launcher still running with its recorded start, or one that wrote no record yet, and removes the rest', async () => {
+    const own = readHeldProcess(process.pid)
+    assert.ok(own !== undefined)
+    const live = await heldFolder(process.pid, own.startedAt)
+    const unrecorded = await heldFolder(process.pid, undefined)
+    const reused = await heldFolder(process.pid, '1')
+    const ended = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' })
+    const gone = await heldFolder(Number(ended.stdout), undefined)
+    const report = await sweepOrphanedFirefoxes(root)
+    assert.deepEqual(report.problems, [])
+    assert.deepEqual(report.ended, [], 'nothing is ended: the job did that')
+    assert.deepEqual(report.removed.sort(), [reused, gone].sort(), 'a pid another process holds now, and a pid nobody holds, are a gone launcher')
+    assert.equal(existsSync(live), true)
+    assert.equal(existsSync(unrecorded), true)
+  })
 })

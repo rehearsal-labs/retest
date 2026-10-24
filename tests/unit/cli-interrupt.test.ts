@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, test } from 'node:test'
 import { abortOnInterrupt } from '../../src/cli/interrupt.ts'
+import { windowsOnly } from '../support/platform-skip.ts'
 import { capture } from './reporters-fixtures.ts'
 
 describe('abortOnInterrupt', () => {
@@ -31,5 +32,16 @@ describe('abortOnInterrupt', () => {
     source.emit('SIGTERM')
     source.emit('SIGINT')
     assert.deepEqual(exits, [143, 130])
+  })
+
+  test('on Windows Ctrl+Break, which Node gives as SIGBREAK, stops the run as SIGTERM does', { skip: windowsOnly('Windows has Ctrl+Break where other systems have SIGTERM') }, () => {
+    const source = new EventEmitter()
+    const stderr = capture()
+    const exits: number[] = []
+    const signal = abortOnInterrupt({ source, stderr, exit: (code) => exits.push(code) })
+    source.emit('SIGBREAK')
+    assert.deepEqual([signal.aborted, signal.reason], [true, 'SIGTERM'])
+    source.emit('SIGBREAK')
+    assert.deepEqual(exits, [143])
   })
 })

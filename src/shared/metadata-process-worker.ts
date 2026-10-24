@@ -3,11 +3,13 @@ import type { MetadataProcessRequest } from './metadata-process.ts'
 import { spawn } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { parentPort } from 'node:worker_threads'
-import { metadataAbandoned, metadataComplete, metadataFailure, metadataPending, metadataRunning, metadataSuccess } from './metadata-process.ts'
+import { errorCode } from './error-code.ts'
+import { metadataAbandoned, metadataComplete, metadataDeadlineVariable, metadataFailure, metadataPending, metadataRunning, metadataSuccess } from './metadata-process.ts'
+import { launchesHeldByJob } from './process-system.ts'
 
-// Children whose query failed, until each one's own exit is seen; none is ever signalled. A stuck one fails only its own
-// query, and queries in flight at once are not counted, but while this many are outstanding later queries are refused, so
-// stuck children cannot pile up.
+// Children whose query failed, until each one's own exit is seen. On macOS and Linux none is ever signalled. A stuck one
+// fails only its own query, and queries in flight at once are not counted, but while this many are outstanding later
+// queries are refused, so stuck children cannot pile up.
 const unresolved = new Set<ChildProcess>()
 const unresolvedLimit = 4
 
@@ -27,7 +29,7 @@ parentPort?.on('message', (request: MetadataProcessRequest) => {
   }
   let child: ChildProcess
   try {
-    child = spawn(request.command, request.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...request.environment, TZ: 'UTC0' } })
+    child = spawn(request.command, request.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...request.environment, TZ: 'UTC0', [metadataDeadlineVariable]: `${Math.floor(performance.timeOrigin + deadline)}` } })
   } catch {
     finish(control, output, metadataFailure, 'The metadata process could not start.')
     return
@@ -51,6 +53,9 @@ parentPort?.on('message', (request: MetadataProcessRequest) => {
     settled = true
     clearTimeout(timer)
     stopReading()
+    // On Windows a query is a run of retest-supervisor, which may still be making or filling a job. One given up on is
+    // ended, through Node's own handle on it, before the failure is told, so no job appears after its caller moved on.
+    if (launchesHeldByJob && !closed) child.kill()
     if (!closed) unresolved.add(child)
     finish(control, output, metadataFailure, message)
   }
@@ -79,9 +84,11 @@ parentPort?.on('message', (request: MetadataProcessRequest) => {
   child.stderr?.on('data', (chunk: Buffer) => { read(chunk, false) })
   child.stdout?.on('error', () => { fail('The metadata process output could not be read.') })
   child.stderr?.on('error', () => { fail('The metadata process output could not be read.') })
-  child.on('error', () => {
+  child.on('error', (error: Error) => {
     if (child.pid === undefined) release()
-    fail('The metadata process could not run.')
+    // The system's code says why, such as a program that is gone or a system out of room for another process.
+    const code = errorCode(error)
+    fail(code === undefined ? 'The metadata process could not run.' : `The metadata process could not run (${code}).`)
   })
   child.once('close', (code, signal) => {
     release()

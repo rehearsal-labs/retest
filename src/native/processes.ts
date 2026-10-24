@@ -14,6 +14,7 @@ import { errorMessage } from '../protocol/failures.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { processTableOutputLimit, readMetadataProcess, readMetadataProcessAsync } from '../shared/metadata-process.ts'
 import { OwnedProcessGroup, sameProcessIdentity } from '../shared/process-ownership.ts'
+import { consolesDetached, holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../shared/process-system.ts'
 import { NativeOutputLines } from './output.ts'
 
 // Each launched native process has an ownership ledger. Descendants are recorded only through verified launch
@@ -125,10 +126,11 @@ export async function runCommand(command: string, args: readonly string[], optio
   if (options.signal?.aborted === true) return { code: null, signal: null, stdout: '', stderr: '', timedOut: false, stopped: true, started: false, cleanupProblems: [] }
   let child: ChildProcessByStdio<null, Readable, Readable>
   try {
+    if (options.ownershipSystem === undefined) prepareOwnedLaunch()
     child = spawn(command, args, {
       cwd: options.cwd,
       env: childEnvironment(options.environment, options.hiddenVariables),
-      detached: true,
+      detached: consolesDetached,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
   } catch (error) {
@@ -400,8 +402,9 @@ class GroupGuard {
 
   constructor(child: ChildProcess, system?: ProcessOwnershipSystem) {
     this.#child = child
-    this.#table = system === undefined ? new ProcessTable() : undefined
-    const owner = child.pid === undefined ? undefined : new OwnedProcessGroup(child.pid, process.pid, system ?? this.#table)
+    this.#table = system === undefined && !launchesHeldByJob ? new ProcessTable() : undefined
+    // Where a job holds each launch, the job is its table; the process table `ps` reads exists only on Unix.
+    const owner = child.pid === undefined ? undefined : system === undefined && launchesHeldByJob ? holdLaunch(child) : new OwnedProcessGroup(child.pid, process.pid, system ?? this.#table)
     this.#owner = owner
     this.#initial = owner === undefined ? Promise.resolve([]) : this.#reading(() => owner.capture())
     this.#exited = child.exitCode !== null || child.signalCode !== null

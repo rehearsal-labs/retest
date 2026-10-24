@@ -18,7 +18,17 @@ beforeEach(async () => {
 
 afterEach(() => rm(root, { recursive: true, force: true }))
 
-async function fakeApp(ini: string): Promise<string> {
+// A Firefox as the system installs it, with its application.ini where that system keeps it: beside firefox.exe on
+// Windows, and in the app bundle's resources on macOS.
+async function fakeApp(ini: string, platform: NodeJS.Platform = process.platform): Promise<string> {
+  if (platform === 'win32') {
+    const folder = join(root, 'Mozilla Firefox')
+    await mkdir(folder, { recursive: true })
+    await writeFile(join(folder, 'application.ini'), ini)
+    const executable = join(folder, 'firefox.exe')
+    await writeFile(executable, '')
+    return executable
+  }
   const app = join(root, 'Firefox.app', 'Contents')
   await mkdir(join(app, 'MacOS'), { recursive: true })
   await mkdir(join(app, 'Resources'), { recursive: true })
@@ -29,18 +39,26 @@ async function fakeApp(ini: string): Promise<string> {
 }
 
 describe('the Firefox executable', () => {
-  test('runs on macOS on Apple silicon only, and names the machine it refuses', () => {
+  test('runs on macOS on Apple silicon and on Windows x64, and names the machine it refuses', () => {
     assert.equal(firefoxPlatformProblem('darwin', 'arm64'), undefined)
-    assert.equal(firefoxPlatformProblem('linux', 'x64'), 'Retest runs Firefox on macOS on Apple silicon, and this machine is linux x64.')
+    assert.equal(firefoxPlatformProblem('win32', 'x64'), undefined)
+    assert.equal(firefoxPlatformProblem('linux', 'x64'), 'Retest runs Firefox on macOS on Apple silicon and on Windows x64, and this machine is linux x64.')
     assert.match(firefoxPlatformProblem('darwin', 'x64') ?? '', /darwin x64/)
+    assert.match(firefoxPlatformProblem('win32', 'arm64') ?? '', /win32 arm64/)
   })
 
   test("reads the version and build from the app's application.ini, and nothing from an app that is not Firefox", async () => {
-    const executable = await fakeApp('[App]\nVendor=Mozilla\nName=Firefox\nVersion=133.0.3\nBuildID=20241209150345\n\n[Gecko]\nMinVersion=133.0.3\n')
-    assert.deepEqual(await readFirefoxRelease(executable), { version: '133.0.3', buildId: '20241209150345' })
+    const executable = await fakeApp('[App]\nVendor=Mozilla\nName=Firefox\nVersion=133.0.3\nBuildID=20241209150345\n\n[Gecko]\nMinVersion=133.0.3\n', 'darwin')
+    assert.deepEqual(await readFirefoxRelease(executable, 'darwin'), { version: '133.0.3', buildId: '20241209150345' })
     await writeFile(join(root, 'Firefox.app', 'Contents', 'Resources', 'application.ini'), '[App]\nName=Thunderbird\nVersion=128.0\n')
-    assert.equal(await readFirefoxRelease(executable), undefined)
-    assert.equal(await readFirefoxRelease(join(root, 'nowhere', 'firefox')), undefined)
+    assert.equal(await readFirefoxRelease(executable, 'darwin'), undefined)
+    assert.equal(await readFirefoxRelease(join(root, 'nowhere', 'firefox'), 'darwin'), undefined)
+  })
+
+  test('reads the release on Windows from the application.ini beside firefox.exe, whose lines end as Windows writes them', async () => {
+    const executable = await fakeApp('[App]\r\nVendor=Mozilla\r\nName=Firefox\r\nVersion=133.0.3\r\nBuildID=20241209150345\r\n', 'win32')
+    assert.deepEqual(await readFirefoxRelease(executable, 'win32'), { version: '133.0.3', buildId: '20241209150345' })
+    assert.equal(await readFirefoxRelease(executable, 'darwin'), undefined, 'a Mac reads the app bundle, which a Windows Firefox has none of')
   })
 
   test('a target that names its executable launches that one, on the machine Retest runs Firefox on', { skip: firefoxPlatformProblem() }, async () => {
@@ -51,7 +69,7 @@ describe('the Firefox executable', () => {
 
 // Review F-5: with no pinned build in the cache, a run took whatever Firefox was in /Applications, at any version, while
 // the driver encodes facts of the tested release alone.
-describe('a Firefox found where macOS installs it', { skip: firefoxPlatformProblem() }, () => {
+describe('a Firefox found where the system installs it', { skip: firefoxPlatformProblem() }, () => {
   const target = { name: 'firefox', browser: 'firefox' as const, headless: true }
 
   test('is used when its files say it is the tested release', async () => {
@@ -67,27 +85,27 @@ describe('a Firefox found where macOS installs it', { skip: firefoxPlatformProbl
     assert.equal(found.failure.class, 'setup_failed')
     assert.equal(
       found.failure.message,
-      `No tested Firefox for the target firefox of the app web: no pinned build is in Retest's cache, and the Firefox at ${executable} is 150.0 build 20260901000000, not the tested 133.0.3 build 20241209150345. Either name it with executablePath on the target to run it at that version, or install the tested Firefox 133.0.3 at ${executable}.`,
+      `No tested Firefox for the target firefox of the app web: no pinned build is in Retest's cache, and the Firefox at ${executable} is 150.0 build 20260901000000, not the tested 158.0.1 build 20261019185856. Either name it with executablePath on the target to run it at that version, or run npx retest install firefox.`,
     )
-    assert.deepEqual(found.failure.details, { app: 'web', target: 'firefox', found: '150.0', tested: '133.0.3' })
+    assert.deepEqual(found.failure.details, { app: 'web', target: 'firefox', found: '150.0', tested: '158.0.1' })
   })
 
   test('whose files name no release is refused the same way, and no Firefox at all names the ways forward', async () => {
     const executable = await fakeApp('[App]\nName=Thunderbird\nVersion=128.0\n')
     const unnamed = await findFirefoxExecutable(target, 'web', {}, { systemPath: executable })
     assert.ok(!unnamed.ok)
-    assert.match(unnamed.failure.message, /the Firefox at .+ names no release in its files, not the tested 133\.0\.3 build 20241209150345/)
+    assert.match(unnamed.failure.message, /the Firefox at .+ names no release in its files, not the tested 158\.0\.1 build 20261019185856/)
     const none = await findFirefoxExecutable(target, 'web', {}, { systemPath: join(root, 'nowhere', 'firefox') })
     assert.ok(!none.ok)
-    assert.match(none.failure.message, /none is at .+\. Either install the tested Firefox 133\.0\.3 at .+, or give the target an executablePath\.$/)
+    assert.match(none.failure.message, /none is at .+\. Either run npx retest install firefox, or give the target an executablePath\.$/)
   })
 
   test('named by the target runs at any release, and says when it is not the tested one', async () => {
     const executable = await fakeApp('[App]\nName=Firefox\nVersion=150.0\nBuildID=20260901000000\n')
     assert.deepEqual(await findFirefoxExecutable({ ...target, executablePath: executable }, 'web', {}), { ok: true, path: executable })
-    assert.equal(untestedFirefox(await readFirefoxRelease(executable)), 'Firefox 150.0 build 20260901000000 is not the tested Firefox 133.0.3 build 20241209150345.')
-    assert.equal(untestedFirefox({ version: '133.0.3', buildId: '20241209150345' }), undefined)
-    assert.equal(untestedFirefox(undefined), 'A Firefox whose files name no release is not the tested Firefox 133.0.3 build 20241209150345.')
+    assert.equal(untestedFirefox(await readFirefoxRelease(executable)), 'Firefox 150.0 build 20260901000000 is not the tested Firefox 158.0.1 build 20261019185856.')
+    assert.equal(untestedFirefox({ version: '158.0.1', buildId: '20261019185856' }), undefined)
+    assert.equal(untestedFirefox(undefined), 'A Firefox whose files name no release is not the tested Firefox 158.0.1 build 20261019185856.')
   })
 })
 
@@ -124,9 +142,10 @@ describe("a Firefox launch's folder", () => {
 
 test('a damaged pinned cache refuses setup and never falls back to a system Firefox, while an explicit binary still wins', { skip: firefoxPlatformProblem() }, async () => {
   const executable = await fakeApp(`[App]\nName=Firefox\nVersion=${testedFirefox().version}\nBuildID=${testedFirefox().buildId ?? ''}\n`)
-  const env = { HOME: root }
-  const { cacheFolders, buildFolder, findPin } = await import('../../src/browser/builds.ts')
-  const pin = findPin('firefox', 'mac-arm64')
+  const env = { HOME: root, LOCALAPPDATA: join(root, 'AppData', 'Local') }
+  const { buildFolder, buildPlatform, cacheFolders, findPin } = await import('../../src/browser/builds.ts')
+  const platform = buildPlatform()
+  const pin = platform === undefined ? undefined : findPin('firefox', platform)
   const folders = cacheFolders(env)
   assert.ok(pin !== undefined && folders !== undefined)
   const damaged = buildFolder(folders, pin)

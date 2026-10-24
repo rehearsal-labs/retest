@@ -5,6 +5,9 @@ import { once } from 'node:events'
 import { describe, test } from 'node:test'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { OwnedProcessGroup, sameProcessIdentity } from '../../src/shared/process-ownership.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+const psHost = unixOnly('the host here is ps, which Windows does not have; process-supervisor-windows.test.ts reads real launches from their jobs')
 
 /** A host snapshot and signal recorder. No system process is read or signaled by these tests. */
 class RecordedHost implements ProcessOwnershipSystem {
@@ -274,7 +277,7 @@ describe('each signal follows a fresh reading of that one pid', () => {
     }
   })
 
-  test('the host reads one real pid, and an absent pid as absent rather than as a failed reading', async () => {
+  test('the host reads one real pid, and an absent pid as absent rather than as a failed reading', { skip: psHost }, async () => {
     const child = spawn('/bin/sleep', ['30'], { detached: true, stdio: 'ignore' })
     try {
       await once(child, 'spawn')
@@ -331,7 +334,7 @@ describe('a reading taken without holding the thread', () => {
     assert.equal(group.verifiedIdentity(network.pid), undefined, 'nothing was recorded from the failed reading')
   })
 
-  test('on the host, a background reading records a child started after the launch was recorded', async () => {
+  test('on the host, a background reading records a child started after the launch was recorded', { skip: psHost }, async () => {
     const shell = spawn('/bin/sh', ['-c', 'sleep 30 & echo $!; wait'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] })
     try {
       await once(shell, 'spawn')
@@ -365,7 +368,7 @@ describe('asynchronous cleanup keeps the immediate identity check and its caller
     }
   }
 
-  test('the host ends a recorded process through asynchronous cleanup while timers can run', async () => {
+  test('the host ends a recorded process through asynchronous cleanup while timers can run', { skip: psHost }, async () => {
     const child = spawn('/bin/sleep', ['30'], { detached: true, stdio: 'ignore' })
     let timer: NodeJS.Timeout | undefined
     try {

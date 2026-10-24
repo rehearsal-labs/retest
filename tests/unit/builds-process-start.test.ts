@@ -2,6 +2,7 @@ import type { Generation } from '../../src/cli/install/lock.ts'
 import type { ProcessStart } from '../../src/cli/install/process-start.ts'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { hostname } from 'node:os'
 import { describe, test } from 'node:test'
 import { decideGeneration } from '../../src/cli/install/lock.ts'
 import { compareStarts, parseProcStat, parseUtcStart, readMachine, startReader } from '../../src/cli/install/process-start.ts'
@@ -36,6 +37,16 @@ describe('reading a start', () => {
     const machine = await readMachine({ platform: process.platform })
     assert.ok(machine.ok, machine.ok ? '' : machine.problem)
     assert.match(machine.ok ? machine.machine.id : '', process.platform === 'linux' ? /^linux boot [0-9a-f-]{36} pid:\[\d+\]$/ : /^macos boot [0-9A-F-]{36}$/)
+  })
+})
+
+describe('a Windows machine', () => {
+  // No start is read there and no boot is compared: a holder is told alive by the file it holds open, so the machine
+  // is its name, which keeps another machine's lock in a shared cache from being judged.
+  test('is named by its host, in one case whatever case the host gives', async () => {
+    const machine = await readMachine({ platform: 'win32' })
+    assert.ok(machine.ok, machine.ok ? '' : machine.problem)
+    assert.deepEqual(machine.ok ? machine.machine : undefined, { id: `windows ${hostname().toLowerCase()}`, host: hostname() })
   })
 })
 

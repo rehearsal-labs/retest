@@ -157,11 +157,11 @@ test('closes when writing fails, as when the browser closed its input pipe', asy
   assert.throws(() => transport.send('{}'), /The pipe is closed: writing to the browser failed/)
 })
 
-test('closes when the pipe to the browser closes', async () => {
+test('closes when the pipe to the browser closes, saying the browser closed it, as a killed browser closes either end first', async () => {
   const { writable, heard } = openPipe()
   writable.destroy()
   await nextTurn()
-  assert.deepEqual(heard.closes, ['the pipe to the browser closed'])
+  assert.deepEqual(heard.closes, ['the browser closed the pipe'])
 })
 
 test('closing twice closes once and drops messages that were never written', async () => {
@@ -207,7 +207,7 @@ test('reports a close that happened before anyone listened', async () => {
   assert.deepEqual(closes, ['the browser closed the pipe'])
 })
 
-test('starts closed over a pipe that had already closed', async () => {
+test('starts closed over a pipe either end of which had already closed, saying the browser closed it', async () => {
   const readable = new PassThrough()
   readable.destroy()
   const writable = new PassThrough()
@@ -217,7 +217,7 @@ test('starts closed over a pipe that had already closed', async () => {
   for (const streams of [{ readable, writable: new PassThrough() }, { readable: new PassThrough(), writable }]) {
     new PipeTransport(streams).listen({ message: () => {}, malformed: () => {}, close: (reason) => closes.push(reason) })
   }
-  assert.deepEqual(closes, ['the browser closed the pipe', 'the pipe to the browser closed'])
+  assert.deepEqual(closes, ['the browser closed the pipe', 'the browser closed the pipe'])
 })
 
 test('ends when the pipe produces text instead of bytes', async () => {
