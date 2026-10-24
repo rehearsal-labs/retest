@@ -19,10 +19,15 @@ import { isArray } from '../../src/protocol/schema.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { repositoryRoot, runCli, writeFiles, writeProject } from './cli-harness.ts'
 
+// No unpack here leaves anything behind for it to report.
+function noReport(line: string): void {
+  assert.fail(`The unpack reported: ${line}`)
+}
+
 // `retest install` against a stand-in archive server this test runs on 127.0.0.1: the real pinned browsers, the
 // Electron 44.5.1 archive from its proof cache, and small stand-in builds made here. Publisher archives are local
 // fixtures; nothing is fetched from a publisher. The checks unpack with the system's own ditto and hdiutil, so they run on macOS arm64 and are
-// skipped by name elsewhere.
+// skipped by name elsewhere. Their Windows twins, further down, unpack with Windows' own tar.exe and run on Windows x64.
 
 const electronArchive = process.env['RETEST_TEST_ELECTRON_ARCHIVE'] ?? join(homedir(), 'Library/Caches/retest-proofs/electron/44.5.1/electron-v44.5.1-darwin-arm64.zip')
 const electronRoute = '/github.com/electron/electron/releases/download/v44.5.1/electron-v44.5.1-darwin-arm64.zip'
@@ -500,17 +505,197 @@ describe('installing stand-in builds through the install itself', { skip: unveri
     // been attached whole, later attaches reach the mount within these delays.
     const whole = join(tempFolder('retest-stopped-into-'), 'build')
     await mkdir(whole)
-    assert.equal(await unpackArchive({ archive: image, format: { format: 'dmg', app: 'Stand-in.app' }, into: whole, platform: 'darwin', tools: systemUnpackTools, signal: new AbortController().signal, timeoutMs: 60_000 }), undefined, 'the image unpacks whole when nothing stops it')
+    assert.equal(await unpackArchive({ archive: image, format: { format: 'dmg', app: 'Stand-in.app' }, into: whole, platform: 'darwin', tools: systemUnpackTools, signal: new AbortController().signal, timeoutMs: 60_000, report: noReport }), undefined, 'the image unpacks whole when nothing stops it')
     for (const delay of [40, 60, 80, 100, 120, 150, 200, 300]) {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), delay)
       const into = join(tempFolder('retest-stopped-into-'), 'build')
       await mkdir(into)
-      await unpackArchive({ archive: image, format: { format: 'dmg', app: 'Stand-in.app' }, into, platform: 'darwin', tools: systemUnpackTools, signal: controller.signal, timeoutMs: 60_000 })
+      await unpackArchive({ archive: image, format: { format: 'dmg', app: 'Stand-in.app' }, into, platform: 'darwin', tools: systemUnpackTools, signal: controller.signal, timeoutMs: 60_000, report: noReport })
       clearTimeout(timer)
       assert.deepEqual(attachedFrom(), [], `nothing is left attached after a stop at ${delay} ms`)
       assert.deepEqual(mountPoints().filter((name) => !pointsBefore.has(name)), [], `no mount point is left after a stop at ${delay} ms`)
     }
+  })
+})
+
+// Windows keeps a user's caches in the local application data folder, so a home of the test's own names that too.
+// Every process Retest starts on Windows goes through retest-supervisor, which such a home holds none of, so the one
+// the setup installed is named to the CLI under test by RETEST_SUPERVISOR_BINARY.
+const onWindows = buildPlatform() === 'win-x64' ? false : `unverified: these checks install the Windows x64 pins with Windows' own tar.exe, and this machine is ${process.platform} ${process.arch}`
+const supervisorBinary = process.env['RETEST_SUPERVISOR_BINARY']
+function windowsHome(prefix: string): { readonly env: Record<string, string>; readonly folders: CacheFolders } {
+  const home = tempFolder(prefix)
+  const env = { HOME: home, LOCALAPPDATA: join(home, 'AppData', 'Local'), NO_COLOR: '1', ...(supervisorBinary === undefined ? {} : { RETEST_SUPERVISOR_BINARY: supervisorBinary }) }
+  return { env, folders: cacheFolders(env) ?? assert.fail('a cache under the test home') }
+}
+
+describe('installing the three pinned Windows builds from real publisher archives on a local mirror', { skip: onWindows }, () => {
+  const { env, folders } = windowsHome('retest-windows-install-home-')
+
+  before(() => {
+    assert.ok(supervisorBinary !== undefined, 'The CLI under test has a home of its own: set RETEST_SUPERVISOR_BINARY to the installed retest-supervisor.exe, as scripts/ci/prepare-windows-integration.ts does.')
+  })
+
+  for (const engine of ['chromium', 'firefox', 'electron'] as const) {
+    test(`${engine}: install, list, verify and repeat without fetching`, { timeout: 300_000 }, async (t) => {
+      const pin = findPin(engine, 'win-x64')
+      assert.ok(pin?.kind === 'archive' && pin.licences.inspected)
+      const archiveName = decodeURIComponent(new URL(pin.archive.url).pathname.split('/').at(-1) ?? assert.fail('an archive name'))
+      const archive = join(browserArchives, `${engine}-win-x64-${archiveName}`)
+      assert.ok(existsSync(archive), `The real archive is required at ${archive}; scripts/ci/prepare-windows-integration.ts puts it there.`)
+      const route = `/${new URL(pin.archive.url).host}${new URL(pin.archive.url).pathname}`
+      serveFile(route, archive)
+      const run = { ...env, RETEST_DOWNLOAD_MIRROR: mirror, RETEST_CHROMIUM: '' }
+      const start = requests.length
+      const installed = await runCli(t, ['install', engine], { env: run })
+      assert.equal(installed.exit.code, 0, `${installed.stdout}\n${installed.stderr}`)
+      assert.deepEqual(requestsSince(start), [route], 'exactly one request reaches the local mirror')
+      assert.ok(installed.stdout.includes(`Downloading ${describePin(pin)} for Windows x64 from ${mirror}${route}`), installed.stdout)
+      assert.ok(installed.stdout.includes(`archive SHA-256 ${pin.archive.sha256}`), installed.stdout)
+      assert.equal(existsSync(archivePath(folders, pin)), false, 'the installer deletes its archive')
+      const executable = installedExecutablePath(buildFolder(folders, pin), pin)
+      assert.ok(executable.endsWith(`\\${engine === 'chromium' ? 'chrome' : engine}.exe`), executable)
+      assert.ok(installed.stdout.includes(executable), installed.stdout)
+      const record = await readInstalledRecord(buildFolder(folders, pin))
+      assert.ok(record.kind === 'found')
+      assert.equal(record.record.platform, 'win-x64')
+      assert.deepEqual(record.record.archive, { size: statSync(archive).size, sha256: pin.archive.sha256 })
+      assert.deepEqual(record.record.executable, { path: pin.executable.path, sha256: pin.executable.sha256 })
+      assert.deepEqual(record.record.licences.map((file) => [file.path, file.sha256]), pin.licences.files.map((file) => [file.path, file.sha256]))
+      if (pin.treeSha256 !== undefined) assert.equal(record.record.tree.sha256, pin.treeSha256, 'the unpacked build reads as the one unpacked when it was pinned')
+      if (engine === 'firefox') assert.deepEqual(readdirSync(join(buildFolder(folders, pin), 'build')), ['core'], 'only the core folder of the installer is installed, and setup.exe is left in it')
+      assert.equal((await inspectBuild(pin, folders, { verify: true })).state, 'installed')
+      assert.deepEqual(readdirSync(tmpdir()).filter((name) => name.startsWith('retest-install-installer-')), [], 'the copy of the archive inside an installer is removed')
+      const listed = await runCli(t, ['install', '--list', '--json'], { env: run })
+      assert.equal(listed.exit.code, 0, listed.stderr)
+      const document: unknown = JSON.parse(listed.stdout)
+      assert.ok(isRecord(document) && isArray(document['builds']) && document['platform'] === 'win-x64')
+      const row = document['builds'].find((build) => isRecord(build) && build['engine'] === engine)
+      assert.ok(isRecord(row))
+      assert.deepEqual([row['state'], row['sha256'], row['executablePath']], ['installed', pin.archive.sha256, executable])
+      const verified = await runCli(t, ['install', '--list', '--verify'], { env: run })
+      assert.equal(verified.exit.code, 0, verified.stdout)
+      assert.ok(verified.stdout.includes('Pinned builds for Windows x64'), verified.stdout)
+      assert.ok(lines(verified.stdout).some((line) => line.startsWith(`${engine} |`) && line.includes('✓ installed') && line.includes(pin.archive.sha256 ?? assert.fail('an archive checksum'))), verified.stdout)
+      const again = await runCli(t, ['install', engine], { env: run })
+      assert.equal(again.exit.code, 0, again.stdout)
+      assert.ok(again.stdout.includes('was already installed'))
+      assert.deepEqual(requestsSince(start), [route], 'list, verify and repeat fetch nothing')
+    })
+  }
+
+  test('reads the notices of the installed Chrome for Testing and Firefox, the Firefox page out of omni.ja', { timeout: 60_000 }, async (t) => {
+    for (const [engine, notice] of [['chromium', '--- chrome-win64/ABOUT ('], ['firefox', '--- core/omni.ja (']] as const) {
+      const pin = findPin(engine, 'win-x64')
+      assert.ok(pin !== undefined)
+      assert.equal((await inspectBuild(pin, folders)).state, 'installed', `the ${engine} case above installed ${describePin(pin)}`)
+      const notices = await runCli(t, ['licences', engine], { env })
+      assert.equal(notices.exit.code, 0, notices.stdout)
+      assert.ok(notices.stdout.includes(notice), notices.stdout.slice(0, 500))
+      if (engine === 'firefox') assert.match(notices.stdout, /<html lang="en">[\s\S]+about:license#top/, 'the complete licence page, not ZIP bytes')
+    }
+  })
+
+  test('refuses WebKit by name, and fetches nothing for it', async (t) => {
+    const start = requests.length
+    const refused = await runCli(t, ['install', 'webkit'], { env: { ...env, RETEST_DOWNLOAD_MIRROR: mirror } })
+    assert.equal(refused.exit.code, 2)
+    assert.match(refused.stdout, /✗ webkit +Retest does not run WebKit on Windows, so there is no WebKit build to install\.\n/)
+    assert.deepEqual(requestsSince(start), [])
+  })
+})
+
+describe('installing Windows stand-in builds through the install itself', { skip: onWindows }, () => {
+  const executableText = 'a stand-in browser\n'
+  const licenceText = 'Stand-in licence: anyone may use this.\n'
+  const tar = systemUnpackTools.tar
+
+  function pinOf(archive: { url: string; sha256: string; size: number }, overrides: Partial<ArchivePin> = {}): ArchivePin {
+    return {
+      kind: 'archive',
+      engine: 'electron',
+      title: 'Stand-in',
+      version: '2.0.0',
+      platform: 'win-x64',
+      archive: { format: 'zip', url: archive.url, sha256: archive.sha256, size: archive.size },
+      executable: { path: 'stand-in/stand-in.exe', sha256: sha256Hex(executableText) },
+      files: [],
+      licences: { inspected: true, files: [{ path: 'LICENSE', title: 'the licence of the stand-in', licence: 'MIT', sha256: sha256Hex(licenceText), published: true }] },
+      provenance: 'made by the test',
+      ...overrides,
+    }
+  }
+
+  // Packs a folder with Windows' own tar, as zip or as 7-Zip, and serves it under `name`.
+  async function packed(name: string, format: 'zip' | '7zip', entries: Readonly<Record<string, string>>, members: readonly string[], stub?: Buffer): Promise<{ url: string; path: string; sha256: string; size: number }> {
+    const folder = tempFolder(`retest-windows-stand-in-${name.replaceAll(/[^a-z0-9]/gi, '-')}-`)
+    const source = join(folder, 'source')
+    for (const [path, text] of Object.entries(entries)) {
+      await mkdir(dirname(join(source, path)), { recursive: true })
+      await writeFile(join(source, path), text)
+    }
+    const packedFile = join(folder, 'packed')
+    execFileSync(tar, ['--format', format, '-c', '-f', packedFile, '-C', source, ...members])
+    const bytes = stub === undefined ? readFileSync(packedFile) : Buffer.concat([stub, readFileSync(packedFile)])
+    const path = join(folder, name)
+    await writeFile(path, bytes)
+    serveFile(`/example.invalid/${encodeURIComponent(name)}`, path)
+    return { url: `https://example.invalid/${encodeURIComponent(name)}`, path, sha256: sha256Hex(bytes), size: bytes.length }
+  }
+
+  const build = { 'stand-in/stand-in.exe': executableText, 'stand-in/locales/en-US.pak': 'words\n', 'LICENSE': licenceText }
+
+  function install(folders: CacheFolders, pin: ArchivePin, tools = systemUnpackTools) {
+    const reported: string[] = []
+    const done = installArchive({ pin, folders, mirror, signal: new AbortController().signal, tools, platform: process.platform, version: '0.0.0-test', report: (line) => reported.push(line) })
+    return { reported, done }
+  }
+
+  test('installs a zip unpacked by tar.exe, records it, and reads it back whole', async () => {
+    const archive = await packed('stand-in-2.0.0.zip', 'zip', build, ['stand-in', 'LICENSE'])
+    const { folders } = windowsHome('retest-windows-stand-in-home-')
+    const pin = pinOf(archive)
+    const result = await install(folders, pin).done
+    assert.ok(result.ok, result.ok ? '' : result.message)
+    assert.equal(result.inspection.executablePath, join(buildFolder(folders, pin), 'build', 'stand-in', 'stand-in.exe'))
+    assert.equal((await inspectBuild(pin, folders, { verify: true })).state, 'installed')
+    assert.equal(existsSync(archivePath(folders, pin)), false)
+    assert.deepEqual(readdirSync(folders.browsers).sort(), ['downloads', 'electron-2.0.0-win-x64'], 'no staging folder is left')
+  })
+
+  test('installs only the named folder of a self-extracting installer, leaving setup.exe in it', async () => {
+    const stub = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(4096, 0x90)])
+    const entries = { 'core/stand-in.exe': executableText, 'core/LICENSE': licenceText, 'setup.exe': 'the installer itself' }
+    const archive = await packed('Stand-in Setup 2.0.0.exe', '7zip', entries, ['core', 'setup.exe'], stub)
+    const { folders } = windowsHome('retest-windows-stand-in-home-')
+    const pin = pinOf(archive, {
+      archive: { format: 'exe', folder: 'core', url: archive.url, sha256: archive.sha256, size: archive.size },
+      executable: { path: 'core/stand-in.exe', sha256: sha256Hex(executableText) },
+      licences: { inspected: true, files: [{ path: 'core/LICENSE', title: 'the licence of the stand-in', licence: 'MIT', sha256: sha256Hex(licenceText), published: true }] },
+    })
+    const result = await install(folders, pin).done
+    assert.ok(result.ok, result.ok ? '' : result.message)
+    assert.deepEqual(readdirSync(join(buildFolder(folders, pin), 'build')), ['core'])
+    assert.equal((await inspectBuild(pin, folders, { verify: true })).state, 'installed')
+  })
+
+  test('refuses a zip without a licence notice the pin names, and keeps a verified archive tar.exe could not unpack', async () => {
+    const withoutLicence = await packed('no-licence-2.0.0.zip', 'zip', { 'stand-in/stand-in.exe': executableText }, ['stand-in'])
+    const first = windowsHome('retest-windows-stand-in-home-')
+    const refused = await install(first.folders, pinOf(withoutLicence)).done
+    assert.match(refused.ok ? '' : refused.message, /^The build lacks licence notices it must carry: LICENSE \(the licence of the stand-in, missing\)\./)
+    assert.deepEqual(readdirSync(join(first.folders.browsers, 'downloads')), [])
+    const kept = await packed('kept-2.0.0.zip', 'zip', build, ['stand-in', 'LICENSE'])
+    const second = windowsHome('retest-windows-stand-in-home-')
+    const pin = pinOf(kept)
+    const missingTar = join(tempFolder('retest-no-tar-'), 'tar.exe')
+    const failed = await install(second.folders, pin, { ...systemUnpackTools, tar: missingTar }).done
+    assert.equal(failed.ok ? '' : failed.message, `Unpacking on Windows needs its own tar.exe at ${missingTar}, which Windows includes from Windows 10 version 1803. The verified archive is kept at ${archivePath(second.folders, pin)} for the next attempt.`)
+    const again = install(second.folders, pin)
+    const result = await again.done
+    assert.ok(result.ok, result.ok ? '' : result.message)
+    assert.match(again.reported[0] ?? '', /^Using the archive kept from an earlier attempt, .+; its SHA-256 matches the pin\.$/)
   })
 })
 

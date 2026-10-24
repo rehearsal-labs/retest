@@ -79,7 +79,12 @@ export async function launchBrowser(
   }
 }
 
-function chromiumArguments(profile: string, headless: boolean): string[] {
+/**
+ * The command line Retest starts Chromium with, the start page last.
+ *
+ * @example chromiumArguments(profile, true).at(-1) // 'about:blank'
+ */
+export function chromiumArguments(profile: string, headless: boolean): string[] {
   return [
     '--remote-debugging-pipe',
     `--user-data-dir=${profile}`,
@@ -87,6 +92,14 @@ function chromiumArguments(profile: string, headless: boolean): string[] {
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
+    // A page whose window another window covers, or that is not in front, keeps its renderer's priority and its
+    // timers: Chromium otherwise backgrounds an occluded window's renderer and throttles a background page's timers,
+    // and a step that waits for the page's next frame or its answer waits on them. These are Chromium's switches
+    // (content/public/common/content_switches.cc); Playwright's default Chromium switches pass the same three on every
+    // platform (packages/playwright-core/src/server/chromium/chromiumSwitches.ts, Apache-2.0, read 23 October 2026).
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
     // Keeps a fresh profile out of the login keychain that the person's own Chrome uses.
     ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     'about:blank',

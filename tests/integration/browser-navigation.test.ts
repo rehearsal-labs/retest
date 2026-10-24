@@ -510,3 +510,49 @@ test('goForward onto a response with no content fails at once, naming the naviga
   assert.deepEqual(failureOf(forward.value), gaveUp(url, 'go forward to', '/other'))
   assert.ok(forward.ms < 2500, `failed after ${forward.ms} ms`)
 })
+
+// Pages whose load handler sends the browser to an address that opens no document: a download, or an answer with no
+// content. The browser gives that navigation up and the page stays, so what follows must not wait on it.
+async function serveLeavingForNothing(t: TestContext): Promise<{ url: string; asked: (path: string) => number }> {
+  const asked = new Map<string, number>()
+  const server = createServer((request, response) => {
+    const path = request.url ?? '/'
+    asked.set(path, (asked.get(path) ?? 0) + 1)
+    if (path === '/download') {
+      response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="report.txt"', 'cache-control': 'no-store' })
+      response.end('report')
+      return
+    }
+    if (path === '/empty') {
+      response.writeHead(204, { 'cache-control': 'no-store' })
+      response.end()
+      return
+    }
+    const target = path === '/to-download' ? '/download' : '/empty'
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+    response.end(`<!doctype html><title>Stays</title><button data-testid="press" onclick="this.textContent = 'pressed'">press</button><script>addEventListener('load', () => { location.href = ${JSON.stringify(target)} })</script>`)
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  const address = server.address()
+  assert.ok(address !== null && typeof address === 'object')
+  return { url: `http://127.0.0.1:${address.port}`, asked: (path) => asked.get(path) ?? 0 }
+}
+
+test('a page whose load handler opens a download or an answer with no content stays usable: the next click and look go on', async (t) => {
+  const site = await serveLeavingForNothing(t)
+  for (const [path, target] of [['/to-download', '/download'], ['/to-empty', '/empty']] as const) {
+    const page = await openPage(t, browser(), site.url)
+    assertOk(await goto(page, path))
+    const asking = performance.now() + 5000
+    while (site.asked(target) === 0 && performance.now() < asking) await delay(25)
+    assert.equal(site.asked(target), 1, `the page asked for ${target} once`)
+    assertOk(await click(page, 'press', 2000))
+    assert.equal((await observeUntil(page, 'press', (seen) => seen.text === 'pressed')).text, 'pressed', `${path}: the page took the click`)
+    assert.equal(page.url, `${site.url}${path}`, `${path}: the page stayed`)
+  }
+})

@@ -6,13 +6,13 @@ import { mkdirSync } from 'node:fs'
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
-import { buildFolder, findPin } from '../../src/browser/builds.ts'
+import { buildFolder, cacheVariable, findPin } from '../../src/browser/builds.ts'
 import { checkNativeTarget, checkScreenRecording } from '../../src/cli/install/doctor-rows.ts'
 import { chromium } from '../../src/config/define.ts'
 import { folderChecksum } from '../../src/native/executors.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
 import { tempFolder } from '../support/temp-folder.ts'
-import { temporaryCache, writeEntries } from './builds-fixtures.ts'
+import { homeEnvironment, temporaryCache, writeEntries } from './builds-fixtures.ts'
 import { loadedConfig } from './cli-fixtures.ts'
 import { fakeTools } from './native-fake-tools.ts'
 
@@ -63,7 +63,7 @@ describe("doctor's row for a native target", () => {
     const { home, folders } = temporaryCache()
     const pin = standIn('mac2')
     const options = { platform: 'mac-arm64' as const, pins: [pin] }
-    const request = { app: 'desk', subject: "{ platform: 'macos' }", target: mac, env: { HOME: home } }
+    const request = { app: 'desk', subject: "{ platform: 'macos' }", target: mac, env: homeEnvironment(home) }
     assert.deepEqual(await checkNativeTarget(request, options), { group: 'desk', subject: "{ platform: 'macos' }", ok: false, text: "WebDriverAgentMac (appium-mac2-driver) 4.3.6 is not built in Retest's cache", fix: 'Run npx retest install mac2 to build it from its pinned commit; otherwise the first run builds it.' })
     const folder = await writeBuild(folders, pin)
     const products = await folderChecksum(join(folder, 'derived/Build/Products/Debug'))
@@ -77,13 +77,13 @@ describe("doctor's row for a native target", () => {
   test('reads WebDriverAgent for an iOS simulator app, and says why there is nothing to read without a cache or a pin', async () => {
     const { home, folders } = temporaryCache()
     const pin = standIn('webdriveragent')
-    const request = { app: 'phone', subject: 'phone', target: iphone, env: { HOME: home } }
+    const request = { app: 'phone', subject: 'phone', target: iphone, env: homeEnvironment(home) }
     const folder = await writeBuild(folders, pin)
     const row = await checkNativeTarget(request, { platform: 'mac-arm64', pins: [pin] })
     assert.equal(row.ok, true)
     assert.equal(row.detail, folder)
     assert.match(row.text, /^WebDriverAgent 16\.13\.6 built in Retest's cache/)
-    assert.deepEqual(await checkNativeTarget({ ...request, env: {} }, { platform: 'mac-arm64', pins: [pin] }), { group: 'phone', subject: 'phone', ok: false, text: 'HOME is not set to an absolute folder, so Retest has no cache to read the WebDriverAgent 16.13.6 build from.' })
+    assert.deepEqual(await checkNativeTarget({ ...request, env: {} }, { platform: 'mac-arm64', pins: [pin] }), { group: 'phone', subject: 'phone', ok: false, text: `${cacheVariable()} is not set to an absolute folder, so Retest has no cache to read the WebDriverAgent 16.13.6 build from.` })
     assert.deepEqual(await checkNativeTarget(request, { platform: 'linux-x64', pins: [pin] }), { group: 'phone', subject: 'phone', ok: false, text: 'Retest builds the webdriveragent executor only on macOS arm64, and this machine is Linux x64, so the target ios-simulator of the app phone cannot start.' })
   })
 })

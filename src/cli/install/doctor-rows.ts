@@ -6,8 +6,8 @@ import type { Check } from '../doctor/checks.ts'
 import type { Environment } from '../terminal.ts'
 import { existsSync } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
-import { isAbsolute, relative, sep } from 'node:path'
-import { buildPlatform, cacheFolders, describePin, describePlatform, findPin, inspectBuild, pinnedBuilds, pinRefusal, readBundledLicence } from '../../browser/builds.ts'
+import { isAbsolute, normalize, relative, sep } from 'node:path'
+import { buildPlatform, cacheFolders, cacheVariable, describePin, describePlatform, findPin, inspectBuild, pinnedBuilds, pinRefusal, readBundledLicence } from '../../browser/builds.ts'
 import { screenRecordingAllowed, screenRecordingGrant, screenRecordingHolder } from '../../native/macos-app.ts'
 import { systemTools } from '../../native/processes.ts'
 import { retestCommand } from '../../reporters/commands.ts'
@@ -92,7 +92,8 @@ export async function checkBuilds(config: LoadedConfig, env: Environment, option
 function checkedNoticeText(pin: ArchivePin, inspection: BuildInspection): string {
   if (!pin.licences.inspected) return pin.licences.reason
   for (const file of pin.licences.files) {
-    const problem = inspection.problems.find(problem => problem.includes(file.path))
+    // A problem names the file by the pin's path, or by its path on disk, which Windows writes with backslashes.
+    const problem = inspection.problems.find(problem => problem.includes(file.path) || problem.includes(normalize(file.path)))
     if (problem !== undefined && inspection.state === 'damaged') return problem
   }
   for (const file of pin.licences.files) {
@@ -126,7 +127,7 @@ export async function checkNativeTarget(request: { readonly app: string; readonl
   const folders = cacheFolders(request.env)
   if (folders === undefined) {
     const named = findPin(engine, 'mac-arm64', pins)
-    return { ...check, ok: false, text: `HOME is not set to an absolute folder, so Retest has no cache to read the ${named === undefined ? engine : describePin(named)} build from.` }
+    return { ...check, ok: false, text: `${cacheVariable()} is not set to an absolute folder, so Retest has no cache to read the ${named === undefined ? engine : describePin(named)} build from.` }
   }
   const platform = 'platform' in options ? options.platform : buildPlatform()
   const pin = platform === undefined ? undefined : findPin(engine, platform, pins)

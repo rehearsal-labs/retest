@@ -1,7 +1,7 @@
 import type { ExecutableHost, ExecutableRequest } from '../../src/browser/executables.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { resolveExecutable, systemHost } from '../../src/browser/executables.ts'
+import { resolveExecutable, systemFirefoxPaths, systemHost, windowsPaths } from '../../src/browser/executables.ts'
 
 function host(platform: NodeJS.Platform, installed: readonly string[] = [], env: Record<string, string> = {}): ExecutableHost {
   return { platform, env: { HOME: '/Users/ada', ...env }, exists: (path) => installed.includes(path) }
@@ -113,24 +113,72 @@ describe('Chromium', () => {
   })
 })
 
-describe('platforms', () => {
-  test('Windows is not supported, and says so before looking anywhere', () => {
-    let looked = false
-    const windows: ExecutableHost = { platform: 'win32', env: {}, exists: () => (looked = true) }
-    for (const request of [{ product: 'chrome' }, { product: 'chromium', executablePath: 'C:\\chrome.exe' }] as const) {
-      assert.deepEqual(resolveExecutable(request, windows), {
-        ok: false,
-        failure: { class: 'unsupported', message: 'Retest runs browsers on macOS and Linux, not on Windows.' },
-        tried: [],
-      })
-    }
-    assert.equal(looked, false)
+describe('Windows', () => {
+  // The folders a Windows machine names, spelled as Windows spells them; a copy of the environment keeps that spelling.
+  const roots = { ProgramFiles: 'C:\\Program Files', 'ProgramFiles(x86)': 'C:\\Program Files (x86)', LOCALAPPDATA: 'C:\\Users\\ada\\AppData\\Local' }
+  function windows(installed: readonly string[] = [], env: Record<string, string> = roots): ExecutableHost {
+    return { platform: 'win32', env, exists: (path) => installed.includes(path) }
+  }
+
+  test('stable Chrome is found under Program Files, for every user, before the copy one person installed', () => {
+    const machine = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+    const own = 'C:\\Users\\ada\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe'
+    assert.deepEqual(resolveExecutable({ product: 'chrome' }, windows([machine, own])), { ok: true, path: machine })
+    assert.deepEqual(resolveExecutable({ product: 'chrome', channel: 'stable' }, windows([own])), { ok: true, path: own })
   })
 
-  test('another platform is named as it is', () => {
-    const result = resolveExecutable({ product: 'chrome' }, host('freebsd'))
+  test('Edge is found where Windows installs it, under the 32-bit Program Files, and each channel has its own folder', () => {
+    const cases: [ExecutableRequest, string][] = [
+      [{ product: 'edge' }, 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'],
+      [{ product: 'edge', channel: 'beta' }, 'C:\\Program Files (x86)\\Microsoft\\Edge Beta\\Application\\msedge.exe'],
+      [{ product: 'edge', channel: 'dev' }, 'C:\\Program Files\\Microsoft\\Edge Dev\\Application\\msedge.exe'],
+      [{ product: 'edge', channel: 'canary' }, 'C:\\Users\\ada\\AppData\\Local\\Microsoft\\Edge SxS\\Application\\msedge.exe'],
+      [{ product: 'chrome', channel: 'beta' }, 'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe'],
+      [{ product: 'chrome', channel: 'dev' }, 'C:\\Program Files (x86)\\Google\\Chrome Dev\\Application\\chrome.exe'],
+      [{ product: 'chrome', channel: 'canary' }, 'C:\\Users\\ada\\AppData\\Local\\Google\\Chrome SxS\\Application\\chrome.exe'],
+    ]
+    for (const [request, path] of cases) assert.deepEqual(resolveExecutable(request, windows([path])), { ok: true, path })
+  })
+
+  test('a browser that is not installed fails setup and names every folder that was looked in', () => {
+    const tried = ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Users\\ada\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe']
+    assert.deepEqual(resolveExecutable({ product: 'chrome' }, windows()), {
+      ok: false,
+      failure: { class: 'setup_failed', message: `Google Chrome is not installed. Retest looked in ${tried.join(', ')}. Install it, or choose another target.` },
+      tried,
+    })
+  })
+
+  test('reads the folders by any spelling of their names, skips one that is unset or relative, and says when none is set', () => {
+    const env = { PROGRAMFILES: 'D:\\Programs', 'programfiles(x86)': 'relative', LocalAppData: '' }
+    assert.deepEqual(windowsPaths('Mozilla Firefox\\firefox.exe', windows([], env)), ['D:\\Programs\\Mozilla Firefox\\firefox.exe'])
+    for (const given of [{}, env]) assert.deepEqual(resolveExecutable({ product: 'edge' }, windows([], { ...given, PROGRAMFILES: '' })), {
+      ok: false,
+      failure: { class: 'setup_failed', message: 'Retest has no folder to look for Microsoft Edge in: none of ProgramFiles, ProgramFiles(x86) and LOCALAPPDATA names an absolute folder.' },
+      tried: [],
+    })
+  })
+
+  test('a path the target names, or RETEST_CHROMIUM, wins as on any other system', () => {
+    const path = 'C:\\Browsers\\chrome-win64\\chrome.exe'
+    assert.deepEqual(resolveExecutable({ product: 'chromium', executablePath: path }, windows([path])), { ok: true, path })
+    assert.deepEqual(resolveExecutable({ product: 'chromium' }, windows([path], { ...roots, RETEST_CHROMIUM: path })), { ok: true, path })
+  })
+
+  test('Firefox is looked for where macOS and Windows install it, and nowhere on Linux', () => {
+    assert.deepEqual(systemFirefoxPaths(windows()), ['C:\\Program Files\\Mozilla Firefox\\firefox.exe', 'C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe', 'C:\\Users\\ada\\AppData\\Local\\Mozilla Firefox\\firefox.exe'])
+    assert.deepEqual(systemFirefoxPaths(host('darwin')), ['/Applications/Firefox.app/Contents/MacOS/firefox'])
+    assert.deepEqual(systemFirefoxPaths(host('linux')), [])
+  })
+})
+
+describe('platforms', () => {
+  test('a platform Retest runs no browser on is named as it is, before anything is looked for', () => {
+    let looked = false
+    const result = resolveExecutable({ product: 'chrome' }, { platform: 'freebsd', env: {}, exists: () => (looked = true) })
     assert.ok(!result.ok)
-    assert.equal(result.failure.message, 'Retest runs browsers on macOS and Linux, not on freebsd.')
+    assert.deepEqual(result.failure, { class: 'unsupported', message: 'Retest runs browsers on macOS, Linux and Windows, not on freebsd.' })
+    assert.equal(looked, false)
   })
 
   test('the system host reads this machine', () => {

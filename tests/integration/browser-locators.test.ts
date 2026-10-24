@@ -10,6 +10,7 @@ import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { observedItemLimit } from '../../src/protocol/commands.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import {
   assertOk,
   awaitFirstLook,
@@ -37,11 +38,22 @@ const browser = sharedBrowser()
 // Cases another engine ends otherwise assert through this, which holds Chrome's outcome or the engine's declared one.
 const engineCase = engineExpectations('browser-locators')
 
-async function locatorsPage(t: TestContext): Promise<OwnedPage> {
+type Opener = (t: TestContext, baseUrl: string) => Promise<OwnedPage>
+
+async function locatorsPage(t: TestContext, open: Opener = (each, baseUrl) => openPage(each, browser(), baseUrl)): Promise<OwnedPage> {
   const app = await openApp(t)
-  const page = await openPage(t, browser(), app.url)
+  const page = await open(t, app.url)
   assertOk(await goto(page, '/locators'))
   await awaitFirstLook(page, byRole('heading', 'Locators'))
+  return page
+}
+
+// The shared browser's first page, opened within the budget a run gives opening a page. A fresh Firefox on the Windows
+// runner took longer than the harness's ten seconds to open its first page (run 39869391983); every later page opens
+// within them.
+async function firstPage(t: TestContext, baseUrl: string): Promise<OwnedPage> {
+  const page = await browser().newPage({ baseUrl }, defaultTimeouts.setup)
+  t.after(() => page.dispose(2000))
   return page
 }
 
@@ -50,7 +62,7 @@ async function texts(page: OwnedPage, locator: LocatorRecipe): Promise<string[]>
 }
 
 test('role finds a button by the name Chrome computes from its content, aria-label, aria-labelledby or title', async (t) => {
-  const page = await locatorsPage(t)
+  const page = await locatorsPage(t, firstPage)
   assert.deepEqual(await texts(page, byRole('button', 'Save')), ['Save'])
   assert.deepEqual(await texts(page, byRole('button', 'Close dialog')), ['×'])
   assert.deepEqual(await texts(page, byRole('button', 'Archive task')), ['archive'])

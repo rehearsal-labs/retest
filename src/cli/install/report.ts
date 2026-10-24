@@ -32,7 +32,10 @@ const licenceNames: Readonly<Record<BuildEngine, string>> = {
 
 /** The project's licence names; component terms remain in the full notices and JSON pin. */
 export function licenceSummary(pin: BuildPin): string | undefined {
-  return pin.licences.inspected && pin.licences.files.length > 0 ? `${licenceNames[pin.engine]}, notices kept with the build` : undefined
+  if (!pin.licences.inspected || pin.licences.files.length === 0) return undefined
+  // Chrome for Testing carries Google's Widevine module on macOS and Linux, and not on Windows.
+  const names = pin.engine === 'chromium' && !pin.licences.files.some((file) => file.licence === 'LicenseRef-Widevine') ? 'BSD' : licenceNames[pin.engine]
+  return `${names}, notices kept with the build`
 }
 
 /** The one notice message printed for each engine named in an install. */
@@ -76,10 +79,10 @@ export function mirrorProblem(mirror: string): string | undefined {
  */
 export function describeResult(engine: BuildEngine, result: InstallResult, style: Style): string {
   const indent = ' '.repeat(4 + engineColumn)
-  if (!result.ok && result.notices !== undefined) return [`  ${style.red('✗')} ${engine.padEnd(engineColumn)}${result.notices.lead}`, ...result.notices.files.map((file) => `${indent}${file.path}, ${file.title}`), ''].join('\n')
-  if (!result.ok) return `  ${style.red('✗')} ${engine.padEnd(engineColumn)}${result.message}\n`
+  if (!result.ok && result.notices !== undefined) return [`  ${style.red(style.marks.failed)} ${engine.padEnd(engineColumn)}${result.notices.lead}`, ...result.notices.files.map((file) => `${indent}${file.path}, ${file.title}`), ''].join('\n')
+  if (!result.ok) return `  ${style.red(style.marks.failed)} ${engine.padEnd(engineColumn)}${result.message}\n`
   const { inspection } = result
-  const lines = [`  ${style.green('✓')} ${engine.padEnd(engineColumn)}${describePin(inspection.pin)} ${result.action === 'installed' ? 'installed' : 'was already installed'}`]
+  const lines = [`  ${style.green(style.marks.passed)} ${engine.padEnd(engineColumn)}${describePin(inspection.pin)} ${result.action === 'installed' ? 'installed' : 'was already installed'}`]
   if (inspection.executablePath !== undefined) lines.push(`${indent}${inspection.executablePath}`)
   else lines.push(`${indent}${inspection.folder}`)
   if (inspection.sha256 !== undefined) lines.push(`${indent}${style.dim(`${inspection.pin.kind === 'archive' ? 'archive' : 'products'} SHA-256 ${inspection.sha256}`)}`)
@@ -114,16 +117,16 @@ export function renderInspections(report: InspectionReport): string {
     const head = `  ${pin.engine.padEnd(engineColumn)}${describePin(pin).padEnd(titleWidth)}`
     const refusal = pinRefusal(pin)
     if (inspection.state === 'installed') {
-      lines.push(`${head}${style.green('✓')} installed${inspection.sha256 === undefined ? '' : style.dim(` · ${pin.kind === 'archive' ? 'archive' : 'products'} SHA-256 ${inspection.sha256}`)}`)
+      lines.push(`${head}${style.green(style.marks.passed)} installed${inspection.sha256 === undefined ? '' : style.dim(` · ${pin.kind === 'archive' ? 'archive' : 'products'} SHA-256 ${inspection.sha256}`)}`)
       lines.push(`${indent}${inspection.executablePath ?? inspection.folder}`)
     } else if (inspection.state === 'damaged') {
       // Only a pin `retest install` installs is ever damaged, so running it again is a fix it accepts.
-      lines.push(`${head}${style.red('✗')} not as recorded in ${inspection.folder}`)
+      lines.push(`${head}${style.red(style.marks.failed)} not as recorded in ${inspection.folder}`)
       for (const problem of inspection.problems) lines.push(`${indent}${problem}`)
       lines.push(`${indent}Remove the folder and run ${retestCommand} install ${pin.engine} again.`)
     } else if (inspection.state === 'unverifiable') {
       // Nothing in such a folder was read, since no install of Retest's put it there to check against the pin.
-      lines.push(`${head}${style.red('✗')} not installed by Retest, and nothing in ${inspection.folder} was checked`)
+      lines.push(`${head}${style.red(style.marks.failed)} not installed by Retest, and nothing in ${inspection.folder} was checked`)
       lines.push(`${indent}Remove the folder.`)
       if (refusal !== undefined) lines.push(...refusalLines(pin.engine, refusal, indent, style))
     } else {

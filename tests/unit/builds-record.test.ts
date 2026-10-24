@@ -8,8 +8,11 @@ import { afterEach, beforeEach, describe, test } from 'node:test'
 import { buildFolder, findPin, inspectBuild, inspectBuilds, installedExecutable, installedExecutablePath, readInstalledRecord, recordFile, treeFolder } from '../../src/browser/builds.ts'
 import { folderChecksum } from '../../src/native/executors.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
-import { installStandIn, standInLicence, standInPin, temporaryCache, writeEntries } from './builds-fixtures.ts'
+import { escapePattern, homeEnvironment, installStandIn, standInLicence, standInPin, temporaryCache, writeEntries } from './builds-fixtures.ts'
+
+const noFifos = unixOnly('a Windows file system has no FIFOs')
 
 // Every inspection reads files only. The global fetch is replaced by one that fails the test, so a reading that
 // reached for the network would show here.
@@ -76,17 +79,19 @@ describe('inspecting the cache', () => {
     assert.equal((await inspectBuild(pin, folders, { verify: true })).state, 'installed')
   })
 
-  const breaks: [string, (folder: string) => Promise<void>, RegExp][] = [
+  // A problem names a file by its path on disk, written as this system writes it.
+  const licencePath = escapePattern(join('build', 'LICENSE'))
+  const breaks: [string, (folder: string) => Promise<void>, RegExp, (string | false)?][] = [
     ['a changed executable', (folder) => writeFile(join(folder, 'build/Stand-in.app/Contents/MacOS/stand-in'), '#!/bin/sh\necho changed\n'), /stand-in has SHA-256 [0-9a-f]{64}, not the [0-9a-f]{64} recorded at install\./],
-    ['an executable that cannot run', (folder) => chmod(join(folder, 'build/Stand-in.app/Contents/MacOS/stand-in'), 0o644), /stand-in cannot be executed\./],
-    ['a licence file removed', (folder) => rm(join(folder, 'build/LICENSE')), /build\/LICENSE is missing\./],
-    ['a changed licence file', (folder) => writeFile(join(folder, 'build/LICENSE'), 'another licence\n'), /build\/LICENSE has SHA-256/],
+    ['an executable that cannot run', (folder) => chmod(join(folder, 'build/Stand-in.app/Contents/MacOS/stand-in'), 0o644), /stand-in cannot be executed\./, unixOnly('a Windows file has no execute bits to take away')],
+    ['a licence file removed', (folder) => rm(join(folder, 'build/LICENSE')), new RegExp(`${licencePath} is missing\\.`)],
+    ['a changed licence file', (folder) => writeFile(join(folder, 'build/LICENSE'), 'another licence\n'), new RegExp(`${licencePath} has SHA-256`)],
     ['a pinned file removed', (folder) => rm(join(folder, 'build/protocol.json')), /protocol\.json is missing\./],
     ['no record', (folder) => rm(join(folder, recordFile)), /holds no build\.json, so nothing records what is in it\./],
     ['an unreadable record', (folder) => writeFile(join(folder, recordFile), '[]'), /Its build\.json cannot be read: it is not a record retest install wrote/],
   ]
-  for (const [what, damage, problem] of breaks) {
-    test(`${what} makes the build damaged, and says what`, async () => {
+  for (const [what, damage, problem, skip = false] of breaks) {
+    test(`${what} makes the build damaged, and says what`, { skip }, async () => {
       const { folders } = temporaryCache()
       const pin = standInPin({ sha256: sha256Hex('archive') })
       const { folder } = await installStandIn(folders, pin)
@@ -143,9 +148,9 @@ describe('inspecting the cache', () => {
     const { home, folders } = temporaryCache()
     const pin = standInPin({ sha256: sha256Hex('archive') })
     const options = { platform: 'mac-arm64' as const, pins: [pin] }
-    assert.equal(await installedExecutable('electron', { HOME: home }, options), undefined)
+    assert.equal(await installedExecutable('electron', homeEnvironment(home), options), undefined)
     const { folder } = await installStandIn(folders, pin)
-    const env = { HOME: home }
+    const env = homeEnvironment(home)
     assert.equal(await installedExecutable('electron', env, options), installedExecutablePath(folder, pin))
     assert.equal(await installedExecutable('electron', {}, options), undefined, 'without a home folder there is no cache')
     assert.equal(await installedExecutable('firefox', env, options), undefined, 'an engine with no pin has no build')
@@ -168,7 +173,7 @@ describe('what inspection holds against the pin, not the record', () => {
       assert.equal(inspection.sha256, undefined)
       assert.match(inspection.problems.join('\n'), new RegExp(`^Retest does not install Stand-in 1\\.0\\.0, so nothing in .+ was installed or checked by Retest: No checksum is pinned for the archive`))
     }
-    assert.equal(await installedExecutable('electron', { HOME: home }, { platform: 'mac-arm64', pins: [unpinned] }), undefined, 'its executable is never handed to a run')
+    assert.equal(await installedExecutable('electron', homeEnvironment(home), { platform: 'mac-arm64', pins: [unpinned] }), undefined, 'its executable is never handed to a run')
     const withoutNotices = standInPin({ sha256: sha256Hex('archive') }, { licences: { inspected: true, files: [{ path: 'LICENSE', title: 'the licence of the stand-in', licence: 'MIT', sha256: sha256Hex(standInLicence), published: false }] } })
     assert.equal((await inspectBuild(withoutNotices, folders)).state, 'unverifiable', 'nor is one published without its notices')
     await rm(join(folder, recordFile))
@@ -194,7 +199,7 @@ describe('what inspection holds against the pin, not the record', () => {
     assert.equal(verified.state, 'damaged')
   })
 
-  test('a full check finds a file given a set-id bit and a FIFO put into the build, which the tree checksum passes over', async () => {
+  test('a full check finds a file given a set-id bit and a FIFO put into the build, which the tree checksum passes over', { skip: unixOnly('a Windows file system has no FIFOs or set-id bits') }, async () => {
     const { folders } = temporaryCache()
     const pin = standInPin({ sha256: sha256Hex('archive') })
     const { folder } = await installStandIn(folders, pin)
@@ -211,7 +216,7 @@ describe('what inspection holds against the pin, not the record', () => {
     assert.deepEqual(fifo.problems, ['It holds entries that are not files, folders or links: Stand-in.app/Contents/Resources/pipe (a FIFO).'])
   })
 
-  test('a FIFO where a licence belongs makes the build damaged at once, without waiting on it', { timeout: 10_000 }, async () => {
+  test('a FIFO where a licence belongs makes the build damaged at once, without waiting on it', { timeout: 10_000, skip: noFifos }, async () => {
     const { home, folders } = temporaryCache()
     const pin = standInPin({ sha256: sha256Hex('archive') })
     const { folder } = await installStandIn(folders, pin)
@@ -221,7 +226,7 @@ describe('what inspection holds against the pin, not the record', () => {
     const inspection = await inspectBuild(pin, folders)
     assert.equal(inspection.state, 'damaged')
     assert.deepEqual(inspection.problems, [`${licence} is a FIFO, not a file.`])
-    assert.equal(await installedExecutable('electron', { HOME: home }, { platform: 'mac-arm64', pins: [pin] }), undefined)
+    assert.equal(await installedExecutable('electron', homeEnvironment(home), { platform: 'mac-arm64', pins: [pin] }), undefined)
   })
 
   test('a link put where a pinned file was is never followed, even to a file with the same bytes', async () => {
@@ -258,7 +263,7 @@ describe('what inspection holds against the pin, not the record', () => {
     assert.match(oversized.problems.join('\n'), /^Its build\.json cannot be read: it is \d+ bytes, more than the 1048576 a record Retest writes may take\.$/)
   })
 
-  test('a FIFO where the record belongs makes the build damaged at once, without waiting on it', { timeout: 10_000 }, async () => {
+  test('a FIFO where the record belongs makes the build damaged at once, without waiting on it', { timeout: 10_000, skip: noFifos }, async () => {
     const { home, folders } = temporaryCache()
     const pin = standInPin({ sha256: sha256Hex('archive') })
     const { folder } = await installStandIn(folders, pin)
@@ -267,7 +272,7 @@ describe('what inspection holds against the pin, not the record', () => {
     const inspection = await inspectBuild(pin, folders)
     assert.equal(inspection.state, 'damaged')
     assert.deepEqual(inspection.problems, ['Its build.json cannot be read: it is a FIFO, not a file.'])
-    assert.equal(await installedExecutable('electron', { HOME: home }, { platform: 'mac-arm64', pins: [pin] }), undefined)
+    assert.equal(await installedExecutable('electron', homeEnvironment(home), { platform: 'mac-arm64', pins: [pin] }), undefined)
   })
 })
 
@@ -344,7 +349,7 @@ describe('inspecting a native executor build', () => {
     assert.match((await inspectBuild(pin, products.folders, { verify: true })).problems.join('\n'), /Its products at .+ read as [0-9a-f]{64}, not the recorded [0-9a-f]{64}\./)
   })
 
-  test('is damaged at once by a link or a FIFO where its record belongs, never following the one or waiting on the other', { timeout: 10_000 }, async () => {
+  test('is damaged at once by a link where its record belongs, never following it', async () => {
     const linked = temporaryCache()
     const written = await writeExecutorBuild(linked.folders)
     const elsewhere = join(tempFolder('retest-elsewhere-'), 'build.json')
@@ -353,6 +358,9 @@ describe('inspecting a native executor build', () => {
     const link = await inspectBuild(pin, linked.folders)
     assert.equal(link.state, 'damaged')
     assert.deepEqual(link.problems, ['Its build.json cannot be read: it is a link, not a file.'])
+  })
+
+  test('is damaged at once by a FIFO where its record belongs, never waiting on it', { timeout: 10_000, skip: noFifos }, async () => {
     const piped = temporaryCache()
     const { folder } = await writeExecutorBuild(piped.folders)
     await rm(join(folder, 'build.json'))

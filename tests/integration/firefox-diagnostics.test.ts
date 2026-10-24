@@ -10,8 +10,10 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { readBidi } from '../../src/browser/firefox/bidi-client.ts'
 import { parseBidiMessage } from '../../src/browser/firefox/bidi-message.ts'
+import { firefoxPlatformProblem, testedFirefox } from '../../src/browser/firefox/executable.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { FirefoxPage } from '../../src/browser/firefox/page.ts'
+import { subscribedSchema, unsubscribeParameters } from '../../src/browser/firefox/subscriptions.ts'
 import { AttemptDiagnostics } from '../../src/diagnostics/attempt.ts'
 import { firefoxConsoleUnavailable } from '../../src/diagnostics/firefox-collector.ts'
 import { defaultDiagnosticsPolicy } from '../../src/diagnostics/policy.ts'
@@ -23,7 +25,7 @@ import { firefoxPath, testFirefoxRoute } from './engines.ts'
 // Network capture on the real Firefox, alone: a page's requests through the attempt that owns its capture, with the
 // console kind unavailable, and the page's own getter on a logged object never run by Retest's capture.
 
-const skip = process.platform === 'darwin' && process.arch === 'arm64' ? false : 'Firefox requires macOS on Apple silicon'
+const skip = firefoxPlatformProblem() ?? false
 const secret = 'kestrel-4417-orchid'
 
 type Site = { url: string; refused: string; hits: (path: string) => number }
@@ -200,7 +202,7 @@ class ConsoleProbeSocket extends WebSocket {
   }
 }
 
-test('Firefox 133 console serialization runs logged enumerable getters before a primitive filter could see the entry, and log subscription depth options do not prevent it', { skip }, async (t) => {
+test('Firefox console serialization runs logged enumerable getters before a primitive filter could see the entry, and log subscription depth options do not prevent it', { skip }, async (t) => {
   const folder = await probeFolder()
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'text/html' })
@@ -228,8 +230,9 @@ test('Firefox 133 console serialization runs logged enumerable getters before a 
   let socket: ConsoleProbeSocket | undefined
   const browser = await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), headless: true, folderRoot: folder, logFile: join(folder, 'browser.log') }, setupMs, (url) => { socket = new ConsoleProbeSocket(url); return socket })
   t.after(async () => { await browser.close(closeMs); await rm(folder, { recursive: true, force: true }) })
-  assert.equal(browser.version, '133.0.3', 'the refusal is verified against the pinned Firefox')
-  assert.equal(browser.buildId, '20241209150345', 'the serialization evidence belongs to the pinned build')
+  const tested = testedFirefox()
+  assert.equal(browser.version, tested.version, 'the refusal is verified against the pinned Firefox')
+  assert.equal(browser.buildId, tested.buildId, 'the serialization evidence belongs to the pinned build')
   assert.ok(socket !== undefined)
   const wire = socket
   const empty = s.object({})
@@ -250,7 +253,7 @@ test('Firefox 133 console serialization runs logged enumerable getters before a 
           const page = await browser.newPage({ baseUrl }, setupMs)
           try {
             assert.ok(page instanceof FirefoxPage, 'the probe uses the actual Firefox browsing context')
-            if (mode.events.length > 0) await wire.command('session.subscribe', { events: mode.events, contexts: [page.context], ...mode.options }, empty)
+            const subscribed = mode.events.length > 0 ? await wire.command('session.subscribe', { events: mode.events, contexts: [page.context], ...mode.options }, subscribedSchema) : undefined
             assert.ok((await page.execute({ kind: 'goto', url: '/' }, setupMs)).ok)
             wire.entries.length = 0
             const target = { context: page.context }
@@ -271,7 +274,7 @@ test('Firefox 133 console serialization runs logged enumerable getters before a 
               assert.deepEqual(primitiveEntries, [], 'discarding the object entry did not prevent its already-observed getter mutation')
             }
             assert.equal(wire.entries.length, logging ? 1 : 0)
-            if (mode.events.length > 0) await wire.command('session.unsubscribe', { events: mode.events, contexts: [page.context] }, empty)
+            if (subscribed !== undefined) await wire.command('session.unsubscribe', unsubscribeParameters({ id: subscribed.subscription, events: mode.events, contexts: [page.context] }), empty)
           } finally { await page.dispose(closeMs) }
         })
       }

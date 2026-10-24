@@ -62,7 +62,7 @@ import { explainStartFailure } from './start-failure.ts'
 
 /** How to launch an Electron app. Every path is absolute. */
 export type ElectronLaunchOptions = {
-  /** The Electron binary, inside Electron.app on macOS. */
+  /** The Electron binary, inside Electron.app on macOS, and electron.exe on Windows. */
   readonly executablePath: string
   /** The app's folder, which holds its package.json, or its entry file. */
   readonly appPath: string
@@ -133,7 +133,8 @@ const launchTimeoutMs = 30_000
 const runAsNode = 'ELECTRON_RUN_AS_NODE'
 // Electron's own logging, which would print the windows' console lines and more into the app's output unredacted.
 const loggingVariables = ['ELECTRON_ENABLE_LOGGING', 'ELECTRON_LOG_FILE', 'ELECTRON_DEBUG_NOTIFICATIONS', 'ELECTRON_LOG_ASAR_READS', 'ELECTRON_ENABLE_STACK_DUMPING']
-const giveBinary = 'Give the Electron binary, inside Electron.app on macOS: Electron.app/Contents/MacOS/Electron.'
+// Electron's own build names its binary Electron inside Electron.app on macOS, and electron.exe on Windows.
+const giveBinary = process.platform === 'win32' ? "Give the Electron binary: electron.exe in Electron's own build." : 'Give the Electron binary, inside Electron.app on macOS: Electron.app/Contents/MacOS/Electron.'
 
 const targetInfoSchema = s.object({ targetId: s.string(), type: s.string(), browserContextId: s.optional(s.string()) })
 const targetsSchema = s.object({ targetInfos: s.array(targetInfoSchema) })
@@ -476,8 +477,10 @@ class ElectronApp implements ElectronRuntime {
   async #close(timeoutMs: number): Promise<void> {
     this.#closeRequested = true
     const graceMs = Math.max(0, Math.min(closeGraceMs, timeoutMs - closeGraceMs))
-    // The app's helpers are read before its pipe closes, without holding the thread, within the allowance `stop` has.
-    const ownershipDeadline = new Deadline(graceMs + 2 * closeGraceMs)
+    // The app's helpers are read before its pipe closes, without holding the thread. The caller's cleanup deadline
+    // bounds the confirmation of the app's end, as it does Chrome's; a short one keeps `stop`'s own allowance.
+    const deadline = new Deadline(timeoutMs)
+    const ownershipDeadline = deadline.budgetMs < graceMs + 2 * closeGraceMs ? new Deadline(graceMs + 2 * closeGraceMs) : deadline
     await this.#process.recordDescendantsNow(ownershipDeadline)
     const problems: string[] = []
     try { this.#connection.close() }
