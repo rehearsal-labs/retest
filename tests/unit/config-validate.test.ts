@@ -1,5 +1,6 @@
 import type { LoadedConfig } from '../../src/config/loaded.ts'
 import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { app, chrome, chromium, defineConfig, edge, env } from '../../src/config/define.ts'
 import { validateConfig } from '../../src/config/validate.ts'
@@ -30,7 +31,7 @@ const waiting = { signal: new AbortController().signal }
 describe('validateConfig: what it reads', () => {
   test('a target on its own is an app with one target, named after its browser', () => {
     const config = loaded({ apps: { web: { browser: 'chromium' } } })
-    assert.equal(config.file, path)
+    assert.equal(config.file, resolve(path))
     assert.equal(config.defaultApp, 'web')
     assert.deepEqual([...config.apps.keys()], ['web'])
     const only = config.apps.get('web')
@@ -63,11 +64,11 @@ describe('validateConfig: what it reads', () => {
     )
     const webApp = config.apps.get('web')
     assert.equal(webApp?.baseUrl, 'http://127.0.0.1:4173')
-    assert.deepEqual(webApp?.start, { command: 'npm run dev', ready: 'http://127.0.0.1:4173/health', cwd: '/work/site', timeoutMs: 30_000 })
-    assert.deepEqual(webApp?.targets.get('local'), { name: 'local', headless: false, browser: 'chromium', executablePath: '/browsers/chrome' })
+    assert.deepEqual(webApp?.start, { command: 'npm run dev', ready: 'http://127.0.0.1:4173/health', cwd: resolve('/work/site'), timeoutMs: 30_000 })
+    assert.deepEqual(webApp?.targets.get('local'), { name: 'local', headless: false, browser: 'chromium', executablePath: resolve('/browsers/chrome') })
     assert.deepEqual(webApp?.targets.get('beta'), { name: 'beta', headless: true, browser: 'chrome', channel: 'beta' })
     assert.deepEqual(webApp?.targets.get('edge'), { name: 'edge', headless: true, browser: 'edge', channel: 'stable' })
-    assert.deepEqual(config.apps.get('phone')?.start, { command: 'npm run mobile', ready: 'https://127.0.0.1:4200', cwd: '/work' })
+    assert.deepEqual(config.apps.get('phone')?.start, { command: 'npm run mobile', ready: 'https://127.0.0.1:4200', cwd: resolve('/work') })
     assert.equal(config.apps.get('phone')?.targets.get('chrome')?.emulate, 'Pixel 9')
     assert.deepEqual(config.apps.get('tablet')?.targets.get('edge')?.emulate, {
       viewport: { width: 800, height: 1280 },

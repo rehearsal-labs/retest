@@ -40,7 +40,7 @@ import {
 import { countHostChecks } from './host-checks.ts'
 import { renderCard } from './human-card.ts'
 import { RunRecord, type EventOfType, type TestRecord } from './run-record.ts'
-import { createStyle, visibleLength, type Style, type Writer } from './style.ts'
+import { createStyle, visibleLength, type Marks, type Style, type Writer } from './style.ts'
 import {
   acrossTargets,
   describeBrowser,
@@ -56,6 +56,8 @@ export type HumanReporterOptions = {
   stdout: Writer
   stderr: Writer
   color: boolean
+  /** The marks the terminal draws for a pass and a failure; the glyphs when absent. */
+  marks?: Marks
   /** The run folder as the person gave it, used in printed paths and commands. */
   runFolder: string
 }
@@ -70,7 +72,7 @@ export type HumanReporter = Reporter & { onOutput(output: ChildOutput): void }
  * @example runFiles(options, [createHumanReporter({ stdout, stderr, color: true, runFolder })])
  */
 export function createHumanReporter(options: HumanReporterOptions): HumanReporter {
-  const style = createStyle(options.color)
+  const style = createStyle(options.color, options.marks)
   const record = new RunRecord()
   const echo = createChildEcho({ stdout: options.stdout, stderr: options.stderr, style })
   const write = (text: string): void => {
@@ -114,7 +116,7 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
           return
         case 'app.failed':
           head()
-          write(`  ${style.red('✗')} ${event.app}  ${style.dim(describeAppEvent(event))}\n`)
+          write(`  ${style.red(style.marks.failed)} ${event.app}  ${style.dim(describeAppEvent(event))}\n`)
           return
         case 'collection.completed':
           head()
@@ -122,11 +124,11 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
           return
         case 'collection.failed':
           head()
-          write(`\n  ${style.red('✗')} ${style.bold(event.file)}  ${style.dim(describeFileProblem('collection'))}\n`)
+          write(`\n  ${style.red(style.marks.failed)} ${style.bold(event.file)}  ${style.dim(describeFileProblem('collection'))}\n`)
           return
         case 'file.failed':
           head()
-          write(`  ${style.red('✗')} ${style.bold(event.file)}  ${style.dim(describeFileProblem('process'))}\n`)
+          write(`  ${style.red(style.marks.failed)} ${style.bold(event.file)}  ${style.dim(describeFileProblem('process'))}\n`)
           return
         case 'test.finished': {
           head()
@@ -194,8 +196,8 @@ type LineContext = { style: Style; targets: RunTargets }
 function testLines(event: EventOfType<'test.finished'>, test: TestRecord | undefined, context: LineContext): string {
   const { style } = context
   const marks: Record<TestStatus, string> = {
-    passed: style.green('✓'),
-    failed: style.red('✗'),
+    passed: style.green(style.marks.passed),
+    failed: style.red(style.marks.failed),
     error: style.yellow('!'),
     not_run: style.dim('-'),
     inconclusive: style.yellow('?'),
@@ -318,10 +320,10 @@ function targetLines(summaries: readonly TargetSummary[], style: Style): string[
 
 function targetMark(summary: TargetSummary, style: Style): string {
   const { counts } = summary
-  if (counts.failed > 0) return style.red('✗')
+  if (counts.failed > 0) return style.red(style.marks.failed)
   if (counts.error > 0 || counts.notRun > 0) return style.yellow('!')
   if (counts.inconclusive > 0) return style.yellow('?')
-  return style.green('✓')
+  return style.green(style.marks.passed)
 }
 
 function fileProblemCounts(result: RunResult): string[] {

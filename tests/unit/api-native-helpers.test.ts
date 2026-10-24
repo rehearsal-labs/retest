@@ -17,6 +17,11 @@ import { appOf, inProcessRun, pageWithText } from '../support/api/in-process-run
 import { quickTimeouts } from '../support/run-harness.ts'
 import { ScriptedProcess, scriptedTest } from '../support/scripted-process.ts'
 import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // The public helpers of a native app's handle: `locator(step)`, `swipe`, the software keyboard's controls and the alert
 // answers. Each is checked twice: as the command the test file's process sends, and through the parent to a stand-in
@@ -356,7 +361,7 @@ describe('the parent routes each native helper to the native interaction layer',
     assert.deepEqual(actionsOf(events), [['action.failed', 'nativeAlert', 'not_found']])
   })
 
-  test("on macOS, a sheet's named button is clicked once inside the sheet, and a locator step clicks what its finder names", async (t) => {
+  test("on macOS, a sheet's named button is clicked once inside the sheet, and a locator step clicks what its finder names", macDriver, async (t) => {
     const { fake, events, run, app, finish } = await nativeHarness(t, 'macos', deskSignIn)
     const sheet = deleteAlert('macos')
     const remove = sheet.children?.[2]

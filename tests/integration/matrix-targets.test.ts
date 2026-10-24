@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
 import { budgets, eventsOf, exampleFile, onlyEvent, onlyTest, runRetest, scenario } from './cli-harness.ts'
 
@@ -16,16 +17,19 @@ test('duplicate targets: two matching test ids fail as ambiguous, and neither is
   assert.equal(app.submissions(), 0)
 })
 
+// The click is the first look at a page in a browser just launched. On GitHub's macOS runner no look answered within a
+// 500 ms budget, and Retest then cannot name a cover it never saw. Naming the cover is the proof, so the click has the
+// budget a run gives every action, and waits all of it for a cover that never goes.
 test('covered target: an overlay stops the click, names what covers it, and nothing is submitted', async (t) => {
   const app = await openApp(t, { mode: 'overlay' })
-  const run = await runRetest(t, { files: [scenario('save-empty')], baseUrl: app.url, timeouts: budgets({ action: 500 }) })
+  const run = await runRetest(t, { files: [scenario('save-empty')], baseUrl: app.url, timeouts: budgets({ action: defaultTimeouts.action }) })
 
   assert.equal(run.exit.code, 1)
   const failed = onlyTest(run)
   assert.deepEqual([failed.status, failed.failure?.class], ['failed', 'not_actionable'])
   const click = onlyEvent(run.events, 'action.failed')
   assert.equal(click.command, 'click')
-  assert.deepEqual(click.failure.details, { check: 'hit-target', covering: '<div>', waitedMs: 500 })
+  assert.deepEqual(click.failure.details, { check: 'hit-target', covering: '<div>', waitedMs: defaultTimeouts.action })
   assert.equal(app.submissions(), 0)
 })
 

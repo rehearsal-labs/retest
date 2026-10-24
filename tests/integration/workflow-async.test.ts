@@ -65,6 +65,13 @@ const retries = 'offers to try again after a failed load, and loads on the secon
 const spinnerStays = 'a loading line that never goes away fails at the hidden check'
 const neverArrives = 'reports that never arrive fail at the list check'
 
+// What a run's exit rests on besides its tests' verdicts, for the exit check to name: what it printed, its own
+// failure, a file's failure and the cleanups that failed.
+function whyExit(run: FinishedRun): string {
+  const files = run.result?.files.flatMap((each) => [each.failure?.message, ...each.tests.flatMap((test) => (test.cleanupFailures ?? []).map((cleanup) => cleanup.message))]) ?? []
+  return [run.stderr, run.result?.failure?.message, ...files].filter((line) => line !== undefined && line !== '').join('\n')
+}
+
 // The failed assertion of a test looked again for its whole budget before it gave up.
 function assertLookedForItsBudget(run: FinishedRun, name: string): void {
   const { testId } = testNamed(run, name)
@@ -83,15 +90,15 @@ test('workflow family 10: checks wait for late data, a click waits for its butto
     [file]: tests,
   })
   const run = await runProject(t, root, { timeouts: budgets({ assertion: assertionMs }), env: { WORKFLOW_APP_URL: app.url } })
-  assert.equal(run.exit.code, 1, run.stderr)
+  assert.equal(run.exit.code, 1, whyExit(run))
 
   // F10.1: the list check passed only after looking again while the reports were on their way.
-  assert.equal(testNamed(run, loads).status, 'passed')
+  assert.equal(testNamed(run, loads).status, 'passed', testNamed(run, loads).failure?.message)
   const listed = eventsOf(run.events, 'assertion.passed').find((event) => event.testId === testNamed(run, loads).testId && event.matcher === 'toHaveText')
   assert.ok((listed?.attempts ?? 0) > 1, `the list check looked ${listed?.attempts} times`)
 
   // F10.2: Export was checked enabled once the reports were in, clicked once, and its two states each checked.
-  assert.equal(testNamed(run, exports).status, 'passed')
+  assert.equal(testNamed(run, exports).status, 'passed', testNamed(run, exports).failure?.message)
   const exportId = testNamed(run, exports).testId
   const clicks = eventsOf(run.events, 'action.completed').filter((event) => event.testId === exportId && event.command === 'click')
   assert.equal(clicks.length, 1)
@@ -99,7 +106,7 @@ test('workflow family 10: checks wait for late data, a click waits for its butto
   assert.equal(enabled?.judgedBy, 'parent', 'the parent judged the enabled check on its own look')
 
   // F10.3: the first answer was an error the page showed, and the second try loaded.
-  assert.equal(testNamed(run, retries).status, 'passed')
+  assert.equal(testNamed(run, retries).status, 'passed', testNamed(run, retries).failure?.message)
 
   // F10.4: the reports arrived, but the loading line stayed for the whole budget.
   assertFailedAt(run, spinnerStays, {

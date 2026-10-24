@@ -5,7 +5,6 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 import { appLogFile } from '../../src/protocol/run-folder.ts'
 import { openApp } from './browser-harness.ts'
 import { appServerCommand, childLog, eventsOf, filesHolding, freePort, runCli, runHost, scratchFolder, testNamed, textHolds, writeProject } from './cli-harness.ts'
@@ -16,7 +15,8 @@ import { appServerCommand, childLog, eventsOf, filesHolding, freePort, runCli, r
 // secrets the page sends everywhere a page can while diagnostics capture it. Then every file of the run folder, the
 // host's output, `inspect` and the processes Retest started are checked for each value, whole and in parts.
 
-const fakeJudge = fileURLToPath(new URL('../support/fake-evaluator.ts', import.meta.url))
+// As a URL, which a module imports from on every platform; Node reads a Windows path there as a URL whose scheme is its drive.
+const fakeJudge = new URL('../support/fake-evaluator.ts', import.meta.url).href
 const file = 'tests/secrets.retest.ts'
 const name = 'sends two secrets everywhere a page can, then asks two judges'
 const refused = 'opens nothing through a proxy that refuses the connection'

@@ -6,5 +6,5 @@ import { RunStore } from '../../src/store/run-store.ts'
 const [folder] = process.argv.slice(2)
 if (folder === undefined) throw new Error('Pass the run folder.')
 const store = RunStore.create(folder)
-store.writeState(stateFile('signed-in', 'stable'), { cookies: [], origins: [] })
+await store.writeState(stateFile('signed-in', 'stable'), { cookies: [], origins: [] })
 process.stdout.write('saved\n', () => process.exit(0))

@@ -445,17 +445,28 @@ test('a click on an element that stays hidden, and a check of a checkbox that st
   const budgetMs = 60
   const early: string[] = []
   const tries = [
-    { command: { kind: 'click', locator: byTestId('hidden') }, check: 'visible' },
-    { command: { kind: 'check', locator: byTestId('covered') }, check: 'hit-target' },
+    { command: { kind: 'click', locator: byTestId('hidden') }, check: 'visible', target: "getByTestId('hidden')" },
+    { command: { kind: 'check', locator: byTestId('covered') }, check: 'hit-target', target: "getByTestId('covered')" },
   ] as const
-  for (const { command, check } of tries) {
+  // Each try ends one of two ways within its 60 ms, both at the whole budget. A look answered and the element was not
+  // ready, so the try is refused by the check it failed. Or, as once on GitHub's macOS runner, no look at the page
+  // answered within 60 ms, and Retest says the page did not answer and sent nothing. Each kind is refused at least once.
+  for (const { command, check, target } of tries) {
+    let refused = 0
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const started = performance.now()
       const result = await opened.execute(command, budgetMs)
       const tookMs = performance.now() - started
-      assert.deepEqual(result.ok ? 'done' : [result.failure.class, result.failure.details?.['check']], ['not_actionable', check], JSON.stringify(result))
+      assert.ok(!result.ok, JSON.stringify(result))
+      if (result.failure.class === 'timeout') {
+        assert.deepEqual([result.failure.message, result.failure.details?.['inputSent']], [`The page did not answer within ${budgetMs} ms while Retest tried to ${command.kind} ${target}.`, false], JSON.stringify(result))
+      } else {
+        assert.deepEqual([result.failure.class, result.failure.details?.['check']], ['not_actionable', check], JSON.stringify(result))
+        refused += 1
+      }
       if (tookMs < budgetMs) early.push(`${command.kind} ${tookMs.toFixed(3)}`)
     }
+    assert.ok(refused > 0, `${command.kind} was refused by its ${check} check at least once in 100 tries`)
   }
   assert.deepEqual(early, [], `refusals told before their ${budgetMs} ms budget had passed`)
 })

@@ -127,7 +127,7 @@ async function project(t: TestContext, file: string, tests: string, config: { sh
 function failed(run: FinishedRun, name: string): EventOf<'assertion.failed'> {
   const found = testNamed(run, name)
   const event = eventsOf(run.events, 'assertion.failed').find((each) => each.testId === found.testId)
-  assert.ok(event !== undefined, `${name} has a failed assertion`)
+  assert.ok(event !== undefined, `${name} has a failed assertion; it ended ${found.status}: ${JSON.stringify(found.failure)}`)
   return event
 }
 

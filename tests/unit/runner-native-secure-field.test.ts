@@ -3,10 +3,14 @@ import { randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { phoneSignIn } from './native-interaction-fake.ts'
 import { standInRun } from './runner-native-stand-in.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// A run of a native app: on Windows each native app is refused at its setup, by its key, before anything starts for it.
+const nativeApps = { skip: unixOnly('Windows refuses a native app at its setup, before anything starts for it') }
 
 for (const nativeWithholding of [undefined, false, true]) {
   for (const field of ['secure', 'plain', 'unreadable'] as const) {
-    test(`native ${field} entry with withholding ${nativeWithholding ?? 'default'} records its pixel branch and preserves the required failure`, async t => {
+    test(`native ${field} entry with withholding ${nativeWithholding ?? 'default'} records its pixel branch and preserves the required failure`, nativeApps, async t => {
       const value = randomBytes(18).toString('hex')
       const run = await standInRun(t, {
         configFields: `${nativeWithholding === undefined ? '' : `recording: { nativeWithholding: ${nativeWithholding} }, `}secrets: { password: env('RETEST_UNIT_PRIVATE') }, secretOrigins: { password: ['dev.retest.fixtures.taskphone'] }`,
@@ -50,7 +54,7 @@ for (const nativeWithholding of [undefined, false, true]) {
 
 for (const nativeWithholding of [undefined, true]) {
 for (const problem of ['type-changed', 'missing-value', 'unknown-input'] as const) {
-  test(`native secure ${problem} with withholding ${nativeWithholding ?? 'default'} preserves its failure and keeps the selected pixels`, async t => {
+  test(`native secure ${problem} with withholding ${nativeWithholding ?? 'default'} preserves its failure and keeps the selected pixels`, nativeApps, async t => {
     const value = randomBytes(18).toString('hex')
     const run = await standInRun(t, {
       configFields: `${nativeWithholding === undefined ? '' : 'recording: { nativeWithholding: true }, '}secrets: { password: env('RETEST_UNIT_PRIVATE') }, secretOrigins: { password: ['dev.retest.fixtures.taskphone'] }`,

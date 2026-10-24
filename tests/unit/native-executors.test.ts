@@ -10,6 +10,11 @@ import { ensureExecutorBuild, facebookBsdHeader, folderChecksum, nativePins, pin
 import { sha256Hex } from '../../src/shared/sha256.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { fakeCheckout, fakeTools } from './native-fake-tools.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // The build lock stands on the kernel lock `lockf` takes, which only macOS and the BSDs ship at /usr/bin/lockf. Every
 // case that reaches a build takes it.
@@ -153,7 +158,7 @@ for (const [name, tools, heads, message] of [
   ['a source with changed files', { dirtySource: true }, {}, /changes to tracked files/],
   ['a source with files the pinned commit does not hold', { untrackedSource: true }, {}, /holds 1 file\(s\) the pinned commit does not/],
 ] as const) {
-  test(`${name} is refused before anything is built`, async (t) => {
+  test(`${name} is refused before anything is built`, macDriver, async (t) => {
     const fake = await setUp(t, tools)
     const result = await ensure(fake, { executor: 'webdriveragent', sources: await sources(fake, heads) })
     assert.equal(!result.ok && result.failure.class, 'setup_failed')
@@ -162,7 +167,7 @@ for (const [name, tools, heads, message] of [
   })
 }
 
-test('a licence that is not the pinned text is refused', async (t) => {
+test('a licence that is not the pinned text is refused', macDriver, async (t) => {
   const fake = await setUp(t)
   const source = await sources(fake)
   await writeFile(join(source.webdriveragent, 'LICENSE'), 'another licence\n')
@@ -218,7 +223,7 @@ test('a build lock whose file is still empty, as a holder leaves it before writi
   assert.equal(await builds(fake), 0)
 })
 
-test('a user scheme of the runner\'s name in the checkout is refused, even where git ignores it', async (t) => {
+test('a user scheme of the runner\'s name in the checkout is refused, even where git ignores it', macDriver, async (t) => {
   const fake = await setUp(t)
   const source = await sources(fake)
   const schemes = join(source.mac2, 'WebDriverAgentMac', 'WebDriverAgentMac.xcodeproj', 'xcuserdata', 'someone.xcuserdatad', 'xcschemes')
@@ -229,7 +234,7 @@ test('a user scheme of the runner\'s name in the checkout is refused, even where
   assert.equal(await builds(fake), 0)
 })
 
-test('a missing checkout names the repository and the commit to clone', async (t) => {
+test('a missing checkout names the repository and the commit to clone', macDriver, async (t) => {
   const fake = await setUp(t)
   const result = await ensure(fake, { executor: 'webdriveragent', sources: { webdriveragent: join(fake.root, 'absent'), mac2: join(fake.root, 'absent-too') } })
   assert.match(!result.ok ? result.failure.message : '', /git clone https:\/\/github\.com\/appium\/WebDriverAgent .*absent && git -C .*absent checkout 9d1d17ddb59e6097ddc3324b23ca9f4174507b12/)
@@ -255,7 +260,7 @@ test('a build recorded before the pin named all its licence files gets them, pro
 
 // A record anything could have put a link or a FIFO in place of: read only as a regular file of a record's size, so
 // neither a run nor doctor can hang on it or take another file for it.
-test('the build record is read only as a regular file: a link is never followed, a FIFO never waited on', { timeout: 15_000 }, async () => {
+test('the build record is read only as a regular file: a link is never followed, a FIFO never waited on', { timeout: 15_000, ...macDriver }, async () => {
   const folder = tempFolder('retest-executor-record-')
   const record: ExecutorBuild = {
     schemaVersion: 1,

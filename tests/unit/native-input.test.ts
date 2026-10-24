@@ -4,6 +4,11 @@ import { randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { elementRoutes, ExecutorElements, executorRoutes } from '../../src/native/webdriver-client.ts'
 import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // Native input against a stand-in executor: each input sent once through the exact routes, Retest's own clear and type
 // for fill, byte for byte, an unanswered request recorded as an unknown outcome and never sent again, and a stale
@@ -29,7 +34,7 @@ test('the interaction layer adds nine exact routes to the client\'s sixteen, non
   assert.deepEqual(Object.getOwnPropertyNames(ExecutorElements.prototype).filter((name) => /value|clear/i.test(name)), [])
 })
 
-test('an iOS tap and a macOS click are one click request; each platform refuses the other\'s verb with nothing sent', async (t) => {
+test('an iOS tap and a macOS click are one click request; each platform refuses the other\'s verb with nothing sent', macDriver, async (t) => {
   const phone = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
   assert.deepEqual(await phone.interaction.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 2000), { result: { ok: true, kind: 'tap' }, input: 'sent' })
   assert.deepEqual(inputBodies(phone.app), ['click {}'])
@@ -42,7 +47,7 @@ test('an iOS tap and a macOS click are one click request; each platform refuses 
   assert.deepEqual(inputBodies(desk.app), ['click {}'])
 })
 
-test('a macOS fill is one click, Command-A and Delete as one keys request, the text as another, then a read-back, byte for byte', async (t) => {
+test('a macOS fill is one click, Command-A and Delete as one keys request, the text as another, then a read-back, byte for byte', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   app.find('account-field').text = 'old'
   assert.deepEqual(await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'account-field' }, value: 'Ada' }, 3000), { result: { ok: true, kind: 'fill' }, input: 'sent' })
@@ -89,7 +94,7 @@ test('a fill whose read-back is the field\'s placeholder cannot be verified: it 
   assert.equal(interaction.inputs.at(-1)?.readBack, undefined)
 })
 
-test('a secure field reads back as masking characters, counted and never shown; a macOS secure field is always cleared, and one that shows nothing after typing fails as unverified with the input sent', async (t) => {
+test('a secure field reads back as masking characters, counted and never shown; a macOS secure field is always cleared, and one that shows nothing after typing fails as unverified with the input sent', macDriver, async (t) => {
   const phone = await openFake(t, { platform: 'ios-simulator', screen: phoneSignIn })
   assert.equal((await phone.interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'password-field' }, value: 'hunter2-secret', secret: 'password' }, 4000)).input, 'sent')
   assert.equal(phone.interaction.inputs.at(-1)?.readBack, 'length_matched')
@@ -115,7 +120,7 @@ test('a secure field reads back as masking characters, counted and never shown; 
   assert.doesNotMatch(JSON.stringify(failed), /hunter2/)
 })
 
-test('a read-back that differs fails after the one typing, naming what the field shows, and nothing is typed again', async (t) => {
+test('a read-back that differs fails after the one typing, naming what the field shows, and nothing is typed again', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   app.behaviours.set(keys, { answer: null })
   const result = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'account-field' }, value: 'ada' }, 3000)
@@ -125,7 +130,7 @@ test('a read-back that differs fails after the one typing, naming what the field
   assert.equal(app.on(keys).length, 1)
 })
 
-test('fill takes a field, and a single-line field refuses a line break, with nothing sent', async (t) => {
+test('fill takes a field, and a single-line field refuses a line break, with nothing sent', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   const button = await interaction.dispatch({ kind: 'fill', locator: { by: 'testId', value: 'sign-in-button' }, value: 'x' }, 5000)
   assert.equal(!button.result.ok && button.result.failure.class, 'unsupported')
@@ -149,7 +154,7 @@ test('a click with no answer by its deadline is an unknown outcome in the ledger
   assert.equal(app.on(click).length, 1, 'reconciliation sends nothing to the app')
 })
 
-test('a cancel after the click went leaves its outcome unknown, takes nothing back, and sends nothing more', async (t) => {
+test('a cancel after the click went leaves its outcome unknown, takes nothing back, and sends nothing more', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   app.behaviours.set(click, { hang: true })
   interaction.onInput((sending) => {
@@ -188,7 +193,7 @@ test('an element resolved before a relaunch is refused afterwards, as the sessio
   assert.equal(app.on(click).length, 0)
 })
 
-test('press sends named keys and chords through the keys route; iOS takes text only, so a chord or a key with no text is refused', async (t) => {
+test('press sends named keys and chords through the keys route; iOS takes text only, so a chord or a key with no text is refused', macDriver, async (t) => {
   const desk = await openFake(t, { platform: 'macos', screen: deskSignIn })
   for (const key of ['Meta+A', 'Enter', 'Shift+Tab', 'ControlOrMeta+Z', 'a']) assert.equal((await desk.interaction.dispatch({ kind: 'press', key }, 2000)).input, 'sent', key)
   assert.deepEqual(inputBodies(desk.app), [
@@ -207,7 +212,7 @@ test('press sends named keys and chords through the keys route; iOS takes text o
   assert.deepEqual(inputBodies(phone.app), ['keys {"value":["\\n"]}'])
 })
 
-test('press on an element focuses a field by clicking it once, and refuses a button that lacks the focus rather than press it', async (t) => {
+test('press on an element focuses a field by clicking it once, and refuses a button that lacks the focus rather than press it', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   const button = await interaction.dispatch({ kind: 'press', locator: { by: 'testId', value: 'sign-in-button' }, key: 'Enter' }, 2000)
   assert.equal(!button.result.ok && button.result.failure.class, 'unsupported')
@@ -216,7 +221,7 @@ test('press on an element focuses a field by clicking it once, and refuses a but
   assert.deepEqual(inputBodies(app), ['click {}', 'keys {"keys":["XCUIKeyboardKeyReturn"]}'])
 })
 
-test('an iOS scroll is one touch drag through exactly the points asked, inside the element; a macOS scroll is one runner scroll', async (t) => {
+test('an iOS scroll is one touch drag through exactly the points asked, inside the element; a macOS scroll is one runner scroll', macDriver, async (t) => {
   const phone = await openFake(t, { platform: 'ios-simulator', screen: () => [{ type: 'CollectionView', identifier: 'form', frame: { x: 0, y: 100, width: 400, height: 600 } }] })
   assert.equal((await phone.interaction.dispatch({ kind: 'scroll', locator: { by: 'testId', value: 'form' }, x: 0, y: 200 }, 3000)).input, 'sent')
   assert.deepEqual(JSON.parse(phone.app.on(actions)[0]?.body ?? '{}'), { actions: [{ type: 'pointer', id: 'finger', parameters: { pointerType: 'touch' }, actions: [
@@ -257,7 +262,7 @@ test('an observe answers with the look, its id and the session that served it, a
 })
 
 
-test('press refuses a field whose click redirects keyboard focus and sends no global key', async (t) => {
+test('press refuses a field whose click redirects keyboard focus and sends no global key', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   app.find('account-field').onClick = (current) => { current.focused = current.find('password-field') }
   const pressed = await interaction.dispatch({ kind: 'press', locator: { by: 'testId', value: 'account-field' }, key: 'a' }, 2000)
@@ -292,7 +297,7 @@ test('on macOS a key with no element goes only while the app is in front, after 
   assert.deepEqual(inputBodies(app), [])
 })
 
-test('on macOS a fill sends no key once the app has left the front after its focusing click', async (t) => {
+test('on macOS a fill sends no key once the app has left the front after its focusing click', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   app.once(click, (fake) => {
     fake.inFront = false
@@ -327,7 +332,7 @@ test('a cancel made on the wrapped session directly stops the interaction sessio
   assert.equal(app.on(click).length, 0)
 })
 
-test('an element resolved before a cancel made on the wrapped session is not pressed', async (t) => {
+test('an element resolved before a cancel made on the wrapped session is not pressed', macDriver, async (t) => {
   const { app, interaction, session } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   const resolved = await interaction.resolve({ by: 'testId', value: 'sign-in-button' }, 2000)
   if (!resolved.ok) throw new Error(resolved.failure.message)
@@ -368,7 +373,7 @@ test('once a lookup learns the executor no longer knows the session, the session
 
 for (const platform of ['macos', 'ios-simulator'] as const) {
   for (const type of ['secure', 'plain', 'unreadable'] as const) {
-    test(`${platform} reads ${type} secret field type from the owned target before secret keys`, async t => {
+    test(`${platform} reads ${type} secret field type from the owned target before secret keys`, macDriver, async t => {
       const value = randomBytes(18).toString('hex')
       const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
       const field = app.find('password-field')
@@ -392,7 +397,7 @@ for (const platform of ['macos', 'ios-simulator'] as const) {
     })
   }
 
-  test(`${platform} a secure field changed to plain after typing fails its masked read-back`, async t => {
+  test(`${platform} a secure field changed to plain after typing fails its masked read-back`, macDriver, async t => {
     const value = randomBytes(18).toString('hex')
     const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
     const changeAfterTyping = (): void => {
@@ -410,7 +415,7 @@ for (const platform of ['macos', 'ios-simulator'] as const) {
     noRepeatingRoute(app)
   })
 
-  test(`${platform} a focus change to plain uses the latest type before secret keys`, async t => {
+  test(`${platform} a focus change to plain uses the latest type before secret keys`, macDriver, async t => {
     const value = randomBytes(18).toString('hex')
     const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
     const field = app.find('password-field')
@@ -424,7 +429,7 @@ for (const platform of ['macos', 'ios-simulator'] as const) {
     noRepeatingRoute(app)
   })
 
-  test(`${platform} a field made secure by focus still requires a masked read-back`, async t => {
+  test(`${platform} a field made secure by focus still requires a masked read-back`, macDriver, async t => {
     const value = randomBytes(18).toString('hex')
     const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(value, '{{password}}') })
     const field = app.find('password-field')
@@ -444,7 +449,7 @@ for (const platform of ['macos', 'ios-simulator'] as const) {
     noRepeatingRoute(app)
   })
 
-  test(`${platform} field disappearance after an unverified fill keeps capture withheld`, async t => {
+  test(`${platform} field disappearance after an unverified fill keeps capture withheld`, macDriver, async t => {
     const secretValue = randomBytes(18).toString('hex')
     const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(secretValue, '{{password}}') })
     const field = app.find('password-field')
@@ -463,7 +468,7 @@ for (const platform of ['macos', 'ios-simulator'] as const) {
     assert.deepEqual(cleared, [])
   })
 
-  test(`${platform} field disappearance without a verified identifier keeps capture withheld`, async t => {
+  test(`${platform} field disappearance without a verified identifier keeps capture withheld`, macDriver, async t => {
     const secretValue = randomBytes(18).toString('hex')
     const { app, interaction } = await openFake(t, { platform, screen: platform === 'macos' ? deskSignIn : phoneSignIn, redact: text => text.replaceAll(secretValue, '{{password}}') })
     const field = app.find('password-field')

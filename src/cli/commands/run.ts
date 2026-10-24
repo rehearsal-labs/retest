@@ -26,7 +26,7 @@ import { isContinuousIntegration, onlyInContinuousIntegration } from '../continu
 import { CliError, UsageError } from '../errors.ts'
 import { statIfPresent } from '../file-system.ts'
 import { readTestScope, selectionArguments, selectionOptions } from '../selection.ts'
-import { shouldUseColor } from '../terminal.ts'
+import { shouldUseColor, terminalMarks } from '../terminal.ts'
 
 const reporterNames = ['human', 'jsonl', 'agent', 'html'] as const
 type ReporterName = (typeof reporterNames)[number]
@@ -242,7 +242,7 @@ function createReporter(name: ReporterName, runFolder: string, dependencies: Cli
   const { stdout, stderr } = dependencies
   if (name === 'jsonl') return { reporter: createJsonlReporter({ stdout }) }
   if (name === 'agent') return { reporter: createAgentReporter({ stdout, runFolder }) }
-  const human = createHumanReporter({ stdout, stderr, color: shouldUseColor(stdout, dependencies.env), runFolder })
+  const human = createHumanReporter({ stdout, stderr, color: shouldUseColor(stdout, dependencies.env), marks: terminalMarks(stdout, dependencies.env), runFolder })
   const reporter = name === 'html' ? createHtmlReporter({ terminal: human, stdout, runFolder, directory: resolve(dependencies.cwd, runFolder) }) : human
   return { reporter, onOutput: (output) => human.onOutput(output) }
 }

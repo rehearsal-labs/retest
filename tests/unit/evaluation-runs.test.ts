@@ -1,8 +1,8 @@
 import type { EvaluationRecord, HostEvaluation } from '../../src/protocol/evaluation.ts'
 import type { Reporter } from '../../src/reporters/reporter.ts'
 import type { RetestEvent } from '../../src/protocol/events.ts'
-import type { TestResult } from '../../src/protocol/result.ts'
-import type { ProjectRecord } from '../support/project.ts'
+import type { RunResult, TestResult } from '../../src/protocol/result.ts'
+import type { ProjectRecord, ProjectRunOptions } from '../support/project.ts'
 import assert from 'node:assert/strict'
 import { getEventListeners } from 'node:events'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -12,12 +12,13 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { after, describe, test } from 'node:test'
 import { appLogFile, testId } from '../../src/protocol/run-folder.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
 import { rebuildResult } from '../../src/store/rebuild-result.ts'
 import { fakeCli } from './cli-fixtures.ts'
 import { fakeCalls, fakeSetups, releaseLate, type FakeCall } from '../support/fake-evaluator.ts'
-import { runProject, tempProject } from '../support/project.ts'
+import { runProject as runHarnessProject, tempProject } from '../support/project.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
@@ -33,6 +34,14 @@ after(() => {
 })
 
 // Suites run at once in this process, so each tags its judge and reads only the calls with its tag.
+
+// About twenty runs start together here, each collecting its files in processes of its own, so a collection waits on
+// the others: 240 to 280 ms each on a Mac, against 80 ms for a run alone. On GitHub's runners one went past the
+// harness's 5000 ms, its file failed collection, and its tests were missing from the result. No case here is about
+// collection, so every run has the budget a run gives collection by default.
+function runProject(root: string, options: ProjectRunOptions): Promise<ProjectRecord> {
+  return runHarnessProject(root, { ...options, timeouts: { collection: defaultTimeouts.collection, ...options.timeouts } })
+}
 type ConfigOptions = { tag: string; limits?: string; keyFrom?: string; timeoutMs?: number; options?: Record<string, string | number | boolean>; extra?: string }
 
 function config({ tag, limits = '', keyFrom = keyVariable, timeoutMs = 2000, options = {}, extra = '' }: ConfigOptions): string {
@@ -156,9 +165,17 @@ test('capped by the config', async () => {
 
 const allTests = (record: ProjectRecord): TestResult[] => record.result.files.flatMap((file) => file.tests)
 
+// What a run's exit code rests on besides its tests' verdicts, for an assertion on it to say: the run's own failure, a
+// file's failure, a test's cleanup failures and the evidence's state.
+function whyExit(result: RunResult): string {
+  const files = result.files.map((file) => ({ file: file.file, failure: file.failure?.message, cleanup: file.tests.flatMap((each) => (each.cleanupFailures ?? []).map((cleanup) => cleanup.message)) }))
+  return JSON.stringify({ failure: result.failure?.message, evidence: result.evidenceStatus?.state, files })
+}
+
 function named(record: ProjectRecord, name: string): TestResult {
   const found = allTests(record).find((each) => each.name === name)
-  assert.ok(found, `a test named ${name}`)
+  const files = record.result.files.map((file) => ({ file: file.file, collection: file.collection, failure: file.failure?.message, tests: file.tests.map((each) => each.name) }))
+  assert.ok(found, `a test named ${name}, in ${JSON.stringify(files)}`)
   return found
 }
 
@@ -369,12 +386,15 @@ describe('required AI checks through the parent', async () => {
 describe('the exit code of a run, for each required outcome alone', async () => {
   const root = tempProject({ 'retest.config.ts': config({ tag: 'exits' }), 'tests/outcomes.retest.ts': outcomes })
   const exits: Record<string, number> = {}
+  const reasons: string[] = []
   for (const name of ['required pass', 'required fail', 'required inconclusive', 'provider error']) {
-    exits[name] = (await runProject(root, { files: ['tests/outcomes.retest.ts'], selection: { grep: new RegExp(`^${name}$`) } })).result.exitCode
+    const { result } = await runProject(root, { files: ['tests/outcomes.retest.ts'], selection: { grep: new RegExp(`^${name}$`) } })
+    exits[name] = result.exitCode
+    reasons.push(`${name}: ${whyExit(result)}`)
   }
 
   test('pass exits 0, fail 1, and undecided or could not run 2', () => {
-    assert.deepEqual(exits, { 'required pass': 0, 'required fail': 1, 'required inconclusive': 2, 'provider error': 2 })
+    assert.deepEqual(exits, { 'required pass': 0, 'required fail': 1, 'required inconclusive': 2, 'provider error': 2 }, reasons.join('\n'))
   })
 })
 
@@ -399,7 +419,7 @@ describe('advisory AI checks', async () => {
 
   test('never change the test: every test passes and the run exits 0', () => {
     assert.deepEqual(allTests(record).map((result) => [result.name, result.status]), [['advisory pass', 'passed'], ['advisory fail', 'passed'], ['advisory inconclusive', 'passed'], ['advisory throw', 'passed']])
-    assert.equal(record.result.exitCode, 0)
+    assert.equal(record.result.exitCode, 0, whyExit(record.result))
   })
 
   test('record a warning for each check that did not pass, and no failure', () => {

@@ -1,5 +1,6 @@
 import type { RetestEvent } from '../../src/protocol/events.ts'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
@@ -145,7 +146,7 @@ describe('agent reporter with targets', () => {
         'fail tests/tasks.retest.ts:10 tasks › saves a task [web=pixel (emulated)]',
         "  check_failed toHaveText getByTestId('saved-task')",
         '  expected "Release checklist" received "Saving…" waited 5003ms for toHaveText, looked 14 times, limit 5000ms',
-        `  screenshot ${runFolder}/artifacts/tasks-saves-a-task-web-failure.png`,
+        `  screenshot ${join(runFolder, 'artifacts/tasks-saves-a-task-web-failure.png')}`,
         `next: npx retest inspect ${runFolder} --test "tests/tasks.retest.ts > tasks > saves a task" --target web=pixel --json`,
         '',
       ].join('\n'),

@@ -3,8 +3,13 @@ import { test } from 'node:test'
 import { folderChecksum } from '../../src/native/executors.ts'
 import { appNames, nativeExecutionIdentity, readAppBundle, runtimeIdentity } from '../../src/native/identity.ts'
 import { fakeAppBundle, fakeTools } from './native-fake-tools.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
-test('an app is named by the bundle id, version and build its Info.plist states, and the checksum of its bundle', async (t) => {
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
+
+test('an app is named by the bundle id, version and build its Info.plist states, and the checksum of its bundle', macDriver, async (t) => {
   const fake = await fakeTools(t)
   const appPath = await fakeAppBundle(fake.root, { platform: 'ios-simulator', name: 'TaskPhone', bundleId: 'dev.retest.fixtures.taskphone' })
   const read = await readAppBundle(appPath, 'ios-simulator', fake.tools)
@@ -14,7 +19,7 @@ test('an app is named by the bundle id, version and build its Info.plist states,
   assert.deepEqual(appNames(read.bundle), ['TaskPhone'])
 })
 
-test('an app built for another platform is refused, naming what it is built for', async (t) => {
+test('an app built for another platform is refused, naming what it is built for', macDriver, async (t) => {
   const fake = await fakeTools(t)
   const appPath = await fakeAppBundle(fake.root, { platform: 'macos', name: 'TaskDesk', bundleId: 'dev.retest.fixtures.taskdesk' })
   const read = await readAppBundle(appPath, 'macos', fake.tools)
@@ -23,7 +28,7 @@ test('an app built for another platform is refused, naming what it is built for'
   assert.equal(!wrong.ok && wrong.failure.class, 'setup_failed')
 })
 
-test('a result names the app, the system, the simulator and the executor build of the tested set', async (t) => {
+test('a result names the app, the system, the simulator and the executor build of the tested set', macDriver, async (t) => {
   const fake = await fakeTools(t)
   const appPath = await fakeAppBundle(fake.root, { platform: 'ios-simulator', name: 'TaskPhone', bundleId: 'dev.retest.fixtures.taskphone' })
   const read = await readAppBundle(appPath, 'ios-simulator', fake.tools)
@@ -41,7 +46,7 @@ test('a result names the app, the system, the simulator and the executor build o
   assert.deepEqual(runtimeIdentity(identity, [7]), { kind: 'ios-simulator', bundleId: 'dev.retest.fixtures.taskphone', appVersion: '2.1', appPath, device: 'iPhone 17', runtime: 'iOS 26.5 (23F77)', processIds: [7] })
 })
 
-test('a build taken over is named as one whose commit is not verified', async (t) => {
+test('a build taken over is named as one whose commit is not verified', macDriver, async (t) => {
   const fake = await fakeTools(t)
   const appPath = await fakeAppBundle(fake.root, { platform: 'macos', name: 'TaskDesk', bundleId: 'dev.retest.fixtures.taskdesk' })
   const read = await readAppBundle(appPath, 'macos', fake.tools)

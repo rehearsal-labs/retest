@@ -58,8 +58,10 @@ test('two apps in one test keep separate storage, get their own commands, and ea
   const run = await runProject(t, root, { timeouts: budgets({ assertion: 1000 }) })
 
   assert.equal(run.exit.code, 1, run.stderr)
-  assert.equal(testNamed(run, 'storage stays with its app').status, 'passed')
-  assert.equal(testNamed(run, 'each app takes its own commands, and two apps may act at once').status, 'passed')
+  for (const name of ['storage stays with its app', 'each app takes its own commands, and two apps may act at once']) {
+    const result = testNamed(run, name)
+    assert.equal(result.status, 'passed', `${name}: ${JSON.stringify(result.failure)}`)
+  }
   assert.equal(app.submissions(), 2)
 
   // Apps on one target share its browser process, and each announces it once.

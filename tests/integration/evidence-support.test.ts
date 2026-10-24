@@ -6,9 +6,11 @@ import assert from 'node:assert/strict'
 import { execFile, execFileSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { buildReport } from '../../src/reporters/html/build-report.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
 import { countParts } from '../../src/reporters/format.ts'
+import { readHeldProcess } from '../../src/shared/process-system.ts'
 import { rebuildRecordedResult } from '../../src/store/rebuild-result.ts'
 import { filesHolding, repositoryRoot } from './cli-harness.ts'
 
@@ -56,6 +58,16 @@ MediaProcess.prototype.record = async function(...args) {
   return path
 }
 
+/**
+ * NODE_OPTIONS that load the observation loader at `path` before anything else. Node reads an --import as a URL, and a
+ * Windows path as one whose scheme is its drive, so the loader is given as a file URL on every platform.
+ *
+ * @example env: { NODE_OPTIONS: importOption(observationLoader(observed)) }
+ */
+export function importOption(path: string): string {
+  return `--import=${pathToFileURL(path).href}`
+}
+
 export type ObservedFrame = { frameId: string; timestampUs: number; format: string; identity: RecordingIdentity; outcome: string; image: string }
 export function observations(folder: string, recording: RecordingRecord): { frames: ObservedFrame[]; ended: Ended; folder: string } {
   const root = join(folder, recording.recordingId)
@@ -65,9 +77,19 @@ export function observations(folder: string, recording: RecordingRecord): { fram
 export function decoder(command: string, args: string[], options: { maximum?: number; timeoutMs?: number } = {}): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = execFile(command, args, { encoding: 'buffer', timeout: options.timeoutMs ?? 60000, maxBuffer: options.maximum ?? 64 * 1024 * 1024 }, (error, stdout) => error === null ? resolve(stdout) : reject(error))
-    const identity = child.pid === undefined ? undefined : execFileSync('/bin/ps', ['-ww', '-o', 'lstart=,args=', '-p', String(child.pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' } }).trim()
+    const identity = child.pid === undefined ? undefined : decoderIdentity(child.pid)
     appendFileSync(join(proofRoot, 'decoder-processes.jsonl'), JSON.stringify({ pid: child.pid, command, args, identity }) + '\n')
   })
+}
+
+// The decoder as the process table shows it, for the proof's record of each one: its start and command line from ps on
+// macOS and Linux, where a child Node has not reaped stays in the table; on Windows, which has no ps, its start and
+// executable as retest-supervisor reads them. Windows shows no process that has ended, so a decoder that ended before
+// the reading, as `ffmpeg -version` does, is recorded as that.
+function decoderIdentity(pid: number): string {
+  if (process.platform !== 'win32') return execFileSync('/bin/ps', ['-ww', '-o', 'lstart=,args=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' } }).trim()
+  const read = readHeldProcess(pid)
+  return read === undefined ? 'ended before it was read' : `${read.startedAt} ${read.image ?? ''}`
 }
 
 export async function verifyVideo(run: FinishedRun, recording: RecordingRecord, observedFolder: string, reportFile: string = join(observedFolder, recording.recordingId, 'decode.json')): Promise<void> {

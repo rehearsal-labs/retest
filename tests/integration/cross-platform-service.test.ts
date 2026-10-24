@@ -3,10 +3,11 @@ import type { IncomingHttpHeaders } from 'node:http'
 import type { TestContext } from 'node:test'
 import type { RequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
 import type { TaskView } from '../../fixtures/cross-platform/service/store.ts'
+import type { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import { join } from 'node:path'
@@ -15,6 +16,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { formatRequestLine, parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
 import { ASSIGNED_ID_PATTERN, SEEDED_TASKS } from '../../fixtures/cross-platform/service/store.ts'
+import { consolesDetached, holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { within } from './browser-harness.ts'
 import { assertStdoutIsEvents, budgets, eventsOf, filesHolding, repositoryRoot, runProgram, runRetest, scratchFolder, testNamed, textHolds } from './cli-harness.ts'
@@ -51,36 +53,42 @@ type Service = {
   networkLog: string
   stdout(): string
   stderr(): string
-  /** Sends SIGTERM and waits for the exit, failing if there is none within `answerMs`. */
+  /** Asks it to stop as a person does, and waits for the exit, failing if there is none within `answerMs`. */
   stop(): Promise<Exit>
 }
 
-type ServiceStorage = { folder: string; register(child: ChildProcess): void }
+type ServiceStorage = { folder: string; register(child: ChildProcess, ownership: OwnedProcessGroup): void }
 
 type ServiceOptions = { flags?: readonly string[]; storage?: ServiceStorage }
 
 /** Stops every service using the folder before removing the files its requests can still write. */
 function serviceStorage(t: TestContext, prefix = 'retest-cross-platform-'): ServiceStorage {
   const folder = tempFolder(prefix)
-  const children: ChildProcess[] = []
+  const services: { child: ChildProcess; ownership: OwnedProcessGroup }[] = []
   t.after(async () => {
-    await Promise.all(children.map((child) => endService(child, 'the cross-platform service')))
+    // On Windows the service runs under the PowerShell that started it, so its job is ended whole first.
+    if (launchesHeldByJob) for (const { ownership } of services) assert.deepEqual(ownership.signal('SIGKILL'), [], 'the service and its launcher were ended')
+    await Promise.all(services.map(({ child }) => endService(child, 'the cross-platform service')))
     await rm(folder, { recursive: true, force: true })
   })
-  return { folder, register: (child) => children.push(child) }
+  return { folder, register: (child, ownership) => services.push({ child, ownership }) }
 }
 
 /**
- * Starts the service on a free port in a process group of its own. After the test it is ended through its own handle if
- * it is still running, and anything of its group still there fails the test by name.
+ * Starts the service on a free port in a process group of its own; on Windows through `serviceLauncher`, in a job of its
+ * own. After the test it is ended through its own handle if it is still running, and anything of its group still there
+ * fails the test by name.
  */
 async function startService(t: TestContext, options: ServiceOptions = {}): Promise<Service> {
   const storage = options.storage ?? serviceStorage(t)
   const { folder } = storage
   const networkLog = join(folder, `network-${Date.now()}.jsonl`)
   const args = ['--conditions=retest-source', serverScript, '--port', '0', '--network-log', networkLog, ...(options.flags ?? [])]
-  const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
-  storage.register(child)
+  prepareOwnedLaunch()
+  const [command, commandArgs] = serviceLauncher(args)
+  const child = spawn(command, commandArgs, { detached: consolesDetached, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const ownership = holdLaunch(child)
+  storage.register(child, ownership)
   const { pid } = child
   assert.ok(pid !== undefined, 'the service did not start')
   let stdout = ''
@@ -113,10 +121,42 @@ async function startService(t: TestContext, options: ServiceOptions = {}): Promi
     stdout: () => stdout,
     stderr: () => stderr,
     stop: () => {
-      if (exit === undefined) child.kill('SIGTERM')
-      return within(exited, answerMs, `the service did not exit within ${answerMs} ms of SIGTERM`)
+      if (exit === undefined) stopService(child, ownership)
+      return within(exited, answerMs, `the service did not exit within ${answerMs} ms of ${stopRequest}`)
     },
   }
+}
+
+// On macOS and Linux the service is node itself. On Windows a person stops it with Ctrl+C, and a program started from a
+// CI step or an SSH session inherits Ctrl+C turned off, so a service started from one would never hear it. There a
+// PowerShell on a console of its own with no window turns Ctrl+C on, starts the service on that console, which inherits
+// it on, turns it off again for itself, and ends with the service's exit code; the service's output is the PowerShell's.
+// This is how the process layer's own Ctrl+C case starts the CLI.
+function serviceLauncher(args: readonly string[]): [string, string[]] {
+  if (!launchesHeldByJob) return [process.execPath, [...args]]
+  const quoted = (text: string): string => `'"${text.replaceAll("'", "''")}"'`
+  const script = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ServiceConsole { [DllImport("kernel32.dll")] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add); }'
+[ServiceConsole]::SetConsoleCtrlHandler([IntPtr]::Zero, $false) | Out-Null
+$service = Start-Process -FilePath ${quoted(process.execPath)} -ArgumentList @(${args.map(quoted).join(', ')}) -NoNewWindow -PassThru
+# A process object reads its exit code only through a handle it took while the process ran.
+$null = $service.Handle
+[ServiceConsole]::SetConsoleCtrlHandler([IntPtr]::Zero, $true) | Out-Null
+$service.WaitForExit()
+exit $service.ExitCode`
+  return ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]]
+}
+
+// How a person stops the service: SIGTERM on macOS and Linux. Windows has no SIGTERM to send, and Node ends a process
+// it is asked to send one to; a console program is stopped there with Ctrl+C on its console, which Node gives the
+// service as SIGINT, and the process layer sends it through retest-supervisor.
+const stopRequest = launchesHeldByJob ? 'Ctrl+C' : 'SIGTERM'
+
+function stopService(child: ChildProcess, ownership: OwnedProcessGroup): void {
+  if (!launchesHeldByJob) {
+    child.kill('SIGTERM')
+    return
+  }
+  assert.deepEqual(ownership.signal('SIGINT'), [], 'Ctrl+C reached the service')
 }
 
 /** Runs the service with arguments it should refuse, and gives its exit code and stderr. */
@@ -328,7 +368,7 @@ test('signs in only the seeded accounts with their own passwords, and refuses th
 
   assert.equal((await call(service, 'POST', '/api/sign-out', { token })).status, 200)
   assert.equal((await call(service, 'GET', '/api/tasks', { token })).status, 401, 'a signed-out token opens nothing')
-  assert.deepEqual(await service.stop(), { code: 0, signal: null }, 'SIGTERM stops the service with exit 0')
+  assert.deepEqual(await service.stop(), { code: 0, signal: null }, `${stopRequest} stops the service with exit 0`)
 })
 
 test('assigns every new task an id of its own, reads and changes it by that id, and keeps the accounts apart', serviceTest, async (t) => {
@@ -631,6 +671,21 @@ test('keeps the tasks in a state file across a restart, without a credential in 
   assert.match(refused.stderr, /^The state file .*broken\.json is not one this service wrote: format and version must be/)
 })
 
+// The state file's folder made one the service cannot write into, with the undo. On macOS and Linux its mode refuses
+// writing. A Windows folder has no such mode, and an administrator, as a CI runner is, wrote into a folder whose access
+// list denied it (measured on the test VM, whose token holds the backup and restore privileges enabled); there the
+// folder is taken away while the service runs, and put back empty.
+const refusedCode = process.platform === 'win32' ? 'ENOENT' : 'EACCES'
+
+function refuseWrites(folder: string): () => void {
+  if (process.platform !== 'win32') {
+    chmodSync(folder, 0o500)
+    return () => chmodSync(folder, 0o700)
+  }
+  rmSync(folder, { recursive: true })
+  return () => mkdirSync(folder)
+}
+
 test('a change the state file cannot keep is answered 500, did not happen, and is reported on stderr', serviceTest, async (t) => {
   const storage = serviceStorage(t, 'retest-cross-platform-state-')
   const { folder } = storage
@@ -639,7 +694,7 @@ test('a change the state file cannot keep is answered 500, did not happen, and i
   const service = await startService(t, { storage, flags: ['--state', join(stateFolder, 'state.json'), '--sync-delay-ms', '0'] })
   const token = await signIn(service, ada.id, ada.password)
   // Restore this in the body: a folder left read-only would prevent its storage from being removed after the service ends.
-  chmodSync(stateFolder, 0o500)
+  const restore = refuseWrites(stateFolder)
   try {
     const change = await call(service, 'PATCH', '/api/tasks/seed-ada-1', { token, body: { done: true } })
     assert.equal(change.status, 500)
@@ -648,10 +703,10 @@ test('a change the state file cannot keep is answered 500, did not happen, and i
     assert.deepEqual((await listTasks(service, token)).map(shape), seededForAda, 'the task was not created')
     assert.equal((await call(service, 'POST', '/admin/reset')).status, 500)
     assert.equal((await call(service, 'GET', '/api/tasks', { token })).status, 200, 'the failed reset signed nobody out')
-    assert.match(service.stderr(), /PATCH \/api\/tasks\/seed-ada-1 failed, and nothing it asked for was kept: EACCES/)
-    assert.match(service.stderr(), /POST \/api\/tasks failed, and nothing it asked for was kept: EACCES/)
+    assert.match(service.stderr(), new RegExp(`PATCH /api/tasks/seed-ada-1 failed, and nothing it asked for was kept: ${refusedCode}`))
+    assert.match(service.stderr(), new RegExp(`POST /api/tasks failed, and nothing it asked for was kept: ${refusedCode}`))
   } finally {
-    chmodSync(stateFolder, 0o700)
+    restore()
   }
   assert.equal((await changeTask(service, token, 'seed-ada-1', { done: true })).done, true, 'it keeps working once the folder is writable again')
   assert.deepEqual(await service.stop(), { code: 0, signal: null })
@@ -733,7 +788,8 @@ test('keeps answering when the network log cannot be written, and says so once o
   }
   assert.deepEqual(await service.stop(), { code: 0, signal: null })
   assert.equal(service.stderr().match(/could not be written/g)?.length, 1, `stderr says it once: ${service.stderr()}`)
-  assert.match(service.stderr(), /The network log .* could not be written \(EACCES/)
+  // Its mode makes the log read-only, which Windows keeps as the file's read-only attribute and reports as EPERM.
+  assert.match(service.stderr(), new RegExp(`The network log .* could not be written \\(${process.platform === 'win32' ? 'EPERM' : 'EACCES'}`))
   assert.equal(readNetworkLog(service).length, 1, 'the log keeps what it had')
   assert.equal(service.stdout().trimEnd().split('\n').length, 1 + 6, 'stdout still has a line for every request')
 })

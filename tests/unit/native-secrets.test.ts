@@ -9,11 +9,16 @@ import { parseNativeTree, redactNativeXml } from '../../src/native/locators.ts'
 import { NativeOutputLines } from '../../src/native/output.ts'
 import { OwnedProcess } from '../../src/native/processes.ts'
 import { openFake, phoneSignIn } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 const placeholder = '{{password}}'
 const secretValue = (): string => `${randomBytes(20).toString('hex')}&private`
 
-test('native output holds split values, removes abbreviated typing activities and redacts both streams before writing', async (t) => {
+test('native output holds split values, removes abbreviated typing activities and redacts both streams before writing', macDriver, async (t) => {
   const value = secretValue()
   const redact = (text: string): string => text.replaceAll(value, placeholder)
   const output: string[] = []
@@ -130,7 +135,7 @@ test('oversized unfinished output discards the whole line without leaking a valu
   assert.equal(problems.length, 1, 'the failure is reported once per stream')
 })
 
-test('a process with oversized output reports cleanup failure rather than silent log loss', async (t) => {
+test('a process with oversized output reports cleanup failure rather than silent log loss', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-output-limit-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   const logFile = join(folder, 'process.log')

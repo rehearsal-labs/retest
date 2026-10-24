@@ -14,6 +14,7 @@ import { ChromiumPage } from '../../src/browser/page.ts'
 import { CaptureSuspension, microsecondsSince, recordSource, ScreenshotLoopSource } from '../../src/media/capture.ts'
 import { mediaArguments, MediaProcess } from '../../src/media/client.ts'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { groupExists, launchGated, openApp, scratchFolder, setupMs } from './browser-harness.ts'
 import { ChromiumTickerProof, decodeFrames, decodeVideo, even, imageSize, mediaPrerequisites, pausesMs, shownFrameIds, spread, tickerFrames, tickerServer, videoAgainstTicks, watched } from './capture-proof.ts'
 
@@ -42,12 +43,15 @@ function frameCounter(): { watch: (message: Record<string, unknown>) => void; co
   }
 }
 
+// Each case's first fill is the first look at a page in a browser just launched, which on GitHub's macOS runner did not
+// answer within 2000 ms. The frames are the proof, not how soon a fill lands, so every fill has the budget a run gives
+// an action.
 async function typeFor(page: ChromiumPage, milliseconds: number): Promise<number> {
   const end = performance.now() + milliseconds
   let typed = 0
   while (performance.now() < end) {
     typed += 1
-    const result = await page.execute({ kind: 'fill', locator: title, value: `Release checklist ${typed}` }, 2000)
+    const result = await page.execute({ kind: 'fill', locator: title, value: `Release checklist ${typed}` }, defaultTimeouts.action)
     assert.ok(result.ok, `fill ${typed} ${JSON.stringify(result)}`)
     await delay(100)
   }

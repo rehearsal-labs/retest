@@ -1,3 +1,4 @@
+import type { FinishedRun } from './cli-harness.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { INVOICE_COUNT, invoiceAmountOf, TEAM } from '../../fixtures/task-app/workflow-lists-page.ts'
@@ -70,6 +71,12 @@ const sorts = 'sorts the table by name one way and then the other'
 const longList = 'finds an invoice far down a long list and opens it'
 const textSort = 'a sort that compares numbers as text fails at the sorted column'
 
+// A test that should pass, and the failure it had if it did not, so a run on CI says why.
+function assertPassed(run: FinishedRun, name: string): void {
+  const result = testNamed(run, name)
+  assert.equal(result.status, 'passed', `${name}: ${JSON.stringify(result.failure)}`)
+}
+
 test('workflow family 8: the rows read in order, cells are found by name, a column sorts both ways, a far item opens, and a text sort fails at its check', async (t) => {
   const app = await openApp(t)
   const root = await writeProject(t, {
@@ -80,8 +87,8 @@ test('workflow family 8: the rows read in order, cells are found by name, a colu
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F8.1 and F8.2: every row's text in order, cells by their names, and the name column sorted both ways.
-  assert.equal(testNamed(run, findsRow).status, 'passed')
-  assert.equal(testNamed(run, sorts).status, 'passed')
+  assertPassed(run, findsRow)
+  assertPassed(run, sorts)
   // Chrome's accessibility tree gives a table row no name from its cells, so a named row would match nothing and both
   // checks would pass beside the row on screen. Each is refused as unsupported, naming why, before the page is asked.
   for (const name of [namedRowCount, namedRowHidden]) {
@@ -91,7 +98,7 @@ test('workflow family 8: the rows read in order, cells are found by name, a colu
   }
 
   // F8.3: the link sits far below the first screen; the click brought it into view and opened its page.
-  assert.equal(testNamed(run, longList).status, 'passed')
+  assertPassed(run, longList)
   const { testId } = testNamed(run, longList)
   const opened = eventsOf(run.events, 'navigation').filter((event) => event.testId === testId && event.cause === 'action')
   assert.deepEqual(opened.map((event) => event.url.slice(app.url.length)), ['/workflow/invoices/detail'])

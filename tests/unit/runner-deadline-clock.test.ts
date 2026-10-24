@@ -37,7 +37,7 @@ for (const succeedsAtLimit of [true, false]) {
       probe: async () => {
         probes.push(clock.now())
         clock.spend()
-        return succeedsAtLimit && (probes.at(-1) ?? -1) >= 120
+        return succeedsAtLimit && (probes.at(-1) ?? -1) >= 120 ? 'answered' : 'refused'
       },
       launch: async () => ({ pid: 4242, exit: undefined, settle: () => undefined, stop: async () => undefined, fail: async problem => { failedAt = clock.now(); throw new Error(problem.message) } }),
     })

@@ -189,11 +189,23 @@ test('goto gives up at its own timeout', async ({ page }) => {
   const run = await runProject(t, root, { env: notCi, timeouts: budgets({ action: 2000, navigation: 5000 }) })
   assert.equal(run.exit.code, 1, run.stderr)
 
+  // The click's 300 ms ends one of two ways, and both are the click giving up at its own budget. Either a look at
+  // the page answered and found no button, or, as on GitHub's macOS runner, the first page of a browser just launched
+  // answered no look within 300 ms, and Retest says the page did not answer rather than that nothing matched. Both
+  // name the 300 ms.
   const click = testNamed(run, 'a click gives up at its own timeout')
   assert.equal(click.status, 'failed')
-  assert.equal(click.failure?.class, 'not_found')
-  assert.match(click.failure?.message ?? '', /within 300 ms/)
-  assert.equal(click.failure?.location?.line, 6)
+  const gaveUp = click.failure
+  assert.ok(gaveUp !== undefined, 'the click failed')
+  if (gaveUp.class === 'not_found') {
+    assert.match(gaveUp.message, /^Could not click getByRole\('button', \{ name: 'Publish' \}\): no element matched within 300 ms\./)
+    assert.equal(gaveUp.details?.['waitedMs'], 300)
+  } else {
+    assert.equal(gaveUp.class, 'timeout', `the click failed as ${gaveUp.class}: ${gaveUp.message}`)
+    assert.match(gaveUp.message, /^The page did not answer within 300 ms while Retest tried to click getByRole\('button', \{ name: 'Publish' \}\)\.$/)
+    assert.equal(gaveUp.details?.['inputSent'], false)
+  }
+  assert.equal(gaveUp.location?.line, 6)
   const step = eventsOf(run.events, 'step.finished').find((event) => event.testId === click.testId)
   assert.equal(step?.status, 'failed')
   const failedClick = eventsOf(run.events, 'action.failed').find((event) => event.testId === click.testId)

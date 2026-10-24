@@ -1,0 +1,17 @@
+# Every text file is checked out with LF on every platform, so a Windows checkout reads the same sources, fixtures and
+# documents as macOS and Linux: tests compare lines, and the compatibility pages are parsed by their lines.
+* text=auto eol=lf
+
+# Binary fixtures are never converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp4 binary
+*.webm binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.wasm binary

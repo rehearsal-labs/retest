@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { appLogFile } from '../../src/protocol/run-folder.ts'
+import { serverStopSignal } from '../../src/shared/process-system.ts'
 import {
   answersAt,
   appServerCommand,
@@ -68,7 +69,7 @@ test('start runs the server, waits until ready answers, logs its output, and sto
   assert.ok(firstTest !== undefined && started.sequence < firstTest.sequence, 'the server was ready before the test started')
 
   const log = readFileSync(join(run.output, appLogFile('web')), 'utf8')
-  for (const line of ['starting', 'app server writes to stderr too', `listening on ${url}`, 'GET /', 'stopping on SIGTERM']) {
+  for (const line of ['starting', 'app server writes to stderr too', `listening on ${url}`, 'GET /', `stopping on ${serverStopSignal}`]) {
     assert.ok(log.includes(line), `the server log holds "${line}":\n${log}`)
   }
   const child = Number(/^child pid (\d+)$/m.exec(log)?.[1])
@@ -112,7 +113,8 @@ test('a server that never answers is a setup failure for every test that needs i
 })
 
 test('a server that exits before it answers is a setup failure that gives its exit', async (t) => {
-  const { root, url } = await servedProject(t, { command: 'echo about to fail; exit 3' })
+  // cmd.exe runs a server's command on Windows, and `;` is no separator there.
+  const { root, url } = await servedProject(t, { command: process.platform === 'win32' ? 'echo about to fail& exit 3' : 'echo about to fail; exit 3' })
   const run = await runProject(t, root)
 
   assert.equal(run.exit.code, 2, run.stderr)
@@ -125,6 +127,6 @@ test('a server that ignores SIGTERM is killed after the close grace, with its gr
   const run = await runProject(t, root)
 
   assert.equal(run.exit.code, 0, run.stderr)
-  assert.match(readFileSync(join(run.output, appLogFile('web')), 'utf8'), /ignoring SIGTERM/)
+  assert.match(readFileSync(join(run.output, appLogFile('web')), 'utf8'), new RegExp(`ignoring ${serverStopSignal}`))
   assert.deepEqual(await appServersOn(port), [])
 })

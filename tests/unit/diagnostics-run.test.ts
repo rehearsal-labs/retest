@@ -8,7 +8,7 @@ import type { LaunchBrowser } from '../../src/runner/browser-pool.ts'
 import type { DiagnosticsConfig, RunOptions } from '../../src/runner/contract.ts'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { describe, test } from 'node:test'
 import { chromiumScope } from '../../src/diagnostics/chromium-collector.ts'
 import { parseArtifact } from '../../src/diagnostics/artifact.ts'
@@ -19,6 +19,14 @@ import { runFiles } from '../../src/runner/run.ts'
 import { readRunFolder } from '../../src/store/read-run-folder.ts'
 import { fakeLauncher } from '../support/fake-browser.ts'
 import { newRunFolder, quickTimeouts, readEvents, rootDir, supportFile } from '../support/run-harness.ts'
+
+// A path inside a pattern: a Windows path's backslashes are literal.
+function escape(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// The reports name the diagnostics folder joined to the run folder they were given, as this platform writes it.
+const diagnosticsFolder = escape(join('run', 'diagnostics'))
 
 /**
  * A page that delegates to a fake page and adds a collector a test scripts: each `goto` the page runs is heard as a
@@ -188,8 +196,8 @@ describe('diagnostics in a run with a driver that collects none', async () => {
   })
 
   test('the reports count the captures that were never there, so they read apart from complete, quiet ones', () => {
-    assert.match(ran.human, /\n {2}Diagnostics {2}3 unavailable captures · run\/diagnostics\n/)
-    assert.match(ran.agent, /\ndiagnostics: 3 unavailable captures; run\/diagnostics\n/)
+    assert.match(ran.human, new RegExp(`\\n {2}Diagnostics {2}3 unavailable captures · ${diagnosticsFolder}\\n`))
+    assert.match(ran.agent, new RegExp(`\\ndiagnostics: 3 unavailable captures; ${diagnosticsFolder}\\n`))
   })
 })
 
@@ -235,8 +243,8 @@ describe('a declared policy in a run', () => {
     assert.match(saves.failure?.message ?? '', /^The diagnostics policy failed the test: its pages had 1 HTTP error response, and the policy allows none\. Records: \S+:page n1 in diagnostics\/\S+\.jsonl\.$/)
     const policy = ran.events.find((event) => event.type === 'diagnostics.started')
     assert.deepEqual(policy?.type === 'diagnostics.started' ? policy.policy : undefined, { strict: { httpErrors: true } })
-    assert.match(ran.human, /Diagnostics {6}console 1 entry, 1 error · network 1 request, 1 HTTP error · run\/diagnostics\/\S+\n {4}Scope {12}console covers top level document/, 'the card names the counts, the artifact and what it covers')
-    assert.match(ran.agent, /\n {2}diagnostics console 1 entry, 1 error · network 1 request, 1 HTTP error · run\/diagnostics\/\S+\n {2}scope console covers/)
+    assert.match(ran.human, new RegExp(`Diagnostics {6}console 1 entry, 1 error · network 1 request, 1 HTTP error · ${diagnosticsFolder}${escape(sep)}\\S+\\n {4}Scope {12}console covers top level document`), 'the card names the counts, the artifact and what it covers')
+    assert.match(ran.agent, new RegExp(`\\n {2}diagnostics console 1 entry, 1 error · network 1 request, 1 HTTP error · ${diagnosticsFolder}${escape(sep)}\\S+\\n {2}scope console covers`))
     for (const words of ['could not load', 'GET http']) assert.equal(ran.human.includes(words) || ran.agent.includes(words), false, `no report prints ${words}`)
   })
 

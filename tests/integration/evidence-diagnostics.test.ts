@@ -10,7 +10,7 @@ import { parseArtifact } from '../../src/diagnostics/artifact.ts'
 import { servePages } from './browser-harness.ts'
 import { budgets, configSource, eventsOf, filesHolding, runProject, writeProject } from './cli-harness.ts'
 import { engineUnderTest } from './engines.ts'
-import { binary, decoder, ffmpeg, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
+import { binary, decoder, ffmpeg, importOption, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
 import { recordingSkip } from './recording-harness.ts'
 
 const source = `import { expect, secret, test } from '@rehearsal-labs/retest'
@@ -39,13 +39,13 @@ test('recording survives bounded and sanitized diagnostics, with the judge and H
  const hashes=join(proofRoot,'judge-image-hashes.jsonl')
  const value=randomUUID(),fake=fileURLToPath(new URL('./evidence-judge.test.ts',import.meta.url))
  const root=await writeProject(t,{'retest.config.ts':configSource(`{apps:{web:${engine.target(`baseUrl:${JSON.stringify(site.url)}`)}},secrets:{value:env('RETEST_EVIDENCE_SECRET')},diagnostics:{limits:{consoleEntries:10,consoleBytes:20000,textLength:4096}},recording:{record:true,fps:10,size:{width:320,height:240}},evaluation:{judges:{fake:{adapter:${JSON.stringify(fake)},accepts:['images'],options:{log:${JSON.stringify(calls)},hashLog:${JSON.stringify(hashes)}}}}}}`),'flood.retest.ts':source})
- const run=await runProject(t,root,{timeouts:budgets({test:30000,setup:30000,cleanup:15000}),env:{RETEST_EVIDENCE_SECRET:value,RETEST_MEDIA_BINARY:binary,RETEST_FFMPEG:ffmpeg,NODE_OPTIONS:`--import=${loader}`}})
+ const run=await runProject(t,root,{timeouts:budgets({test:30000,setup:30000,cleanup:15000}),env:{RETEST_EVIDENCE_SECRET:value,RETEST_MEDIA_BINARY:binary,RETEST_FFMPEG:ffmpeg,NODE_OPTIONS:importOption(loader)}})
  writeFileSync(join(run.output,'cli-output.json'),JSON.stringify({exit:run.exit,stdout:run.stdout,stderr:run.stderr},null,2))
  const kept=await preserveReport(run,'flood'),html=readFileSync(join(kept,'report.html'),'utf8')
  t.diagnostic(`artifacts ${kept}; judge ${calls}; observations ${observed}`)
  secretAbsent(run,value)
  assert.deepEqual(filesHolding(proofRoot,value),[])
- assert.equal(run.exit.code,0)
+ assert.equal(run.exit.code,0,JSON.stringify(run.result?.failure))
  const result=run.result?.files.flatMap(file=>file.tests)[0]
  assert.ok(result)
  assert.equal(result.status,'passed')

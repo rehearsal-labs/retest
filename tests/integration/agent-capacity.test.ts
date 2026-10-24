@@ -137,6 +137,13 @@ test('stopping the host stops an action waiting on the page, ends its session an
   assert.equal(budget.snapshot().host, 0)
 })
 
+// A process's command line: from ps on macOS and Linux; on Windows, which has no ps, from its process list, as
+// browser-harness.ts reads a browser's profile there.
+function commandLineOf(pid: number): string {
+  if (process.platform !== 'win32') return execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8' })
+  return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', windowsHide: true })
+}
+
 test('a lost browser ends its sessions as lost and gives their sessions back; the next session gets a new browser', async (t) => {
   const app = await openApp(t)
   // The browsers of this case keep their profiles in a folder of its own, so what a lost browser left can be looked for.
@@ -154,7 +161,7 @@ test('a lost browser ends its sessions as lost and gives their sessions back; th
   await holdersReach(app.url, 'lost', 1)
   const [pid] = session.runtime.processIds
   assert.ok(pid !== undefined)
-  const command = execFileSync('ps', ['-p', String(pid), '-o', 'args='], { encoding: 'utf8' })
+  const command = commandLineOf(pid)
   assert.ok(command.includes(session.runtime.executablePath), `pid ${pid} runs ${session.runtime.executablePath}, the browser this host started: ${command}`)
   // The browser is lost as its own driver's tests lose it: Chromium's whole group through the launch record this
   // process keeps, which the driver needs before it signals anything; Firefox's and WebKit's main process. A Chromium

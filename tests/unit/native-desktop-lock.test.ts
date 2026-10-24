@@ -211,19 +211,22 @@ test('a gone holder\'s record is kept, and the desktop refused, until what it na
   const fake = await fakeTools(t)
   await fake.configure({ psFails: true })
   const lock = join(fake.root, 'desktop.lock')
-  const left = { startTimeVersion: 1, pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [{ pid: 1234, command: 'x' }] }
+  // The runner app the record names is a process that has ended. A fixed pid such as 1234 can belong to a live
+  // process, as it did on GitHub's macOS runner, and recovery then rightly refuses.
+  const runner = await endedPid()
+  const left = { startTimeVersion: 1, pid: await endedPid(), startedAt: '2026-10-03T00:00:00.000Z', holderCommand: 'node gone', runnerApps: [{ pid: runner, command: 'x' }] }
   await writeFile(join(fake.root, 'desktop.json'), JSON.stringify(left))
   const refused = await takeDesktopLock({ path: lock, tools: fake.tools })
   assert.match(!refused.ok ? refused.failure.message : '', new RegExp(`could not read whether the Retest process that held the desktop before \\(pid ${left.pid}\\) still runs.*The record`))
   assert.deepEqual(await recordOf(lock), left, 'a failed holder identity reading does not release the record')
   await fake.configure({})
   const ps = join(fake.root, 'runner-reading-ps')
-  await writeFile(ps, `#!/bin/sh\nif [ \"$5\" = \"1234\" ]; then echo \"ps: could not run\" >&2; exit 1; fi\nexec \"${fake.tools.ps}\" \"$@\"\n`)
+  await writeFile(ps, `#!/bin/sh\nif [ \"$5\" = \"${runner}\" ]; then echo \"ps: could not run\" >&2; exit 1; fi\nexec \"${fake.tools.ps}\" \"$@\"\n`)
   await chmod(ps, 0o755)
   const runnerRefused = await takeDesktopLock({ path: lock, tools: { ...fake.tools, ps } })
-  assert.match(!runnerRefused.ok ? runnerRefused.failure.message : '', /could not read whether pid 1234 is still running.*is kept, so a later start can try again/)
+  assert.match(!runnerRefused.ok ? runnerRefused.failure.message : '', new RegExp(`could not read whether pid ${runner} is still running.*is kept, so a later start can try again`))
   assert.deepEqual(await recordOf(lock), left, 'the record still names what is left')
-  // Once the processes can be read, a later start finds pid 1234 gone and takes the desktop.
+  // Once the processes can be read, a later start finds the runner app gone and takes the desktop.
   await fake.configure({})
   const taken = await takeDesktopLock({ path: lock, tools: fake.tools })
   assert.ok(taken.ok, !taken.ok ? taken.failure.message : '')

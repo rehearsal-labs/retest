@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { ELECTRON_FILES_MAIN, ELECTRON_FILES_PAGE, TASKS_CSV } from '../../fixtures/task-app/files-page.ts'
 import { resultFile } from '../../src/protocol/run-folder.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { eventArtifactReferences, inventoryArtifacts, resultArtifactReferences } from '../../src/store/artifacts.ts'
 import { browserPath } from '../support/test-browser.ts'
 import { openApp } from './browser-harness.ts'
@@ -92,7 +93,11 @@ test('a run uploads, catches a picker and keeps downloads, and its events and re
     'fixtures/a.png': 'first picture',
     'fixtures/b.png': 'second',
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 2000 }) })
+  // The first upload is the first look at a page in a browser just launched, and on GitHub's macOS runner the label
+  // was not found within the harness's 2000 ms action budget. What the run uploads and keeps is the proof, not how soon,
+  // so actions have the budget a run gives them; a per-call timeout cannot raise it. Every wait this run is meant to
+  // give up on names its own short timeout.
+  const run = await runProject(t, root, { timeouts: budgets({ assertion: 2000, action: defaultTimeouts.action }) })
   assert.equal(run.exit.code, 1, run.stderr)
 
   const flow = testNamed(run, names.flow)

@@ -7,7 +7,9 @@ import { relativePosixPath } from '../shared/posix-path.ts'
 
 // The folder holding this copy of Retest: `src` when run from source, `dist` when built.
 const ownDirectory = fileURLToPath(new URL('../', import.meta.url))
-const stackFrame = /(?:\(|at )((?:file:\/\/)?\/[^()]*?):(\d+):(\d+)\)?$/
+// A frame names its script by a file URL or an absolute path: a POSIX one, or on Windows a drive or UNC path, as V8
+// writes a frame a source map placed.
+const stackFrame = /(?:\(|at )((?:file:\/\/)?\/[^()]*?|[A-Za-z]:[\\/][^()]*?|\\\\[^()]*?):(\d+):(\d+)\)?$/
 const maxFrames = 64
 
 /**

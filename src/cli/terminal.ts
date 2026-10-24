@@ -1,5 +1,6 @@
 import type { ExitCode } from '../protocol/events.ts'
-import type { Writer } from '../reporters/style.ts'
+import type { Marks, Writer } from '../reporters/style.ts'
+import { consoleMarks, unicodeMarks } from '../reporters/style.ts'
 
 export type Environment = Readonly<Record<string, string | undefined>>
 
@@ -23,6 +24,19 @@ export type ReportTerminal = { terminal: Terminal; failure(): Error | undefined 
 export function shouldUseColor(terminal: Terminal, env: Environment): boolean {
   const noColor = env['NO_COLOR']
   return terminal.isTTY && (noColor === undefined || noColor === '')
+}
+
+/**
+ * The marks a terminal draws: the glyphs, except in a Windows console that names no terminal of its own, whose fonts
+ * lack ✓, ✗, ⏎ or ▸. Windows Terminal (`WT_SESSION`), an editor's terminal (`TERM_PROGRAM`) and one that sets `TERM`
+ * draw them, and output that is not a terminal is UTF-8 for whatever reads it.
+ *
+ * @example terminalMarks(stdout, process.env).passed // '✓', or '√' in a Windows console
+ */
+export function terminalMarks(terminal: Terminal, env: Environment, platform: NodeJS.Platform = process.platform): Marks {
+  if (platform !== 'win32' || !terminal.isTTY) return unicodeMarks
+  const named = [env['WT_SESSION'], env['TERM_PROGRAM'], env['TERM']].some((value) => value !== undefined && value !== '')
+  return named ? unicodeMarks : consoleMarks
 }
 
 /**

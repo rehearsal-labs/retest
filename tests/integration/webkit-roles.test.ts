@@ -5,7 +5,9 @@ import type { CommandResult } from '../../src/protocol/commands.ts'
 import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { labelledRoles } from '../../src/browser/accessibility.ts'
@@ -13,7 +15,7 @@ import { launchBrowser } from '../../src/browser/launch.ts'
 import { launchWebKit } from '../../src/browser/webkit/browser.ts'
 import { ariaRoles } from '../../src/protocol/aria-role.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
-import { browserPath, closeMs, scratchFolder, servePages, setupMs } from './browser-harness.ts'
+import { browserPath, closeMs, servePages, setupMs } from './browser-harness.ts'
 import { webKitPath } from './engines.ts'
 
 // Role membership on Chrome and WebKit, read side by side: each element kind the WebKit review and its fix read, on a
@@ -308,14 +310,28 @@ async function opened(t: TestContext, browser: OwnedBrowser): Promise<OwnedPage>
   return page
 }
 
+// Chrome and WebKit for one case, each closed after it, with their logs in a folder removed only once both have
+// closed. After hooks run in the order they were added, and one that throws skips those after it. A folder removed by
+// a hook added before the browsers' closes was removed while a browser still wrote into it, and failed with ENOTEMPTY
+// on GitHub's macOS runner (run 40121939837); the closes it skipped left both browsers running, so the file never
+// ended and its shard ran out of time.
+async function chromeAndWebKit(t: TestContext, logPrefix = ''): Promise<{ chrome: OwnedPage; webkit: OwnedPage }> {
+  const folder = await mkdtemp(join(tmpdir(), 'retest-browser-test-'))
+  try {
+    const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, `${logPrefix}chrome.log`), headless: true }))
+    const webkit = await opened(t, await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, `${logPrefix}webkit.log`), headless: true }, setupMs * 3))
+    return { chrome, webkit }
+  } finally {
+    t.after(() => rm(folder, { recursive: true, force: true }))
+  }
+}
+
 if (process.platform !== 'darwin') {
   test('the role table of Chrome and WebKit', (t) => t.skip(`Retest runs WebKit on macOS only, and this host is ${process.platform}`))
 } else {
   test("every lookup of every element kind read beside Chrome is answered on WebKit as Chrome answers it, or refused by name, never answered differently", async (t) => {
-    const folder = await scratchFolder(t)
     const url = await serveCases(t)
-    const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'chrome.log'), headless: true }))
-    const webkit = await opened(t, await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'webkit.log'), headless: true }, setupMs * 3))
+    const { chrome, webkit } = await chromeAndWebKit(t)
     const expected = await answersOn(chrome, url)
     const seen = await answersOn(webkit, url)
     const differences: string[] = []
@@ -348,10 +364,8 @@ if (process.platform !== 'darwin') {
 
   // Held from the WebKit lane's own record: the refusal by role took two lookups WebKit can answer exactly.
   test('a cell named by aria-label, a custom option on a page that also holds a select, and a field named by a shown label beside a hidden one, are answered on WebKit as Chrome answers them', async (t) => {
-    const folder = await scratchFolder(t)
     const url = await serveCases(t)
-    const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'chrome.log'), headless: true }))
-    const webkit = await opened(t, await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'webkit.log'), headless: true }, setupMs * 3))
+    const { chrome, webkit } = await chromeAndWebKit(t)
     const cell = allCases.findIndex((entry) => entry.html.includes('aria-label="Cell A"'))
     const options = allCases.findIndex((entry) => entry.html.includes('option label="Lab"'))
     const labels = allCases.findIndex((entry) => entry.html.includes('<label for="v">Shown label</label>'))
@@ -389,9 +403,7 @@ if (process.platform !== 'darwin') {
       <table><tr><th>Task</th><th>Other</th></tr><tr><td aria-label="Chosen cell">chosen cell</td><td aria-label="Other cell">decoy cell</td></tr></table>
       <div role="listbox"><div role="option" aria-label="Custom choice">chosen option</div></div>`
     const site = await servePages(t, { '/': html, '/native': html + '<select aria-label="Native choice"><option>Native one</option><option>Native two</option></select>' })
-    const folder = await scratchFolder(t)
-    const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'fixed-chrome.log'), headless: true }))
-    const other = await opened(t, await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'fixed-webkit.log'), headless: true }, setupMs * 3))
+    const { chrome, webkit: other } = await chromeAndWebKit(t, 'fixed-')
     const supported: readonly { locator: LocatorRecipe; text?: string; value?: string }[] = [
       { locator: { by: 'role', role: 'button', name: 'Save task' }, text: 'chosen save' },
       { locator: { by: 'role', role: 'link', name: 'Open task' }, text: 'chosen link' },
