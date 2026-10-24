@@ -2,9 +2,10 @@ import type { CommandResult } from '../../native/processes.ts'
 import type { EncoderProbe, Hello } from '../../media/protocol.ts'
 import { constants } from 'node:fs'
 import { access, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { delimiter, isAbsolute, join, resolve, sep } from 'node:path'
 import { MediaProcess, mediaArguments } from '../../media/client.ts'
 import { mediaGreetingProblem } from '../../media/build-identity.ts'
+import { hostVariable, programFileName, toolchainVariables } from '../../media/host.ts'
 import { describeCommand, runCommand } from '../../native/processes.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { minimumRust } from './media-pins.ts'
@@ -16,8 +17,8 @@ export type MediaToolRunner = (command: string, args: readonly string[], options
 /** Tools inherit only the paths needed by the host toolchain, never test or evaluator credentials. */
 export const runMediaTool: MediaToolRunner = (command, args, options) => {
   const environment: Record<string, string> = { LC_ALL: 'C' }
-  for (const key of ['PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'TMPDIR']) {
-    const value = options.env[key]
+  for (const key of toolchainVariables) {
+    const value = hostVariable(options.env, key)
     if (value !== undefined) environment[key] = value
   }
   return runCommand(command, args, { timeoutMs: options.timeoutMs ?? 10_000, signal: options.signal, ...(options.cwd === undefined ? {} : { cwd: options.cwd }), hiddenVariables: Object.keys(process.env), environment: { ...environment, ...options.environment } })
@@ -25,7 +26,8 @@ export const runMediaTool: MediaToolRunner = (command, args, options) => {
 
 /** An explicit name wins even when it is unusable. PATH lookup never substitutes for it. */
 export async function findMediaTool(name: string, env: MediaEnvironment): Promise<string | undefined> {
-  const paths = name.includes('/') ? [resolve(name)] : (env['PATH'] ?? '').split(':').filter((part) => isAbsolute(part)).map((part) => join(part, name))
+  const named = name.includes('/') || name.includes(sep)
+  const paths = named ? [resolve(name)] : (hostVariable(env, 'PATH') ?? '').split(delimiter).filter((part) => isAbsolute(part)).map((part) => join(part, programFileName(name)))
   for (const path of paths) {
     try {
       const found = await realpath(path)

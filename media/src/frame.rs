@@ -781,10 +781,16 @@ mod tests {
         let candidates: Vec<std::path::PathBuf> = if path.components().count() > 1 {
             vec![path.to_owned()]
         } else {
+            // Windows finds a program on PATH by its name with `.exe`.
+            let name = if cfg!(windows) && path.extension().is_none() {
+                path.with_extension("exe")
+            } else {
+                path.to_owned()
+            };
             std::env::split_paths(
                 &std::env::var_os("PATH").expect("PATH for the ffmpeg prerequisite"),
             )
-            .map(|folder| folder.join(path))
+            .map(|folder| folder.join(&name))
             .collect()
         };
         let ffmpeg = candidates

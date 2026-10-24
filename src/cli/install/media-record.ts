@@ -5,7 +5,7 @@ import type { MediaPrebuiltPin, MediaTarget } from './media-pins.ts'
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, lstat, readdir } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cacheFolders } from '../../browser/builds.ts'
 import { MEDIA_PROTOCOL_VERSION } from '../../media/protocol.ts'
@@ -14,7 +14,7 @@ import { errorMessage } from '../../protocol/failures.ts'
 import { Deadline } from '../../protocol/deadline.ts'
 import { isMissingFile } from '../../shared/error-code.ts'
 import { checkFileIdentity, readFileSha256, readRecordText } from '../../shared/regular-file.ts'
-import { maximumMediaBinaryBytes, maximumMediaSourceBytes, mediaPrebuiltPins, mediaSourceDigest, mediaSourceFiles, mediaTarget, mediaVersion, minimumRust } from './media-pins.ts'
+import { maximumMediaBinaryBytes, maximumMediaSourceBytes, mediaExecutableName, mediaPrebuiltPins, mediaSourceDigest, mediaSourceFiles, mediaTarget, mediaVersion, minimumRust } from './media-pins.ts'
 import { rustAtLeast } from './media-tools.ts'
 
 export type MediaRecord = {
@@ -30,7 +30,7 @@ export type MediaRecord = {
   installedAt: string
   installedBy: string
 }
-const recordSchema: Schema<MediaRecord> = s.object({ schemaVersion: s.literal(1), version: s.string(), protocol: s.number({ integer: true, min: 1 }), sourceDigest: s.string(), target: s.enum(['aarch64-apple-darwin', 'x86_64-unknown-linux-gnu']), method: s.enum(['source', 'prebuilt']), rustcVersion: s.union([s.string(), s.literal(null)]), binarySha256: s.string(), notices: s.array(s.object({ path: s.string(), sha256: s.string() })), installedAt: s.string(), installedBy: s.string() })
+const recordSchema: Schema<MediaRecord> = s.object({ schemaVersion: s.literal(1), version: s.string(), protocol: s.number({ integer: true, min: 1 }), sourceDigest: s.string(), target: s.enum(['aarch64-apple-darwin', 'x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc']), method: s.enum(['source', 'prebuilt']), rustcVersion: s.union([s.string(), s.literal(null)]), binarySha256: s.string(), notices: s.array(s.object({ path: s.string(), sha256: s.string() })), installedAt: s.string(), installedBy: s.string() })
 
 export type MediaInspection = {
   readonly engine: 'media'; readonly version: string; readonly protocol: number; readonly target: MediaTarget
@@ -44,7 +44,7 @@ export function mediaFolder(env: MediaEnvironment, target: MediaTarget): string 
   const folders = cacheFolders(env)
   return folders === undefined ? undefined : join(dirname(folders.browsers), 'media', `media-${mediaVersion}-${target}`)
 }
-export function mediaLockPath(folder: string): string { return join(dirname(dirname(folder)), 'locks', `${folder.split('/').at(-1) ?? 'media'}.lock`) }
+export function mediaLockPath(folder: string): string { return join(dirname(dirname(folder)), 'locks', `${basename(folder)}.lock`) }
 
 /** Hashes the pinned allowlist only. A changed, absent or non-regular source is refused before cargo runs. */
 export async function checkMediaSource(root: string, options: FileReadControl = {}): Promise<string | undefined> {
@@ -71,7 +71,8 @@ export async function inspectMedia(env: MediaEnvironment, options: FileReadContr
   if (target === undefined) return undefined
   const folder = mediaFolder(env, target)
   if (folder === undefined) return undefined
-  const base = { engine: 'media' as const, version: mediaVersion, protocol: MEDIA_PROTOCOL_VERSION, target, folder, executablePath: join(folder, 'retest-media') }
+  const executable = mediaExecutableName(target)
+  const base = { engine: 'media' as const, version: mediaVersion, protocol: MEDIA_PROTOCOL_VERSION, target, folder, executablePath: join(folder, executable) }
   const bad = (problem: string, state: 'damaged' | 'unverifiable' = 'damaged'): MediaInspection => ({ ...base, state, problems: [problem] })
   try {
     const stats = await lstat(folder)
@@ -96,9 +97,9 @@ export async function inspectMedia(env: MediaEnvironment, options: FileReadContr
   const notices = mediaNoticePins()
   if (JSON.stringify(record.notices) !== JSON.stringify(notices)) return bad(`${path} does not name the pinned licence notices.`)
   let executableIdentity: FileIdentity | undefined
-  for (const file of [{ path: 'retest-media', sha256: record.binarySha256 }, ...notices]) {
+  for (const file of [{ path: executable, sha256: record.binarySha256 }, ...notices]) {
     const filePath = join(folder, file.path)
-    const reading = await readFileSha256(filePath, { maximumBytes: file.path === 'retest-media' ? maximumMediaBinaryBytes : maximumMediaSourceBytes, deadline, ...(options.signal === undefined ? {} : { signal: options.signal }) })
+    const reading = await readFileSha256(filePath, { maximumBytes: file.path === executable ? maximumMediaBinaryBytes : maximumMediaSourceBytes, deadline, ...(options.signal === undefined ? {} : { signal: options.signal }) })
     if (reading.kind !== 'file') return bad(reading.kind === 'missing' ? `${filePath} is missing.` : reading.problem)
     if (reading.sha256 !== file.sha256) return bad(`${filePath} has SHA-256 ${reading.sha256}, not the recorded ${file.sha256}.`)
     try {
@@ -106,12 +107,12 @@ export async function inspectMedia(env: MediaEnvironment, options: FileReadContr
       if (!stats.isFile()) return bad(`${filePath} is no longer a regular file.`)
       if (stats.dev.toString() !== reading.identity.device || stats.ino.toString() !== reading.identity.inode) return bad(`${filePath} was replaced after Retest hashed it; its file identity no longer matches.`)
       if ((stats.mode & 0o6000n) !== 0n) return bad(`${filePath} has a set-user-id or set-group-id bit.`)
-      if (file.path === 'retest-media') executableIdentity = reading.identity
+      if (file.path === executable) executableIdentity = reading.identity
     } catch (error) { return bad(`${filePath} cannot be checked: ${errorMessage(error)}.`) }
   }
   if (!(await access(base.executablePath, constants.X_OK).then(() => true, () => false))) return bad(`${base.executablePath} is not executable.`)
   if (options.verify === true) {
-    const allowed = new Set(['build.json', 'retest-media', ...notices.map((notice) => notice.path)])
+    const allowed = new Set(['build.json', executable, ...notices.map((notice) => notice.path)])
     let names: string[]
     try { names = await readdir(folder) } catch (error) { return bad(`${folder} cannot be checked: ${errorMessage(error)}.`) }
     const unexpected = names.filter((name) => !allowed.has(name))

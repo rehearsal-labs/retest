@@ -4,10 +4,16 @@
 //! as FAT or exFAT, refuses the link; then the file is copied to `<path>.copying` beside it, synced, and renamed to
 //! the path with a rename that refuses to replace a file, so nothing is ever at the path but a whole file. A process
 //! killed during the copy leaves the `.copying` file, which `leftovers` lists and removes.
+//!
+//! Windows refuses to rename or remove a file while another program holds it open without allowing that, as a virus
+//! scanner reading a new file briefly does. There each move and removal waits a bounded time for the file to be let go,
+//! and a failure names the file as open in another program.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -51,7 +57,7 @@ pub fn place(partial: &Path, path: &Path) -> io::Result<Placed> {
 /// Publishes a complete file without removing its original partial.
 pub fn retain_source(partial: &Path, path: &Path) -> io::Result<Placed> {
     delayed_if_a_test_asks();
-    match link(partial, path) {
+    match while_in_use(partial, || link(partial, path)) {
         Ok(()) => Ok(Placed::Link),
         Err(error) if links_unavailable(&error) => {
             copy_exclusively(partial, path)?;
@@ -85,7 +91,7 @@ pub fn finalize_file(partial: &Path, path: &Path) -> Finalization {
         }
     }
     match retain_source(partial, path) {
-        Ok(placed) => match fs::remove_file(partial) {
+        Ok(placed) => match while_in_use(partial, || fs::remove_file(partial)) {
             Ok(()) => Finalization::Placed(placed),
             Err(error) => Finalization::Failed(format!(
                 "the video was placed at {}, but its source at {} could not be removed: {error}",
@@ -118,7 +124,7 @@ fn delayed_if_a_test_asks() {}
 #[cfg(debug_assertions)]
 fn link(partial: &Path, path: &Path) -> io::Result<()> {
     if std::env::var_os("RETEST_MEDIA_TEST_NO_HARD_LINKS").is_some() {
-        return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+        return Err(io::Error::from_raw_os_error(NOT_SUPPORTED));
     }
     fs::hard_link(partial, path)
 }
@@ -135,8 +141,84 @@ fn links_unavailable(error: &io::Error) -> bool {
     }
     matches!(
         error.raw_os_error(),
-        Some(code) if [libc::EPERM, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EXDEV, libc::EMLINK, libc::ENOSYS].contains(&code)
+        Some(code) if LINKS_UNAVAILABLE.contains(&code)
     )
+}
+
+// The codes a failed link or rename gives when the filesystem cannot do it at all, rather than because of what is at
+// the path, as each host numbers them.
+#[cfg(unix)]
+const LINKS_UNAVAILABLE: [i32; 6] = [
+    libc::EPERM,
+    libc::ENOTSUP,
+    libc::EOPNOTSUPP,
+    libc::EXDEV,
+    libc::EMLINK,
+    libc::ENOSYS,
+];
+#[cfg(unix)]
+const RENAME_UNSUPPORTED: [i32; 4] = [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EINVAL, libc::ENOSYS];
+// What the test hook that hides hard links answers.
+#[cfg(all(unix, any(debug_assertions, test)))]
+const NOT_SUPPORTED: i32 = libc::ENOTSUP;
+
+// FAT and exFAT answer a hard link with ERROR_INVALID_FUNCTION, a share without links with ERROR_NOT_SUPPORTED.
+#[cfg(windows)]
+const LINKS_UNAVAILABLE: [i32; 5] = [
+    windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION as i32,
+    windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED as i32,
+    windows_sys::Win32::Foundation::ERROR_NOT_SAME_DEVICE as i32,
+    windows_sys::Win32::Foundation::ERROR_TOO_MANY_LINKS as i32,
+    windows_sys::Win32::Foundation::ERROR_CALL_NOT_IMPLEMENTED as i32,
+];
+#[cfg(windows)]
+const RENAME_UNSUPPORTED: [i32; 3] = [
+    windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION as i32,
+    windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED as i32,
+    windows_sys::Win32::Foundation::ERROR_CALL_NOT_IMPLEMENTED as i32,
+];
+#[cfg(all(windows, any(debug_assertions, test)))]
+const NOT_SUPPORTED: i32 = windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED as i32;
+
+/// How long a move or removal waits for another program to let go of a file on Windows.
+#[cfg(windows)]
+const IN_USE_WAIT: Duration = Duration::from_secs(2);
+
+// Runs a move or removal of `path` again while another program holds the file open against it, up to `IN_USE_WAIT`.
+// A file still held then is named as open in another program.
+#[cfg(windows)]
+fn while_in_use<T>(path: &Path, mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION};
+    let started = Instant::now();
+    loop {
+        match operation() {
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(code) if code == ERROR_SHARING_VIOLATION as i32 || code == ERROR_LOCK_VIOLATION as i32
+                ) =>
+            {
+                if started.elapsed() >= IN_USE_WAIT {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "{} is open in another program, which kept it from being moved or removed for {} s: {error}",
+                            path.display(),
+                            IN_USE_WAIT.as_secs()
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            done => return done,
+        }
+    }
+}
+
+// A Unix file that is open can always be renamed and removed.
+#[cfg(unix)]
+fn while_in_use<T>(_: &Path, mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    operation()
 }
 
 fn copy_exclusively(partial: &Path, path: &Path) -> io::Result<()> {
@@ -165,7 +247,12 @@ fn copy_exclusively(partial: &Path, path: &Path) -> io::Result<()> {
 // operation is supported, placement fails with the destination named and keeps the source. Ordinary rename is
 // never used because it can replace a foreign file between a check and publication.
 fn rename_without_replacing(from: &Path, to: &Path) -> io::Result<()> {
-    rename_using(from, to, exclusive_rename, || {})
+    rename_using(
+        from,
+        to,
+        |from, to| while_in_use(from, || exclusive_rename(from, to)),
+        || {},
+    )
 }
 
 fn rename_using(
@@ -178,7 +265,7 @@ fn rename_using(
         Err(error)
             if matches!(
                 error.raw_os_error(),
-                Some(code) if [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EINVAL, libc::ENOSYS].contains(&code)
+                Some(code) if RENAME_UNSUPPORTED.contains(&code)
             ) =>
         {
             if to.symlink_metadata().is_ok() {
@@ -233,7 +320,34 @@ fn exclusive_rename(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+// MoveFileExW without MOVEFILE_REPLACE_EXISTING fails when anything is at the destination, the same refusal as
+// RENAME_EXCL and RENAME_NOREPLACE.
+#[cfg(windows)]
+fn exclusive_rename(from: &Path, to: &Path) -> io::Result<()> {
+    let (from, to) = (wide_path(from)?, wide_path(to)?);
+    // SAFETY: MoveFileExW takes two NUL-terminated UTF-16 paths that live across the call, and no flags.
+    let moved = unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
+    };
+    if moved != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    wide.push(0);
+    Ok(wide)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn exclusive_rename(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::Error::from_raw_os_error(libc::ENOTSUP))
 }
@@ -259,8 +373,9 @@ fn copy_in_chunks(source: &mut File, target: &mut File) -> io::Result<()> {
     }
 }
 
-// A test sets this to prove what a process killed in the middle of a copy leaves behind. Release builds have no hook.
-#[cfg(debug_assertions)]
+// A test sets this to prove what a process killed in the middle of a copy leaves behind. Release builds have no hook,
+// and neither has Windows, where no test asks.
+#[cfg(all(debug_assertions, unix))]
 fn killed_if_a_test_asks() {
     if std::env::var_os("RETEST_MEDIA_TEST_KILL_DURING_COPY").is_some() {
         // SAFETY: kill(2) on this process's own pid; SIGKILL leaves exactly what a kill from outside would.
@@ -270,7 +385,7 @@ fn killed_if_a_test_asks() {
     }
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(all(debug_assertions, unix)))]
 fn killed_if_a_test_asks() {}
 
 #[cfg(test)]
@@ -349,7 +464,7 @@ mod tests {
         let result = rename_using(
             &copying,
             &path,
-            |_, _| Err(io::Error::from_raw_os_error(libc::ENOTSUP)),
+            |_, _| Err(io::Error::from_raw_os_error(NOT_SUPPORTED)),
             || {
                 barrier.wait();
                 barrier.wait();
@@ -391,6 +506,7 @@ mod tests {
         let _ = fs::remove_dir_all(folder);
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_link_refusals_choose_the_copy() {
         for code in [libc::EPERM, libc::ENOTSUP, libc::EXDEV, libc::EMLINK] {
@@ -405,5 +521,108 @@ mod tests {
                 "{code}"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_link_refusals_choose_the_copy_on_windows() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DISK_FULL, ERROR_FILE_NOT_FOUND,
+            ERROR_INVALID_FUNCTION, ERROR_NOT_SAME_DEVICE, ERROR_NOT_SUPPORTED,
+            ERROR_TOO_MANY_LINKS,
+        };
+        for code in [
+            ERROR_INVALID_FUNCTION,
+            ERROR_NOT_SUPPORTED,
+            ERROR_NOT_SAME_DEVICE,
+            ERROR_TOO_MANY_LINKS,
+        ] {
+            assert!(
+                links_unavailable(&io::Error::from_raw_os_error(code as i32)),
+                "{code}"
+            );
+        }
+        for code in [
+            ERROR_ALREADY_EXISTS,
+            ERROR_FILE_NOT_FOUND,
+            ERROR_ACCESS_DENIED,
+            ERROR_DISK_FULL,
+        ] {
+            assert!(
+                !links_unavailable(&io::Error::from_raw_os_error(code as i32)),
+                "{code}"
+            );
+        }
+    }
+
+    // Opens `path` as a program that lets others read it but neither rename nor remove it, and lets go after `hold`.
+    #[cfg(windows)]
+    fn held_open(path: &Path, hold: std::time::Duration) -> std::thread::JoinHandle<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .open(path)
+            .expect("the other program opens the file");
+        std::thread::spawn(move || {
+            std::thread::sleep(hold);
+            drop(file);
+        })
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_partial_another_program_holds_open_is_placed_once_it_is_let_go() {
+        let folder = folder("held-briefly");
+        let path = folder.join("video.mp4");
+        let partial = partial_path_of(&path);
+        fs::write(&partial, b"video").expect("written");
+        let other = held_open(&partial, std::time::Duration::from_millis(400));
+        let placed = finalize_file(&partial, &path);
+        other.join().expect("the other program lets go");
+        assert!(
+            matches!(placed, Finalization::Placed(Placed::Link)),
+            "{placed:?}"
+        );
+        assert_eq!(fs::read(&path).expect("there"), b"video");
+        assert!(!partial.exists());
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_partial_held_open_past_the_wait_is_named_as_open_in_another_program() {
+        let folder = folder("held-long");
+        let path = folder.join("video.mp4");
+        let partial = partial_path_of(&path);
+        fs::write(&partial, b"video").expect("written");
+        let other = held_open(&partial, IN_USE_WAIT + std::time::Duration::from_secs(1));
+        let placed = finalize_file(&partial, &path);
+        other.join().expect("the other program lets go");
+        let Finalization::Failed(message) = placed else {
+            panic!("a source still held open is not removed: {placed:?}");
+        };
+        assert!(message.contains("is open in another program"), "{message}");
+        assert!(
+            message.contains(&partial.display().to_string()),
+            "{message}"
+        );
+        assert_eq!(fs::read(&path).expect("the video is in place"), b"video");
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_copy_another_program_holds_open_is_renamed_once_it_is_let_go() {
+        let folder = folder("copy-held");
+        let path = folder.join("video.mp4");
+        let copying = copying_path_of(&path);
+        fs::write(&copying, b"whole").expect("written");
+        let other = held_open(&copying, std::time::Duration::from_millis(400));
+        rename_without_replacing(&copying, &path).expect("renamed once let go");
+        other.join().expect("the other program lets go");
+        assert_eq!(fs::read(&path).expect("there"), b"whole");
+        assert!(!copying.exists());
+        let _ = fs::remove_dir_all(folder);
     }
 }

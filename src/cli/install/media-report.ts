@@ -1,13 +1,15 @@
 import type { MediaInspection } from './media-record.ts'
 import type { MediaInstallResult } from './media-install.ts'
+import type { Marks } from '../../reporters/style.ts'
 import { mediaSourceDigest } from './media-pins.ts'
 import { parse, s } from '../../protocol/schema.ts'
+import { unicodeMarks } from '../../reporters/style.ts'
 
 const licenceFile = s.object({ path: s.string(), title: s.string(), licence: s.string(), sha256: s.optional(s.string()), published: s.boolean(), bundled: s.optional(s.string()) })
 const licences = s.union([s.object({ inspected: s.literal(true), files: s.array(licenceFile) }), s.object({ inspected: s.literal(false), reason: s.string() })])
 const sourceCode = s.object({ repository: s.string(), revision: s.string(), patches: s.string() })
-const listedBuild = s.object({ engine: s.string(), title: s.string(), version: s.string(), build: s.optional(s.string()), platform: s.enum(['mac-arm64', 'linux-x64']), source: s.string(), pinnedSha256: s.union([s.string(), s.literal(null)]), state: s.enum(['missing', 'installed', 'damaged', 'unverifiable']), folder: s.string(), executablePath: s.optional(s.string()), sha256: s.optional(s.string()), installedAt: s.optional(s.string()), problems: s.array(s.string()), licences, sourceCode: s.optional(sourceCode), install: s.union([s.object({ command: s.string() }), s.object({ refused: s.string(), missingNotices: s.optional(s.array(s.string())) })]) })
-const browserDocument = s.object({ schemaVersion: s.literal(1), platform: s.enum(['mac-arm64', 'linux-x64']), cache: s.object({ browsers: s.string(), executors: s.string() }), builds: s.array(listedBuild) })
+const listedBuild = s.object({ engine: s.string(), title: s.string(), version: s.string(), build: s.optional(s.string()), platform: s.enum(['mac-arm64', 'linux-x64', 'win-x64']), source: s.string(), pinnedSha256: s.union([s.string(), s.literal(null)]), state: s.enum(['missing', 'installed', 'damaged', 'unverifiable']), folder: s.string(), executablePath: s.optional(s.string()), sha256: s.optional(s.string()), installedAt: s.optional(s.string()), problems: s.array(s.string()), licences, sourceCode: s.optional(sourceCode), install: s.union([s.object({ command: s.string() }), s.object({ refused: s.string(), missingNotices: s.optional(s.array(s.string())) })]) })
+const browserDocument = s.object({ schemaVersion: s.literal(1), platform: s.enum(['mac-arm64', 'linux-x64', 'win-x64']), cache: s.object({ browsers: s.string(), executors: s.string() }), builds: s.array(listedBuild) })
 
 /** Adds media to the existing list document without changing browser pin or record rules. */
 export function renderMediaListing(browserText: string, inspection: MediaInspection | undefined, json: boolean): string {
@@ -19,7 +21,8 @@ export function renderMediaListing(browserText: string, inspection: MediaInspect
   return `${JSON.stringify({ ...document.value, builds: [...document.value.builds, media] }, null, 2)}\n`
 }
 
-export function renderMediaInstall(result: MediaInstallResult): string {
-  if (!result.ok) return `  ✗ media            ${result.message}\n`
-  return `  ✓ media            retest-media ${result.inspection.version} ${result.action === 'installed' ? 'installed' : 'was already installed'}\n                     ${result.inspection.executablePath}\n                     binary SHA-256 ${result.inspection.record?.binarySha256 ?? 'unavailable'}\n                     Recording finds it from this checked cache. ffmpeg is a separate host prerequisite.\n`
+/** The media install as the terminal shows it, with the marks the terminal draws. */
+export function renderMediaInstall(result: MediaInstallResult, marks: Marks = unicodeMarks): string {
+  if (!result.ok) return `  ${marks.failed} media            ${result.message}\n`
+  return `  ${marks.passed} media            retest-media ${result.inspection.version} ${result.action === 'installed' ? 'installed' : 'was already installed'}\n                     ${result.inspection.executablePath}\n                     binary SHA-256 ${result.inspection.record?.binarySha256 ?? 'unavailable'}\n                     Recording finds it from this checked cache. ffmpeg is a separate host prerequisite.\n`
 }

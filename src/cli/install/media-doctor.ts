@@ -1,6 +1,7 @@
 import type { Check } from '../doctor/checks.ts'
 import type { LoadedConfig } from '../../config/loaded.ts'
 import type { MediaEnvironment } from './media-tools.ts'
+import { notAnEncoder } from '../../media/host.ts'
 import { locateFfmpeg, ffmpegFix, locateMedia } from '../../media/locate.ts'
 import { mediaTarget, minimumRust } from './media-pins.ts'
 import { findMediaTool, probeMediaBinary, rustAtLeast, runMediaTool, rustFix } from './media-tools.ts'
@@ -14,7 +15,7 @@ export async function checkMedia(config: LoadedConfig, env: MediaEnvironment, si
 export async function mediaDoctorRows(env: MediaEnvironment, signal: AbortSignal): Promise<Check[]> {
   const checks: Check[] = []
   if (signal.aborted) return [{ group: 'media', subject: 'retest-media', ok: false, text: 'The media check was stopped.', fix: rustFix }]
-  const found = await locateMedia({ env, ffmpeg: '/usr/bin/false', signal })
+  const found = await locateMedia({ env, ffmpeg: notAnEncoder, signal })
   checks.push(found.ok
     ? { group: 'media', subject: 'retest-media', ok: true, text: `retest-media ${found.hello.version}, protocol ${found.hello.protocol}, from ${found.source}; source builds need Rust 1.88 or later, edition 2024 needs Rust 1.85 or later${found.inspection?.record === undefined ? '; no cache record for this explicit binary' : `; SHA-256 ${found.inspection.record.binarySha256} matches its record`}`, detail: found.executable, fix: rustFix }
     : { group: 'media', subject: 'retest-media', ok: false, text: found.message, fix: 'Run npx retest install media. For an explicit release binary set RETEST_MEDIA_BINARY.' })

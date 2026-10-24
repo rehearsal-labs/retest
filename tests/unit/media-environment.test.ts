@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { MediaProcess } from '../../src/media/client.ts'
+import { hostVariable } from '../../src/media/host.ts'
 import { tempProject } from '../support/project.ts'
 import { fakeMediaStarter, recordProject } from './runner-recording-fakes.ts'
 
@@ -14,15 +15,16 @@ test('an explicit media environment excludes a synthetic parent judge variable i
   const previous = process.env[name]
   process.env[name] = 'synthetic-fixture-value'
   t.after(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous })
-  const executable = join(folder, 'media.mjs')
+  // Node runs the stand-in, so the child is a real process on every platform, Windows included.
+  const script = join(folder, 'media.mjs')
   const marker = join(folder, 'environment.json')
-  await writeFile(executable, `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';
+  await writeFile(script, `import {writeFileSync} from 'node:fs';
 writeFileSync(${JSON.stringify(marker)}, JSON.stringify({judgePresent:Object.hasOwn(process.env,${JSON.stringify(name)}), path:process.env.PATH}));
 function send(value){const head=Buffer.from(JSON.stringify(value));const prefix=Buffer.alloc(8);prefix.writeUInt32BE(head.length);process.stdout.write(Buffer.concat([prefix,head]));}
 send({type:'hello',protocol:2,version:'0.1.0',build:{target:'aarch64-apple-darwin',profile:'release'},ffmpeg:'/fake/ffmpeg',encoder:{state:'probing'}});
 process.stdin.once('data',()=>{send({type:'bye',stopped:0});process.stdin.pause();});
-process.stdin.resume();\n`, { mode: 0o755 })
-  const options = { executable, startTimeoutMs: 5000, env: { PATH: '/usr/bin:/bin' } }
+process.stdin.resume();\n`)
+  const options = { executable: process.execPath, args: [script], startTimeoutMs: 5000, env: { PATH: '/usr/bin:/bin' } }
   const media = await MediaProcess.start(options)
   try {
     assert.deepEqual(JSON.parse(await readFile(marker, 'utf8')), { judgePresent: false, path: '/usr/bin:/bin' })
@@ -51,5 +53,5 @@ test('the recording runner carries its judge exclusion into media startup', asyn
   assert.equal(run.result.files[0]?.tests[0]?.status, 'passed')
   assert.ok(environment, 'media startup must receive an explicit environment')
   assert.equal(Object.hasOwn(environment, name), false)
-  assert.equal(environment['PATH'], process.env['PATH'])
+  assert.equal(hostVariable(environment, 'PATH'), process.env['PATH'])
 })
