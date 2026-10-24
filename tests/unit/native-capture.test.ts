@@ -15,6 +15,11 @@ import { nativeCaptureTargetCheck, nativeFrameSource, sessionFrameSource, sessio
 import { grabSimulatorDisplay } from '../../src/native/capture/simulator-display.ts'
 import { systemTools } from '../../src/native/processes.ts'
 import { controlledClock } from '../support/controlled-clock.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 const sessionIdentity: SessionIdentity = {
   sessionId: 'k3v9q0x2mb:phone',
@@ -124,7 +129,7 @@ describe('a native session’s own captures as a screenshot loop', () => {
 })
 
 describe('the simulator’s display read through simctl', () => {
-  test('the file simctl wrote is handed back as it is, asked for in the format named, and its folder removed', async (t) => {
+  test('the file simctl wrote is handed back as it is, asked for in the format named, and its folder removed', macDriver, async (t) => {
     const { tools, calls } = await fakeXcrun(t, `printf '\\377\\330\\377\\340rest' > "$6"`)
     const before = new Set((await readdir(tmpdir())).filter((name) => name.startsWith('retest-display-')))
     const taken = await grabSimulatorDisplay({ tools, udid: 'UDID-1', format: 'jpeg', timeoutMs: 5000, signal: new AbortController().signal })
@@ -135,14 +140,14 @@ describe('the simulator’s display read through simctl', () => {
     assert.deepEqual(after, [], 'nothing is left in the temporary folder')
   })
 
-  test('simctl failing, or writing something that is not the format asked for, is a failed read that says so', async (t) => {
+  test('simctl failing, or writing something that is not the format asked for, is a failed read that says so', macDriver, async (t) => {
     const failing = await fakeXcrun(t, `echo 'Invalid device: UDID-1' >&2; exit 164`)
     assert.deepEqual(await grabSimulatorDisplay({ tools: failing.tools, udid: 'UDID-1', format: 'png', timeoutMs: 5000, signal: new AbortController().signal }), { ok: false, problem: 'xcrun simctl io screenshot ended with exit code 164: Invalid device: UDID-1' })
     const wrong = await fakeXcrun(t, `printf 'GIF89a' > "$6"`)
     assert.deepEqual(await grabSimulatorDisplay({ tools: wrong.tools, udid: 'UDID-1', format: 'png', timeoutMs: 5000, signal: new AbortController().signal }), { ok: false, problem: 'xcrun simctl io screenshot wrote a file that is not a PNG.' })
   })
 
-  test('a simulator display source hands over simctl’s JPEG untouched, and a session that ends while simctl runs ends capture', async (t) => {
+  test('a simulator display source hands over simctl’s JPEG untouched, and a session that ends while simctl runs ends capture', macDriver, async (t) => {
     const { tools } = await fakeXcrun(t, `printf '\\377\\330\\377\\333' > "$6"`)
     const session = new FakeSession()
     const source = simulatorDisplayFrameSource({ session, udid: 'UDID-1', tools, format: 'jpeg' }, identity)

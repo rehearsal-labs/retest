@@ -14,6 +14,7 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { ELECTRON_FILES_MAIN, ELECTRON_FILES_PAGE, TASKS_CSV } from '../../fixtures/task-app/files-page.ts'
 import { launchElectron } from '../../src/browser/electron.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { AttemptFiles } from '../../src/runner/files.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { agentHost, openOn } from './agent-harness.ts'
@@ -93,7 +94,10 @@ async function downloadEvents(events: readonly EventBody[], count: number): Prom
 test('a file by path reaches the input and the server with its name, type and bytes', async (t) => {
   const { page, received } = await filesPage(t)
   const path = await writeReport(t)
-  const result = await give(page, byLabel('Attachment'), [path])
+  // The file's first look in its browser, just launched, waits for the page's first frame, which a label needs; on
+  // GitHub's macOS runner that took longer than the 2000 ms the later cases give. What reaches the input and the
+  // server is the proof, not how soon, so this one has the budget a run gives every action.
+  const result = await give(page, byLabel('Attachment'), [path], defaultTimeouts.action)
   assert.ok(result.ok && result.kind === 'setInputFiles', JSON.stringify(result))
   assert.deepEqual(result.files, [{ name: 'report.pdf', size: report.length, type: 'application/pdf' }])
   assert.equal(result.page?.title, 'Files')

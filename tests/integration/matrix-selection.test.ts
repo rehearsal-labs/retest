@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { test } from 'node:test'
 import { openApp } from './browser-harness.ts'
 import {
@@ -11,6 +12,7 @@ import {
   onlyEvent,
   onlyTest,
   printedPids,
+  repositoryRoot,
   resultOf,
   runRetest,
   scenario,
@@ -77,7 +79,8 @@ test('missing browser: an executable that is not there is a setup failure, never
   const skipped = onlyTest(run)
   assert.equal(skipped.status, 'not_run')
   assert.equal(skipped.failure?.class, 'setup_failed')
-  assert.match(skipped.failure?.message ?? '', /No browser at \/nonexistent\/chromium\./)
+  // The CLI reads --browser against its working folder, so on Windows the path is on that folder's drive.
+  assert.ok(skipped.failure?.message.includes(`No browser at ${resolve(repositoryRoot, '/nonexistent/chromium')}.`), skipped.failure?.message)
   assert.equal(app.submissions(), 0)
 })
 

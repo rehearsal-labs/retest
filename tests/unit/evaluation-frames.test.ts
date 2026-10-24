@@ -12,7 +12,7 @@ import type { HeldFrame } from '../../fixtures/evaluation-corpus/runner/frame-st
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { describe, test } from 'node:test'
 import { AttemptEvaluations } from '../../src/evaluation/attempt.ts'
 import { CallBudget, defaultEvaluationLimits } from '../../src/evaluation/budget.ts'
@@ -446,7 +446,9 @@ describe('what a report says of frames and diagnostics', () => {
     const { evaluations } = await harness(t, { diagnostics: view(snapshot) })
     const record = await check(evaluations, [{ kind: 'diagnostics', include: ['console', 'network'] }])
     const evidence = evaluationDetails(record, 'run').find((line) => line.label === 'Evidence')?.value ?? ''
-    assert.match(evidence, /^e1 console and network records of web, 2 sent, partial: The selected records are not whole: network partial, over the limits\. run\/artifacts\/.*-diagnostics\.json$/)
+    // The artifact is named joined to the run folder the report was given, as this platform writes it.
+    assert.ok(evidence.startsWith(`e1 console and network records of web, 2 sent, partial: The selected records are not whole: network partial, over the limits. ${join('run', 'artifacts')}${sep}`), evidence)
+    assert.match(evidence, /-diagnostics\.json$/)
   })
 })
 

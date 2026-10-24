@@ -9,3 +9,21 @@ import { relative, sep } from 'node:path'
 export function relativePosixPath(from: string, to: string): string {
   return relative(from, to).split(sep).join('/')
 }
+
+/**
+ * A path with forward slashes on every platform, as a record stores it, so a run on macOS and one on Windows read alike.
+ *
+ * @example posixPath('C:\\work\\.data\\desk') // 'C:/work/.data/desk' on Windows; a POSIX path is unchanged
+ */
+export function posixPath(path: string): string {
+  return path.split(sep).join('/')
+}
+
+/**
+ * A path a record stores, as this platform writes it, for a person.
+ *
+ * @example platformPath('C:/work/.data/desk') // 'C:\\work\\.data\\desk' on Windows; unchanged on macOS and Linux
+ */
+export function platformPath(path: string): string {
+  return path.split('/').join(sep)
+}

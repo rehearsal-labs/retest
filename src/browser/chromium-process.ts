@@ -12,9 +12,11 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { Deadline } from '../protocol/deadline.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { errorMessage } from '../protocol/failures.ts'
+import { withoutVariables } from '../shared/environment.ts'
 import { errorCode } from '../shared/error-code.ts'
 import { onlyUnreaped, procStats } from '../shared/unreaped-group.ts'
 import { OwnedProcessGroup, unverifiedMembersProblem } from '../shared/process-ownership.ts'
+import { holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../shared/process-system.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { writeRedactedLog } from './redacted-log.ts'
 
@@ -292,6 +294,19 @@ export function stillThereMessage(groupId: number, stats: () => readonly string[
  * @example signalGroup(browser.pid, 0) // true while any browser process is still there
  */
 export function signalGroup(pgid: number, signal: NodeJS.Signals | 0): boolean {
+  // Windows has no process group to send signal 0 to: a launch held here is asked through its job, and one held by
+  // another process only by its own pid.
+  if (signal === 0 && launchesHeldByJob) {
+    const owner = ownedGroups.get(pgid)
+    if (owner !== undefined) return owner.remains()
+    try {
+      process.kill(pgid, 0)
+      return true
+    } catch (error) {
+      if (errorCode(error) === 'ESRCH') return false
+      throw error
+    }
+  }
   if (signal !== 0) {
     const owner = ownedGroups.get(pgid)
     if (owner === undefined) throw new Error(`Process group ${pgid} has no recorded launch ownership in this process, so it was not signaled.`)
@@ -324,18 +339,30 @@ async function spawnInGroup(options: StartOptions): Promise<ChromiumProcess> {
   const log = await openLog(options.logFile)
   let logHandedOn = false
   try {
-    const hidden = new Set(options.hiddenVariables)
     // Output to redact comes through Retest; any other goes straight to the log.
     const outputMode = redact === undefined && redactStream === undefined ? log.fd : 'pipe'
-    const child = spawn(options.executable, options.args, {
-      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !hidden.has(name))),
-      detached: true,
-      stdio: ['ignore', outputMode, outputMode, 'pipe', 'pipe'],
-    })
+    try {
+      prepareOwnedLaunch()
+    } catch (error) {
+      throw new LaunchError(`Cannot start ${options.executable}: ${errorMessage(error)}`, { cause: error })
+    }
+    let child: ChildProcess
+    try {
+      child = spawn(options.executable, options.args, {
+        env: withoutVariables(process.env, options.hiddenVariables),
+        detached: true,
+        stdio: ['ignore', outputMode, outputMode, 'pipe', 'pipe'],
+      })
+    } catch (error) {
+      // Windows refuses a program whose access list denies this user running it at the spawn itself, with EPERM; the
+      // check before the launch cannot see that there, as it sees a mode on macOS and Linux.
+      const refused = errorCode(error) === 'EPERM' || errorCode(error) === 'EACCES'
+      throw new LaunchError(refused ? `${options.executable} is not executable. Allow it to run, or pass another browser.` : `Cannot start ${options.executable}: ${errorMessage(error)}`, { cause: error })
+    }
     await once(child, 'spawn').catch((error: unknown) => {
       throw new LaunchError(`Cannot start ${options.executable}: ${errorMessage(error)}`, { cause: error })
     })
-    const ownership = new OwnedProcessGroup(child.pid ?? 0)
+    const ownership = holdLaunch(child)
     const ownershipProblems = ownership.capture()
     const [, , , writable, readable] = child.stdio
     if (!(writable instanceof Writable) || !(readable instanceof Readable)) {
@@ -454,20 +481,50 @@ async function groupEnds(ownership: OwnedProcessGroup, grace: Deadline, { ref = 
   return true
 }
 
+/** How long an exit hook on Windows asks again to remove a folder whose processes it confirmed gone. */
+export const exitRemovalMs: number = 2 * closeGraceMs
+
 // Runs while the Retest process exits, when a failure can neither be awaited nor reported.
 function killAtExit(ownership: OwnedProcessGroup, profile: string | undefined): void {
   try {
     const deadline = new Deadline(closeGraceMs)
     ownership.signalNow('SIGKILL', deadline)
-    if (profile !== undefined && groupEndsNow(ownership, deadline)) rmSync(profile, { recursive: true, force: true, maxRetries: 3 })
+    if (profile === undefined || !groupEndsNow(ownership, deadline)) return
+    // On Windows the end and its confirmation are runs of retest-supervisor, which a slow host can spend most of the
+    // bound on, and the folder refuses removal for up to a second after its processes left their job, as a scanner
+    // holds what they wrote; the removal gets a bound of its own, so a profile whose processes are confirmed gone is
+    // removed.
+    if (launchesHeldByJob) removeOnceFree(profile, new Deadline(exitRemovalMs))
+    else rmSync(profile, { recursive: true, force: true, maxRetries: 3 })
   } catch {
     // Throwing here would replace the exit code Retest chose.
   }
 }
 
-// `groupEnds` for an exit hook, which cannot await. Processes just sent SIGKILL are still exiting when `ps` first reads
-// them, so the group is read again, a poll apart, until it is gone or the deadline passes.
-function groupEndsNow(ownership: OwnedProcessGroup, deadline: Deadline): boolean {
+/**
+ * Removes a folder from an exit hook on Windows, where a folder whose files processes just ended were using refuses
+ * removal for a moment after they left their job, and the synchronous removal does not wait: it is asked again, a poll
+ * apart, until the deadline.
+ */
+export function removeOnceFree(folder: string, deadline: Deadline): void {
+  const pause = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+  for (;;) {
+    try {
+      rmSync(folder, { recursive: true, force: true })
+      return
+    } catch (error) {
+      const code = errorCode(error)
+      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'ENOTEMPTY') || deadline.expired) throw error
+      Atomics.wait(pause, 0, 0, Math.min(pollMs, deadline.remainingMs))
+    }
+  }
+}
+
+/**
+ * Whether a group is gone, for an exit hook, which cannot await. Processes just sent SIGKILL are still exiting when they
+ * are first read, so the group is read again, a poll apart, until it is gone or the deadline passes.
+ */
+export function groupEndsNow(ownership: OwnedProcessGroup, deadline: Deadline): boolean {
   const pause = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
   while (ownership.remains(deadline)) {
     if (deadline.expired) return false

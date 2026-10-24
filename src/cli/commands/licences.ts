@@ -13,6 +13,7 @@ import { listWords } from '../../shared/list-words.ts'
 import { parseArguments } from '../arguments.ts'
 import { CliError, UsageError } from '../errors.ts'
 import { licenceSummary } from '../install/report.ts'
+import { readZipMember } from '../install/zip-member.ts'
 import { suggest } from '../suggest.ts'
 
 export const licencesCommand: Command = {
@@ -118,8 +119,59 @@ function sourcePointers(pin: BuildPin): string[] {
 
 type NoticeText = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly problem: string }
 
+/** How much of a notice is read at a time while its checksum is checked, before any of it is kept. */
+const checkChunkBytes = 1024 * 1024
+
+/** A notice's bytes once both readings had its checksum, or why they are not kept, as a clause with no full stop. */
+export type CheckedNotice = { readonly ok: true; readonly bytes: Buffer } | { readonly ok: false; readonly problem: string }
+
+/** Reads `length` bytes of an opened file at `position` into `buffer` at `offset`, as a file handle does. */
+export type PositionedRead = (buffer: Buffer, offset: number, length: number, position: number) => Promise<{ readonly bytesRead: number }>
+
+/**
+ * The bytes of an opened notice of `size` bytes, kept only when they have `checksum`. The recorded checksum, not a
+ * size, says what a notice must be, and notices differ widely in size: Chromium's licence page in Electron is 20 MB.
+ * So the file is first read through a chunk at a time and kept only when it has that checksum, then read again into a
+ * buffer of the size just read and checked once more: a file of other bytes is never held, whatever its size, and one
+ * that changed between the readings is refused.
+ *
+ * @example await readCheckedNotice((buffer, offset, length, position) => handle.read(buffer, offset, length, position), size, checksum, signal)
+ */
+export async function readCheckedNotice(read: PositionedRead, size: number, checksum: string, signal: AbortSignal): Promise<CheckedNotice> {
+  const stopped = { ok: false, problem: 'reading was stopped' } as const
+  const changed = { ok: false, problem: 'notice changed size while read' } as const
+  const chunk = Buffer.allocUnsafe(Math.min(checkChunkBytes, size + 1))
+  const first = createHash('sha256')
+  let through = 0
+  for (;;) {
+    if (signal.aborted) return stopped
+    const { bytesRead } = await read(chunk, 0, chunk.length, through)
+    if (bytesRead === 0) break
+    first.update(chunk.subarray(0, bytesRead))
+    through += bytesRead
+    if (through > size) return changed
+  }
+  if (through !== size) return changed
+  if (first.digest('hex') !== checksum) return { ok: false, problem: 'notice checksum does not match' }
+  const buffer = Buffer.alloc(size + 1)
+  let filled = 0
+  while (filled < buffer.length) {
+    if (signal.aborted) return stopped
+    const { bytesRead } = await read(buffer, filled, buffer.length - filled, filled)
+    if (bytesRead === 0) break
+    filled += bytesRead
+  }
+  const bytes = buffer.subarray(0, filled)
+  if (filled !== size || createHash('sha256').update(bytes).digest('hex') !== checksum) return { ok: false, problem: 'notice changed while read' }
+  return { ok: true, bytes }
+}
+
+/** The member of Firefox's omni.ja that is its about:license page. */
+const firefoxLicencePage = 'chrome/toolkit/content/global/license.html'
+
 // Firefox keeps its notice page in omni.ja. Read the archive from the checked descriptor before asking the host
-// unzip to print that one member from a private copy. No path from a build becomes a command or archive member name.
+// unzip to print that one member from a private copy, or on Windows, which has no unzip, reading the member from the
+// checked bytes. No path from a build becomes a command or archive member name.
 async function readNoticeFile(path: string, file: LicenceFile, checksum: string | undefined, signal: AbortSignal): Promise<NoticeText> {
   if (checksum === undefined) return { ok: false, problem: `${file.path}: no notice checksum is recorded.` }
   const opened = await openRegularFile(path)
@@ -127,28 +179,23 @@ async function readNoticeFile(path: string, file: LicenceFile, checksum: string 
   if (opened.kind !== 'opened') return { ok: false, problem: `${describeRefusal(opened, file.path)}.` }
   let bytes: Buffer
   try {
-    const maximum = file.path.endsWith('/omni.ja') ? 128 * 1024 * 1024 : 16 * 1024 * 1024
-    if (opened.size > maximum) return { ok: false, problem: `${file.path}: notice exceeds the byte limit.` }
-    const buffer = Buffer.alloc(opened.size + 1)
-    let filled = 0
-    while (filled < buffer.length) {
-      if (signal.aborted) return { ok: false, problem: `${file.path}: reading was stopped.` }
-      const { bytesRead } = await opened.handle.read(buffer, filled, buffer.length - filled, null)
-      if (bytesRead === 0) break
-      filled += bytesRead
-    }
-    if (filled !== opened.size) return { ok: false, problem: `${file.path}: notice changed size while read.` }
-    bytes = buffer.subarray(0, filled)
-    if (createHash('sha256').update(bytes).digest('hex') !== checksum) return { ok: false, problem: `${file.path}: notice checksum does not match.` }
+    const { handle } = opened
+    const checked = await readCheckedNotice((buffer, offset, length, position) => handle.read(buffer, offset, length, position), opened.size, checksum, signal)
+    if (!checked.ok) return { ok: false, problem: `${file.path}: ${checked.problem}.` }
+    bytes = checked.bytes
   } finally {
     await opened.handle.close()
   }
   if (!file.path.endsWith('/omni.ja')) return { ok: true, text: bytes.toString('utf8') }
+  if (process.platform === 'win32') {
+    const page = readZipMember(bytes, firefoxLicencePage, 16 * 1024 * 1024 - 1)
+    return page.ok && page.bytes.length > 0 ? { ok: true, text: page.bytes.toString('utf8') } : { ok: false, problem: `${file.path}: its licence page could not be read completely.` }
+  }
   const folder = await mkdtemp(join(tmpdir(), 'retest-licences-'))
   try {
     const archive = join(folder, 'omni.ja')
     await writeFile(archive, bytes, { mode: 0o600, flag: 'wx' })
-    const result = await runCommand('/usr/bin/unzip', ['-p', archive, 'chrome/toolkit/content/global/license.html'], { timeoutMs: 10_000, signal })
+    const result = await runCommand('/usr/bin/unzip', ['-p', archive, firefoxLicencePage], { timeoutMs: 10_000, signal })
     if (result.code !== 0 || result.cleanupProblems.length > 0 || result.stdout.length >= 16 * 1024 * 1024 || result.stdout === '') return { ok: false, problem: `${file.path}: its licence page could not be read completely.` }
     return { ok: true, text: result.stdout }
   } finally {

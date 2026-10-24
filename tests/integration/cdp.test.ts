@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import type { TestContext } from 'node:test'
 import type { CdpSession } from '../../src/browser/cdp/session.ts'
+import type { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -18,7 +19,8 @@ import { CdpClosedError, CdpDisconnectedError } from '../../src/browser/cdp/erro
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
-import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
+import { groupsOf, processesUsing as windowsProcessesUsing } from './browser-harness.ts'
 
 const DEFAULT_BROWSER = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
@@ -53,6 +55,8 @@ async function launch(t: TestContext): Promise<Browser> {
     ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     'about:blank',
   ]
+  // On Windows the browser is held in a job of this test's own, which is how it is read and ended there.
+  prepareOwnedLaunch()
   const child = spawn(browserPath(), args, { detached: true, stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] })
   try {
     await once(child, 'spawn')
@@ -63,7 +67,7 @@ async function launch(t: TestContext): Promise<Browser> {
   const exited = once(child, 'exit')
   const { pid } = child
   assert.ok(pid !== undefined)
-  const ownership = new OwnedProcessGroup(pid)
+  const ownership = holdLaunch(child)
   assert.deepEqual(ownership.capture(), [])
   t.after(async () => {
     await stopGroup(pid, exited, ownership)
@@ -97,6 +101,7 @@ function processGroupExists(pgid: number): boolean {
 
 /** Lines of `ps` that mention the profile, which every browser process carries in its command line. */
 async function processesUsing(profile: string): Promise<string[]> {
+  if (launchesHeldByJob) return windowsProcessesUsing(profile)
   const paths = [profile, await realpath(profile)]
   const { stdout } = await promisify(execFile)('ps', ['-axww', '-o', 'pid=,pgid=,command='])
   return stdout.split('\n').filter((line) => paths.some((path) => line.includes(path)))
@@ -190,7 +195,7 @@ test('drives Chrome over the debugging pipe, and a killed browser rejects its pe
   assert.equal(field(script, 'result', 'value'), 'function')
   assert.deepEqual(exceptions, [])
   const running = await processesUsing(browser.profile)
-  const groups = new Set(running.map((line) => line.trim().split(/\s+/)[1]))
+  const groups = new Set(groupsOf(running))
   assert.ok(running.length > 0, 'ps should see the running browser')
   assert.deepEqual([...groups], [String(browser.pid)], 'every browser process should share the process group')
   t.diagnostic(`${running.length} browser processes, all in process group ${browser.pid}`)
@@ -214,7 +219,9 @@ test('drives Chrome over the debugging pipe, and a killed browser rejects its pe
   assert.deepEqual(browser.diagnostics, [])
 
   const [code, signal] = await browser.exited
-  assert.deepEqual([code, signal], [null, 'SIGKILL'])
+  // Windows ends a process in a job that is ended with the code retest-supervisor gives a process it ends, and names no
+  // signal.
+  assert.deepEqual([code, signal], launchesHeldByJob ? [137, null] : [null, 'SIGKILL'])
   await until(() => !processGroupExists(browser.pid), 5000, `process group ${browser.pid} to end`)
   assert.deepEqual(await processesUsing(browser.profile), [])
 

@@ -2,17 +2,18 @@ import type { EventBody } from '../../src/protocol/events.ts'
 import type { RecordingRecord } from '../../src/protocol/recording.ts'
 import type { FinishedRun } from './cli-harness.ts'
 import type { TestContext } from 'node:test'
+import type { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { RunMedia, startMediaProcess } from '../../src/runner/run-media.ts'
-import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { launchOwnership } from '../../src/shared/process-system.ts'
 import { rebuildResult } from '../../src/store/rebuild-result.ts'
 import { buildReport } from '../../src/reporters/html/build-report.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
 import { countParts } from '../../src/reporters/format.ts'
-import { assertKilledStdoutIsEventPrefix, assertStdoutIsEvents, readFinishedRun, repositoryRoot, waitFor } from './cli-harness.ts'
+import { assertKilledStdoutIsEventPrefix, assertStdoutIsEvents, killedExit, readFinishedRun, repositoryRoot, waitFor } from './cli-harness.ts'
 import { encoderPid, finishRecordingRun, killOwned, ownershipOf, partialFiles, recordingRun, recordingSkip, saveProof as saveRecordingProof } from './recording-harness.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 import { decoder, ffmpeg, ffprobe, preserve, reportFor } from './evidence-support.test.ts'
@@ -151,10 +152,10 @@ test('a killed runner leaves no owned media worker, encoder, browser or test pro
       await waitFor('the recorded exit-test descendants gone after harness cleanup', () => !owner.remains())
     }
   })
-  killOwned(owner, started.retest.pid)
+  started.retest.killOutright()
   const run = await readFinishedRun(started)
   await saveProof(run, 'runner-exit',t)
-  assert.deepEqual(run.exit, { code: null, signal: 'SIGKILL' })
+  assert.deepEqual([run.exit, run.killedOutright], [killedExit, true])
   assert.equal(run.result, undefined)
   // The assertion precedes harness cleanup: only the runner is killed by the test body.
   await waitFor('the worker and all launch descendants to stop after the runner died', () => !owner.remains())
@@ -195,7 +196,7 @@ test('the next media worker removes leftovers of a killed run and leaves unrelat
   await started.retest.waitForEvent('action.completed', event => event.command === 'goto')
   const owner = ownershipOf(started)
   killOwned(owner, mediaStart.media.pid)
-  killOwned(owner, started.retest.pid)
+  started.retest.killOutright()
   const stopped = owner.signalReport('SIGKILL')
   assert.deepEqual(stopped.problems, [])
   assert.deepEqual(stopped.identityRefusals, [])
@@ -214,7 +215,7 @@ test('the next media worker removes leftovers of a killed run and leaves unrelat
   let nextOwner: OwnedProcessGroup | undefined
   const next = new RunMedia({
     location: { executable: process.env['RETEST_TEST_MEDIA_BINARY'] ?? join(repositoryRoot, 'media/target/release/retest-media'), ffmpeg: process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg' },
-    start: async (location, budget) => { const process = await startMediaProcess(location, budget); nextOwner = new OwnedProcessGroup(process.pid); assert.deepEqual(nextOwner.capture(), []); return process },
+    start: async (location, budget) => { const process = await startMediaProcess(location, budget); nextOwner = launchOwnership(process.pid); assert.deepEqual(nextOwner.capture(), []); return process },
     emit: event => void events.push(event), timeouts: { start: 10000, close: 5000, leftovers: 5000 }, runFolder: join(dirname(started.output), 'current'),
   })
   t.after(async () => { assert.equal(await next.close(), undefined); assert.equal(nextOwner?.remains(), false) })

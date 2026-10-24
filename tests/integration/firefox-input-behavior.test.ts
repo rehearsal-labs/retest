@@ -4,9 +4,9 @@ import { test } from 'node:test'
 import { toggleRefusal } from '../../src/browser/firefox/input.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { byLabel, byTestId, closeMs, observe, observeUntil, openPage, scratchFolder, servePages, setupMs, timed } from './browser-harness.ts'
-import { firefoxPath, testFirefoxRoute } from './engines.ts'
+import { firefoxHostSkip, firefoxPath, testFirefoxRoute } from './engines.ts'
 
-const skip = process.platform === 'darwin' && process.arch === 'arm64' ? false : 'Firefox requires macOS on Apple silicon'
+const skip = firefoxHostSkip()
 
 const selectionPage = `<!doctype html><select data-testid="list" multiple size="4">
 <option value="a">A</option><option value="b" selected>B</option><option value="c" selected>C</option><option value="d">D</option>

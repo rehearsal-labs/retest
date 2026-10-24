@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import type { Failure } from '../../src/protocol/failures.ts'
 import { BrowserError } from '../../src/browser/browser-error.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
-import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { holdLaunch, launchOwnership, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { closeGraceMs } from '../../src/browser/contract.ts'
 import {
   assertOk,
@@ -22,6 +22,7 @@ import {
   failureOf,
   goto,
   groupExists,
+  groupsOf,
   launch,
   observe,
   observeUntil,
@@ -36,6 +37,9 @@ import {
   within,
 } from './browser-harness.ts'
 import { killBrowserFromOutside } from './outside-kill.ts'
+
+// A profile path ends in its folder's name after the platform's own separator.
+const pathSeparator = process.platform === 'win32' ? '\\\\' : '/'
 
 // Posts to /pressed with a synchronous request, so the server knows the press arrived, then never returns.
 const FREEZE_ON_PRESS = `<!doctype html><button data-testid="freeze" style="width: 200px; height: 60px">Freeze</button><script>
@@ -107,7 +111,7 @@ test('launch reports the browser that ran and owns a process group and a profile
   assert.ok(existsSync(profile))
   const running = await processesUsing(profile)
   assert.ok(running.length > 0)
-  const groups = new Set(running.map((line) => line.trim().split(/\s+/)[1]))
+  const groups = new Set(groupsOf(running))
   assert.deepEqual([...groups], [String(browser.pid)], 'every browser process should be in the browser process group')
 })
 
@@ -335,7 +339,7 @@ test('a page whose renderer crashes fails the command waiting on it at once, and
   assertOk(await goto(page, '/'))
   await awaitPosts(site, '/busy', 1)
   // Record the fixture's live process tree after its renderer reports readiness, before injecting the crash.
-  const crashOwnership = new OwnedProcessGroup(browser.pid)
+  const crashOwnership = launchOwnership(browser.pid)
   assert.deepEqual(crashOwnership.capture(), [], 'the fixture browser and its descendants are owned by this test')
   const reading = timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'text' } }, 10_000))
   const renderers = (await processesUsing(await profileOf(browser.pid)))
@@ -431,13 +435,15 @@ async function launchInChild(t: TestContext, mode: 'exit' | 'wait') {
     if (process.env.RETEST_MODE === 'exit') process.stdin.once('data', () => process.exit(3))
     else setInterval(() => {}, 1000)
   `
+  // On Windows the child is held in a job of this test's own, which holds the browser it launches too.
+  prepareOwnedLaunch()
   const child = spawn(process.execPath, ['--conditions=retest-source', '--input-type=module', '-e', script], {
     stdio: ['pipe', 'pipe', 'inherit'],
     env: { ...process.env, RETEST_BROWSER: browserPath(), RETEST_LOG: join(folder, 'browser.log'), RETEST_MODE: mode },
   })
   const exited = once(child, 'exit')
   assert.ok(child.pid !== undefined)
-  const ownership = new OwnedProcessGroup(child.pid)
+  const ownership = holdLaunch(child)
   assert.deepEqual(ownership.capture(), [])
   t.after(() => assert.deepEqual(ownership.signal('SIGKILL'), []))
   const line = await firstOutput(child, exited, 30_000)
@@ -467,7 +473,7 @@ test('when the owning process exits without closing the browser, the browser gro
 
 test('when the owning process is killed outright, the browser exits because its pipe closed, and the next launch retains its profile', async (t) => {
   const { child, exited, pid, profile, ownership } = await launchInChild(t, 'wait')
-  assert.match(profile, new RegExp(`/retest-profile-${child.pid}-[A-Za-z0-9]+$`), 'the profile names the process that owns it')
+  assert.match(profile, new RegExp(`[${pathSeparator}]retest-profile-${child.pid}-[A-Za-z0-9]+$`), 'the profile names the process that owns it')
   assert.ok(child.pid !== undefined && ownership.verifiedIdentity(child.pid) !== undefined, 'the launched Retest process still has its recorded identity')
   child.kill('SIGKILL')
   await exited
@@ -476,5 +482,5 @@ test('when the owning process is killed outright, the browser exits because its 
   assert.equal(existsSync(profile), true, 'nothing was left to remove it')
   const next = await launch(t)
   assert.equal(existsSync(profile), true, 'a later launch cannot prove the old profile is still disposable')
-  assert.match(await profileOf(next.pid), new RegExp(`/retest-profile-${process.pid}-[A-Za-z0-9]+$`))
+  assert.match(await profileOf(next.pid), new RegExp(`[${pathSeparator}]retest-profile-${process.pid}-[A-Za-z0-9]+$`))
 })

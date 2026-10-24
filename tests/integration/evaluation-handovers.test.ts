@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { servePages } from './browser-harness.ts'
 import { budgets, configSource, eventsOf, filesHolding, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
 
@@ -26,7 +27,10 @@ test('a non-recording CLI screenshot check refuses pixels after a secret fill', 
       })`,
   })
   const secret = randomUUID()
-  const run = await runProject(t, root, { env: { RETEST_CLOSEOUT_PASSWORD: secret }, timeouts: budgets({ test: 30_000 }) })
+  // The fill is the first look at a page in a browser just launched. On GitHub's macOS runner the page answered no
+  // look within the harness's 2000 ms, so the test failed at the fill and never reached the check. The refusal after
+  // a secret fill is the proof, not the fill's speed, so actions have the budget a run gives them.
+  const run = await runProject(t, root, { env: { RETEST_CLOSEOUT_PASSWORD: secret }, timeouts: budgets({ test: 30_000, action: defaultTimeouts.action }) })
   assert.equal(run.exit.code, 2, `${run.stdout}\n${run.stderr}`)
   const result = testNamed(run, 'secret screenshot')
   const evaluation = result.evaluations?.[0]

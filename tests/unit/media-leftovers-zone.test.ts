@@ -23,7 +23,7 @@ test('a media sweep reports an unmarked live owner and leaves its run and output
   const notes = run.events.filter(event => event.type === 'media.leftovers')
   assert.equal(notes.length, 1)
   assert.match(JSON.stringify(notes), /cannot confirm.*time zone/)
-  assert.ok(JSON.stringify(notes).includes(`Remove ${join(old, 'events.jsonl')} once no runner is running.`))
+  assert.ok(notes.some(note => note.type === 'media.leftovers' && note.problem?.includes(`Remove ${join(old, 'events.jsonl')} once no runner is running.`) === true))
   assert.equal(readFileSync(join(old, 'events.jsonl'), 'utf8'), original)
   const pid = await endedPid()
   writeFileSync(join(old, 'events.jsonl'), previous.events.map(event => JSON.stringify(event.type === 'media.started' ? { ...event, media: { ...event.media, owner: { pid, startedAt: 'Thu Jan 1 00:00:00 1970' } } } : event)).join('\n') + '\n')

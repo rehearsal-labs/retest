@@ -68,9 +68,12 @@ const reporter: Reporter = {
 }
 
 // SIGINT stops the run as Ctrl+C does. SIGTERM means the host's own machine is shutting down, and the run says so.
+// Windows sends a console program no SIGTERM; there Ctrl+Break, which Node gives as SIGBREAK, means the same.
 const stop = new AbortController()
+const shuttingDown = { class: 'interrupted', message: 'The host is shutting down, so it stopped the run.' }
 process.once('SIGINT', () => stop.abort('SIGINT'))
-process.once('SIGTERM', () => stop.abort({ class: 'interrupted', message: 'The host is shutting down, so it stopped the run.' }))
+process.once('SIGTERM', () => stop.abort(shuttingDown))
+if (process.platform === 'win32') process.once('SIGBREAK', () => stop.abort(shuttingDown))
 
 const result = await runFiles(
   {

@@ -16,6 +16,9 @@ import { browserVersion, budgets, configSource, eventsOf, hostScript, runHost, r
 // intended check on a broken one and passes again once the app is repaired.
 
 const fakeJudge = fileURLToPath(new URL('../support/fake-evaluator.ts', import.meta.url))
+// What a module re-exports the judge from: a URL, which Node reads on every platform, where a Windows path would be read as
+// a URL whose scheme is its drive.
+const fakeJudgeUrl = new URL('../support/fake-evaluator.ts', import.meta.url).href
 
 // The Google Chrome a chrome() target runs on this machine, wherever its installer put it.
 function installedChrome(): string {
@@ -118,7 +121,7 @@ test('a fixed test passes on a correct app, fails at its intended required check
   const root = await writeProject(t, {
     'package.json': '{ "type": "module" }\n',
     'host.ts': replayHost(),
-    'judges/fake.ts': `export { default } from ${JSON.stringify(fakeJudge)}\n`,
+    'judges/fake.ts': `export { default } from ${JSON.stringify(fakeJudgeUrl)}\n`,
     [file]: tests,
     'tests/helpers/titles.ts': `export const taskTitle = 'Release checklist'\n`,
   })
@@ -167,7 +170,7 @@ test('a fixed test passes on a correct app, fails at its intended required check
   assert.deepEqual(eventsOf(weakened.events, 'browser.started'), [], 'and nothing started')
 
   // The evaluator's own code changes: the judge's adapter is edited.
-  writeFileSync(join(root, 'judges/fake.ts'), `// A new revision of the judge.\nexport { default } from ${JSON.stringify(fakeJudge)}\n`)
+  writeFileSync(join(root, 'judges/fake.ts'), `// A new revision of the judge.\nexport { default } from ${JSON.stringify(fakeJudgeUrl)}\n`)
   const newJudge = await host({ APP_URL: repaired.url, APP_BUILD: 'build-3-repaired' })
   assert.equal(newJudge.exit.code, 0, newJudge.stderr)
   const judged = testNamed(newJudge, name).execution

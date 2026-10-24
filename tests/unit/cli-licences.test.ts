@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { test } from 'node:test'
+import { join, normalize } from 'node:path'
+import { describe, test } from 'node:test'
 import { buildFolder, buildPlatform, findPin, pinnedBuilds, readBundledLicence } from '../../src/browser/builds.ts'
-import { listLicencePins, readLicenceNotices } from '../../src/cli/commands/licences.ts'
+import { listLicencePins, readCheckedNotice, readLicenceNotices } from '../../src/cli/commands/licences.ts'
+import { systemUnpackTools } from '../../src/cli/install/unpack.ts'
+import { windowsOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { unpinnedBuilds } from '../support/unpinned-host.ts'
-import { installStandIn, standInLicence, standInPin, temporaryCache, writeEntries } from './builds-fixtures.ts'
+import { homeEnvironment, installStandIn, standInLicence, standInPin, temporaryCache, writeEntries } from './builds-fixtures.ts'
 import { fakeCli } from './cli-fixtures.ts'
 import { fileSha256 } from '../../src/browser/builds.ts'
 import { runCommand } from '../../src/native/processes.ts'
+import { sha256Hex } from '../../src/shared/sha256.ts'
 
 const signal = (): AbortSignal => new AbortController().signal
 
@@ -91,6 +95,69 @@ test('an installed notice prints its exact text, and a missing or changed instal
   assert.match(missing.text, /LICENSE is missing\./)
 })
 
+test("an installed notice of any size prints whole once its checksum holds, as Electron's 20 MB Chromium licence page on each platform's pin", async () => {
+  for (const platform of ['mac-arm64', 'win-x64'] as const) {
+    const electron = findPin('electron', platform)
+    assert.ok(electron?.kind === 'archive' && electron.licences.inspected)
+    // Notices of the sizes Electron's are, standing in for their bytes: its page is past the 16 MiB a notice was once held to.
+    // LICENSE is the stand-in build's own, which installStandIn writes.
+    const texts = new Map(electron.licences.files.map((file) => [file.path, file.path === 'LICENSES.chromium.html' ? `<html>${'licence text, '.repeat(1_600_000)}</html>\n` : standInLicence]))
+    assert.ok((texts.get('LICENSES.chromium.html') ?? '').length > 20 * 1024 * 1024)
+    const { folders } = temporaryCache()
+    const pin = standInPin({ sha256: 'f'.repeat(64) }, { platform, licences: { inspected: true, files: electron.licences.files.map((file) => ({ ...file, sha256: sha256Hex(texts.get(file.path) ?? '') })) } })
+    await writeEntries(join(buildFolder(folders, pin), 'build'), Object.fromEntries(texts))
+    await installStandIn(folders, pin, { size: 7, sha256: 'f'.repeat(64) })
+    const result = await readLicenceNotices(pin, folders, signal())
+    assert.equal(result.complete, true, result.text.slice(-500))
+    for (const file of electron.licences.files) assert.ok(result.text.includes(`--- ${file.path} (${file.licence}) ---\n${texts.get(file.path) ?? ''}`), `${platform} ${file.path} is printed whole`)
+  }
+})
+
+describe('reading a notice against its checksum', () => {
+  // A notice's bytes as an opened file reads them, by position, with every read it was asked for written down.
+  function reader(first: Buffer, second: Buffer = first): { readonly read: Parameters<typeof readCheckedNotice>[0]; readonly lengths: number[] } {
+    const lengths: number[] = []
+    let passes = 0
+    return {
+      lengths,
+      read: async (buffer, offset, length, position) => {
+        if (position === 0) passes += 1
+        lengths.push(length)
+        const bytes = passes > 1 ? second : first
+        const count = Math.max(0, Math.min(length, bytes.length - position))
+        bytes.copy(buffer, offset, position, position + count)
+        return { bytesRead: count }
+      },
+    }
+  }
+  const notice = Buffer.from('x'.repeat(3 * 1024 * 1024 + 5))
+  const checksum = sha256Hex(notice)
+
+  test('keeps the bytes when both readings have the checksum', async () => {
+    const { read } = reader(notice)
+    const checked = await readCheckedNotice(read, notice.length, checksum, signal())
+    assert.ok(checked.ok)
+    assert.ok(checked.bytes.equals(notice))
+  })
+
+  test('holds no more than a chunk of bytes with another checksum, and never reads them a second time', async () => {
+    const other = Buffer.from('y'.repeat(notice.length))
+    const { read, lengths } = reader(other)
+    assert.deepEqual(await readCheckedNotice(read, other.length, checksum, signal()), { ok: false, problem: 'notice checksum does not match' })
+    assert.ok(lengths.every((length) => length <= 1024 * 1024), `reads of ${lengths.join(', ')} bytes`)
+  })
+
+  test('refuses bytes that changed between the readings, a file that grew or shrank, and a stopped reading', async () => {
+    const { read } = reader(notice, Buffer.from('z'.repeat(notice.length)))
+    assert.deepEqual(await readCheckedNotice(read, notice.length, checksum, signal()), { ok: false, problem: 'notice changed while read' })
+    assert.deepEqual(await readCheckedNotice(reader(notice).read, notice.length - 1, checksum, signal()), { ok: false, problem: 'notice changed size while read' })
+    assert.deepEqual(await readCheckedNotice(reader(notice).read, notice.length + 1, checksum, signal()), { ok: false, problem: 'notice changed size while read' })
+    const controller = new AbortController()
+    controller.abort()
+    assert.deepEqual(await readCheckedNotice(reader(notice).read, notice.length, checksum, controller.signal), { ok: false, problem: 'reading was stopped' })
+  })
+})
+
 test('an installed build never masks a missing notice with a bundled copy', async () => {
   const { folders } = temporaryCache()
   const real = findPin('webkit', 'mac-arm64')
@@ -106,7 +173,7 @@ test('an installed build never masks a missing notice with a bundled copy', asyn
   await rm(join(folder, 'build', notice.path))
   const missing = await readLicenceNotices(pin, folders, signal())
   assert.equal(missing.complete, false)
-  assert.ok(missing.text.includes(notice.path))
+  assert.ok(missing.text.includes(normalize(notice.path)), 'the missing notice is named by its path as this system writes it')
   assert.ok(!missing.text.includes(supplied.bytes.toString('utf8')))
 })
 
@@ -143,6 +210,24 @@ test('the Firefox notice archive prints the complete licence page rather than ZI
   assert.equal(result.text, `Licence notices for Firefox 1.0.0 (mac-arm64)\n\n--- ${path} (MPL-2.0) ---\n${page}\nSource https://example.invalid/releases/stand-in-1.0.0.zip\n`)
 })
 
+test('on Windows the Firefox notice archive prints the complete licence page, read without unzip', { skip: windowsOnly('Windows reads the page out of omni.ja itself; macOS and Linux ask the host unzip, as the case above shows') }, async () => {
+  const { folders } = temporaryCache()
+  const source = tempFolder('retest-licence-zip-source-')
+  const page = '<html><body>Complete licence text for the stand-in Firefox.</body></html>\n'
+  await writeEntries(source, { 'chrome/toolkit/content/global/license.html': page, 'chrome.manifest': 'manifest\n' })
+  const archive = join(tempFolder('retest-licence-zip-'), 'omni.ja')
+  execFileSync(systemUnpackTools.tar, ['--format', 'zip', '-c', '-f', archive, '-C', source, 'chrome.manifest', 'chrome'])
+  const path = 'core/omni.ja'
+  const pin = standInPin({ sha256: 'e'.repeat(64) }, { engine: 'firefox', title: 'Firefox', platform: 'win-x64', licences: { inspected: true, files: [{ path, title: 'the licence page in the archive', licence: 'MPL-2.0', published: true, sha256: await fileSha256(archive) }] } })
+  const root = join(buildFolder(folders, pin), 'build')
+  await mkdir(join(root, 'core'), { recursive: true })
+  await writeFile(join(root, path), await readFile(archive))
+  await installStandIn(folders, pin, { size: 7, sha256: 'e'.repeat(64) })
+  const result = await readLicenceNotices(pin, folders, signal())
+  assert.equal(result.complete, true, result.text)
+  assert.equal(result.text, `Licence notices for Firefox 1.0.0 (win-x64)\n\n--- ${path} (MPL-2.0) ---\n${page}\nSource https://example.invalid/releases/stand-in-1.0.0.zip\n`)
+})
+
 test('licences help and usage errors describe only the implemented command', async () => {
   for (const args of [['help', 'licences'], ['licences', '--help']]) {
     const fake = fakeCli({ cwd: tempFolder('retest-licences-help-') })
@@ -170,7 +255,7 @@ test('the licences CLI uses the caller cache and never starts a run', { skip: un
   const pin = findPin('chromium', platform)
   assert.ok(pin !== undefined)
   await mkdir(buildFolder(folders, pin), { recursive: true })
-  const fake = fakeCli({ cwd: tempFolder('retest-licences-cache-'), env: { HOME: home } })
+  const fake = fakeCli({ cwd: tempFolder('retest-licences-cache-'), env: homeEnvironment(home) })
   assert.equal(await fake.cli(['licences', 'chromium']), 2)
   assert.ok(fake.stdout.text.includes(buildFolder(folders, pin)))
   assert.match(fake.stdout.text, /holds no build\.json/)

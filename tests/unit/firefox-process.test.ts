@@ -8,8 +8,9 @@ import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { FirefoxProcess } from '../../src/browser/firefox/process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
-test('an awaited asynchronous Firefox ownership reading completes in a standalone process with no other live handle', async () => {
+test('an awaited asynchronous Firefox ownership reading completes in a standalone process with no other live handle', { skip: unixOnly('this reading is ps, which Windows does not have; process-supervisor.test.ts makes the same promise of a job reading') }, async () => {
   const module = new URL('../../src/browser/firefox/process-table.ts', import.meta.url).href
   const source = `import { readProcessTableAsync } from ${JSON.stringify(module)}; const entries = await readProcessTableAsync(); process.stdout.write(String(entries.length > 0))`
   const result = await promisify(execFile)(process.execPath, ['--conditions=retest-source', '--input-type=module', '-e', source])
@@ -164,6 +165,57 @@ test('a Firefox helper first seen after its parent exited is left alone and its 
   entries = []
   assert.deepEqual(await firefox.stop(0), [], 'a fresh empty group settles the earlier unverified-member refusal')
   assert.deepEqual(signals, [], 'no signal was sent to the helper whose launch could not be traced')
+})
+
+test('what Firefox leaves after its main process exited is waited for a bounded time, then named, never waited for without end', async () => {
+  const { ChildProcess } = await import('node:child_process')
+  const child = new ChildProcess()
+  Object.defineProperty(child, 'pid', { value: firefoxPid })
+  const helper: OwnedProcessIdentity = { ...firefoxEntry, pid: firefoxPid + 1, parentPid: firefoxPid, command: '/Applications/Firefox.app/Contents/MacOS/plugin-container -contentproc 7 tab' }
+  let entries: OwnedProcessIdentity[] = [firefoxEntry, helper]
+  const ownership = new OwnedProcessGroup(firefoxPid, 1, { read: () => entries, readAsync: async () => entries, signal: () => {} })
+  assert.deepEqual(ownership.capture(), [])
+  const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-left-'))
+  const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'spawn', folder, profile: join(folder, 'profile'), ownership, child, output: Promise.resolve([]) })
+  entries = [helper]
+  const started = performance.now()
+  child.emit('exit', null, 'SIGKILL')
+  await assert.rejects(firefox.gone(), { message: `Firefox's main process ${firefoxPid} exited, but process ${helper.pid} (plugin-container) was still running 5000 ms later.` })
+  const waited = performance.now() - started
+  assert.ok(waited >= 4900 && waited < 8000, `the bound is the one Chromium's group gets: ${Math.round(waited)} ms`)
+  entries = []
+})
+
+// Once the main process exits, a reading either shows what is left or fails; a process is named as still running only
+// once a reading showed it, and readings that failed are said to have failed, with why. After the exit, the first
+// reading records what the main process left and the waiting ones follow; `succeed` readings show the helper.
+test('what Firefox leaves is named only from a reading that showed it, and readings that failed say so', async () => {
+  const { ChildProcess } = await import('node:child_process')
+  const helper: OwnedProcessIdentity = { ...firefoxEntry, pid: firefoxPid + 1, parentPid: firefoxPid, command: '/Applications/Firefox.app/Contents/MacOS/plugin-container -contentproc 7 tab' }
+  const said = await Promise.all([0, 2].map(async (succeed) => {
+    const child = new ChildProcess()
+    Object.defineProperty(child, 'pid', { value: firefoxPid })
+    let exited = false
+    let readings = 0
+    const read = (): OwnedProcessIdentity[] => {
+      if (!exited) return [firefoxEntry, helper]
+      readings += 1
+      if (readings <= succeed) return [helper]
+      throw new Error('The metadata process could not run (ENOENT).')
+    }
+    const ownership = new OwnedProcessGroup(firefoxPid, 1, { read, readAsync: async () => read(), signal: () => {} })
+    assert.deepEqual(ownership.capture(), [])
+    const folder = await mkdtemp(join(tmpdir(), 'retest-firefox-unread-'))
+    const firefox = new FirefoxProcess({ pid: firefoxPid, route: 'spawn', folder, profile: join(folder, 'profile'), ownership, child, output: Promise.resolve([]) })
+    exited = true
+    child.emit('exit', null, 'SIGKILL')
+    return firefox.gone().then(() => 'settled', (error: unknown) => (error instanceof Error ? error.message : String(error)))
+  }))
+  const unread = `Could not read ownership of process ${firefoxPid}: The metadata process could not run (ENOENT).`
+  assert.deepEqual(said, [
+    `Firefox's main process ${firefoxPid} exited, and no reading in the 5000 ms after could tell whether what it started had ended. ${unread}`,
+    `Firefox's main process ${firefoxPid} exited, but process ${helper.pid} (plugin-container) was still running when last read, and the readings after that failed. ${unread}`,
+  ])
 })
 
 /** A machine whose Firefox is alive until `end()`, counting how often each kind of reading was taken. */

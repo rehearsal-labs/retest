@@ -5,6 +5,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
+import { shellQuote } from '../../src/reporters/commands.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
 import { rebuildResult } from '../../src/store/rebuild-result.ts'
 import { recordedRun, recordingRecord } from './reporters-html-fixtures.ts'
@@ -145,7 +146,7 @@ describe('human reporter', () => {
         "    › 7 │   await expect(page.getByTestId('saved-task')).toHaveText('Release checklist')",
         '      8 │ })',
         '',
-        `    Screenshot       ${runFolder}/artifacts/saves-a-task-failure.png`,
+        `    Screenshot       ${join(runFolder, 'artifacts/saves-a-task-failure.png')}`,
         '    Rerun            npx retest run examples/task.retest.ts:3 --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --base-url http://127.0.0.1:4173',
         `    Inspect          npx retest inspect ${runFolder} --test "examples/task.retest.ts > saves a task"`,
         '',
@@ -289,7 +290,9 @@ describe('human reporter', () => {
     const events = failingRun(root)
     events[0] =
       stamp([runStarted(root, { timeouts: { ...defaultTimeouts, action: 500, test: 3000 } })])[0] ?? assert.fail()
-    assert.match(render(events).stdout, /--base-url http:\/\/127\.0\.0\.1:4173 --timeouts action=500,test=3000\n/)
+    // On Windows the comma is quoted, which PowerShell would otherwise read as an array.
+    const stdout = render(events).stdout
+    assert.ok(stdout.includes(`--base-url http://127.0.0.1:4173 --timeouts ${shellQuote('action=500,test=3000')}\n`), stdout)
   })
 
   test('colours only when asked, with the same words', () => {

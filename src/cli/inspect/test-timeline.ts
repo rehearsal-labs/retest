@@ -129,23 +129,23 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
     case 'cleanup.finished':
       return [describeCleanup(event.cleanup)]
     case 'step.started':
-      return [`▸ ${event.name}`]
+      return [`${style.marks.step} ${event.name}`]
     case 'step.finished': {
-      const mark = event.status === 'passed' ? style.green('✓') : style.red('✗')
+      const mark = event.status === 'passed' ? style.green(style.marks.passed) : style.red(style.marks.failed)
       return [`${mark} ${stepNames.get(event.stepId) ?? event.stepId}  ${style.dim(formatDuration(event.durationMs))}`]
     }
     case 'action.completed':
     case 'action.failed': {
       const text = `${describeAction(event)}  ${style.dim(formatDuration(event.durationMs))}`
-      return [event.type === 'action.failed' ? `${style.red('✗')} ${text}  ${style.red(event.failure.class)}` : text]
+      return [event.type === 'action.failed' ? `${style.red(style.marks.failed)} ${text}  ${style.red(event.failure.class)}` : text]
     }
     case 'navigation':
       return [style.dim(describeNavigation(event))]
     case 'host_check.passed':
-      return [`${style.green('✓')} host check ${describeHostCheck(event.check)}  ${style.dim(hostCheckFacts(event))}`]
+      return [`${style.green(style.marks.passed)} host check ${describeHostCheck(event.check)}  ${style.dim(hostCheckFacts(event))}`]
     case 'host_check.failed':
       return [
-        `${style.red('✗')} host check ${describeHostCheck(event.check)}  ${style.dim(hostCheckFacts(event))}  ${style.red(event.failure.class)}`,
+        `${style.red(style.marks.failed)} host check ${describeHostCheck(event.check)}  ${style.dim(hostCheckFacts(event))}  ${style.red(event.failure.class)}`,
         `page ${hostCheckPage(event.check, event.actual)}`,
       ]
     case 'state.saved':
@@ -164,7 +164,7 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       return describeEvaluationEvent(event, options)
     case 'inbox.read': {
       const text = `${describeInboxRead(event)}  ${style.dim(formatDuration(event.waitedMs))}`
-      return [event.failure === undefined ? text : `${style.red('✗')} ${text}  ${style.red(event.failure.class)}`]
+      return [event.failure === undefined ? text : `${style.red(style.marks.failed)} ${text}  ${style.red(event.failure.class)}`]
     }
     case 'dialog':
       return [event.by === 'test' ? describeDialog(event) : style.yellow(describeDialog(event))]
@@ -176,10 +176,10 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
       const file = event.path === undefined ? [] : [`file ${join(options.runFolder, event.path)}`]
       if (event.state === 'completed') return [describeDownload(event), ...file]
       if (event.failure === undefined) return [style.yellow(describeDownload(event))]
-      return [`${style.red('✗')} ${describeDownload(event)}  ${style.red(event.failure.class)}`]
+      return [`${style.red(style.marks.failed)} ${describeDownload(event)}  ${style.red(event.failure.class)}`]
     }
     case 'route':
-      return [event.failure === undefined ? describeRouteChange(event) : `${style.red('✗')} ${describeRouteChange(event)}  ${style.red(event.failure.class)}`]
+      return [event.failure === undefined ? describeRouteChange(event) : `${style.red(style.marks.failed)} ${describeRouteChange(event)}  ${style.red(event.failure.class)}`]
     case 'diagnostics.started':
       return [style.dim('diagnostics capture started')]
     case 'diagnostics.finished':
@@ -239,7 +239,7 @@ function describeScreenshot(event: EventOfType<'evidence.captured'>, options: Ti
 function describeEvaluationEvent(event: EventOfType<'evaluation.finished'>, options: TimelineOptions): Described {
   const { style } = options
   const { evaluation } = event
-  const mark = evaluation.verdict === 'pass' ? style.green('✓') : evaluation.mode === 'advisory' ? style.yellow('!') : style.red('✗')
+  const mark = evaluation.verdict === 'pass' ? style.green(style.marks.passed) : evaluation.mode === 'advisory' ? style.yellow('!') : style.red(style.marks.failed)
   const failed = evaluation.failure === undefined ? '' : `  ${style.red(evaluation.failure.class)}`
   const details = evaluationDetails(evaluation, options.runFolder).map(({ label, value }) => `${label.toLowerCase()} ${value}`)
   return [`${mark} AI check ${describeEvaluation(evaluation)}  ${style.dim(formatDuration(evaluation.durationMs))}${failed}`, ...details]
@@ -266,7 +266,7 @@ type AssertionEvent = EventOfType<'assertion.passed'> | EventOfType<'assertion.f
 // file's process judged alone, on a value only it holds, says so.
 function describeAssertion(event: AssertionEvent, looks: readonly Look[], style: Style): Described {
   const passed = event.type === 'assertion.passed'
-  const mark = passed ? style.green('✓') : style.red('✗')
+  const mark = passed ? style.green(style.marks.passed) : style.red(style.marks.failed)
   const target = event.locator === undefined ? '' : ` ${describeLocator(event.locator)}`
   const facts = [
     formatDuration(event.durationMs),

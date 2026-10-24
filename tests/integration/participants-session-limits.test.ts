@@ -95,7 +95,7 @@ const run = (owner, files) => runFiles({
 const results = await Promise.all([run('owner-a', ['tests/a1.retest.ts', 'tests/a2.retest.ts', 'tests/a3.retest.ts']), run('owner-b', ['tests/b1.retest.ts', 'tests/b2.retest.ts', 'tests/b3.retest.ts'])])
 const peak = budget.peak()
 const after = budget.snapshot()
-process.stdout.write(JSON.stringify({ exitCodes: results.map((result) => result.exitCode), peak: { host: peak.host, owners: Object.fromEntries(peak.owners) }, after: { host: after.host, waiting: after.waiting } }) + '\\n')
+process.stdout.write(JSON.stringify({ exitCodes: results.map((result) => result.exitCode), failures: results.map((result) => result.failure === undefined ? null : result.failure.class + ' ' + result.failure.message), peak: { host: peak.host, owners: Object.fromEntries(peak.owners) }, after: { host: after.host, waiting: after.waiting } }) + '\\n')
 `
 }
 
@@ -123,7 +123,7 @@ test('two owners share one host budget without oversubscribing it, and both get 
   const hosted = await runHostProgram(t, root, 'host.ts', ['owner-a', 'owner-b'])
   assert.equal(hosted.code, 0, hosted.stderr)
   const printed: unknown = JSON.parse(hosted.stdout.trim().split('\n').at(-1) ?? '{}')
-  assert.deepEqual(printed, { exitCodes: [0, 0], peak: { host: 3, owners: { 'owner-a': 2, 'owner-b': 2 } }, after: { host: 0, waiting: 0 } })
+  assert.deepEqual(printed, { exitCodes: [0, 0], failures: [null, null], peak: { host: 3, owners: { 'owner-a': 2, 'owner-b': 2 } }, after: { host: 0, waiting: 0 } })
 
   const hostWide = await holders(app.url, 'host-wide')
   assert.deepEqual([hostWide.holds, hostWide.current], [6, 0])

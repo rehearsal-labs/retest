@@ -11,6 +11,11 @@ import { launchLoggedNativeApp, NativeLogSource } from '../../src/native/logs.ts
 import { commandOf, endRecorded, processExists, systemTools } from '../../src/native/processes.ts'
 import { defaultDiagnosticLimits } from '../../src/protocol/diagnostics.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // The launch that keeps an app's standard output: the processes it starts are Retest's own, and they are ended on
 // every path that leaves them, or by an exit hook.
@@ -25,7 +30,7 @@ function groupOf(pid: number): number {
   return Number(spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim())
 }
 
-test('a logged macOS app runs in a process group of its own, and an exit hook ends it until it is stopped', async (t) => {
+test('a logged macOS app runs in a process group of its own, and an exit hook ends it until it is stopped', macDriver, async (t) => {
   const before = new Set(process.listeners('exit'))
   const launched = await launchLoggedNativeApp({ source: source(), tools: systemTools, launch: { arguments: ['600'], environment: {} }, timeoutMs: 5000, target: { platform: 'macos', executable: '/bin/sleep' } })
   t.after(() => launched.stop().catch(() => undefined))
@@ -42,7 +47,7 @@ test('a logged macOS app runs in a process group of its own, and an exit hook en
   assert.equal(process.listeners('exit').filter((listener) => !before.has(listener)).length, 0, 'the hook goes once the app is confirmed ended')
 })
 
-test('a logged iOS launch that cannot be reconciled ends the console launcher Retest started, and nothing else', async (t) => {
+test('a logged iOS launch that cannot be reconciled ends the console launcher Retest started, and nothing else', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-log-launch-unit-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
   // The stand-in launcher writes its pid and stays, as `simctl launch --console` stays while the app runs.

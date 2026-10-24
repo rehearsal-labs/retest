@@ -13,6 +13,7 @@ import { judgeVariables } from '../evaluation/judges.ts'
 import { withAlso } from '../protocol/failures.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { relativePosixPath } from '../shared/posix-path.ts'
+import { asOneRun } from '../shared/process-system.ts'
 import { RunStore } from '../store/run-store.ts'
 import { loadTests, missingFileFailure } from './load-tests.ts'
 import { collectedTest, planTests } from './plan.ts'
@@ -45,7 +46,7 @@ export async function runFiles(
 ): Promise<RunResult> {
   const store = RunStore.create(options.outputDir)
   try {
-    return await new RunSession({ options, reporters, launch, findExecutable, store }).run()
+    return await asOneRun(() => new RunSession({ options, reporters, launch, findExecutable, store }).run())
   } finally {
     store.close()
   }

@@ -82,7 +82,7 @@ describe('retest run --reporter html', () => {
     assert.equal(code, 1, fake.stderr.text)
     const printed = plain(fake.stdout.text)
     assert.match(printed, /✗ saves a task {2}5\.6s/)
-    assert.match(printed, /Exit {4}1\n\n {2}Report {2}html-run\/report\.html\n\n$/)
+    assert.ok(printed.endsWith(`Exit    1\n\n  Report  ${join('html-run', 'report.html')}\n\n`), printed)
     const fromRun = readFileSync(join(root, 'html-run', 'report.html'), 'utf8')
     assert.match(fromRun, /data-source="run"/)
 

@@ -9,7 +9,10 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, Read};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -205,8 +208,39 @@ pub fn encode_arguments(
     arguments
 }
 
+/// The variables an encoder inherits: where programs and temporary files are. Windows programs also expect the
+/// system folder's variable, and name their temporary folder differently.
+#[cfg(unix)]
+const ENCODER_VARIABLES: [&str; 2] = ["PATH", "TMPDIR"];
+#[cfg(windows)]
+const ENCODER_VARIABLES: [&str; 4] = ["PATH", "SystemRoot", "TEMP", "TMP"];
+
+/// Starts the encoder and the ownership that will record it. On Unix the encoder leads a process group of its own; on
+/// Windows it is created suspended and runs only once it is in a job of its own, so everything it starts is in that job
+/// from birth. A Windows encoder that cannot be put in a job is ended through its own handle before it ever ran.
+pub fn spawn_owned(
+    ffmpeg: &Path,
+    arguments: &[OsString],
+    stdin: Stdio,
+    stdout: Stdio,
+) -> io::Result<(Child, Ownership)> {
+    let mut child = spawn_in_group(ffmpeg, arguments, stdin, stdout)?;
+    #[cfg(unix)]
+    let held: io::Result<Ownership> = Ok(Ownership::new(child.id()));
+    #[cfg(windows)]
+    let held: io::Result<Ownership> = Ownership::hold(&mut child);
+    match held {
+        Ok(ownership) => Ok((child, ownership)),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
+}
+
 /// Starts the encoder in its own process group. Ownership is recorded separately before any cleanup signal.
-pub fn spawn_in_group(
+fn spawn_in_group(
     ffmpeg: &Path,
     arguments: &[OsString],
     stdin: Stdio,
@@ -217,16 +251,29 @@ pub fn spawn_in_group(
     if ffmpeg.components().count() > 1 {
         std::fs::metadata(ffmpeg)?;
     }
-    Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    command
         .env_clear()
         .envs(
-            ["PATH", "TMPDIR"]
+            ENCODER_VARIABLES
                 .into_iter()
                 .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
         )
         .env("LC_ALL", "C")
-        .args(arguments)
-        .process_group(0)
+        .args(arguments);
+    #[cfg(unix)]
+    command.process_group(0);
+    // The encoder gets a console of its own without a window: nothing appears on screen, a Ctrl+C typed in another
+    // console never reaches it, so, as on Unix, only the media process ends it, and the programs a wrapper starts
+    // share that console and the wrapper's pipes. Without any console, a wrapper's child would get a new console in
+    // place of those pipes. Windows signals no process group; the encoder starts suspended instead, so `spawn_owned`
+    // can put it in a job before it runs.
+    #[cfg(windows)]
+    command.creation_flags(
+        windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+            | windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+    );
+    command
         .stdin(stdin)
         .stdout(stdout)
         .stderr(Stdio::piped())
@@ -328,14 +375,11 @@ struct Listing {
 // what was asked: `asked` names it, such as "its encoders".
 fn listing(ffmpeg: &Path, arguments: &[&str], asked: &str) -> Result<Listing, EncoderFailure> {
     let arguments: Vec<OsString> = arguments.iter().map(OsString::from).collect();
-    let mut child =
-        spawn_in_group(ffmpeg, &arguments, Stdio::null(), Stdio::piped()).map_err(|error| {
-            EncoderFailure {
-                message: format!("{} could not be started: {error}", ffmpeg.display()),
-                exit: None,
-            }
+    let (mut child, mut ownership) = spawn_owned(ffmpeg, &arguments, Stdio::null(), Stdio::piped())
+        .map_err(|error| EncoderFailure {
+            message: format!("{} could not be started: {error}", ffmpeg.display()),
+            exit: None,
         })?;
-    let mut ownership = Ownership::new(child.id());
     let mut problems = ownership.capture();
     let stdout = child.stdout.take().map(read_bounded);
     let stderr = child.stderr.take().map(read_bounded);

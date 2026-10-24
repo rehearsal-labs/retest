@@ -8,7 +8,8 @@ let released = false
 function answer(request: MetadataProcessRequest): void {
   const control = new Int32Array(request.control)
   if (Atomics.compareExchange(control, 0, metadataPending, metadataRunning) !== metadataPending) return
-  const text = new TextEncoder().encode(`${request.args[0]}\n`)
+  // Echoes the query's last argument, the text where `/bin/echo` or the Node script that stands in for it on Windows takes it.
+  const text = new TextEncoder().encode(`${request.args.at(-1) ?? ''}\n`)
   new Uint8Array(request.output).set(text)
   Atomics.store(control, 1, metadataSuccess)
   Atomics.store(control, 2, text.length)

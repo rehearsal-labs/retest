@@ -75,9 +75,9 @@ export function processStart(pid: number): string {
   return start
 }
 
-/** A pid no process has now: that of a process that started and ended. */
+/** A pid no process has now: that of a process that started and ended. Node itself is the process, on every platform. */
 export async function endedPid(): Promise<number> {
-  const child = spawn('/usr/bin/true', [], { stdio: 'ignore' })
+  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
   await once(child, 'exit')
   if (child.pid === undefined) throw new Error('The ended process had no pid.')
   return child.pid

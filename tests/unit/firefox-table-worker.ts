@@ -34,4 +34,6 @@ export function installTableFixture(reused = false): void {
   })
 }
 
-if (process.argv[1]?.endsWith('/firefox-table-worker.ts') === true) installTableFixture()
+// Loaded as a worker, it answers; imported by the reused-table worker, that worker installs it. A path ends in either
+// separator.
+if (/[\\/]firefox-table-worker\.ts$/.test(process.argv[1] ?? '')) installTableFixture()

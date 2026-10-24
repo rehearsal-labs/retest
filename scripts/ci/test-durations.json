@@ -2,2473 +2,3115 @@
   "tests/integration/agent-capacity.test.ts": {
     "macos-arm64": 35,
     "linux-x64": 18,
-    "linux-arm64": 21
+    "linux-arm64": 21,
+    "windows-x64": 31
   },
   "tests/integration/agent-firefox.test.ts": {
     "macos-arm64": 161,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 162
   },
   "tests/integration/agent-identity.test.ts": {
     "macos-arm64": 8,
     "linux-x64": 5,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 14
   },
   "tests/integration/agent-participants.test.ts": {
     "macos-arm64": 28,
     "linux-x64": 9,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 41
   },
   "tests/integration/agent-sessions.test.ts": {
     "macos-arm64": 53,
     "linux-x64": 18,
-    "linux-arm64": 15
+    "linux-arm64": 15,
+    "windows-x64": 22
   },
   "tests/integration/agent-webkit.test.ts": {
     "macos-arm64": 88,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/browser-actions.test.ts": {
     "macos-arm64": 77,
     "linux-x64": 41,
-    "linux-arm64": 41
+    "linux-arm64": 41,
+    "windows-x64": 45
+  },
+  "tests/integration/browser-dialogs.test.ts": {
+    "windows-x64": 18
+  },
+  "tests/integration/browser-drag.test.ts": {
+    "windows-x64": 24
   },
   "tests/integration/browser-emulation.test.ts": {
     "macos-arm64": 16,
     "linux-x64": 5,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 11
+  },
+  "tests/integration/browser-files.test.ts": {
+    "windows-x64": 13
+  },
+  "tests/integration/browser-frames.test.ts": {
+    "windows-x64": 24
   },
   "tests/integration/browser-launch.test.ts": {
     "macos-arm64": 9,
     "linux-x64": 3,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 6
   },
   "tests/integration/browser-lifecycle.test.ts": {
     "linux-x64": 21,
-    "linux-arm64": 19
+    "linux-arm64": 19,
+    "windows-x64": 29
   },
   "tests/integration/browser-locators.test.ts": {
     "linux-x64": 11,
-    "linux-arm64": 12
+    "linux-arm64": 12,
+    "windows-x64": 15
   },
   "tests/integration/browser-navigation.test.ts": {
     "macos-arm64": 28,
     "linux-x64": 10,
-    "linux-arm64": 12
+    "linux-arm64": 12,
+    "windows-x64": 15
   },
   "tests/integration/browser-ownership.test.ts": {
     "macos-arm64": 45,
     "linux-x64": 13,
-    "linux-arm64": 11
+    "linux-arm64": 11,
+    "windows-x64": 20
   },
   "tests/integration/browser-playwright-rules.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 8
+  },
+  "tests/integration/browser-popups.test.ts": {
+    "windows-x64": 11
   },
   "tests/integration/browser-proxy.test.ts": {
     "macos-arm64": 10,
     "linux-x64": 4,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 4
   },
   "tests/integration/browser-read-page.test.ts": {
     "macos-arm64": 8,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 10
+  },
+  "tests/integration/browser-routes.test.ts": {
+    "windows-x64": 29
+  },
+  "tests/integration/browser-screenshots.test.ts": {
+    "windows-x64": 11
   },
   "tests/integration/browser-secrets.test.ts": {
     "macos-arm64": 20,
     "linux-x64": 8,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 11
+  },
+  "tests/integration/browser-shadow-dom.test.ts": {
+    "windows-x64": 6
   },
   "tests/integration/browser-state.test.ts": {
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 19
   },
   "tests/integration/capture-chromium.test.ts": {
     "macos-arm64": 45,
     "linux-x64": 45,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 6
   },
   "tests/integration/capture-firefox.test.ts": {
     "macos-arm64": 42,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 24
   },
   "tests/integration/capture-ios.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/capture-macos.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/capture-webkit.test.ts": {
     "macos-arm64": 21,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/cdp.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 5
   },
   "tests/integration/cli-commands.test.ts": {
     "macos-arm64": 30,
     "linux-x64": 12,
-    "linux-arm64": 13
+    "linux-arm64": 13,
+    "windows-x64": 55
   },
   "tests/integration/cli-harness.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 3
   },
   "tests/integration/command-lanes.test.ts": {
     "macos-arm64": 8,
     "linux-x64": 4,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 8
   },
   "tests/integration/conformance-chrome.test.ts": {
     "macos-arm64": 257,
     "linux-x64": 45,
-    "linux-arm64": 51
+    "linux-arm64": 51,
+    "windows-x64": 250
   },
   "tests/integration/conformance-firefox.test.ts": {
     "macos-arm64": 257,
     "linux-x64": 45,
-    "linux-arm64": 51
+    "linux-arm64": 51,
+    "windows-x64": 272
   },
   "tests/integration/conformance-webkit.test.ts": {
     "macos-arm64": 257,
     "linux-x64": 45,
-    "linux-arm64": 51
+    "linux-arm64": 51,
+    "windows-x64": 2
   },
   "tests/integration/consumer-loading.test.ts": {
     "macos-arm64": 54,
     "linux-x64": 23,
-    "linux-arm64": 35
+    "linux-arm64": 35,
+    "windows-x64": 124
   },
   "tests/integration/cross-platform-service.test.ts": {
     "macos-arm64": 59,
     "linux-x64": 34,
-    "linux-arm64": 37
+    "linux-arm64": 37,
+    "windows-x64": 61
   },
   "tests/integration/diagnostics-collector.test.ts": {
     "macos-arm64": 23,
     "linux-x64": 8,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 17
   },
   "tests/integration/diagnostics-engines.test.ts": {
     "macos-arm64": 269,
     "linux-x64": 61,
-    "linux-arm64": 56
+    "linux-arm64": 56,
+    "windows-x64": 521
   },
   "tests/integration/diagnostics.test.ts": {
     "macos-arm64": 78,
     "linux-x64": 63,
-    "linux-arm64": 56
+    "linux-arm64": 56,
+    "windows-x64": 118
+  },
+  "tests/integration/dialogs.test.ts": {
+    "windows-x64": 26
+  },
+  "tests/integration/drag.test.ts": {
+    "windows-x64": 18
   },
   "tests/integration/electron-web-flow.test.ts": {
     "macos-arm64": 52,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 49
   },
   "tests/integration/electron.test.ts": {
     "macos-arm64": 48,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 45
   },
   "tests/integration/evaluation-ai-sdk.test.ts": {
     "macos-arm64": 44,
     "linux-x64": 21,
-    "linux-arm64": 25
+    "linux-arm64": 25,
+    "windows-x64": 84
   },
   "tests/integration/evaluation-corpus.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 4
   },
   "tests/integration/evaluation-engines.test.ts": {
     "macos-arm64": 26,
     "linux-x64": 3,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 22
   },
   "tests/integration/evaluation-frames.test.ts": {
     "macos-arm64": 11,
     "linux-x64": 8,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/integration/evaluation-handovers.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 5,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 13
   },
   "tests/integration/evaluation.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 4,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 11
   },
   "tests/integration/evidence-browsers.test.ts": {
     "macos-arm64": 27,
     "linux-x64": 17,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 34
   },
   "tests/integration/evidence-diagnostics.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 12
   },
   "tests/integration/evidence-failures.test.ts": {
     "macos-arm64": 92,
     "linux-x64": 38,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 87
   },
   "tests/integration/evidence-flows.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/evidence-judge.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/evidence-native.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/evidence-pixel-artifacts.test.ts": {
     "macos-arm64": 10,
     "linux-x64": 6,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 16
   },
   "tests/integration/evidence-queue.test.ts": {
     "macos-arm64": 22,
     "linux-x64": 16,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 28
   },
   "tests/integration/evidence-support.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/integration/evidence-timelines.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
+  },
+  "tests/integration/files.test.ts": {
+    "windows-x64": 44
   },
   "tests/integration/firefox-browser-actions.test.ts": {
     "macos-arm64": 60,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 89
   },
   "tests/integration/firefox-browser-locators.test.ts": {
     "macos-arm64": 75,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 45
   },
   "tests/integration/firefox-browser-navigation.test.ts": {
     "macos-arm64": 16,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 38
   },
   "tests/integration/firefox-browser-secrets.test.ts": {
     "macos-arm64": 23,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 23
+  },
+  "tests/integration/firefox-browser-shadow-dom.test.ts": {
+    "windows-x64": 19
   },
   "tests/integration/firefox-diagnostics.test.ts": {
     "macos-arm64": 56,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 40
   },
   "tests/integration/firefox-driver.test.ts": {
     "macos-arm64": 41,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 41
   },
   "tests/integration/firefox-hold.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 13
   },
   "tests/integration/firefox-input-behavior.test.ts": {
     "macos-arm64": 7,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 20
   },
   "tests/integration/firefox-lookup.test.ts": {
     "macos-arm64": 36,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 34
   },
   "tests/integration/firefox-m2-state.test.ts": {
     "macos-arm64": 28,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 32
   },
   "tests/integration/firefox-native-tables.test.ts": {
     "macos-arm64": 5,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 9
   },
   "tests/integration/firefox-refusals.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 21
   },
   "tests/integration/firefox-roles.test.ts": {
     "macos-arm64": 177,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 162
+  },
+  "tests/integration/firefox-screenshots.test.ts": {
+    "windows-x64": 98
+  },
+  "tests/integration/frames.test.ts": {
+    "windows-x64": 31
+  },
+  "tests/integration/inbox.test.ts": {
+    "windows-x64": 5
   },
   "tests/integration/install-media.test.ts": {
     "macos-arm64": 71,
     "linux-x64": 56,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 96
   },
   "tests/integration/install.test.ts": {
     "macos-arm64": 145,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 101
+  },
+  "tests/integration/layout-matchers.test.ts": {
+    "windows-x64": 13
   },
   "tests/integration/locks.test.ts": {
     "macos-arm64": 137,
     "linux-x64": 50,
-    "linux-arm64": 51
+    "linux-arm64": 51,
+    "windows-x64": 132
   },
   "tests/integration/lookup.test.ts": {
     "macos-arm64": 35,
     "linux-x64": 26,
-    "linux-arm64": 26
+    "linux-arm64": 26,
+    "windows-x64": 32
   },
   "tests/integration/m2-apps.test.ts": {
     "macos-arm64": 13,
     "linux-x64": 5,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 11
   },
   "tests/integration/m2-config.test.ts": {
     "macos-arm64": 35,
     "linux-x64": 15,
-    "linux-arm64": 16
+    "linux-arm64": 16,
+    "windows-x64": 66
   },
   "tests/integration/m2-doctor.test.ts": {
     "macos-arm64": 13,
     "linux-x64": 5,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 19
   },
   "tests/integration/m2-emulation.test.ts": {
     "macos-arm64": 23,
     "linux-x64": 9,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 20
   },
   "tests/integration/m2-example.test.ts": {
     "macos-arm64": 52,
     "linux-x64": 15,
-    "linux-arm64": 13
+    "linux-arm64": 13,
+    "windows-x64": 26
   },
   "tests/integration/m2-guarantees.test.ts": {
     "macos-arm64": 63,
     "linux-x64": 25,
-    "linux-arm64": 25
+    "linux-arm64": 25,
+    "windows-x64": 92
   },
   "tests/integration/m2-hooks.test.ts": {
     "macos-arm64": 9,
     "linux-x64": 4,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 69
   },
   "tests/integration/m2-locators.test.ts": {
     "macos-arm64": 13,
     "linux-x64": 6,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 15
   },
   "tests/integration/m2-matchers.test.ts": {
     "macos-arm64": 18,
     "linux-x64": 9,
-    "linux-arm64": 10
+    "linux-arm64": 10,
+    "windows-x64": 15
   },
   "tests/integration/m2-matrix.test.ts": {
     "macos-arm64": 35,
     "linux-x64": 16,
-    "linux-arm64": 13
+    "linux-arm64": 13,
+    "windows-x64": 31
   },
   "tests/integration/m2-package.test.ts": {
     "macos-arm64": 52,
     "linux-x64": 32,
-    "linux-arm64": 28
+    "linux-arm64": 28,
+    "windows-x64": 144
   },
   "tests/integration/m2-secrets.test.ts": {
     "macos-arm64": 21,
     "linux-x64": 9,
-    "linux-arm64": 12
+    "linux-arm64": 12,
+    "windows-x64": 26
   },
   "tests/integration/m2-selection.test.ts": {
     "macos-arm64": 80,
     "linux-x64": 40,
-    "linux-arm64": 35
+    "linux-arm64": 35,
+    "windows-x64": 143
   },
   "tests/integration/m2-servers.test.ts": {
     "macos-arm64": 24,
     "linux-x64": 11,
-    "linux-arm64": 14
+    "linux-arm64": 14,
+    "windows-x64": 44
   },
   "tests/integration/m2-state.test.ts": {
     "macos-arm64": 36,
     "linux-x64": 13,
-    "linux-arm64": 13
+    "linux-arm64": 13,
+    "windows-x64": 31
   },
   "tests/integration/m3-actions.test.ts": {
     "macos-arm64": 35,
     "linux-x64": 20,
-    "linux-arm64": 19
+    "linux-arm64": 19,
+    "windows-x64": 37
   },
   "tests/integration/m3-concurrent-runs.test.ts": {
     "macos-arm64": 8,
     "linux-x64": 4,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 5
   },
   "tests/integration/m3-host-checks.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 11,
-    "linux-arm64": 10
+    "linux-arm64": 10,
+    "windows-x64": 49
   },
   "tests/integration/m3-host-run.test.ts": {
     "macos-arm64": 39,
     "linux-x64": 18,
-    "linux-arm64": 26
+    "linux-arm64": 26,
+    "windows-x64": 99
   },
   "tests/integration/m3-observations.test.ts": {
     "macos-arm64": 18,
     "linux-x64": 10,
-    "linux-arm64": 9
+    "linux-arm64": 9,
+    "windows-x64": 50
   },
   "tests/integration/m3-package.test.ts": {
     "macos-arm64": 26,
     "linux-x64": 13,
-    "linux-arm64": 20
+    "linux-arm64": 20,
+    "windows-x64": 65
   },
   "tests/integration/m3-press.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 15
   },
   "tests/integration/m3-proxy.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 6,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 16
   },
   "tests/integration/m3-titles.test.ts": {
     "macos-arm64": 24,
     "linux-x64": 18,
-    "linux-arm64": 17
+    "linux-arm64": 17,
+    "windows-x64": 42
   },
   "tests/integration/matrix-lifecycle.test.ts": {
     "macos-arm64": 51,
     "linux-x64": 20,
-    "linux-arm64": 20
+    "linux-arm64": 20,
+    "windows-x64": 40
   },
   "tests/integration/matrix-outcomes.test.ts": {
     "macos-arm64": 32,
     "linux-x64": 13,
-    "linux-arm64": 18
+    "linux-arm64": 18,
+    "windows-x64": 41
   },
   "tests/integration/matrix-reporting.test.ts": {
     "macos-arm64": 27,
     "linux-x64": 16,
-    "linux-arm64": 14
+    "linux-arm64": 14,
+    "windows-x64": 48
   },
   "tests/integration/matrix-selection.test.ts": {
     "macos-arm64": 9,
     "linux-x64": 8,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 21
   },
   "tests/integration/matrix-targets.test.ts": {
     "macos-arm64": 36,
     "linux-x64": 20,
-    "linux-arm64": 18
+    "linux-arm64": 18,
+    "windows-x64": 62
   },
   "tests/integration/native-api-desk.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/integration/native-api-phone.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/integration/native-diagnostics-wired.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/native-diagnostics.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/native-evaluation.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/native-interaction.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/native-ios-lifecycle.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/native-macos-lifecycle.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/native-secrets.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/native-withhold-resume.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/package-smoke.test.ts": {
     "macos-arm64": 35,
     "linux-x64": 20,
-    "linux-arm64": 19
+    "linux-arm64": 19,
+    "windows-x64": 50
   },
   "tests/integration/participants-accounts.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 10
   },
   "tests/integration/participants-four-sessions.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 8,
-    "linux-arm64": 10
+    "linux-arm64": 10,
+    "windows-x64": 10
   },
   "tests/integration/participants-identity.test.ts": {
     "macos-arm64": 39,
     "linux-x64": 18,
-    "linux-arm64": 25
+    "linux-arm64": 25,
+    "windows-x64": 84
   },
   "tests/integration/participants-preparation.test.ts": {
     "macos-arm64": 10,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 9
   },
   "tests/integration/participants-reference.test.ts": {
     "macos-arm64": 17,
     "linux-x64": 8,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 19
   },
   "tests/integration/participants-session-limits.test.ts": {
     "macos-arm64": 68,
     "linux-x64": 24,
-    "linux-arm64": 24
+    "linux-arm64": 24,
+    "windows-x64": 41
   },
   "tests/integration/playwright-compat-table.test.ts": {
     "macos-arm64": 148,
     "linux-x64": 90,
-    "linux-arm64": 87
+    "linux-arm64": 87,
+    "windows-x64": 120
   },
   "tests/integration/playwright-compat.test.ts": {
     "macos-arm64": 16,
     "linux-x64": 12,
-    "linux-arm64": 11
+    "linux-arm64": 11,
+    "windows-x64": 20
+  },
+  "tests/integration/popups.test.ts": {
+    "windows-x64": 33
   },
   "tests/integration/record-identity.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 21
   },
   "tests/integration/recording-pixels.test.ts": {
     "macos-arm64": 5,
     "linux-x64": 3,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 4
   },
   "tests/integration/recording-run.test.ts": {
     "macos-arm64": 18,
     "linux-x64": 11,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 26
   },
   "tests/integration/reference-flow-engines.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/integration/reference-flow.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/integration/report-html.test.ts": {
     "macos-arm64": 28,
     "linux-x64": 14,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 28
   },
   "tests/integration/resources.test.ts": {
     "macos-arm64": 24,
     "linux-x64": 19,
-    "linux-arm64": 18
+    "linux-arm64": 18,
+    "windows-x64": 48
+  },
+  "tests/integration/routes.test.ts": {
+    "windows-x64": 15
   },
   "tests/integration/run-interrupt.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 24
+  },
+  "tests/integration/screenshots.test.ts": {
+    "windows-x64": 136
   },
   "tests/integration/secrets-across-lanes.test.ts": {
     "macos-arm64": 8,
     "linux-x64": 4,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 35
   },
   "tests/integration/session-contract.test.ts": {
     "macos-arm64": 10,
     "linux-x64": 6,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 7
   },
   "tests/integration/test-controls.test.ts": {
     "macos-arm64": 33,
     "linux-x64": 16,
-    "linux-arm64": 22
+    "linux-arm64": 22,
+    "windows-x64": 61
   },
   "tests/integration/viewport.test.ts": {
     "macos-arm64": 9,
     "linux-x64": 5,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 10
   },
   "tests/integration/webkit-browser-actions.test.ts": {
     "macos-arm64": 64,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/webkit-browser-locators.test.ts": {
     "macos-arm64": 21,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/webkit-browser-navigation.test.ts": {
     "macos-arm64": 24,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/webkit-browser-secrets.test.ts": {
     "macos-arm64": 11,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/integration/webkit-browser-shadow-dom.test.ts": {
+    "windows-x64": 1
   },
   "tests/integration/webkit-driver.test.ts": {
     "macos-arm64": 35,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/webkit-lookup.test.ts": {
     "macos-arm64": 39,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/webkit-m2-state.test.ts": {
     "macos-arm64": 20,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/integration/webkit-roles.test.ts": {
     "macos-arm64": 93,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/integration/webkit-screenshots.test.ts": {
+    "windows-x64": 1
+  },
+  "tests/integration/windows-processes.test.ts": {
+    "windows-x64": 25
   },
   "tests/integration/workflow-async.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 10,
-    "linux-arm64": 10
+    "linux-arm64": 10,
+    "windows-x64": 12
   },
   "tests/integration/workflow-create.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 11
   },
   "tests/integration/workflow-edit-delete.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 7,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 11
   },
   "tests/integration/workflow-lists.test.ts": {
     "macos-arm64": 10,
     "linux-x64": 5,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 13
   },
   "tests/integration/workflow-navigation.test.ts": {
     "macos-arm64": 16,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 12
   },
   "tests/integration/workflow-saved-state.test.ts": {
     "macos-arm64": 11,
     "linux-x64": 5,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 13
   },
   "tests/integration/workflow-search.test.ts": {
     "macos-arm64": 12,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 15
   },
   "tests/integration/workflow-selection.test.ts": {
     "macos-arm64": 11,
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 13
   },
   "tests/integration/workflow-sign-in.test.ts": {
     "macos-arm64": 11,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 12
   },
   "tests/integration/workflow-validation.test.ts": {
     "macos-arm64": 13,
     "linux-x64": 6,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 11
   },
   "tests/unit/agent-checks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 7
   },
   "tests/unit/agent-entry.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 4
   },
   "tests/unit/agent-host.test.ts": {
     "macos-arm64": 9,
     "linux-x64": 9,
-    "linux-arm64": 9
+    "linux-arm64": 9,
+    "windows-x64": 10
   },
   "tests/unit/agent-looks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 4
   },
   "tests/unit/agent-recipes.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/agent-session.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 5
   },
   "tests/unit/api-actions.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/api-child.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 3,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 6
   },
   "tests/unit/api-handles.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/api-helpers.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/api-hooks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/api-native-helpers.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 5
   },
   "tests/unit/api-operation.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/api-registration.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 5
   },
   "tests/unit/api-secret.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/api-test-controls.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/api-test-run.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/assertions-deep-equal.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/assertions-expect.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
+  },
+  "tests/unit/assertions-layout.test.ts": {
+    "windows-x64": 3
   },
   "tests/unit/assertions-looks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/assertions-matchers.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/assertions-negation.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/assertions-observation-id.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/assertions-poll.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/assertions-soft.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/assertions-text.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/benchmarks-generate.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/benchmarks-options.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/benchmarks-phases.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/benchmarks-runners.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-accessibility.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-actionability.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/browser-capture.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-cdp-results.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-check.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/browser-chromium-process.test.ts": {
     "macos-arm64": 28,
     "linux-x64": 28,
-    "linux-arm64": 28
+    "linux-arm64": 28,
+    "windows-x64": 32
   },
   "tests/unit/browser-command-failures.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-contract.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-dispatch.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-document-facts.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/browser-downloads.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/browser-element-identity.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-emulation.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-executables.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/browser-firefox-subscriptions.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/browser-input-dispatch.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/browser-input-guard.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/browser-isolated-world.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 6
   },
   "tests/unit/browser-keys.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/browser-launch-arguments.test.ts": {
+    "windows-x64": 1
+  },
+  "tests/unit/browser-layout-script.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/browser-listeners.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-locate.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-navigation-cause.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-navigation.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/browser-output-finish.test.ts": {
     "macos-arm64": 34,
     "linux-x64": 34,
-    "linux-arm64": 34
+    "linux-arm64": 34,
+    "windows-x64": 34
   },
   "tests/unit/browser-output-inherited-writer.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 1
   },
   "tests/unit/browser-page-changes.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/browser-page-open.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-page-scripts.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-page-url.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-page.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/browser-profiles.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/browser-proxy.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-redacted-log.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-scroll.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-select.test.ts": {
     "macos-arm64": 9,
     "linux-x64": 9,
-    "linux-arm64": 9
+    "linux-arm64": 9,
+    "windows-x64": 10
   },
   "tests/unit/browser-start-failure.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-storage-state.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-text-match.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/browser-titles.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/builds-doctor-native.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/builds-doctor.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/builds-download.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
+  },
+  "tests/unit/builds-file-changes.test.ts": {
+    "windows-x64": 2
   },
   "tests/unit/builds-install.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/builds-installed.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/builds-lock.test.ts": {
     "macos-arm64": 14,
     "linux-x64": 7,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 7
   },
   "tests/unit/builds-pins.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/builds-process-start.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/builds-record.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/builds-unpack.test.ts": {
     "macos-arm64": 7,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 3
   },
   "tests/unit/builds-webkit-notices.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/builds-windows-ci-pins.test.ts": {
+    "windows-x64": 1
+  },
+  "tests/unit/builds-zip-member.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/capture-proof-decode.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/capture-proof-matcher.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/capture-withhold.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/cdp-connection.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cdp-message.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cdp-task-app.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 4
   },
   "tests/unit/cdp-transport.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/ci-browser-action-phases.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/ci-chrome-pipe-holders.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/ci-macos-pins.test.ts": {
+    "windows-x64": 1
+  },
+  "tests/unit/ci-refresh-durations.test.ts": {
+    "windows-x64": 2
   },
   "tests/unit/ci-run-tests.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/ci-test-plan.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-agent-detection.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-arguments.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-doctor-licence-wording.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-doctor.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 2,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 4
   },
   "tests/unit/cli-help.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-init.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 10
   },
   "tests/unit/cli-install.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/cli-interrupt.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-licence-wording.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/cli-licences.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/cli-list.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/cli-playwright-files.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-prompt.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-run-config.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 3
   },
   "tests/unit/cli-run.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/cli-tag-expression.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cli-terminal.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/config-define.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/config-devices.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/config-electron.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/config-load-file.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 3
   },
   "tests/unit/config-load-typescript.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/config-native-diagnostics.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/config-recording.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/config-test-controls.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/config-validate.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/cross-platform-store.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/deadline.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/desktop-legacy-record.test.ts": {
     "macos-arm64": 5,
     "linux-x64": 3,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 4
   },
   "tests/unit/diagnostics-capture.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/diagnostics-engines.test.ts": {
     "macos-arm64": 7,
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 8
   },
   "tests/unit/diagnostics-policy.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/diagnostics-run.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 6
   },
   "tests/unit/diagnostics-sanitize.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/dialogs-popups.test.ts": {
+    "windows-x64": 2
   },
   "tests/unit/early-browser-waits.test.ts": {
     "macos-arm64": 5,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/early-native-waits.test.ts": {
     "macos-arm64": 8,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/early-process-waits.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 1
   },
   "tests/unit/engine-expectations.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 5,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 7
   },
   "tests/unit/evaluation-ai-sdk-frames.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/evaluation-ai-sdk.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 4
   },
   "tests/unit/evaluation-commands.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 4
   },
   "tests/unit/evaluation-config.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/evaluation-contract.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/evaluation-corpus-cases.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/evaluation-corpus-run.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/evaluation-corpus-score.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/evaluation-diagnostics-view.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/evaluation-evidence-api.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/evaluation-frame-store.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/evaluation-frames.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 8
   },
   "tests/unit/evaluation-races.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 6
   },
   "tests/unit/evaluation-runs.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 6,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 12
   },
   "tests/unit/evaluation-secret-policy.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/failures.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/fake-browser-changes.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
+  },
+  "tests/unit/files.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/firefox-bidi-client.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/firefox-bridge.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/firefox-browser.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/firefox-capture.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-collector-attempt.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-collector.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-executable.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-gate.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-input.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-navigation-hold.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/firefox-navigation.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-orphans.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-page.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/firefox-pool.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-process-table.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/firefox-process.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 8
   },
   "tests/unit/firefox-route.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-sandbox.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-spawn.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 14,
-    "linux-arm64": 13
+    "linux-arm64": 13,
+    "windows-x64": 1
   },
   "tests/unit/firefox-storage.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/firefox-window-order.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/fixture-search-app.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/frame-recipes.test.ts": {
+    "windows-x64": 1
+  },
+  "tests/unit/frame-world.test.ts": {
+    "windows-x64": 1
+  },
+  "tests/unit/image-diff.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/index-native-types.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/inspect-command.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/inspect-looks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/inspect-timeline.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/inspect-titles.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/inspect-variants.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
+  },
+  "tests/unit/layout-checks.test.ts": {
+    "windows-x64": 1
+  },
+  "tests/unit/layout-measure.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/loader-node.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/loader-resolve.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/loader-tsconfig.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/locator.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/media-capture.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/media-client-binding.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 3,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 4
   },
   "tests/unit/media-client-bounds.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 8
   },
   "tests/unit/media-client-eof.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/media-discovery-bounds.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 3
   },
   "tests/unit/media-environment.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/media-install.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/media-leftovers-zone.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 4
   },
   "tests/unit/media-locate.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/media-ownership.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/media-policy.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/media-protocol.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/metadata-process.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 8
   },
   "tests/unit/native-actionability.test.ts": {
     "macos-arm64": 23,
     "linux-x64": 22,
-    "linux-arm64": 22
+    "linux-arm64": 22,
+    "windows-x64": 6
   },
   "tests/unit/native-assertions.test.ts": {
     "macos-arm64": 11,
     "linux-x64": 11,
-    "linux-arm64": 11
+    "linux-arm64": 11,
+    "windows-x64": 12
   },
   "tests/unit/native-capture.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/native-desktop-lock.test.ts": {
     "macos-arm64": 17,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-diagnostics.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/native-evaluation.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-executors.test.ts": {
     "macos-arm64": 23,
     "linux-x64": 4,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 1
   },
   "tests/unit/native-identity.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-input.test.ts": {
     "macos-arm64": 17,
     "linux-x64": 15,
-    "linux-arm64": 15
+    "linux-arm64": 15,
+    "windows-x64": 8
   },
   "tests/unit/native-ios-simulator.test.ts": {
     "macos-arm64": 125,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 4
   },
   "tests/unit/native-keyboard-alerts.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 6
   },
   "tests/unit/native-locators.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-logs.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-macos-app.test.ts": {
     "macos-arm64": 186,
     "linux-x64": 10,
-    "linux-arm64": 10
+    "linux-arm64": 10,
+    "windows-x64": 4
   },
   "tests/unit/native-process-zone.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-processes.test.ts": {
     "macos-arm64": 30,
     "linux-x64": 26,
-    "linux-arm64": 26
+    "linux-arm64": 26,
+    "windows-x64": 13
   },
   "tests/unit/native-reset-policy.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-secrets.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/native-session.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 7
   },
   "tests/unit/native-source-retry.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/native-source-scope.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/native-webdriver-client.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/playwright-compare.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/playwright-compat.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/playwright-resolve.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/playwright-subset.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
+  },
+  "tests/unit/png.test.ts": {
+    "windows-x64": 2
+  },
+  "tests/unit/private-file.test.ts": {
+    "windows-x64": 2
+  },
+  "tests/unit/process-ownership-shared-readings.test.ts": {
+    "windows-x64": 2
   },
   "tests/unit/process-ownership.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/process-supervisor-windows.test.ts": {
+    "windows-x64": 6
+  },
+  "tests/unit/process-supervisor.test.ts": {
+    "windows-x64": 16
   },
   "tests/unit/process-zone-lifecycle.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 1
   },
   "tests/unit/process-zone-records.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/process-zone-worker.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/process-zone.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 1
   },
   "tests/unit/protocol-entry.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/protocol-formats.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-host-check.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-identity.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-keys.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-locator-checks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-observation-record.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-option-choices.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-page-facts.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-scroll-delta.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-select.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol-variant.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/protocol.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reference-flow-processes.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/regular-file.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-actions.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-agent.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-format.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-host-check-lines.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-host-checks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-html-agreement.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/reporters-html-command.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/reporters-html-escape.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-html-jump.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-html-safety.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/reporters-html-source.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/reporters-html.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-human.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-jsonl.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/reporters-layout.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/reporters-press.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/reporters-variants.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/routes.test.ts": {
+    "windows-x64": 1
   },
   "tests/unit/run-folder.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-actions.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/runner-app-server.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 5,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 4
   },
   "tests/unit/runner-browser-pool.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-call-timeouts.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 3
   },
   "tests/unit/runner-collect.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 8,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 11
   },
   "tests/unit/runner-command-lanes.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 4,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 5
   },
   "tests/unit/runner-config-apps.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 5,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 6
   },
   "tests/unit/runner-config-secrets.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 4
   },
   "tests/unit/runner-config-selection.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 4,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 8
   },
   "tests/unit/runner-config-servers.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 5
   },
   "tests/unit/runner-config-state.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 6,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 9
   },
   "tests/unit/runner-deadline-clock.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/runner-diagnostics-interruption.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/runner-electron-target.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 3,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 9
   },
   "tests/unit/runner-event-log.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-evidence-status.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-fingerprint.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-host-checks.test.ts": {
     "macos-arm64": 7,
     "linux-x64": 9,
-    "linux-arm64": 8
+    "linux-arm64": 8,
+    "windows-x64": 18
+  },
+  "tests/unit/runner-inbox.test.ts": {
+    "windows-x64": 5
   },
   "tests/unit/runner-last-run-file.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 5
+  },
+  "tests/unit/runner-layout-looks.test.ts": {
+    "windows-x64": 8
   },
   "tests/unit/runner-lifecycle.test.ts": {
     "macos-arm64": 18,
     "linux-x64": 23,
-    "linux-arm64": 21
+    "linux-arm64": 21,
+    "windows-x64": 41
   },
   "tests/unit/runner-locks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-lost-look.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 3,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/runner-media-identity.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/runner-media-leftovers.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-media-lifecycle.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 5
   },
   "tests/unit/runner-native-diagnostics.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 1
   },
   "tests/unit/runner-native-run-end.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 3
   },
   "tests/unit/runner-native-secrets.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/runner-native-secure-field.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 2
   },
   "tests/unit/runner-native-wiring.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/runner-native-withhold-resume.test.ts": {
     "macos-arm64": 5,
     "linux-x64": 5,
-    "linux-arm64": 6
+    "linux-arm64": 6,
+    "windows-x64": 2
   },
   "tests/unit/runner-observations.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/runner-outcome.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-page-looks.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/runner-parallel.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 5,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 8
   },
   "tests/unit/runner-parent-look-verdict.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-plan.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-planning-refusals.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 3
   },
   "tests/unit/runner-policed-source.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/runner-preparation.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-process-failures.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-process.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 3
   },
   "tests/unit/runner-proxy.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/runner-recording.test.ts": {
     "macos-arm64": 9,
     "linux-x64": 9,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 13
   },
   "tests/unit/runner-redactor.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-replay-run.test.ts": {
     "macos-arm64": 15,
     "linux-x64": 17,
-    "linux-arm64": 16
+    "linux-arm64": 16,
+    "windows-x64": 32
   },
   "tests/unit/runner-resolve-hook.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/runner-resources.test.ts": {
     "macos-arm64": 26,
     "linux-x64": 28,
-    "linux-arm64": 27
+    "linux-arm64": 27,
+    "windows-x64": 46
   },
   "tests/unit/runner-run-config.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-run.test.ts": {
     "macos-arm64": 4,
     "linux-x64": 4,
-    "linux-arm64": 4
+    "linux-arm64": 4,
+    "windows-x64": 6
   },
   "tests/unit/runner-running-test.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/runner-schedule.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-secrets.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/runner-selection.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-session-evidence.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 5
   },
   "tests/unit/runner-sessions.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/runner-setup-search.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-skipped-host-checks.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 2,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 6
   },
   "tests/unit/runner-stop-reason.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/runner-target-drivers.test.ts": {
     "macos-arm64": 5,
     "linux-x64": 6,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 9
   },
   "tests/unit/runner-test-controls-run.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 7,
-    "linux-arm64": 7
+    "linux-arm64": 7,
+    "windows-x64": 12
   },
   "tests/unit/runner-test-controls.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-test-environment.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 4
   },
   "tests/unit/runner-titles.test.ts": {
     "macos-arm64": 5,
     "linux-x64": 5,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 7
   },
   "tests/unit/runner-typescript-loading.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 2,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 6
   },
   "tests/unit/runner-variants.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/runner-workers.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/schema.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
+  },
+  "tests/unit/screenshot-checks.test.ts": {
+    "windows-x64": 2
   },
   "tests/unit/screenshot-loop-capture.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/store-artifacts.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/store-read-run-folder.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/store-rebuild-browsers.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/store-rebuild-not-run-checks.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 1,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   },
   "tests/unit/store-rebuild-result.test.ts": {
     "macos-arm64": 3,
     "linux-x64": 3,
-    "linux-arm64": 3
+    "linux-arm64": 3,
+    "windows-x64": 4
   },
   "tests/unit/store-retention-records.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/store-retention.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/store-run-store.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/store-states.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/timeouts.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/type-diagnostics.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/unreaped-group.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/wait-before-read.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-browser.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-capture.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-collector.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-connection.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-input-events.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-navigation.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 3
   },
   "tests/unit/webkit-page.test.ts": {
     "macos-arm64": 2,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 3
   },
   "tests/unit/webkit-process-table.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-process.test.ts": {
     "macos-arm64": 6,
     "linux-x64": 6,
-    "linux-arm64": 5
+    "linux-arm64": 5,
+    "windows-x64": 1
   },
   "tests/unit/webkit-relay.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-runner.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 2
   },
   "tests/unit/webkit-sweep.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 1,
-    "linux-arm64": 1
+    "linux-arm64": 1,
+    "windows-x64": 1
   },
   "tests/unit/webkit-target-session.test.ts": {
     "macos-arm64": 1,
     "linux-x64": 2,
-    "linux-arm64": 2
+    "linux-arm64": 2,
+    "windows-x64": 2
   }
 }

@@ -2,6 +2,7 @@ import type { RetestEvent } from '../../src/protocol/events.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
 import type { RunResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
@@ -20,7 +21,8 @@ import {
 const root = checkoutProject()
 const runFolder = '.retest/runs/2026-09-30T09-15-00.000Z'
 const inspect = `npx retest inspect ${runFolder} --test "tests/checkout.retest.ts > places an order"`
-const screenshot = `${runFolder}/artifacts/checkout-places-an-order-web-failure.png`
+// The screenshot is named joined to the run folder the report was given, as this platform writes it.
+const screenshot = join(runFolder, 'artifacts/checkout-places-an-order-web-failure.png')
 
 function human(events: RetestEvent[], options: { color?: boolean; result?: RunResult } = {}): string {
   const stdout = capture()

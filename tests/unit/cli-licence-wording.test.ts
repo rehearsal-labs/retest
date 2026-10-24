@@ -1,6 +1,7 @@
 import type { BuildInspection, BuildPin } from '../../src/browser/builds.ts'
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { buildFolder, buildPlatform, findPin, pinnedBuilds } from '../../src/browser/builds.ts'
 import { installLicenceText, renderInspections } from '../../src/cli/install/report.ts'
@@ -8,7 +9,7 @@ import { renderMediaListing } from '../../src/cli/install/media-report.ts'
 import { createStyle } from '../../src/reporters/style.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { unpinnedBuilds } from '../support/unpinned-host.ts'
-import { temporaryCache } from './builds-fixtures.ts'
+import { homeEnvironment, temporaryCache } from './builds-fixtures.ts'
 import { fakeCli } from './cli-fixtures.ts'
 
 const style = createStyle(false)
@@ -25,7 +26,7 @@ test('install notice wording is exact, with only WebKit naming the notice folder
   const folders = { browsers: '/cache/browsers', executors: '/cache/executors' }
   const webkit = findPin('webkit', 'mac-arm64')
   assert.ok(webkit !== undefined)
-  assert.equal(installLicenceText(webkit, folders), 'WebKit is open source. Its licence notices are kept with the build in /cache/browsers/webkit-26.6-mac-arm64/build/licenses; `retest licences webkit` prints them.')
+  assert.equal(installLicenceText(webkit, folders), `WebKit is open source. Its licence notices are kept with the build in ${join('/cache/browsers', 'webkit-26.6-mac-arm64', 'build', 'licenses')}; \`retest licences webkit\` prints them.`)
   const expected = [
     ['electron', 'Electron is open source; its licence notices are kept with the build, and `retest licences electron` prints them.'],
     ['webdriveragent', 'WebDriverAgent is open source; its licence notices are kept with the build, and `retest licences webdriveragent` prints them.'],
@@ -47,7 +48,7 @@ test('the install CLI prints its notice message once per named pin and hides det
   const pins = pinnedBuilds.filter(pin => pin.platform === platform)
   // Each folder is deliberately damaged before the install, so no archive or source build can start.
   for (const pin of pins) await mkdir(buildFolder(folders, pin), { recursive: true })
-  const fake = fakeCli({ cwd: tempFolder('retest-notice-cli-'), env: { HOME: home, NO_COLOR: '1' } })
+  const fake = fakeCli({ cwd: tempFolder('retest-notice-cli-'), env: { ...homeEnvironment(home), NO_COLOR: '1' } })
   assert.equal(await fake.cli(['install', ...pins.flatMap(pin => [pin.engine, pin.engine])]), 2)
   assert.equal(fake.stderr.text, '')
   for (const pin of pins) {
@@ -67,6 +68,15 @@ test('the plain list gives exactly one short licence line per pin, without notic
   assert.deepEqual(text.split('\n').filter(line => line.includes('notices kept')).map(line => line.trim()), summaries)
   assert.doesNotMatch(text, /Licence |SHA-256|[a-f0-9]{64}|licenses\/|WebInspectorUI|Source https:|Patches https:/)
   for (const pin of pins) if (pin.licences.inspected) for (const file of pin.licences.files) assert.ok(!text.includes(file.path))
+})
+
+test('the Windows list names the licences each Windows build carries, and no Widevine module, which it lacks', () => {
+  const folders = { browsers: '/cache/browsers', executors: '/cache/executors' }
+  const pins = pinnedBuilds.filter(pin => pin.platform === 'win-x64')
+  const inspections: BuildInspection[] = pins.map(pin => ({ pin, folder: buildFolder(folders, pin), state: 'missing', problems: [] }))
+  const text = renderInspections({ platform: 'win-x64', folders, inspections, json: false, style })
+  assert.match(text, /^ {2}Pinned builds for Windows x64, in /m)
+  assert.deepEqual(text.split('\n').filter(line => line.includes('notices kept')).map(line => line.trim()), ['BSD, notices kept with the build', 'MPL 2.0, notices kept with the build', 'MIT and BSD, notices kept with the build'])
 })
 
 test('the JSON list retains every notice fact and source pointer when media is appended', () => {

@@ -9,7 +9,7 @@ import type { RunOptions } from '../../src/runner/contract.ts'
 import type { AcquiredStage, HeldApp, ResourceGrant, ResourceLease, ResourceNeed, ResourceRequest } from '../../src/runner/resources.ts'
 import assert from 'node:assert/strict'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, test } from 'node:test'
 import { configFileName, loadConfig } from '../../src/config/load.ts'
@@ -30,8 +30,15 @@ import { RunStore } from '../../src/store/run-store.ts'
 import { FakeBrowser, fakeLauncher } from '../support/fake-browser.ts'
 import { fakeExecutable, tempProject } from '../support/project.ts'
 import { newRunFolder, quickTimeouts, readEvents } from '../support/run-harness.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { capture, plain } from './reporters-fixtures.ts'
+
+// A folder whose mode refuses Retest reading it is a Unix permission; Windows gives folders no such mode.
+const unreadableFolder = unixOnly('Windows gives a folder no mode that refuses reading it')
+// A path shown to a person is written with the platform's own separator, which a quoted value escapes.
+const separator = sep === '\\' ? '\\\\' : '\\/'
+const quotedSeparator = sep === '\\' ? '\\\\\\\\' : '\\/'
 
 // The runner's resources with fakes: the acquisition order, freedom from deadlock under contention, the bound behind
 // an expired lease, release, a stopped run, the interactive desktop on a stand-in for the native runtime, and the table
@@ -173,7 +180,7 @@ describe('the acquisition order', () => {
     assert.equal(describeLeaseParts(needsOf(['mac', 'admin', 'desk'], ['inbox']).map(leasePart), { mac: 'macos', admin: 'macos', desk: 'electron' }), `lock inbox, the desktop of mac=macos and admin=macos and the data folder ${folderB} of desk=electron`)
   })
 
-  test('a disk whose case rule cannot be read refuses the folder rather than guess', () => {
+  test('a disk whose case rule cannot be read refuses the folder rather than guess', { skip: unreadableFolder }, () => {
     const root = tempFolder('unreadable-')
     const locked = join(root, 'locked')
     mkdirSync(locked)
@@ -1091,7 +1098,7 @@ describe('an Electron app in a run', () => {
     const [part] = waited.resources
     assert.deepEqual([waited.resources.length, part?.kind, part?.apps], [1, 'data-folder', ['desk']])
     assert.ok(part?.name.endsWith('/.data/desk'), part?.name)
-    assert.match(humanReport(ran), /holds the folder {2}desk=electron \(Electron\) {2}(\d+ ms|[\d.]+s)\n {6}holds the data folder \S+\/\.data\/desk of desk=electron, after waiting (\d+ ms|[\d.]+s)\n {6}held by tests\/[ab]\.retest\.ts > [ab] holds the folder\n/)
+    assert.match(humanReport(ran), new RegExp(`holds the folder {2}desk=electron \\(Electron\\) {2}(\\d+ ms|[\\d.]+s)\\n {6}holds the data folder \\S+${separator}\\.data${separator}desk of desk=electron, after waiting (\\d+ ms|[\\d.]+s)\\n {6}held by tests\\/[ab]\\.retest\\.ts > [ab] holds the folder\\n`))
     assert.deepEqual(eventsOf(ran.events, 'test.started', waited.attemptId)[0]?.execution?.sessions.map((session) => session.resource), ['data-folder'])
   })
 
@@ -1159,9 +1166,9 @@ describe('an Electron app in a run', () => {
     assert.deepEqual([expired[0]?.held.map((part) => part.kind), expired[0]?.released], [['data-folder'], []])
     assert.equal(refused.failure?.class, 'setup_failed')
     const holder = kept.testId.replaceAll('.', '\\.')
-    assert.match(refused.failure?.message ?? '', new RegExp(`^Not run: the data folder \\S+/\\.data/desk of desk=electron did not come free\\. ${holder} held it past the end of its lease, and the test waited 250 ms more, \\d+ ms in all\\.$`))
+    assert.match(refused.failure?.message ?? '', new RegExp(`^Not run: the data folder \\S+${separator}\\.data${separator}desk of desk=electron did not come free\\. ${holder} held it past the end of its lease, and the test waited 250 ms more, \\d+ ms in all\\.$`))
     const shown = card(ran, refused)
-    assert.match(shown, /\n {4}Waited for {7}"the data folder \S+\/\.data\/desk of desk=electron"\n/)
+    assert.match(shown, new RegExp(`\\n {4}Waited for {7}"the data folder \\S+${quotedSeparator}\\.data${quotedSeparator}desk of desk=electron"\\n`))
     assert.match(shown, new RegExp(`\\n {4}Held by {10}"${holder}"\\n`))
     assert.match(humanReport(ran), new RegExp(`\\n {2}Not run\\n {4}\\S+ › [ab] uses the folder  desk=electron \\(Electron\\)  Not run: the data folder \\S+ of desk=electron did not come free\\. ${holder} held it past the end of its lease`))
 
@@ -1203,7 +1210,7 @@ describe('an Electron app in a run', () => {
     assert.ok(waited !== undefined, 'the other run waited for the data folder')
   })
 
-  test('a data folder on a disk whose case rule cannot be read keeps the test from running, and says why', async () => {
+  test('a data folder on a disk whose case rule cannot be read keeps the test from running, and says why', { skip: unreadableFolder }, async () => {
     // With one named data folder the config has nothing to tell it apart from, so the run is the first to read its disk.
     const root = tempProject({
       [configFileName]: `import { chromium, defineConfig, electron, env } from '@rehearsal-labs/retest'

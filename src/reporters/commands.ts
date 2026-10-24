@@ -11,18 +11,39 @@ export const retestCommand = 'npx retest'
 /** The config a run reads when `--config` does not name another, in the root directory. */
 export const defaultConfigFile = 'retest.config.ts'
 
-const bare = /^[\w@%+=:,./-]+$/
-const needsSingleQuotes = /["$`\\!]/
+type Quoting = { bare: RegExp; needsSingleQuotes: RegExp; singleQuoted: (value: string) => string }
+
+// A POSIX shell, and on Windows PowerShell and Git Bash, which read the same quotes. PowerShell takes a bare comma for its
+// array operator and a leading @ for splatting, so on Windows a value holding either is quoted too; a backslash is
+// single-quoted there as everywhere, which Git Bash would otherwise read as an escape. PowerShell also reads the
+// typographic double quotes “ ” „ as a double quote, so a value holding one is single-quoted, and the typographic single
+// quotes ‘ ’ ‚ ‛ as a single quote, so inside single quotes each is doubled, as a plain one is. cmd.exe reads no single
+// quotes and is not a shell these commands are written for.
+const posixQuoting: Quoting = { bare: /^[\w@%+=:,./-]+$/, needsSingleQuotes: /["$`\\!]/, singleQuoted: (value) => value.replaceAll("'", `'\\''`) }
+const windowsQuoting: Quoting = { bare: /^[\w%+=:./-][\w@%+=:./-]*$/, needsSingleQuotes: /["$`\\!“”„]/, singleQuoted: (value) => value.replace(/['‘’‚‛]/g, '$&$&') }
 
 /**
- * Quotes a value for a POSIX shell, as lightly as it allows.
+ * Quotes a value for the shell a person pastes the command into, as lightly as it allows: a POSIX shell, or on Windows
+ * PowerShell and Git Bash.
  *
  * @example shellQuote('examples/task.retest.ts > saves a task') // '"examples/task.retest.ts > saves a task"'
  */
-export function shellQuote(value: string): string {
+export function shellQuote(value: string, platform: NodeJS.Platform = process.platform): string {
+  const { bare, needsSingleQuotes, singleQuoted } = platform === 'win32' ? windowsQuoting : posixQuoting
   if (bare.test(value)) return value
   if (!needsSingleQuotes.test(value)) return `"${value}"`
-  return `'${value.replaceAll("'", `'\\''`)}'`
+  return `'${singleQuoted(value)}'`
+}
+
+/**
+ * A run folder as a printed command names it: with forward slashes on Windows too, which cmd.exe, PowerShell and Git
+ * Bash all hand to the program as they are, and Windows reads as separators, so a folder with no space needs no quotes
+ * in any of them.
+ *
+ * @example commandPath('.retest\\runs\\2026-09-30T09-15-00.000Z', 'win32') // '.retest/runs/2026-09-30T09-15-00.000Z'
+ */
+export function commandPath(path: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? path.replaceAll('\\', '/') : path
 }
 
 /**
@@ -61,7 +82,7 @@ export function formatRerunCommand(run: EventOfType<'run.started'>, request: Rer
   for (const [app, url] of Object.entries(baseUrls ?? {})) parts.push('--base-url', shellQuote(`${app}=${url}`))
   parts.push(...targetOptions(request.targets))
   const given = commandLineTimeouts === undefined ? changedTimeouts(timeouts) : formatTimeouts(commandLineTimeouts)
-  if (given !== '') parts.push('--timeouts', given)
+  if (given !== '') parts.push('--timeouts', shellQuote(given))
   return parts.join(' ')
 }
 
@@ -79,13 +100,13 @@ export type InspectCommandOptions = {
 }
 
 /** @example formatInspectCommand({ runFolder: 'runs/a', json: true }) // 'npx retest inspect runs/a --json' */
-export function formatInspectCommand(options: InspectCommandOptions): string {
-  const parts = [retestCommand, 'inspect', shellQuote(options.runFolder)]
-  if (options.testId !== undefined) parts.push('--test', shellQuote(options.testId), ...targetOptions(options.targets))
+export function formatInspectCommand(options: InspectCommandOptions, platform: NodeJS.Platform = process.platform): string {
+  const parts = [retestCommand, 'inspect', shellQuote(commandPath(options.runFolder, platform), platform)]
+  if (options.testId !== undefined) parts.push('--test', shellQuote(options.testId, platform), ...targetOptions(options.targets, platform))
   if (options.json === true) parts.push('--json')
   return parts.join(' ')
 }
 
-function targetOptions(targets: Variant | undefined): string[] {
-  return variantPairs(targets).flatMap((pair) => ['--target', shellQuote(pair)])
+function targetOptions(targets: Variant | undefined, platform: NodeJS.Platform = process.platform): string[] {
+  return variantPairs(targets).flatMap((pair) => ['--target', shellQuote(pair, platform)])
 }

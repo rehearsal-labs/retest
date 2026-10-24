@@ -67,7 +67,7 @@ export function renderCard(card: FailureCard, options: HumanCardOptions): string
 function heading(card: FailureCard, style: Style): string {
   const after = card.test === undefined ? describeFileProblem(card.fileProblem) : formatDuration(card.test.durationMs)
   const variant = card.variant === undefined ? '' : `  ${style.cyan(card.variant)}`
-  return `  ${style.red('✗')} ${style.bold(card.title)}${variant}  ${style.dim(after)}`
+  return `  ${style.red(style.marks.failed)} ${style.bold(card.title)}${variant}  ${style.dim(after)}`
 }
 
 // The failure first, then each other host check that failed, then the host checks that never ran.

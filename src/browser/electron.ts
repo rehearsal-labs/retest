@@ -62,7 +62,7 @@ import { explainStartFailure } from './start-failure.ts'
 
 /** How to launch an Electron app. Every path is absolute. */
 export type ElectronLaunchOptions = {
-  /** The Electron binary, inside Electron.app on macOS. */
+  /** The Electron binary, inside Electron.app on macOS, and electron.exe on Windows. */
   readonly executablePath: string
   /** The app's folder, which holds its package.json, or its entry file. */
   readonly appPath: string
@@ -133,7 +133,8 @@ const launchTimeoutMs = 30_000
 const runAsNode = 'ELECTRON_RUN_AS_NODE'
 // Electron's own logging, which would print the windows' console lines and more into the app's output unredacted.
 const loggingVariables = ['ELECTRON_ENABLE_LOGGING', 'ELECTRON_LOG_FILE', 'ELECTRON_DEBUG_NOTIFICATIONS', 'ELECTRON_LOG_ASAR_READS', 'ELECTRON_ENABLE_STACK_DUMPING']
-const giveBinary = 'Give the Electron binary, inside Electron.app on macOS: Electron.app/Contents/MacOS/Electron.'
+// Electron's own build names its binary Electron inside Electron.app on macOS, and electron.exe on Windows.
+const giveBinary = process.platform === 'win32' ? "Give the Electron binary: electron.exe in Electron's own build." : 'Give the Electron binary, inside Electron.app on macOS: Electron.app/Contents/MacOS/Electron.'
 
 const targetInfoSchema = s.object({ targetId: s.string(), type: s.string(), browserContextId: s.optional(s.string()) })
 const targetsSchema = s.object({ targetInfos: s.array(targetInfoSchema) })

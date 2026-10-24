@@ -3,6 +3,7 @@ import type { FirefoxRoute } from './route.ts'
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { s, parse } from '../../protocol/schema.ts'
+import { launchesHeldByJob, readHeldProcess } from '../../shared/process-system.ts'
 import { readProcessTable, readProcessTableAsync } from './process-table.ts'
 
 /** How the temporary folders of Firefox launches begin: `retest-firefox-<pid of the launching process>-<random>`. */
@@ -16,7 +17,7 @@ export const ownerRecordFile = 'retest-owner.json'
  * since `remote.prefs.recommended` is on by default; these name what Retest relies on instead of leaving it to that list.
  */
 export const firefoxPreferences: Readonly<Record<string, string | number | boolean>> = {
-  // WebDriver BiDi only. Firefox 133 still offers its deprecated CDP endpoint under other values.
+  // WebDriver BiDi only, the one protocol Retest speaks to Firefox.
   'remote.active-protocols': 1,
   // No update is downloaded or applied, and no restart is asked for, while a test runs.
   'app.update.disabledForTesting': true,
@@ -38,6 +39,9 @@ export const firefoxPreferences: Readonly<Record<string, string | number | boole
   // No page is kept in the back-forward cache, so a move through the history always loads its document again and
   // Firefox tells of it as a navigation.
   'browser.sessionhistory.max_total_viewers': 0,
+  // Firefox 158 writes each error of a page's script to its output, with the script's address and query, which the
+  // browser log keeps; Firefox 133 wrote none.
+  'browser.dom.window.dump.enabled': false,
 }
 
 /** Who launched a Firefox: the launching process as `ps` read it when the launch began. */
@@ -60,6 +64,12 @@ const recordSchema = s.object({
   profile: s.string(),
 })
 
+/**
+ * How the starts in a record this platform writes are read: 1 is `ps` in the C locale under UTC0, 2 the creation time
+ * Windows keeps, in 100 ns ticks since 1601. A record of another version is never compared.
+ */
+export const ownerStartVersion: number = launchesHeldByJob ? 2 : 1
+
 let ownIdentity: OwnerIdentity | undefined
 
 /**
@@ -78,6 +88,12 @@ export function ownerIdentity(table: () => readonly OwnedProcessIdentity[] = rea
 /** This launcher read without holding the event loop, cached just as ownerIdentity is. */
 export async function ownerIdentityAsync(): Promise<OwnerIdentity> {
   if (ownIdentity !== undefined) return ownIdentity
+  if (launchesHeldByJob) {
+    const own = readHeldProcess(process.pid)
+    if (own === undefined) throw new Error(`Windows does not show this process, ${process.pid}, so no Firefox it launches could be recorded as its own.`)
+    ownIdentity = { pid: own.pid, startedAt: own.startedAt, command: own.image ?? '' }
+    return ownIdentity
+  }
   const table = await readProcessTableAsync()
   return ownerIdentity(() => table)
 }

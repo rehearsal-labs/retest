@@ -8,6 +8,9 @@ import { ChromiumProcess } from '../../src/browser/chromium-process.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { readMetadataProcess, useMetadataWorkerModule } from '../../src/shared/metadata-process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { jobSystem, Supervisor } from '../../src/shared/process-supervisor.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+import { standInProcess, standInSupervisor } from './process-supervisor-world.ts'
 
 const retest = 41000
 const root: OwnedProcessIdentity = { pid: 41100, parentPid: retest, groupId: 41100, state: 'Ss', startedAt: 'Mon Oct 12 21:43:09 2026', command: '/owned/browser --headless' }
@@ -224,7 +227,7 @@ describe('a capture or a signal pass reads the host as it is when asked', () => 
 })
 
 describe('a reading on a worker ended for another query', () => {
-  test('is asked again of a fresh worker, so a caller waiting with it answers within its deadline without a read problem', bounded, async (t) => {
+  test('is asked again of a fresh worker, so a caller waiting with it answers within its deadline without a read problem', { ...bounded, skip: unixOnly('the host here is ps, which Windows does not have; the next case makes the same promise of a job reading') }, async (t) => {
     const sleeper = spawn('/bin/sleep', ['30'], { detached: true, stdio: 'ignore' })
     t.after(() => { if (sleeper.exitCode === null && sleeper.signalCode === null) sleeper.kill('SIGKILL') })
     await once(sleeper, 'spawn')
@@ -239,6 +242,30 @@ describe('a reading on a worker ended for another query', () => {
     assert.throws(() => readMetadataProcess({ command: '/bin/sleep', args: ['1'], environment: { PATH: '/usr/bin:/bin' }, deadline: new Deadline(50) }), /caller deadline|did not answer/)
     const asked = performance.now()
     assert.equal(await group.remainsAsync(new Deadline(2000)), true, 'the process is still there')
+    const ms = performance.now() - asked
+    assert.ok(ms < 1500, `the caller answered from a fresh reading, not at its deadline: ${Math.round(ms)} ms`)
+    assert.deepEqual(group.readProblems, [])
+    assert.deepEqual(await background, [], 'the background capture was answered too')
+    assert.ok(settledMs !== undefined && settledMs < 1500, `the background reading was asked again at once, not left to its own bound: ${Math.round(settledMs ?? -1)} ms`)
+  })
+})
+
+describe('a job reading on a worker ended for another query', () => {
+  // The same promise of the readings Windows takes: a job's members, through retest-supervisor, here its stand-in.
+  test('is asked again of a fresh worker, so a caller waiting with it answers within its deadline without a read problem', bounded, async (t) => {
+    const stand = standInSupervisor(4242, { processes: [standInProcess(4242, 1), standInProcess(5000, 4242)] })
+    const supervisor = new Supervisor(stand.program, 4242)
+    supervisor.hold()
+    const group = new OwnedProcessGroup(5000, 4242, jobSystem(supervisor, supervisor.adopt(5000)))
+    assert.deepEqual(group.capture(), [])
+    const restore = useMetadataWorkerModule(new URL('./metadata-slow-worker.ts', import.meta.url))
+    t.after(restore)
+    let settledMs: number | undefined
+    const background = group.captureAsync().then((problems) => { settledMs = performance.now() - asked; return problems })
+    // Another query stuck past its caller's deadline: giving it up ends the worker the background reading is on.
+    assert.throws(() => readMetadataProcess({ command: process.execPath, args: ['-e', '', 'stuck'], environment: {}, deadline: new Deadline(50) }), /caller deadline|did not answer/)
+    const asked = performance.now()
+    assert.equal(await group.remainsAsync(new Deadline(2000)), true, 'the launch is still there')
     const ms = performance.now() - asked
     assert.ok(ms < 1500, `the caller answered from a fresh reading, not at its deadline: ${Math.round(ms)} ms`)
     assert.deepEqual(group.readProblems, [])

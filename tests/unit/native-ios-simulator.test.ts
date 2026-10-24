@@ -16,6 +16,11 @@ import { ExecutorClient } from '../../src/native/webdriver-client.ts'
 import { readProcessTable, readProcessTableAsync } from '../../src/shared/process-ownership.ts'
 import { alive, readApps, readJsonFile } from './native-fake-executor.ts'
 import { fakeAppBundle, fakeTools, fakeWindowProcess, hungProcesses, startedProcesses } from './native-fake-tools.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // An iOS simulator runtime needs macOS with Xcode, and refuses to start anywhere else.
 const darwinOnly = { skip: process.platform === 'darwin' ? false : 'iOS simulators run only on macOS' }
@@ -259,7 +264,7 @@ test('a second session waits for the first to be disposed', darwinOnly, async (t
   assert.equal((await second).ok, true)
 })
 
-test('the sweep reports an orphan name without claiming or deleting its device', async (t) => {
+test('the sweep reports an orphan name without claiming or deleting its device', macDriver, async (t) => {
   const setup = await setUp(t)
   const gone = spawn('true')
   await new Promise((resolve) => gone.once('exit', resolve))

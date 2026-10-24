@@ -3,9 +3,13 @@ import { randomBytes } from 'node:crypto'
 import { test } from 'node:test'
 import { standInRun } from './runner-native-stand-in.ts'
 import { phoneSignIn } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// A run of a native app: on Windows each native app is refused at its setup, by its key, before anything starts for it.
+const nativeApps = { skip: unixOnly('Windows refuses a native app at its setup, before anything starts for it') }
 
 for (const state of ['focused', 'unmasked', 'secure-unmasked', 'masked', 'empty', 'unread', 'tree-unread', 'window-gone', 'field-gone', 'disabled'] as const) {
-  test(`native secret capture ${state} preserves the required failure and clears only proved safe pixels`, async (t) => {
+  test(`native secret capture ${state} preserves the required failure and clears only proved safe pixels`, nativeApps, async (t) => {
     const secretValue = randomBytes(18).toString('hex')
     const run = await standInRun(t, {
       configFields: `recording: { nativeWithholding: ${state !== 'disabled'} }, secrets: { password: env('RETEST_UNIT_PRIVATE') }, secretOrigins: { password: ['dev.retest.fixtures.taskphone'] }`,

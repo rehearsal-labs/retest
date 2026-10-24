@@ -15,9 +15,11 @@ import { closeGraceMs } from '../browser/contract.ts'
 import { Deadline, elapsedMs, monotonicClock, smallestBudget } from '../protocol/deadline.ts'
 import { errorMessage, failure, withAlso } from '../protocol/failures.ts'
 import { isWebUrl, withoutCredentials } from '../protocol/url.ts'
+import { withoutVariables } from '../shared/environment.ts'
 import { errorCode } from '../shared/error-code.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { OwnedProcessGroup } from '../shared/process-ownership.ts'
+import { consolesDetached, holdLaunch, launchOwnership, prepareOwnedLaunch, serverStopSignal } from '../shared/process-system.ts'
 import { bounded } from './bounded.ts'
 
 export type AppServerOptions = {
@@ -35,8 +37,9 @@ export type AppServerOptions = {
 }
 
 /**
- * A server `start` made ready. One that already answered is `reused` and never stopped. One Retest `started` has
- * the process id of its shell. `stop` ends only processes whose launch ancestry and exact identity Retest recorded.
+ * A server `start` made ready. One that was already there, whose port took Retest's connection, is `reused` and never
+ * stopped. One Retest `started` has the process id of its shell. `stop` ends only processes whose launch ancestry and
+ * exact identity Retest recorded.
  */
 export type AppServerHandle =
   | { readonly status: 'reused'; readonly durationMs: number; stop(timeoutMs: number): Promise<void> }
@@ -59,52 +62,92 @@ const liveServers = new Set<ServerOwnership>()
 let exitHookInstalled = false
 
 /**
+ * What one look at a server's `ready` address found. `answered`: an HTTP answer came, whatever its status.
+ * `accepted`: the port took the connection, so a server is there, but no HTTP answer came. `refused`: the connection
+ * was refused, or the host's name resolves to nothing, so no server is there. `unreached`: the connection neither opened
+ * nor was refused, or failed in another way first, or the address is not HTTP, so nothing is known.
+ */
+export type ReadyLook = 'answered' | 'accepted' | 'refused' | 'unreached'
+
+// The errors that say no server is there: nothing listens on the port, or the name is no host's.
+const noServerCodes: ReadonlySet<string> = new Set(['ECONNREFUSED', 'ENOTFOUND'])
+const wakeGraceMs = 50
+
+/**
+ * Asks `url` once with an HTTP GET and says what it found within `timeoutMs`, or before `signal` aborts. What came in
+ * while this process was held busy counts, as does a connection asked for just before: a limit that passed while the
+ * process was held is judged a moment after it wakes, once those events have been read.
+ *
+ * @example await lookAtReady('http://127.0.0.1:3000/health', 1000) // 'answered'
+ */
+export function lookAtReady(url: string, timeoutMs: number, signal?: AbortSignal): Promise<ReadyLook> {
+  const target = URL.parse(url)
+  if (!isWebUrl(target)) return Promise.resolve('unreached')
+  const get = target.protocol === 'https:' ? httpsGet : httpGet
+  const { promise, resolve } = Promise.withResolvers<ReadyLook>()
+  let connected = false
+  const request = get(target, { agent: false, ...(signal === undefined ? {} : { signal }) }, (response) => {
+    resolve('answered')
+    response.destroy()
+  })
+  request.on('socket', (socket) => {
+    if (!socket.connecting) {
+      connected = socket.readyState === 'open'
+      return
+    }
+    socket.once('connect', () => {
+      connected = true
+    })
+  })
+  // A timer that came due while the process was held runs before the events that came in meanwhile, and Node sends a
+  // connection it was asked for only once the process is free; so a late timer gives the look a moment more.
+  const dueAt = monotonicClock() + timeoutMs
+  let timer = setTimeout(() => {
+    timer = setTimeout(() => request.destroy(), monotonicClock() - dueAt > wakeGraceMs ? wakeGraceMs : 0)
+  }, timeoutMs)
+  request.on('error', (error) => resolve(connected ? 'accepted' : noServerCodes.has(errorCode(error) ?? '') ? 'refused' : 'unreached'))
+  request.on('close', () => resolve(connected ? 'accepted' : 'unreached'))
+  return promise.finally(() => clearTimeout(timer))
+}
+
+/**
  * Asks `url` once, within `timeoutMs`, whether a server answers there. Any HTTP answer counts, whatever its
  * status; a refused connection, a timeout or anything that is not HTTP does not.
  *
  * @example await probeReady('http://127.0.0.1:3000/health', 1000) // true
  */
-export function probeReady(url: string, timeoutMs: number): Promise<boolean> {
-  const target = URL.parse(url)
-  if (!isWebUrl(target)) return Promise.resolve(false)
-  const get = target.protocol === 'https:' ? httpsGet : httpGet
-  const { promise, resolve } = Promise.withResolvers<boolean>()
-  const request = get(target, { agent: false }, (response) => {
-    resolve(true)
-    response.destroy()
-  })
-  const timer = setTimeout(() => request.destroy(), timeoutMs)
-  request.on('error', () => resolve(false))
-  request.on('close', () => resolve(false))
-  return promise.finally(() => clearTimeout(timer))
+export async function probeReady(url: string, timeoutMs: number): Promise<boolean> {
+  return (await lookAtReady(url, timeoutMs)) === 'answered'
 }
 
 /**
- * Makes an app's server ready within `timeoutMs`. When `ready` already answers, that server is reused. Otherwise
- * `command` runs in a shell, as its own process group, with its output in `logFile`, until `ready` answers. A
- * server that exits first, or never answers, is stopped and throws `AppServerError`. The parent's exit also ends
+ * Makes an app's server ready within `timeoutMs`. Whether a server is already there is a fact about the connection,
+ * not about how soon it answers. When the port at `ready` takes the connection, that server is reused: Retest waits
+ * for it to answer within `timeoutMs`, as it waits for one it starts, and one that never answers throws
+ * `AppServerError` and is left running. When the connection is refused, or neither opens nor is refused within a
+ * second, `command` runs in a shell, as its own process group, with its output in `logFile`, until `ready` answers.
+ * A server that exits first, or never answers, is stopped and throws `AppServerError`. The parent's exit also ends
  * every recorded process still running, after checking its exact identity again.
  *
  * @example const server = await startAppServer({ name: 'web', start, logFile }, 60_000); await server.stop(1000)
  */
 export async function startAppServer(options: AppServerOptions, timeoutMs: number, dependencies: AppServerDependencies = {}): Promise<AppServerHandle> {
   const interrupted = (): boolean => options.signal?.aborted === true
-  const probe = dependencies.probe ?? probeReady
+  const look = dependencies.probe ?? lookAtReady
   const launchServer = dependencies.launch ?? launch
   const startedAt = monotonicClock()
   const deadline = new Deadline(timeoutMs, { startedAt })
   const { name, start } = options
   const ready = withoutCredentials(start.ready)
-  if (await probe(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs))) {
-    return { status: 'reused', durationMs: elapsedMs(startedAt), stop: async () => undefined }
-  }
+  const found = await look(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs), options.signal)
+  if (found === 'answered' || found === 'accepted') return reuse({ options, timeoutMs, deadline, startedAt, look, found })
   const server = await launchServer(options)
   for (;;) {
     if (interrupted()) return server.fail(failure('interrupted', `Starting the server for ${name} was interrupted.`))
     if (server.exit !== undefined) {
       return server.fail(failure('setup_failed', `The server for ${name} exited with ${describeExit(server.exit)} before ${ready} answered. Its output is in ${options.logFile}.`))
     }
-    if (await probe(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs))) {
+    if ((await look(start.ready, smallestBudget(probeLimitMs, deadline.commandTimeoutMs))) === 'answered') {
       server.settle()
       return { status: 'started', pid: server.pid, durationMs: elapsedMs(startedAt), stop: (budget) => server.stop(budget) }
     }
@@ -119,9 +162,36 @@ export async function startAppServer(options: AppServerOptions, timeoutMs: numbe
   return server.fail(failure('setup_failed', `The server for ${name} did not answer at ${ready} within ${timeoutMs} ms. Its output is in ${options.logFile}.`))
 }
 
-/** Internal readiness seams; production uses the owned server and HTTP probe. */
+type Reuse = {
+  options: AppServerOptions
+  timeoutMs: number
+  deadline: Deadline
+  startedAt: number
+  look: ReadyLooker
+  /** What the first look found: an answer, or a port that took the connection. */
+  found: ReadyLook
+}
+
+// A server already there is waited for as long as one Retest starts, each look held open for the time left, so a
+// server slower than a look's second still answers. Retest started nothing, so it stops nothing, whatever the outcome.
+async function reuse({ options, timeoutMs, deadline, startedAt, look, found }: Reuse): Promise<AppServerHandle> {
+  const { name, start, signal } = options
+  for (let last = found; last !== 'answered'; last = await look(start.ready, deadline.commandTimeoutMs, signal)) {
+    await sleep(smallestBudget(pollIntervalMs, deadline.waitToEndMs))
+    if (signal?.aborted === true) throw new AppServerError(failure('interrupted', `Waiting for the server for ${name} was interrupted.`))
+    if (deadline.reached) {
+      const ready = withoutCredentials(start.ready)
+      throw new AppServerError(failure('setup_failed', `Something was already listening at ${ready}, so Retest used it as the server for ${name} and started nothing, but it did not answer within ${timeoutMs} ms.`))
+    }
+  }
+  return { status: 'reused', durationMs: elapsedMs(startedAt), stop: async () => undefined }
+}
+
+type ReadyLooker = (url: string, timeoutMs: number, signal?: AbortSignal) => Promise<ReadyLook>
+
+/** Internal readiness seams; production uses the owned server and the HTTP look. */
 export type AppServerDependencies = {
-  readonly probe?: (url: string, timeoutMs: number) => Promise<boolean>
+  readonly probe?: ReadyLooker
   readonly launch?: (options: AppServerOptions) => Promise<Launched>
 }
 
@@ -152,7 +222,7 @@ class ServerOwnership {
   constructor(child: ChildProcess, pid: number) {
     this.#child = child
     this.#pid = pid
-    this.#group = new OwnedProcessGroup(pid)
+    this.#group = holdLaunch(child)
   }
 
   get group(): OwnedProcessGroup {
@@ -164,7 +234,7 @@ class ServerOwnership {
     if (this.#settled) return
     this.#settled = true
     if (this.#child.exitCode !== null || this.#child.signalCode !== null) return
-    const settled = new OwnedProcessGroup(this.#pid)
+    const settled = launchOwnership(this.#pid)
     if (settled.capture().length === 0) this.#group = settled
   }
 }
@@ -173,11 +243,13 @@ async function launch({ name, start, logFile, redactor, hiddenVariables }: AppSe
   const folder = checkFolder(name, start.cwd)
   mkdirSync(dirname(logFile), { recursive: true })
   const log = openSync(logFile, 'a')
-  const hidden = new Set(hiddenVariables)
-  const env = Object.fromEntries(Object.entries(process.env).filter(([variable]) => !hidden.has(variable)))
+  const env = withoutVariables(process.env, hiddenVariables)
   let child: ChildProcess
   try {
-    child = spawn(start.command, { shell: true, cwd: folder, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    prepareOwnedLaunch()
+    // windowsHide gives the server, on Windows, a console of its own with no window, which Retest can send Ctrl+C to
+    // without reaching its own; Node ignores it elsewhere.
+    child = spawn(start.command, { shell: true, cwd: folder, env, detached: consolesDetached, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     const problem = failure('setup_failed', `The server for ${name} could not start: ${outputErrorMessage(error, redactor)}`)
     try {
@@ -319,7 +391,7 @@ function outputErrorMessage(error: unknown, redactor: Redactor | undefined): str
 async function stopGroup(server: ServerOwnership, timeoutMs: number): Promise<string[]> {
   server.settle()
   const ownership = server.group
-  const problems = ownership.signal('SIGTERM')
+  const problems = ownership.signal(serverStopSignal)
   let gone = await groupGoneWithin(ownership, timeoutMs)
   if (!gone) {
     problems.push(...ownership.signal('SIGKILL'))

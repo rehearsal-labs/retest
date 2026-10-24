@@ -2,6 +2,7 @@ import type { TestContext } from 'node:test'
 import type { Pages } from './browser-harness.ts'
 import type { FinishedRun } from './cli-harness.ts'
 import assert from 'node:assert/strict'
+import { realpathSync } from 'node:fs'
 import { test } from 'node:test'
 import { browserPath, openApp, servePages } from './browser-harness.ts'
 import {
@@ -35,11 +36,16 @@ navigator.userAgentData
   })
 </script>`
 
-/** The versions of the two test browsers, which must differ for a page to tell which one opened it. */
-function testBrowserVersions(): { chrome: string; testing: string } {
+/**
+ * The versions of the two test browsers, which are two executables. Where the versions differ, a page tells which
+ * browser opened it. Two builds can carry the same version, as Google Chrome and Debian's Chromium do on the Linux
+ * image at times; then a page tells only that it was opened, and each target is told apart by the executable its
+ * browser started from, which `browser.started` names.
+ */
+function testBrowserVersions(): { chrome: string; testing: string; pagesTellApart: boolean } {
+  assert.notEqual(realpathSync(browserPath()), realpathSync(secondBrowserPath()), `Both test browsers are ${browserPath()}. Set RETEST_TEST_SECOND_BROWSER to another build.`)
   const [chrome, testing] = [browserVersion(browserPath()), browserVersion(secondBrowserPath())]
-  assert.notEqual(chrome, testing, `Both test browsers are version ${chrome}. Set RETEST_TEST_SECOND_BROWSER to a build of another version.`)
-  return { chrome, testing }
+  return { chrome, testing, pagesTellApart: chrome !== testing }
 }
 
 // A version as it appears in a pattern, where each dot is literal.
@@ -105,9 +111,11 @@ test('an app with two targets runs its test on each, and a run of two such apps 
   assert.deepEqual(variantsOf(run, 'reports both browsers'), ['admin=testing,web=chrome', 'admin=chrome,web=testing'])
   assert.deepEqual(testNamed(run, 'reports its browser').variant, { web: 'chrome' })
 
-  // Each run of a test opened its page in the browser its variant names, and in no other.
+  // Each run of a test opened its page in the browser its variant names, and in no other. Where both builds carry
+  // one version, each run opened its page once, and the browser it ran on is the one started below for its target.
   for (const label of ['solo', 'web', 'admin']) {
-    for (const version of [versions.chrome, versions.testing]) assert.equal(site.posts(`/seen/${label}/${version}`), 1, `${label} ${version}`)
+    if (versions.pagesTellApart) for (const version of [versions.chrome, versions.testing]) assert.equal(site.posts(`/seen/${label}/${version}`), 1, `${label} ${version}`)
+    else assert.equal(site.posts(`/seen/${label}/${versions.chrome}`), 2, `${label} ${versions.chrome}, once on each target`)
   }
 
   const browsers = eventsOf(run.events, 'browser.started')
@@ -151,10 +159,14 @@ test('--target keeps only the runs on that target, and starts only the browsers 
   assert.deepEqual(variantsOf(run, 'reports its browser'), ['web=testing'])
   assert.deepEqual(variantsOf(run, 'reports both browsers'), ['admin=chrome,web=testing'])
   const seen = (label: string, version: string) => site.posts(`/seen/${label}/${version}`)
-  assert.deepEqual([seen('solo', versions.testing), seen('solo', versions.chrome)], [1, 0])
-  assert.deepEqual([seen('web', versions.testing), seen('admin', versions.chrome), seen('web', versions.chrome)], [1, 1, 0])
-  const started = eventsOf(run.events, 'browser.started').map((event) => `${event.app}=${event.target?.name}`)
-  assert.deepEqual(started.sort(), ['admin=chrome', 'web=testing'])
+  if (versions.pagesTellApart) {
+    assert.deepEqual([seen('solo', versions.testing), seen('solo', versions.chrome)], [1, 0])
+    assert.deepEqual([seen('web', versions.testing), seen('admin', versions.chrome), seen('web', versions.chrome)], [1, 1, 0])
+  } else {
+    assert.deepEqual([seen('solo', versions.chrome), seen('web', versions.chrome), seen('admin', versions.chrome)], [1, 1, 1])
+  }
+  const started = eventsOf(run.events, 'browser.started').map((event) => [`${event.app}=${event.target?.name}`, event.executablePath])
+  assert.deepEqual(started.sort(), [['admin=chrome', browserPath()], ['web=testing', secondBrowserPath()]])
 
   // A run must use every target named: no runs entry pairs chrome with chrome, and the solo test uses no admin.
   const both = await runProject(t, root, { args: ['--target', 'web=chrome', '--target', 'admin=chrome'] })

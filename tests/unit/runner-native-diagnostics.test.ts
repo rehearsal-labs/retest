@@ -29,6 +29,10 @@ import { fakeExecutable, tempProject } from '../support/project.ts'
 import { newRunFolder, quickTimeouts, readEvents } from '../support/run-harness.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { FakeApp } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// A run of a native app: on Windows each native app is refused at its setup, by its key, before anything starts for it.
+const nativeApps = { skip: unixOnly('Windows refuses a native app at its setup, before anything starts for it') }
 
 // The order a native app's diagnostics keep around its launch, over the stand-in executor: the sources start before the
 // app launches, the launch that keeps its standard output goes in place of the executor's after the session's own checks
@@ -214,7 +218,7 @@ describe('a launch the session owner makes in place of the executor', () => {
 
 // A whole run on a native stand-in: a real test file process drives `phone`, whose runtime is the stand-in and whose
 // launch with its output kept is a stand-in too. What the app writes, and when, shows when each source starts and ends.
-describe('a run keeps a native app\'s diagnostics from before its launch until its body and checks are over', () => {
+describe('a run keeps a native app\'s diagnostics from before its launch until its body and checks are over', nativeApps, () => {
   const phoneTests = `import { expect, test } from '@rehearsal-labs/retest'
 
 test('saves on the phone', { apps: ['phone'] }, async ({ phone }) => {

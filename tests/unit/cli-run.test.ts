@@ -1,7 +1,7 @@
 import type { RunResult } from '../../src/protocol/result.ts'
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { commands } from '../../src/cli/cli.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
@@ -19,6 +19,12 @@ writeFileSync(join(root, 'taken', 'events.jsonl'), '')
 mkdirSync(join(root, 'empty'))
 
 const browser = ['--browser', browserPath]
+
+// A path inside a pattern: a Windows path's backslashes and a file's dots are literal.
+function escape(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 async function run(args: string[], options: Partial<FakeOptions> = {}) {
   const fake = fakeCli({ cwd: root, runFiles: playing(failingRun(root)), ...options })
   const code = await fake.cli(['run', ...args])
@@ -58,7 +64,7 @@ describe('run options', () => {
     assert.ok(options !== undefined)
     assert.deepEqual(options.files, [file, 'examples/other.retest.ts'])
     assert.equal(options.rootDir, root)
-    assert.deepEqual(options.apps, { kind: 'browser', browserPath, baseUrl: 'http://127.0.0.1:4173' })
+    assert.deepEqual(options.apps, { kind: 'browser', browserPath: resolve(root, browserPath), baseUrl: 'http://127.0.0.1:4173' })
     assert.equal(options.outputDir, join(root, 'out/first'))
     assert.deepEqual(options.timeouts, { ...defaultTimeouts, action: 500, test: 3000 })
     assert.equal(options.headless, true)
@@ -76,7 +82,8 @@ describe('run options', () => {
   test('writes to a new timestamped folder under .retest/runs by default', async () => {
     const { runs } = await run([file, ...browser])
     const outputDir = runs[0]?.options.outputDir ?? ''
-    assert.match(outputDir.slice(root.length), /^\/\.retest\/runs\/\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.\d{3}Z$/)
+    assert.equal(dirname(outputDir), join(root, '.retest', 'runs'))
+    assert.match(basename(outputDir), /^\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.\d{3}Z$/)
   })
 
   test('takes an empty existing folder', async () => {
@@ -92,7 +99,7 @@ describe('run usage errors', () => {
   test('names a missing file and suggests a close one', async () => {
     assert.match(
       await rejected(['examples/tsak.retest.ts', ...browser]),
-      /examples\/tsak\.retest\.ts does not exist\. Did you mean examples\/task\.retest\.ts\?/,
+      new RegExp(`examples/tsak\\.retest\\.ts does not exist\\. Did you mean ${escape(join('examples', 'task.retest.ts'))}\\?`),
     )
     assert.match(await rejected(['nowhere/a.retest.ts', ...browser]), /nowhere\/a\.retest\.ts does not exist\.\n/)
   })
@@ -100,7 +107,7 @@ describe('run usage errors', () => {
   test('takes files, not folders, and lists the test files inside', async () => {
     const stderr = await rejected(['examples', ...browser])
     assert.match(stderr, /examples is a folder\. Pass files, not folders/)
-    assert.match(stderr, /Test files in it: examples\/other\.retest\.ts, examples\/task\.retest\.ts\./)
+    assert.match(stderr, new RegExp(`Test files in it: ${escape(join('examples', 'other.retest.ts'))}, ${escape(join('examples', 'task.retest.ts'))}\\.`))
     assert.match(await rejected(['examples/nested.retest.ts', ...browser]), /is a folder\. Pass files, not folders/)
   })
 

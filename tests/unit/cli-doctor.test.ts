@@ -4,11 +4,12 @@ import type { LoadedConfig } from '../../src/config/loaded.ts'
 import type { AppServerOptions } from '../../src/runner/app-server.ts'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { beforeEach, describe, test } from 'node:test'
 import { LaunchError } from '../../src/browser/contract.ts'
 import { app, chrome, chromium, env } from '../../src/config/define.ts'
 import { AppServerError } from '../../src/runner/app-server.ts'
+import { escapePattern } from './builds-fixtures.ts'
 import { fakeBrowser, fakeCli, loadedConfig, type FakeOptions } from './cli-fixtures.ts'
 import { temporaryFolder } from './reporters-fixtures.ts'
 
@@ -81,7 +82,7 @@ describe('doctor', () => {
     assert.equal(calls.stops, 1)
     assert.deepEqual(calls.starts.map((start) => [start.name, start.start.command]), [['web', 'npm run dev']])
     const logFile = calls.launches[0]?.logFile ?? ''
-    assert.ok(logFile.startsWith(`${doctorLogs}/`), `the logs are in the project's .retest/doctor, not the temporary folder: ${logFile}`)
+    assert.ok(logFile.startsWith(`${doctorLogs}${sep}`), `the logs are in the project's .retest/doctor, not the temporary folder: ${logFile}`)
     assert.equal(existsSync(doctorLogs), false, 'the logs of a clean check are removed, with the folder they were in')
   })
 
@@ -125,7 +126,9 @@ describe('doctor', () => {
     assert.ok(fix !== null, stdout)
     assert.match(stdout, /✗ The browser exited with code 1 before it answered\.\n/)
     const logFile = fix[1] ?? ''
-    assert.match(logFile, new RegExp(`^${doctorLogs}/\\d{4}-\\d\\d-\\d\\dT\\d\\d-\\d\\d-\\d\\d\\.\\d{3}Z/logs/browser-`))
+    // The log's path is written as this system writes paths.
+    const separator = escapePattern(sep)
+    assert.match(logFile, new RegExp(`^${escapePattern(doctorLogs)}${separator}\\d{4}-\\d\\d-\\d\\dT\\d\\d-\\d\\d-\\d\\d\\.\\d{3}Z${separator}logs${separator}browser-`))
     assert.equal(existsSync(logFile), true, 'the logs a fix points to are kept')
   })
 

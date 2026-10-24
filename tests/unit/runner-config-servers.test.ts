@@ -1,4 +1,3 @@
-import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -18,17 +17,6 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
   await new Promise<void>((resolve) => server.close(() => resolve()))
-  assert.ok(address !== null && typeof address === 'object')
-  return address.port
-}
-
-// A port no other test can take while this one runs, where nothing answers: each connection is closed at once, as
-// a refused one would be. A port from freePort() is free again at once, and another file's server may take it.
-async function heldPort(t: TestContext): Promise<number> {
-  const holder = createTcpServer((socket) => socket.destroy())
-  t.after(() => holder.close())
-  await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', resolve))
-  const address = holder.address()
   assert.ok(address !== null && typeof address === 'object')
   return address.port
 }
@@ -61,6 +49,14 @@ function serverCommand(port: number, delayMs = 0): string {
   return [process.execPath, serverScript, port, delayMs].map((part) => JSON.stringify(String(part))).join(' ')
 }
 
+// A server that takes its port at once and every connection on it, and never answers. A port that takes the connection
+// has a server on it, so Retest uses one already there; this one is free at Retest's first look and then the server's,
+// which keeps another file's server off it.
+function silentServerCommand(port: number): string {
+  const script = `console.log('pid', process.pid); require('node:net').createServer((socket) => socket.on('error', () => {})).listen(${port}, '127.0.0.1')`
+  return [process.execPath, '-e', script].map((part) => JSON.stringify(part)).join(' ')
+}
+
 describe('an app with a start command', () => {
   test('is started once, before the first test that needs it, logged, and stopped when the run ends', async () => {
     const port = await freePort()
@@ -91,9 +87,9 @@ describe('an app with a start command', () => {
     assert.equal(await probeReady(`http://127.0.0.1:${port}/`, 1000), true)
   })
 
-  test('that never answers keeps every test that needs it from running, as setup, and the browser launched meanwhile is closed', async (t) => {
-    const port = await heldPort(t)
-    const record = await runProject(project(port, serverCommand(port, 60_000), 600), { files: ['tests/web.retest.ts'] })
+  test('that never answers keeps every test that needs it from running, as setup, and the browser launched meanwhile is closed', async () => {
+    const port = await freePort()
+    const record = await runProject(project(port, silentServerCommand(port), 600), { files: ['tests/web.retest.ts'] })
     const [failed] = eventsOfType(record.events, 'app.failed')
     assert.equal(failed?.failure.class, 'setup_failed')
     assert.match(failed?.failure.message ?? '', new RegExp(`^The server for web did not answer at http://127\\.0\\.0\\.1:${port}/ within 600 ms\\.`))

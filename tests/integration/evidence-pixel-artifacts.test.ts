@@ -6,11 +6,11 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { MediaProcess, mediaArguments } from '../../src/media/client.ts'
-import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { launchOwnership } from '../../src/shared/process-system.ts'
 import { servePages } from './browser-harness.ts'
 import { budgets, configSource, eventsOf, filesHolding, runProject, waitFor, writeProject } from './cli-harness.ts'
 import { engineUnderTest } from './engines.ts'
-import { binary, decoder, ffmpeg, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
+import { binary, decoder, ffmpeg, importOption, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
 import { recordingSkip } from './recording-harness.ts'
 
 const source=`import {expect,secret,test} from '@rehearsal-labs/retest'
@@ -53,7 +53,7 @@ test('real secret fill refuses image requests, and approved frame sequences and 
  }`)
  writeFileSync(join(proofRoot,'project-config.ts'),configuration)
  const root=await writeProject(t,{'retest.config.ts':configuration,'pixels.retest.ts':source})
- const run=await runProject(t,root,{timeouts:budgets({test:30000,setup:30000,cleanup:15000}),env:{RETEST_EVIDENCE_SECRET:value,RETEST_MEDIA_BINARY:binary,RETEST_FFMPEG:ffmpeg,NODE_OPTIONS:`--import=${loader}`}})
+ const run=await runProject(t,root,{timeouts:budgets({test:30000,setup:30000,cleanup:15000}),env:{RETEST_EVIDENCE_SECRET:value,RETEST_MEDIA_BINARY:binary,RETEST_FFMPEG:ffmpeg,NODE_OPTIONS:importOption(loader)}})
  const output={exit:run.exit,stdout:run.stdout.replaceAll(value,'<declared-secret>'),stderr:run.stderr.replaceAll(value,'<declared-secret>')}
  writeFileSync(join(proofRoot,'cli-output.json'),JSON.stringify(output,null,2))
  assert.ok(run.result,output.stderr)
@@ -135,7 +135,8 @@ test('real secret fill refuses image requests, and approved frame sequences and 
 
  // Thumbnails use actual policy-approved source frames, never a fresh capture of the secret-bearing page.
  const media=await MediaProcess.start({executable:binary,args:mediaArguments({ffmpeg}),env:{PATH:'/opt/homebrew/bin:/usr/bin:/bin'},startTimeoutMs:10000})
- const owner=new OwnedProcessGroup(media.pid)
+ // On Windows the media process is held in a job of its own as it starts, and is read through that job.
+ const owner=launchOwnership(media.pid)
  t.after(async()=>{await media.close(10000);await waitFor('thumbnail process gone',()=>!owner.remains());assert.deepEqual(owner.readProblems,[])})
  assert.deepEqual(owner.capture(),[])
  const processIdentity=owner.verifiedIdentity(media.pid)

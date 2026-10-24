@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { defaultEvaluationLimits } from '../../src/evaluation/budget.ts'
 import { validateConfig } from '../../src/config/validate.ts'
@@ -34,8 +35,8 @@ describe('the evaluation block', () => {
     const evaluation = validated.config.evaluation
     assert.ok(evaluation !== undefined)
     const visual = evaluation.judges.get('visual')
-    assert.deepEqual(visual?.adapter, { kind: 'file', path: '/work/judges/visual.ts' })
-    assert.deepEqual(evaluation.judges.get('words')?.adapter, { kind: 'package', specifier: '@rehearsal-labs/retest/evaluation/ai-sdk', from: '/work/retest.config.ts' })
+    assert.deepEqual(visual?.adapter, { kind: 'file', path: resolve('/work/judges/visual.ts') })
+    assert.deepEqual(evaluation.judges.get('words')?.adapter, { kind: 'package', specifier: '@rehearsal-labs/retest/evaluation/ai-sdk', from: resolve('/work/retest.config.ts') })
     assert.deepEqual(visual?.credentials.get('apiKey'), { env: 'ANTHROPIC_API_KEY' })
     assert.ok(visual?.credentials.get('project') !== undefined && 'read' in (visual.credentials.get('project') ?? {}))
     assert.deepEqual(visual?.options, { provider: 'anthropic', model: 'claude-sonnet-5', nested: { list: [1, 'two', null] } })

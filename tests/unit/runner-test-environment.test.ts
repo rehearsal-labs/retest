@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process'
 import { after, before, describe, test } from 'node:test'
 import { promisify } from 'node:util'
 import { isArray } from '../../src/protocol/schema.ts'
+import { foldCase, withoutVariables } from '../../src/shared/environment.ts'
 import { runProject, tempProject } from '../support/project.ts'
 import { runSupportFiles } from '../support/run-harness.ts'
 
@@ -70,5 +71,55 @@ test('prints its environment', () => {
     })
     assert.equal(record.result.exitCode, 0)
     assert.deepEqual(printed(record.output), ['RETEST_CANARY'])
+  })
+
+  test('on Windows a variable an env secret reads is hidden whatever the case of its name; elsewhere another case is another variable', async () => {
+    const otherCase = 'Retest_Unit_Env_Secret'
+    const root = tempProject({
+      'retest.config.ts': `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+export default defineConfig({
+  apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
+  secrets: { token: env('${secretVariable}') },
+})
+`,
+      'tests/environment.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+test('prints its environment', () => {
+  console.log(\`environment \${JSON.stringify(Object.keys(process.env).sort())}\`)
+  expect(true).toBe(true)
+})
+`,
+    })
+    const record = await runProject(root, {
+      files: ['tests/environment.retest.ts'],
+      env: { [secretVariable]: 'secret-value-8812' },
+      testEnvironment: { [otherCase]: 'secret-value-8812', RETEST_CANARY: 'visible' },
+    })
+    assert.equal(record.result.exitCode, 0)
+    assert.deepEqual(printed(record.output), process.platform === 'win32' ? ['RETEST_CANARY'] : ['RETEST_CANARY', otherCase])
+  })
+})
+
+describe('withoutVariables', () => {
+  const environment = { Path: 'C:\\Windows', TEMP: 'C:\\Temp', Retest_Password: 'hunter2', RETEST_CANARY: 'visible' }
+
+  test('on Windows takes a hidden name as one name in every case, as Windows does: Path is PATH', () => {
+    assert.deepEqual(withoutVariables(environment, ['PATH', 'RETEST_PASSWORD'], 'win32'), { TEMP: 'C:\\Temp', RETEST_CANARY: 'visible' })
+    assert.deepEqual(withoutVariables(environment, ['retest_canary'], 'win32'), { Path: 'C:\\Windows', TEMP: 'C:\\Temp', Retest_Password: 'hunter2' })
+  })
+
+  test('on macOS and Linux takes a hidden name exactly, as they do: Path is not PATH', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      assert.deepEqual(withoutVariables(environment, ['PATH', 'RETEST_PASSWORD'], platform), environment)
+      assert.deepEqual(withoutVariables(environment, ['Path', 'Retest_Password'], platform), { TEMP: 'C:\\Temp', RETEST_CANARY: 'visible' })
+    }
+    assert.deepEqual(withoutVariables(environment, undefined, 'win32'), environment)
+  })
+
+  // Windows compares a name character by character; a character whose upper case is two, as ß is SS, stays one.
+  test('on Windows folds each character to one character, so straße is not STRASSE but is STRAßE', () => {
+    assert.equal(foldCase('straße'), 'STRAßE')
+    assert.equal(foldCase('ﬁle'), 'ﬁLE')
+    assert.deepEqual(withoutVariables({ straße: 'kept' }, ['STRASSE'], 'win32'), { straße: 'kept' })
+    assert.deepEqual(withoutVariables({ straße: 'hidden' }, ['STRAßE'], 'win32'), {})
   })
 })

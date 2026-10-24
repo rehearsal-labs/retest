@@ -4,17 +4,22 @@ import type { RecordingRecord } from '../../src/protocol/recording.ts'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
-import { basename, join } from 'node:path'
-import { mediaTarget } from '../../src/cli/install/media-pins.ts'
+import { basename, join, sep, win32 } from 'node:path'
+import { mediaExecutableName, mediaTarget } from '../../src/cli/install/media-pins.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
+import { jobSystem } from '../../src/shared/process-supervisor.ts'
+import { heldLaunches, launchesHeldByJob } from '../../src/shared/process-system.ts'
 import { rebuildRecordedResult } from '../../src/store/rebuild-result.ts'
 import { browserPath, openApp, waitForGroupEnd } from './browser-harness.ts'
 import { budgets, configSource, finishRun, repositoryRoot, startRun, writeProject } from './cli-harness.ts'
 
 export const file = 'tests/record.retest.ts'
 
+/** The media binary a gate builds with `cargo build --release` in this checkout, by the name Cargo gives it here. */
+export const builtMediaBinary: string = join(repositoryRoot, 'media/target/release', mediaExecutableName(mediaTarget() ?? 'aarch64-apple-darwin'))
+
 const recordingTools = [
-  ['the media binary', process.env['RETEST_TEST_MEDIA_BINARY'] ?? join(repositoryRoot, 'media/target/release/retest-media'), 'RETEST_TEST_MEDIA_BINARY'],
+  ['the media binary', process.env['RETEST_TEST_MEDIA_BINARY'] ?? builtMediaBinary, 'RETEST_TEST_MEDIA_BINARY'],
   ['ffmpeg', process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg', 'RETEST_TEST_FFMPEG'],
   ['ffprobe', process.env['RETEST_TEST_FFPROBE'] ?? '/opt/homebrew/bin/ffprobe', 'RETEST_TEST_FFPROBE'],
 ] as const
@@ -29,7 +34,7 @@ const recordingTools = [
 export const recordingSkip: string | false = process.platform === 'darwin' ? false : recordingProblem()
 
 function recordingProblem(): string | false {
-  if (mediaTarget() === undefined) return `unverified: retest-media has a pinned target for macOS arm64 and Linux x64 only, and this machine is ${process.platform} ${process.arch}`
+  if (mediaTarget() === undefined) return `unverified: retest-media has a pinned target for macOS arm64, Linux x64 and Windows x64 only, and this machine is ${process.platform} ${process.arch}`
   const missing = recordingTools.filter(([, path]) => !existsSync(path)).map(([name, path, variable]) => `${name} at ${path} (or set ${variable})`)
   return missing.length === 0 ? false : `unverified: recording needs ${missing.join(', ')}, which this machine lacks`
 }
@@ -40,7 +45,7 @@ export async function recordingRun(t: TestContext, source: string, options: { re
     'retest.config.ts': configSource(`{ apps: { web: chromium({ executablePath: ${JSON.stringify(browserPath())}, baseUrl: ${JSON.stringify(app.url)} }) }, recording: { record: ${options.record ?? true}, required: ${options.required ?? false}, keep: ${JSON.stringify(options.keep ?? 'all')}, fps: 10, size: { width: 320, height: 240 } } }`),
     [file]: source,
   })
-  const executable = process.env['RETEST_TEST_MEDIA_BINARY'] ?? join(repositoryRoot, 'media/target/release/retest-media')
+  const executable = process.env['RETEST_TEST_MEDIA_BINARY'] ?? builtMediaBinary
   const ffmpeg = process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg'
   if (options.record !== false) {
     assert.ok(existsSync(executable), 'build or explicitly name the media binary before this gate')
@@ -48,24 +53,50 @@ export async function recordingRun(t: TestContext, source: string, options: { re
   }
   const mediaBinary = options.record === false ? join(root, 'missing-media') : executable
   const encoder = options.record === false ? join(root, 'missing-ffmpeg') : ffmpeg
-  return startRun(t, { cwd: root, browser: false, files: [file], timeouts: budgets({ test: options.timeout ?? 15000 }), env: { RETEST_MEDIA_BINARY: mediaBinary, RETEST_FFMPEG: encoder } })
+  // The job the run is held in on Windows is made before the run starts, so holding the run right after is only a
+  // question to retest-supervisor, answered before the run has started anything of its own.
+  if (launchesHeldByJob) heldLaunches()?.prepare()
+  const started = await startRun(t, { cwd: root, browser: false, files: [file], timeouts: budgets({ test: options.timeout ?? 15000 }), env: { RETEST_MEDIA_BINARY: mediaBinary, RETEST_FFMPEG: encoder } })
+  if (launchesHeldByJob) heldRuns.set(started, holdRun(started.retest.pid))
+  return started
+}
+
+// Windows has no `ps` to read a run's processes from. There the run is held, as soon as it starts, in a job of this
+// harness's own through retest-supervisor, the process layer's seam, and everything the run starts from then on is in
+// that job however it is started, its own jobs nested inside. The job's members are the witness `ps` is on Unix.
+const heldRuns = new WeakMap<StartedRun, OwnedProcessGroup>()
+
+function holdRun(pid: number): OwnedProcessGroup {
+  const supervisor = heldLaunches()?.supervisor
+  assert.ok(supervisor !== undefined, 'this harness holds the processes it watches through retest-supervisor')
+  const launch = supervisor.adopt(pid)
+  assert.deepEqual(launch.unheld, [], 'the run started nothing retest-supervisor could not hold with it')
+  return new OwnedProcessGroup(pid, process.pid, jobSystem(supervisor, launch))
 }
 
 export function ownershipOf(started: StartedRun): OwnedProcessGroup {
-  const owner = new OwnedProcessGroup(started.retest.pid)
+  const owner = launchesHeldByJob ? heldRuns.get(started) : new OwnedProcessGroup(started.retest.pid)
+  assert.ok(owner !== undefined, 'the run was started through recordingRun, which holds it')
   assert.deepEqual(owner.capture(), [], 'record this test run and its launch descendants')
   return owner
 }
 
 export function encoderPid(mediaPid: number): number {
-  const rows = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,comm='], { encoding: 'utf8', timeout: 5000 }).split('\n')
-  const matches = rows.flatMap(row => {
+  const matches = launchesHeldByJob ? heldEncoders(mediaPid) : execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,comm='], { encoding: 'utf8', timeout: 5000 }).split('\n').flatMap(row => {
     const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(row)
     // macOS reports the executable path in comm; Linux reports its basename. The direct parent stays required.
     return match?.[1] !== undefined && Number(match[2]) === mediaPid && basename(match[3] ?? '') === 'ffmpeg' ? [Number(match[1])] : []
   })
   assert.equal(matches.length, 1, 'the running recording has one ffmpeg encoder')
   return matches[0] ?? 0
+}
+
+// On Windows the harness's own job, which `recordingRun` holds this process in, holds the run and all it started, the
+// jobs nested inside it included, so its members are the table `ps` is on Unix.
+function heldEncoders(mediaPid: number): number[] {
+  const supervisor = heldLaunches()?.supervisor
+  assert.ok(supervisor !== undefined, 'this harness reads the processes it watches through retest-supervisor')
+  return supervisor.members(supervisor.runnerJob).filter((entry) => entry.parentPid === mediaPid && win32.basename(entry.image ?? '').toLowerCase() === 'ffmpeg.exe').map((entry) => entry.pid)
 }
 
 export function killOwned(owner: OwnedProcessGroup, pid: number): void {
@@ -109,6 +140,7 @@ export function saveProof(run: FinishedRun, name: string): void {
   cpSync(run.output, output, {recursive:true})
 }
 
+// Relative paths with `/` on every platform, as the cases write them; Windows lists them with `\`.
 export function partialFiles(folder: string): string[] {
-  return readdirSync(folder, {recursive:true, encoding:'utf8'}).filter(path => path.endsWith('.partial') || path.endsWith('.copying'))
+  return readdirSync(folder, {recursive:true, encoding:'utf8'}).filter(path => path.endsWith('.partial') || path.endsWith('.copying')).map(path => path.split(sep).join('/'))
 }

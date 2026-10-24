@@ -4,8 +4,11 @@ import { once } from 'node:events'
 import { test } from 'node:test'
 import { Worker } from 'node:worker_threads'
 import { metadataComplete, metadataRunning, metadataSuccess } from '../../src/shared/metadata-process.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
-test('the metadata worker reads UTC0 even when a raw request asks for another zone', async () => {
+const zones = unixOnly('a start read through ps in a time zone exists only on Unix; Windows keeps each process start as UTC ticks')
+
+test('the metadata worker reads UTC0 even when a raw request asks for another zone', { skip: zones }, async () => {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', env: { PATH: process.env['PATH'], TZ: 'Etc/GMT+12' } })
   const ended = once(child, 'exit')
   const worker = new Worker(process.env['RETEST_TIMEZONE_WORKER'] === undefined ? new URL('../../src/shared/metadata-process-worker.ts', import.meta.url) : new URL(process.env['RETEST_TIMEZONE_WORKER']), { execArgv: [] })

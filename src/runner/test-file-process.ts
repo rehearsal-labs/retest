@@ -7,8 +7,11 @@ import { extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { testProcessFlags } from '../loader/node.ts'
 import { playwrightArgument } from '../loader/resolve.ts'
+import { failure } from '../protocol/failures.ts'
 import { childMessageSchema } from '../protocol/messages.ts'
 import { parse } from '../protocol/schema.ts'
+import { withoutVariables } from '../shared/environment.ts'
+import { holdOwnChild, prepareOwnedLaunch } from '../shared/process-system.ts'
 
 /** A message about the file or the test running in it. Errors outside any test are kept by the process. */
 export type TestFileMessage = Exclude<ChildMessage, { type: 'process-error' }>
@@ -34,6 +37,18 @@ export type SpawnOptions = {
   hiddenVariables?: readonly string[]
   /** The process's whole environment, in place of this process's own. The hidden variables are left out of it too. */
   environment?: Readonly<Record<string, string>>
+}
+
+/**
+ * The environment a test file's process starts with: this process's, or `environment`, without the hidden variables. On
+ * Windows NODE_COMPILE_CACHE is left out too: Node turns the compile cache on as it starts when that variable is set, and
+ * the test file's process keeps the cache off there (`child.ts`).
+ *
+ * @example testFileEnvironment({ environment: { NODE_COMPILE_CACHE: 'C:\\cache' } }, 'win32') // {}
+ */
+export function testFileEnvironment(options: Pick<SpawnOptions, 'environment' | 'hiddenVariables'>, platform: NodeJS.Platform = process.platform): Record<string, string | undefined> {
+  const hidden = platform === 'win32' ? [...(options.hiddenVariables ?? []), 'NODE_COMPILE_CACHE'] : options.hiddenVariables
+  return withoutVariables(options.environment ?? process.env, hidden, platform)
 }
 
 // The entry beside this module: child.ts when running from source, child.js once built.
@@ -91,19 +106,27 @@ export class TestFileProcess {
    */
   static spawn(options: SpawnOptions = {}): TestFileProcess {
     const output = options.onOutput
-    const hidden = new Set(options.hiddenVariables)
+    // On Windows the runner is held before its first test file's process starts, and each one is held as a launch of
+    // its own, so whatever a test starts below it is held too, and ends with Retest.
+    prepareOwnedLaunch()
     const child = fork(childEntry, options.playwright === true ? [playwrightArgument] : [], {
       execArgv: [...conditionArguments(process.execArgv), ...testProcessFlags],
-      env: Object.fromEntries(Object.entries(options.environment ?? process.env).filter(([name]) => !hidden.has(name))),
+      env: testFileEnvironment(options),
       serialization: 'json',
       stdio: output === undefined ? ['ignore', 'ignore', 'ignore', 'ipc'] : ['ignore', 'pipe', 'pipe', 'ipc'],
+      // On Windows a console of its own with no window, so a key pressed on Retest's console stops the run as Retest
+      // decides, rather than each test file's process at once; Node ignores it elsewhere.
+      windowsHide: true,
     })
     own(child)
+    const holding = holdOwnChild(child)
     if (output !== undefined) {
       child.stdout?.setEncoding('utf8').on('data', (text: string) => output('stdout', text))
       child.stderr?.setEncoding('utf8').on('data', (text: string) => output('stderr', text))
     }
-    return new TestFileProcess(child)
+    const spawned = new TestFileProcess(child)
+    for (const problem of holding) spawned.#errors.push(failure('setup_failed', `Retest could not hold the test file's process: ${problem}`))
+    return spawned
   }
 
   get pid(): number | undefined {

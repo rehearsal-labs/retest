@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
+import { relativePosixPath } from '../../src/shared/posix-path.ts'
 import { openApp } from './browser-harness.ts'
 import {
   assertReleased,
@@ -14,6 +15,7 @@ import {
   compilers,
   eventsOf,
   filesHolding,
+  installedRetest,
   installPacked,
   linkNodeTypes,
   packRetest,
@@ -37,7 +39,8 @@ const packageName = '@rehearsal-labs/retest'
 /** Every file of a project but its installed packages, with its contents, to tell whether anything changed. */
 function snapshot(root: string): Record<string, string> {
   const files = readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile())
-  const kept = files.map((entry) => relative(root, join(entry.parentPath, entry.name))).filter((path) => !path.startsWith('node_modules'))
+  // Named with forward slashes on every platform, as the expectations write them.
+  const kept = files.map((entry) => relativePosixPath(root, join(entry.parentPath, entry.name))).filter((path) => !path.startsWith('node_modules'))
   return Object.fromEntries(kept.sort().map((path) => [path, readFileSync(join(root, path), 'utf8')]))
 }
 
@@ -213,7 +216,8 @@ describe('milestone 2 package: init and a registered consumer', () => {
     const tools = await project('tools', {})
     const empty = join(root, 'empty')
     await mkdir(empty)
-    const init = await runProgram(join(tools, 'node_modules/.bin/retest'), ['init', '--yes'], empty, { ...process.env, NO_COLOR: '1' })
+    const [retest, ...before] = installedRetest(tools)
+    const init = await runProgram(retest, [...before, 'init', '--yes'], empty, { ...process.env, NO_COLOR: '1' })
     assertSucceeded(init, 'retest init --yes')
     assert.deepEqual(Object.keys(snapshot(empty)), ['.gitignore', 'package.json', 'retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json'])
     const written: unknown = JSON.parse(readFileSync(join(empty, 'package.json'), 'utf8'))
@@ -248,8 +252,8 @@ describe('milestone 2 package: init and a registered consumer', () => {
   test('init --yes --ci github writes a project that type-checks on TypeScript 6 and 7 and runs its example, and a second init changes nothing', async (t) => {
     const app = await openApp(t)
     const initialized = await project('initialized', {})
-    const bin = join(initialized, 'node_modules/.bin/retest')
-    const first = await runProgram(bin, ['init', '--yes', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
+    const [bin, ...before] = installedRetest(initialized)
+    const first = await runProgram(bin, [...before, 'init', '--yes', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
     assertSucceeded(first, 'retest init --yes --ci github')
     for (const path of ['retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json', '.github/workflows/retest.yml', '.gitignore']) {
       assert.match(first.stdout, new RegExp(`created +${path.replaceAll('.', '\\.')}`), `init created ${path}:\n${first.stdout}`)
@@ -261,7 +265,7 @@ describe('milestone 2 package: init and a registered consumer', () => {
     assert.match(config, /web: chrome\(\{\n {6}baseUrl: 'http:\/\/localhost:3000',/, 'the default browser is the Chrome installed here')
 
     const written = snapshot(initialized)
-    const second = await runProgram(bin, ['init', '--yes', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
+    const second = await runProgram(bin, [...before, 'init', '--yes', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
     assertSucceeded(second, 'a second retest init')
     assert.deepEqual(snapshot(initialized), written, 'the second init changed no file')
     assert.doesNotMatch(second.stdout, /created|updated/)
@@ -270,14 +274,14 @@ describe('milestone 2 package: init and a registered consumer', () => {
     for (const [name, compiler] of Object.entries(compilers)) {
       assertSucceeded(await typecheck(compiler, initialized, 'tests/tsconfig.json'), `${name} on the project init wrote`)
     }
-    const run = await runRetest(t, { files: [], cwd: initialized, browser: false, command: [bin], baseUrl: app.url })
+    const run = await runRetest(t, { files: [], cwd: initialized, browser: false, command: [bin, ...before], baseUrl: app.url })
     assert.equal(run.exit.code, 0, run.stderr)
     assertStdoutIsEvents(run)
     assert.equal(testNamed(run, 'shows the home page').status, 'passed')
 
     // The loader reads the tsconfig init wrote for the tests: an import a test file cannot find names it.
     await writeFiles(initialized, { 'tests/governed.retest.ts': `import { test } from '${packageName}'\nimport { gone } from './gone'\n\ntest('never loads', async () => {\n  gone()\n})\n` })
-    const listed = await runProgram(bin, ['list', 'tests/governed.retest.ts'], initialized, { ...process.env, NO_COLOR: '1' })
+    const listed = await runProgram(bin, [...before, 'list', 'tests/governed.retest.ts'], initialized, { ...process.env, NO_COLOR: '1' })
     assert.equal(listed.code, 2, listed.stdout)
     assert.ok(listed.stderr.includes(`Imports from that file follow ${join(realpathSync(initialized), 'tests/tsconfig.json')}.`), listed.stderr)
   })
@@ -311,7 +315,7 @@ describe('milestone 2 package: init and a registered consumer', () => {
       files: [],
       cwd: consumer,
       browser: false,
-      command: [join(consumer, 'node_modules/.bin/retest')],
+      command: installedRetest(consumer),
       env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD },
     })
     assert.equal(run.exit.code, 0, run.stderr)

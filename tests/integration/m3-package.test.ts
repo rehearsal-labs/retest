@@ -10,6 +10,7 @@ import {
   assertSucceeded,
   compilers,
   eventsOf,
+  installedRetest,
   installPacked,
   linkNodeTypes,
   packRetest,
@@ -218,7 +219,8 @@ describe('milestone 3 package: wave 1', () => {
       checks: ['tests/checkout.retest.ts > checkout > places an order'],
       secret: 'function',
       folder: ['events.jsonl', 'result.json', 'logs'],
-      missing: 'No run folder at <project>/no-run-here.',
+      // The folder is named as this platform writes a path.
+      missing: `No run folder at ${join('<project>', 'no-run-here')}.`,
       typed: 13,
     })
   })
@@ -226,7 +228,7 @@ describe('milestone 3 package: wave 1', () => {
   test('its installed command line presses keys, chooses, ticks and scrolls in the fixture', async (t) => {
     const app = await openApp(t)
     const folder = join(root, 'consumer')
-    const run = await runRetest(t, { files: [], cwd: folder, browser: false, command: [join(folder, 'node_modules/.bin/retest')], env: { TASK_APP_URL: app.url } })
+    const run = await runRetest(t, { files: [], cwd: folder, browser: false, command: installedRetest(folder), env: { TASK_APP_URL: app.url } })
     assert.equal(run.exit.code, 0, run.stderr)
     assertStdoutIsEvents(run)
     assert.equal(testNamed(run, 'submits a search with Enter, and moves the focus with Tab and back').status, 'passed')

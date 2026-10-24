@@ -314,11 +314,19 @@ test('a swap inside the unlink call cannot redirect deletion outside the opened 
   const plan = planRetention({ moment: { kind: 'attempt_finished', attemptId: passed, status: 'passed' }, rules: { recordings: 'failures' }, references, inventory: inventoryArtifacts(run, references) })
   const original = fs.unlinkSync
   let swapped = false
+  // Windows refuses to rename a folder that is a process's working directory, which the removal makes the parent, so
+  // there the swap itself is refused, as a folder in use, and the removal goes on in the folder that stayed.
+  let swapRefused: string | undefined
   const hook = mock.method(fs, 'unlinkSync', (path: PathLike) => {
     if (typeof path === 'string' && path.endsWith('recording-1.mp4') && !swapped) {
       swapped = true
-      renameSync(join(run, 'artifacts', passed, 'web'), join(run, 'artifacts', passed, 'web-moved'))
-      symlinkSync(outside, join(run, 'artifacts', passed, 'web'))
+      try {
+        renameSync(join(run, 'artifacts', passed, 'web'), join(run, 'artifacts', passed, 'web-moved'))
+      } catch (error) {
+        if (process.platform !== 'win32') throw error
+        swapRefused = error instanceof Error && 'code' in error ? String(error.code) : String(error)
+      }
+      if (swapRefused === undefined) symlinkSync(outside, join(run, 'artifacts', passed, 'web'))
     }
     original(path)
   })
@@ -326,9 +334,11 @@ test('a swap inside the unlink call cannot redirect deletion outside the opened 
   try {
     const outcome = applyRetention(run, { ...plan, removals: plan.removals.filter((removal) => removal.reference === reference) }, recorder())
     assert.ok(swapped)
+    assert.equal(swapRefused, process.platform === 'win32' ? 'EBUSY' : undefined, 'only Windows refuses to rename the folder removal is anchored in, as a folder in use')
     assert.ok(existsSync(join(outside, 'recording-1.mp4')), 'unlink must stay anchored to the verified parent even inside the call boundary')
     assert.equal(readFileSync(join(outside, 'recording-1.mp4'), 'utf8'), 'precious outside file')
     assert.equal(outcome.removed.length, 1, 'the original entry was removed through its opened parent')
     assert.ok(!existsSync(join(run, 'artifacts', passed, 'web-moved', 'recording-1.mp4')))
+    if (swapRefused !== undefined) assert.ok(!existsSync(join(run, 'artifacts', passed, 'web', 'recording-1.mp4')), 'the entry was removed from the folder that stayed')
   } finally { hook.mock.restore(); syncBuiltinESMExports() }
 })

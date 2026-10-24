@@ -10,6 +10,7 @@ import { after, before, test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 import {
   assertOk,
@@ -263,7 +264,10 @@ test('a fill waits for its verdict request to enter the document before input ca
   })
   const page = await openPage(t, browser, site.url)
   assertOk(await goto(page, '/'))
-  assert.deepEqual(await fillBound(page, [site.url]), { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
+  // The first look in a browser just launched waits for its page's first frames, which took 0.8 s of a 2 s fill on
+  // GitHub's macOS runner, against 20 ms on a Mac. The order is the proof, not the speed, so the fill has the budget a
+  // run gives every action, as the first fill in the file's own browser has.
+  assert.deepEqual(await fillBound(page, [site.url], defaultTimeouts.action), { ok: true, kind: 'fill', page: { url: `${site.url}/focused` } })
   await observeUntil(page, 'done', (seen) => seen.text === 'Done')
   assert.equal(site.posts('/typed'), 1)
   assert.ok(verdictHeld && textDispatched, 'the proof delayed a real verdict request and then sent text')

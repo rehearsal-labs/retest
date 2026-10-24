@@ -60,10 +60,11 @@ import { BidiProtocolError } from './bidi-errors.ts'
 import { cdpError, FirefoxBridge } from './bridge.ts'
 import { clickAt, moveTo, pressedStrokes, pressKey, selectionProblem, toggleRefusal, typeText, typedStrokes, typingProblem, wheelAt, type Point } from './input.ts'
 import { NavigationHold } from './navigation-hold.ts'
-import { navigate, NavigationWatcher, reload, traverse } from './navigation.ts'
+import { errorPageReason, navigate, NavigationWatcher, reload, traverse } from './navigation.ts'
 import { navigationShim, relayScript, sandboxName, wrapped } from './sandbox.ts'
 import { inWindowOrder } from './window-order.ts'
 import { readFirefoxCookies, readFirefoxOriginStorage } from './storage.ts'
+import { subscribedSchema, unsubscribeParameters } from './subscriptions.ts'
 
 export type FirefoxPageOptions = {
   client: BidiClient
@@ -116,6 +117,12 @@ const responseSchema = s.object({
   navigation: s.nullable(s.string()),
   request: s.object({ url: s.string() }),
   response: s.object({ status: s.number(), headers: s.optional(s.array(s.object({ name: s.string(), value: s.object({ type: s.string(), value: s.optional(s.string()) }) }))) }),
+})
+const requestSchema = s.object({
+  context: s.string(),
+  navigation: s.nullable(s.string()),
+  redirectCount: s.number(),
+  request: s.object({ url: s.string(), destination: s.optional(s.string()) }),
 })
 const messageSchema = s.object({ channel: s.string(), data: s.object({ type: s.string(), value: s.optional(s.string()) }), source: s.object({ context: s.optional(s.string()) }) })
 const treeSchema = s.object({ contexts: s.array(s.object({ url: s.string() })) })
@@ -210,6 +217,11 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   readonly #stops: (() => void)[] = []
   readonly #channels: { changed: string; documented: string }
   readonly #subscriptions = new Map<string, number>()
+  // The id a later Firefox gave each counted event's subscription, and how many of each subscription's events are live.
+  readonly #subscriptionIds = new Map<string, string>()
+  readonly #liveEvents = new Map<string, number>()
+  // The id of the page's own subscription to its context's events, when the browser gave one.
+  #pageSubscription: string | undefined
   #changes = 0
   #url: URL | undefined
   #commits = 0
@@ -217,7 +229,9 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   #opening = 0
   // Whether a navigation started since the opening command began, which is then that command's.
   #claimed = false
-  #pending: { id: string; url: string } | undefined
+  // The navigation under way: its id, its address, and, for one Firefox 158 did not announce, the id Firefox gave its
+  // request, which is the document's still showing and names the navigation's response and its end.
+  #pending: { id: string; url: string; requestedAs?: string } | undefined
   readonly #started = new Set<string>()
   #document: string | undefined
   #lostReason: string | undefined
@@ -265,7 +279,10 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     this.#listen('browsingContext.domContentLoaded', navigationEventSchema, ({ navigation, url }) => this.#contentLoaded(navigation, url))
     this.#listen('browsingContext.load', navigationEventSchema, ({ navigation, url }) => this.#loaded(navigation, url))
     this.#listen('browsingContext.navigationFailed', navigationEventSchema, ({ navigation }) => this.#navigationFailed(navigation))
+    this.#listen('browsingContext.navigationCommitted', navigationEventSchema, ({ navigation, url }) => this.#navigationCommitted(navigation, url))
+    this.#listen('network.beforeRequestSent', requestSchema, (params) => this.#requested(params))
     this.#listen('network.responseStarted', responseSchema, (params) => this.#responded(params))
+    this.#listen('browsingContext.downloadWillBegin', navigationEventSchema, ({ navigation, url }) => this.#downloading(navigation, url))
     this.#listen('browsingContext.userPromptOpened', promptSchema, ({ type }) => this.#promptOpened(type))
     this.#listen('browsingContext.userPromptClosed', contextEventSchema, () => this.#promptClosed())
     this.#listen('browsingContext.contextDestroyed', contextEventSchema, () => this.#lose('the page was closed'))
@@ -478,15 +495,16 @@ export class FirefoxPage implements WebSession, ElementIdentity {
 
   async #start(options: FirefoxPageOptions, deadline: Deadline): Promise<void> {
     const send = () => ({ timeoutMs: deadline.commandTimeoutMs, signal: deadline.signal })
-    await this.#client.request('session.subscribe', { events: ['browsingContext', 'script'], contexts: [this.#context] }, s.object({}), send())
+    this.#pageSubscription = (await this.#client.request('session.subscribe', { events: ['browsingContext', 'script'], contexts: [this.#context] }, subscribedSchema, send())).subscription
     const channels = [
       { type: 'channel', value: { channel: this.#channels.changed, ownership: 'none' } },
       { type: 'channel', value: { channel: this.#channels.documented, ownership: 'none' } },
     ]
     // The claim's event type is random, so no page can listen for it or send it.
     const script = documentScript(`retest-claim-${randomUUID()}`)
-    // A navigation answered with no document is told by its response alone (`#responded`).
-    await this.#subscribe(['network.responseStarted'], send())
+    // A navigation answered with no document is told by its response alone (`#responded`), and one Firefox 158 does not
+    // announce by its document's request (`#requested`).
+    await this.#subscribe(['network.beforeRequestSent', 'network.responseStarted'], send())
     const preload = await this.#client.request('script.addPreloadScript', { functionDeclaration: script, arguments: channels, sandbox: sandboxName, contexts: [this.#context] }, scriptSchema, send())
     this.#preload = preload.script
     const { emulation } = options
@@ -771,10 +789,17 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     if (pending !== undefined) this.#navigationFailed(pending.id)
   }
 
-  // Subscriptions are counted by event, so the navigation hold and the diagnostics collector never end each other's.
+  // Subscriptions are counted by event, so the navigation hold and the diagnostics collector never end each other's. A
+  // subscription a later Firefox gave an id is ended by it once none of the events it was made for is wanted.
   async #subscribe(events: readonly string[], send: { timeoutMs: number; signal?: AbortSignal | undefined }): Promise<void> {
     const fresh = events.filter((event) => (this.#subscriptions.get(event) ?? 0) === 0)
-    if (fresh.length > 0) await this.#client.request('session.subscribe', { events: fresh, contexts: [this.#context] }, s.object({}), send)
+    if (fresh.length > 0) {
+      const { subscription } = await this.#client.request('session.subscribe', { events: fresh, contexts: [this.#context] }, subscribedSchema, send)
+      if (subscription !== undefined) {
+        for (const event of fresh) this.#subscriptionIds.set(event, subscription)
+        this.#liveEvents.set(subscription, fresh.length)
+      }
+    }
     for (const event of events) this.#subscriptions.set(event, (this.#subscriptions.get(event) ?? 0) + 1)
   }
 
@@ -787,9 +812,25 @@ export class FirefoxPage implements WebSession, ElementIdentity {
         ended.push(event)
       } else this.#subscriptions.set(event, count)
     }
-    if (ended.length > 0 && this.#client.closeReason === undefined && this.#lostReason === undefined) {
-      this.#client.send('session.unsubscribe', { events: ended, contexts: [this.#context] }).catch(() => undefined)
+    const unnamed = ended.filter((event) => !this.#subscriptionIds.has(event))
+    const finished = ended.flatMap((event) => this.#endEvent(event))
+    if (this.#client.closeReason !== undefined || this.#lostReason !== undefined) return
+    for (const id of finished) this.#client.send('session.unsubscribe', { subscriptions: [id] }).catch(() => undefined)
+    if (unnamed.length > 0) this.#client.send('session.unsubscribe', { events: unnamed, contexts: [this.#context] }).catch(() => undefined)
+  }
+
+  // Forgets an ended event's subscription id, and names the subscription once none of its events is live.
+  #endEvent(event: string): string[] {
+    const id = this.#subscriptionIds.get(event)
+    if (id === undefined) return []
+    this.#subscriptionIds.delete(event)
+    const live = (this.#liveEvents.get(id) ?? 1) - 1
+    if (live > 0) {
+      this.#liveEvents.set(id, live)
+      return []
     }
+    this.#liveEvents.delete(id)
+    return [id]
   }
 
   async #pressKey(command: Extract<BrowserCommand, { kind: 'press' }>, deadline: Deadline, dispatch: Dispatch, commandToken: number | undefined): Promise<CommandResult> {
@@ -1075,7 +1116,8 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     }
     const preload = this.#preload
     if (preload !== undefined) await attempt("remove the page's preload script", () => this.#client.send('script.removePreloadScript', { script: preload }, options()))
-    await attempt("stop following the page's events", () => this.#client.send('session.unsubscribe', { events: ['browsingContext', 'script'], contexts: [this.#context] }, options()))
+    const subscription = { id: this.#pageSubscription, events: ['browsingContext', 'script'], contexts: [this.#context] }
+    await attempt("stop following the page's events", () => this.#client.send('session.unsubscribe', unsubscribeParameters(subscription), options()))
     await attempt("close the page's user context", () => inWindowOrder(this.#client, deadline, () => this.#client.send('browser.removeUserContext', { userContext: this.#userContext }, options())))
     if (problems.length > 0) throw new BrowserError({ class: 'cleanup_failed', message: problems.join(' ') })
   }
@@ -1110,14 +1152,14 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   // nothing of who asked for a navigation, so the first one to start while such a command opens is the command's, as
   // its answer later confirms for a goto or a reload, and any other is the page's own, such as one a script starts
   // while the document the goto opened is parsed.
-  #navigationStarted(navigation: string | null, url: string): void {
+  #navigationStarted(navigation: string | null, url: string, requestedAs?: string): void {
     const id = navigation ?? `navigation-${this.#commits}-${url}`
     const commands = this.#opening > 0 && !this.#claimed
     if (commands) this.#claimed = true
     else this.#causes.requested(url)
     this.#causes.started(url, id)
     this.#started.add(id)
-    this.#pending = { id, url }
+    this.#pending = requestedAs === undefined ? { id, url } : { id, url, requestedAs }
     this.#navigationStarts.emit(url)
     for (const watcher of [...this.#watchers]) watcher.onStarted(id)
   }
@@ -1149,6 +1191,34 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     this.#client.send('script.callFunction', params, { timeoutMs: guardInstallMs }).catch(() => undefined)
   }
 
+  // Firefox 158 tells a navigation's commit, Firefox 133 does not; the document itself is heard from Retest's script
+  // either way. What the commit adds is the address of Firefox's error page, which names its reason, before the page's
+  // own events say it.
+  #navigationCommitted(navigation: string | null, url: string): void {
+    if (errorPageReason(url) === undefined) return
+    const id = this.#documentOf(navigation, url)
+    for (const watcher of [...this.#watchers]) watcher.onContentLoaded(id, url)
+  }
+
+  // Firefox 158 announces no navigation a document's own script starts as it loads, such as from a load handler; the
+  // only word of it is the request for the next document, named by the navigation of the document still showing. That
+  // request starts the navigation here, as Firefox 133's announcement did, so nothing is done in a document about to
+  // be replaced. Any other document request is a navigation Firefox announced, or one of a frame.
+  #requested({ navigation, redirectCount, request }: Infer<typeof requestSchema>): void {
+    if (request.destination !== 'document' || redirectCount > 0 || navigation === null) return
+    if (this.#pending !== undefined || navigation !== this.#document) return
+    const url = URL.parse(request.url)
+    if (url === null || !isWebUrl(url)) return
+    this.#navigationStarted(null, request.url, navigation)
+  }
+
+  // The navigation under way, when `navigation` names it: by its own id, or by the id Firefox gave the request of one it
+  // did not announce.
+  #pendingNamed(navigation: string): { id: string; url: string } | undefined {
+    const pending = this.#pending
+    return pending !== undefined && (pending.id === navigation || pending.requestedAs === navigation) ? pending : undefined
+  }
+
   #contentLoaded(navigation: string | null, url: string): void {
     const id = this.#documentOf(navigation, url)
     this.#titles.contentLoaded(id)
@@ -1175,24 +1245,41 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   // The response of the navigation under way says it opens no document: no content, or a download. Firefox 133 keeps such
   // a navigation as started until another one begins, and only then says it failed, so the response is what ends it.
   #responded({ navigation, request, response }: Infer<typeof responseSchema>): void {
-    if (navigation === null || navigation !== this.#pending?.id) return
+    const pending = navigation === null ? undefined : this.#pendingNamed(navigation)
+    if (pending === undefined) return
     const disposition = response.headers?.find((header) => header.name.toLowerCase() === 'content-disposition')?.value.value
     const download = disposition !== undefined && /^\s*attachment\b/i.test(disposition)
     if (response.status !== 204 && response.status !== 205 && !download) return
-    this.#pending = undefined
-    this.#causes.stoppedLoading()
-    this.#started.delete(navigation)
-    for (const watcher of [...this.#watchers]) watcher.onAbandoned(navigation, request.url)
+    this.#abandon(pending, request.url)
   }
 
+  // Firefox 158 announces a navigation a load handler sent to a download only once the download's response came, and
+  // then says the download begins, naming that navigation; it never commits, so the download is what ends it.
+  #downloading(navigation: string | null, url: string): void {
+    const pending = navigation === null ? undefined : this.#pendingNamed(navigation)
+    if (pending !== undefined) this.#abandon(pending, url)
+  }
+
+  // The navigation under way opened no document at `url`: the browser gave it up, and the page stayed where it was.
+  #abandon(pending: { id: string }, url: string): void {
+    this.#pending = undefined
+    this.#causes.stoppedLoading()
+    this.#started.delete(pending.id)
+    for (const watcher of [...this.#watchers]) watcher.onAbandoned(pending.id, url)
+  }
+
+  // Firefox gave a navigation up, or Retest failed its request, as a hold that cancels one does with the id Firefox gave
+  // the request: the navigation under way it names ends.
   #navigationFailed(navigation: string | null): void {
     if (navigation === null) return
-    if (this.#pending?.id === navigation) {
+    const pending = this.#pendingNamed(navigation)
+    if (pending !== undefined) {
       this.#pending = undefined
       this.#causes.stoppedLoading()
     }
-    this.#started.delete(navigation)
-    for (const watcher of [...this.#watchers]) watcher.onFailed(navigation)
+    const id = pending?.id ?? navigation
+    this.#started.delete(id)
+    for (const watcher of [...this.#watchers]) watcher.onFailed(id)
   }
 
   #movedWithinDocument(href: string): void {
@@ -1235,7 +1322,9 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     if (read.source.context !== this.#context || read.data.type !== 'string' || read.data.value === undefined) return
     const href = read.data.value
     if (read.channel === this.#channels.documented) {
-      this.#committed(href)
+      // Firefox 158 runs the script in a passing document with no address while a navigation moves to another process;
+      // only a document with an address committed.
+      if (href !== '') this.#committed(href)
       return
     }
     if (read.channel !== this.#channels.changed) return

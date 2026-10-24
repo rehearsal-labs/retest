@@ -27,7 +27,34 @@ export type ProcessOwnershipSystem = {
   readAsync?(deadline?: Deadline): Promise<readonly OwnedProcessIdentity[]>
   /** The same immediate pre-signal reading without holding the event loop. */
   readProcessAsync?(pid: number, deadline?: Deadline): Promise<OwnedProcessIdentity | undefined>
-  signal(pid: number, signal: NodeJS.Signals | 0): void
+  /** `expected` is the fresh reading the signal follows, for a host that checks it again as it signals. */
+  signal(pid: number, signal: NodeJS.Signals | 0, expected?: OwnedProcessIdentity): void
+  /**
+   * Set where `read` lists one job's processes and nothing else, as on Windows: the job the launch `root` was put in,
+   * which holds every process it and its descendants started. There, a member is owned by being in the job, and the
+   * group is ended by ending the job.
+   */
+  job?: OwnedJob
+}
+
+/**
+ * A launch's job: the pid it was made for, and its end, which ends every process in it at once. A job holds only
+ * processes born of the launch, so ending it ends nothing else, and nothing in it is left out.
+ */
+export type OwnedJob = {
+  readonly root: number
+  /**
+   * The launch as it was read when it was put in the job, alive. A process gone from the job is gone from its list at
+   * once, where Unix still shows it until it is reaped, so a launch that ended before the first reading is recorded
+   * from this.
+   */
+  readonly launched?: OwnedProcessIdentity
+  end(deadline?: Deadline): void
+  endAsync(deadline?: Deadline): Promise<void>
+  /** Sends Ctrl+C to the console the job's processes are on, which is how a console program is asked to stop. */
+  interrupt(deadline?: Deadline): void
+  /** What the job's end could not confirm, once the job was read empty: processes still running outside every job. */
+  unconfirmed(): readonly string[]
 }
 
 /** Signal failures stay failures; identity refusals can be reconciled only by a later proof of absence. */
@@ -54,9 +81,14 @@ const host: ProcessOwnershipSystem = {
   signal: (pid, signal) => { process.kill(pid, signal) },
 }
 
+/** What one reading of whether a group remains said: the processes of the group it found running, or why it failed. */
+export type LivenessReading = { readonly running: readonly OwnedProcessIdentity[] } | { readonly problem: string }
+
 /**
  * Records a launched process and the descendants observed beneath a still-verified owned process. Group membership
  * alone never establishes ownership. Signals are sent to recorded, freshly verified pids, never to a numeric group.
+ * A launch held in a job of its own, as on Windows, is the exception the job makes possible: the job holds nothing but
+ * what the launch started, so its members are owned by being there, and it is ended whole.
  */
 export class OwnedProcessGroup {
   readonly #pid: number
@@ -65,6 +97,7 @@ export class OwnedProcessGroup {
   readonly #records = new Map<number, OwnedProcessIdentity>()
   readonly #unowned = new Map<number, OwnedProcessIdentity>()
   readonly #readProblems = new Set<string>()
+  #lastLook: LivenessReading | undefined
   #initialized = false
   #retired = false
   #initialProcessAbsent = false
@@ -91,14 +124,45 @@ export class OwnedProcessGroup {
     return this.#initialProcessAbsent
   }
 
-  /** Failed metadata readings remain visible even when a later reading proves the launch ended. */
+  /**
+   * Failed metadata readings remain visible even when a later reading proves the launch ended, as does, for a launch
+   * held in a job, anything its job's end could not confirm.
+   */
   get readProblems(): readonly string[] {
-    return [...this.#readProblems]
+    return [...this.#readProblems, ...(this.#ownJob()?.unconfirmed() ?? [])]
   }
 
   /** Whether the launch has been read once, whatever the reading found or however it failed. */
   get captured(): boolean {
     return this.#initialized
+  }
+
+  /** Whether this group is a launch held in a job of its own, which ends it whole rather than one signal at a time. */
+  get heldByJob(): boolean {
+    return this.#ownJob() !== undefined
+  }
+
+  /**
+   * The processes of the group on record, recorded or not traced to the launch, as the newest reading that succeeded
+   * left them. A reading that failed changes nothing here, so this is no proof that they still run. Empty once a reading
+   * found the group gone.
+   */
+  get stillThere(): readonly OwnedProcessIdentity[] {
+    return [...this.#records.values(), ...this.#unowned.values()]
+  }
+
+  /**
+   * What the newest reading of whether the group remains said: the processes of the group it found still running, or
+   * the problem it failed with. Undefined before the first.
+   */
+  get lastLook(): LivenessReading | undefined {
+    return this.#lastLook
+  }
+
+  // The job of this very launch; a descendant handed off by `groupFor` shares the system but is not its job's root.
+  #ownJob(): OwnedJob | undefined {
+    const { job } = this.#system
+    return job?.root === this.#pid ? job : undefined
   }
 
   #failedRead(error: unknown): string {
@@ -151,7 +215,7 @@ export class OwnedProcessGroup {
     this.#newest = Math.max(this.#newest, sequence)
     const initial = !this.#initialized
     this.#initialized = true
-    const root = processes.find((entry) => entry.pid === this.#pid)
+    const root = processes.find((entry) => entry.pid === this.#pid) ?? (initial ? this.#ownJob()?.launched : undefined)
     if (initial) {
       if (root === undefined) {
         this.#initialProcessAbsent = true
@@ -160,6 +224,10 @@ export class OwnedProcessGroup {
       if (root.parentPid !== this.#parentPid) return [`Process ${this.#pid} is not the launched child, so it was not claimed.`]
       this.#records.set(root.pid, root)
       this.#launchIdentity = root
+    }
+    // A job lists only processes born of its launch, even one whose parent is gone, so its members need no ancestry.
+    if (this.#ownJob() !== undefined) {
+      for (const entry of processes) if (running(entry) && entry.groupId === this.#pid && !this.#records.has(entry.pid)) this.#records.set(entry.pid, entry)
     }
     for (const entry of processes) {
       const record = this.#records.get(entry.pid)
@@ -250,6 +318,9 @@ export class OwnedProcessGroup {
    */
   signalReport(signal: NodeJS.Signals, deadline?: Deadline): ProcessSignalReport {
     if (this.#retired) return { problems: [], identityRefusals: [] }
+    const job = this.#ownJob()
+    if (job !== undefined && endsProcess(signal)) return this.#endJob(job, deadline)
+    if (job !== undefined && signal === 'SIGINT') return this.#interruptJob(job, deadline)
     let processes: readonly OwnedProcessIdentity[]
     try {
       checkDeadline(deadline)
@@ -283,6 +354,9 @@ export class OwnedProcessGroup {
    */
   async signalReportAsync(signal: NodeJS.Signals, deadline?: Deadline): Promise<ProcessSignalReport> {
     if (this.#retired) return { problems: [], identityRefusals: [] }
+    const job = this.#ownJob()
+    if (job !== undefined && endsProcess(signal)) return this.#endJobAsync(job, deadline)
+    if (job !== undefined && signal === 'SIGINT') return this.#interruptJob(job, deadline)
     const asked = this.#sequence
     let read: { readonly processes: readonly OwnedProcessIdentity[]; readonly reading: TableReading } | undefined
     try {
@@ -314,6 +388,41 @@ export class OwnedProcessGroup {
     return { problems, identityRefusals }
   }
 
+  // Windows has no SIGINT to send; a console program is asked to stop by Ctrl+C on its console, which reaches every
+  // process on it at once, so it is sent once for the launch. It is only asked: one that cannot be asked, as one with no
+  // console left, is ended when its grace runs out, as one that ignores Ctrl+C is, and that end is what cleanup reports.
+  #interruptJob(job: OwnedJob, deadline: Deadline | undefined): ProcessSignalReport {
+    try {
+      checkDeadline(deadline)
+      job.interrupt(deadline)
+    } catch {
+      // As above: the end that follows is the outcome.
+    }
+    return { problems: [], identityRefusals: [] }
+  }
+
+  // A job is ended whole, without a reading first: it holds only what the launch started, so nothing else can be in it,
+  // and a helper born a moment ago is in it too. Whether it is then gone is for `remains` to read.
+  #endJob(job: OwnedJob, deadline: Deadline | undefined): ProcessSignalReport {
+    try {
+      checkDeadline(deadline)
+      job.end(deadline)
+    } catch (error) {
+      return { problems: [endProblem(this.#pid, error)], identityRefusals: [] }
+    }
+    return { problems: [], identityRefusals: [] }
+  }
+
+  async #endJobAsync(job: OwnedJob, deadline: Deadline | undefined): Promise<ProcessSignalReport> {
+    try {
+      checkDeadline(deadline)
+      await job.endAsync(deadline)
+    } catch (error) {
+      return { problems: [endProblem(this.#pid, error)], identityRefusals: [] }
+    }
+    return { problems: [], identityRefusals: [] }
+  }
+
   #signalCurrent(record: OwnedProcessIdentity, current: OwnedProcessIdentity | undefined, signal: NodeJS.Signals, problems: string[], identityRefusals: string[], deadline?: Deadline): void {
     // Another awaited cleanup may already have confirmed this record gone. It must not be restored by a late reply.
     if (this.#retired || !sameProcess(this.#records.get(record.pid), record)) return
@@ -338,7 +447,7 @@ export class OwnedProcessGroup {
     }
     try {
       checkDeadline(deadline)
-      this.#system.signal(record.pid, signal)
+      this.#system.signal(record.pid, signal, current)
     } catch (error) {
       if (errorCode(error) !== 'ESRCH') problems.push(`Could not signal recorded process ${record.pid}: ${errorMessage(error)}`)
     }
@@ -434,7 +543,10 @@ export class OwnedProcessGroup {
       checkDeadline(deadline)
       processes = this.#system.read(deadline)
       checkDeadline(deadline)
-    } catch (error) { this.#failedRead(error); return true }
+    } catch (error) {
+      this.#lastLook = { problem: this.#failedRead(error) }
+      return true
+    }
     return this.#remainsFrom(processes, this.#next())
   }
 
@@ -451,7 +563,10 @@ export class OwnedProcessGroup {
       checkDeadline(deadline)
       read = await this.#readFreshTableAsync(deadline)
       checkDeadline(deadline)
-    } catch (error) { this.#failedRead(error); return true }
+    } catch (error) {
+      this.#lastLook = { problem: this.#failedRead(error) }
+      return true
+    }
     if (this.#retired || read === undefined) return false
     return this.#remainsFrom(read.processes, read.reading.sequence)
   }
@@ -460,14 +575,20 @@ export class OwnedProcessGroup {
     this.#newest = Math.max(this.#newest, sequence)
     // A failed first reading never grants signal authority, and an empty ledger is no proof that the launched
     // child ended. Until its pid and group are absent, that unresolved launch continues to hold its resource.
-    if (this.#launchIdentity === undefined && processes.some((entry) => running(entry) && (entry.pid === this.#pid || entry.groupId === this.#pid))) return true
+    if (this.#launchIdentity === undefined) {
+      const unresolved = processes.filter((entry) => running(entry) && (entry.pid === this.#pid || entry.groupId === this.#pid))
+      this.#lastLook = { running: unresolved }
+      if (unresolved.length > 0) return true
+    }
     const root = processes.find((entry) => entry.pid === this.#pid)
     const reusedGroup = root !== undefined && this.#launchIdentity !== undefined && !sameBirth(this.#launchIdentity, root)
     if (!reusedGroup) for (const current of processes) {
       if (running(current) && current.groupId === this.#pid && !sameBirth(this.#records.get(current.pid), current)) this.#unowned.set(current.pid, current)
     }
     this.#forgetGone(processes)
-    for (const current of processes) if (running(current) && (sameBirth(this.#records.get(current.pid), current) || sameBirth(this.#unowned.get(current.pid), current))) return true
+    const left = processes.filter((current) => running(current) && (sameBirth(this.#records.get(current.pid), current) || sameBirth(this.#unowned.get(current.pid), current)))
+    this.#lastLook = { running: left }
+    if (left.length > 0) return true
     this.#retired = true
     this.#records.clear()
     this.#unowned.clear()
@@ -483,6 +604,15 @@ export class OwnedProcessGroup {
  */
 export function unverifiedMembersProblem(groupId: number): string {
   return `Process group ${groupId} contains processes whose launch ownership could not be verified; they were left alone.`
+}
+
+// The signals a job's end stands for. Windows has no gentler end than its job's, so SIGTERM ends a job as SIGKILL does.
+function endsProcess(signal: NodeJS.Signals): boolean {
+  return signal === 'SIGKILL' || signal === 'SIGTERM'
+}
+
+function endProblem(pid: number, error: unknown): string {
+  return `Could not end the job holding process ${pid} and what it started: ${errorMessage(error)}`
 }
 
 function sameProcess(record: OwnedProcessIdentity | undefined, current: OwnedProcessIdentity): boolean {

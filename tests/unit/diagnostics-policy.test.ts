@@ -3,6 +3,7 @@ import type { DiagnosticCollection, DiagnosticSink } from '../../src/diagnostics
 import type { DiagnosticRecord, DiagnosticsSummary } from '../../src/protocol/diagnostics.ts'
 import type { EventBody } from '../../src/protocol/events.ts'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { parseArtifact, redactArtifactText } from '../../src/diagnostics/artifact.ts'
 import { AttemptDiagnostics } from '../../src/diagnostics/attempt.ts'
@@ -290,7 +291,7 @@ describe('how reports speak of diagnostics', () => {
     assert.equal(describeConsole({ state: 'unavailable', reason: 'the page crashed' }), 'console unavailable: the page crashed')
     const lines = diagnosticsCardLines([{ app: 'web', sessionId: 's:web', path: 'diagnostics/a.jsonl', scope: chromiumScope, console: consoleCounts, network: networkCounts }], 'run')
     assert.deepEqual(lines, [
-      { label: 'Diagnostics', value: `web: ${describeConsole(consoleCounts)} · ${describeNetwork(networkCounts)} · run/diagnostics/a.jsonl` },
+      { label: 'Diagnostics', value: `web: ${describeConsole(consoleCounts)} · ${describeNetwork(networkCounts)} · ${join('run', 'diagnostics/a.jsonl')}` },
       { label: 'Scope', value: 'web: console covers top level document, same process frames, dedicated workers; network covers top level document, same process frames' },
     ])
     assert.equal(describeConsole({ ...consoleCounts, runtimeErrors: 0, handledLater: 1 }), 'console 4 entries, 1 error, 2 warnings, 1 handled later, 1 cut')

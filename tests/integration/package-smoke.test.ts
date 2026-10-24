@@ -9,6 +9,7 @@ import {
   assertSucceeded,
   compilers,
   exampleFile,
+  installedRetest,
   installPacked,
   onlyTest,
   repositoryRoot,
@@ -42,6 +43,10 @@ test('checks a locator like a value', async ({ page }) => {
 })
 `
 
+// The tar that lists the tarball. On Windows it is the system's own, which ends its lines with CRLF: a Git shell, as a CI
+// step is, puts GNU tar first on PATH, and GNU tar reads the drive in a path such as D:\a as a remote host's name.
+const tar = process.platform === 'win32' ? join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
+
 describe('package smoke test', () => {
   let root = ''
   let consumer = ''
@@ -52,9 +57,9 @@ describe('package smoke test', () => {
     consumer = join(root, 'consumer')
     await mkdir(join(consumer, 'tests'), { recursive: true })
     const packed = await packRetest(root)
-    const listing = await runProgram('tar', ['-tzf', packed.tarball], root)
+    const listing = await runProgram(tar, ['-tzf', packed.tarball], root)
     assertSucceeded(listing, 'tar -tzf')
-    published = listing.stdout.split('\n').filter((line) => line !== '').map((line) => line.replace(/^package\//, ''))
+    published = listing.stdout.split(/\r?\n/).filter((line) => line !== '').map((line) => line.replace(/^package\//, ''))
 
     await writeFile(join(consumer, 'package.json'), `${JSON.stringify({ name: 'retest-consumer', private: true, type: 'module' })}\n`)
     await installPacked(consumer, packed)
@@ -84,6 +89,7 @@ describe('package smoke test', () => {
       'media/src/main.rs',
       'media/src/place.rs',
       'media/src/process_ownership.rs',
+      'media/src/process_ownership_windows.rs',
       'media/src/protocol.rs',
       'media/src/queue.rs',
       'media/src/recording.rs',
@@ -102,6 +108,14 @@ describe('package smoke test', () => {
       'src/cli/install/licences/webkit/libvpx-LICENSE.txt',
       'src/cli/install/licences/webkit/swiftCompatibilitySpan-LICENSE.txt',
       'src/cli/install/media-notices.txt',
+      'supervisor/Cargo.lock',
+      'supervisor/Cargo.toml',
+      'supervisor/NOTICES',
+      'supervisor/build.rs',
+      'supervisor/src/command.rs',
+      'supervisor/src/jobs.rs',
+      'supervisor/src/main.rs',
+      'supervisor/src/reply.rs',
     ])
     assert.deepEqual(
       published.filter((path) => path.endsWith('.ts') && !path.endsWith('.d.ts')),
@@ -154,7 +168,7 @@ describe('package smoke test', () => {
       files: ['tests/task.retest.ts'],
       baseUrl: app.url,
       cwd: consumer,
-      command: [join(consumer, 'node_modules/.bin/retest')],
+      command: installedRetest(consumer),
     })
     assert.equal(run.exit.code, 0, run.stderr)
     assert.equal(onlyTest(run).status, 'passed')
@@ -168,7 +182,7 @@ describe('package smoke test', () => {
       files: ['tests/task.retest.ts'],
       baseUrl: app.url,
       cwd: consumer,
-      command: [join(consumer, 'node_modules/.bin/retest')],
+      command: installedRetest(consumer),
     })
     assert.equal(run.exit.code, 1, run.stderr)
     const failed = onlyTest(run)

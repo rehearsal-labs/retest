@@ -2,12 +2,13 @@ import type { Dirent } from 'node:fs'
 import type { OwnedProcessIdentity } from '../../shared/process-ownership.ts'
 import type { OwnerRecord } from './profile.ts'
 import { lstat, readdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Deadline } from '../../protocol/deadline.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { errorCode } from '../../shared/error-code.ts'
 import { sameProcessIdentity } from '../../shared/process-ownership.ts'
+import { launchesHeldByJob, readHeldProcess } from '../../shared/process-system.ts'
 import { firefoxFolderPrefix, ownerRecordFile, readOwnerRecord } from './profile.ts'
 import { isRunning, readProcessIdentityAsync, readProcessTableAsync } from './process-table.ts'
 
@@ -64,6 +65,10 @@ export async function sweepOrphanedFirefoxes(root: string, system: SweepSystem =
   }
   const folders = entries.filter((entry) => entry.isDirectory() && ownedFolder.test(entry.name)).map((entry) => join(root, entry.name))
   if (folders.length === 0) return report
+  if (launchesHeldByJob && system === host) {
+    for (const folder of folders) await sweepHeldFolder(folder, report)
+    return report
+  }
   let table: readonly OwnedProcessIdentity[]
   try {
     table = await system.read()
@@ -77,7 +82,7 @@ export async function sweepOrphanedFirefoxes(root: string, system: SweepSystem =
 
 async function sweepFolder(folder: string, table: readonly OwnedProcessIdentity[], system: SweepSystem, report: SweepReport): Promise<void> {
   const record = await readOwnerRecord(folder)
-  const ownerPid = Number(ownedFolder.exec(folder.slice(folder.lastIndexOf('/') + 1))?.[1])
+  const ownerPid = Number(ownedFolder.exec(basename(folder))?.[1])
   if (record === undefined) {
     try {
       await lstat(join(folder, 'retest-owner.json'))
@@ -175,6 +180,31 @@ async function endRecorded(record: OwnerRecord, system: SweepSystem): Promise<st
     if (deadline.expired) return `Firefox ${pid} and the processes it started were still there ${killGraceMs} ms after SIGKILL: ${remaining.map((entry) => entry.pid).join(', ')}.`
     await sleep(Math.min(pollMs, deadline.remainingMs))
   }
+}
+
+/**
+ * A folder a launch on Windows left. There the launcher's job ended its Firefox with it, whatever ended the launcher, so
+ * nothing is left to end: the folder goes once its launcher is shown gone, by its recorded start, or, before a record
+ * was written, by no process holding the pid the folder is named after.
+ */
+async function sweepHeldFolder(folder: string, report: SweepReport): Promise<void> {
+  const record = await readOwnerRecord(folder)
+  const ownerPid = Number(ownedFolder.exec(basename(folder))?.[1])
+  const exact = record !== undefined && record.startTimeVersion === 2 && record.owner.pid === ownerPid ? record.owner.startedAt : undefined
+  let alive: boolean
+  try {
+    alive = exact === undefined ? readHeldProcess(ownerPid) !== undefined : readHeldProcess(ownerPid)?.startedAt === exact
+  } catch (error) {
+    report.problems.push(`Could not tell whether the launcher of ${folder} is gone, so the folder was kept: ${errorMessage(error)}`)
+    return
+  }
+  if (!alive) {
+    await remove(folder, report)
+    return
+  }
+  // A record without a start Windows wrote cannot tell its launcher from another process given the same pid since.
+  const file = join(folder, ownerRecordFile)
+  if (record !== undefined && exact === undefined) report.kept.push(`${folder}: cannot confirm the recorded start in ${file}, and its launcher pid is present; the folder was left alone. Remove ${file} once no runner is running.`)
 }
 
 async function remove(folder: string, report: SweepReport): Promise<void> {

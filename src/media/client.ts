@@ -35,6 +35,8 @@ import { Deadline } from '../protocol/deadline.ts'
 import { describeExit } from '../shared/process-exit.ts'
 import { readMetadataProcess, readMetadataProcessAsync } from '../shared/metadata-process.ts'
 import { OwnedProcessGroup } from '../shared/process-ownership.ts'
+import { consolesDetached, holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../shared/process-system.ts'
+import { encoderVariables, hostVariable } from './host.ts'
 import {
   encodeRequestHead,
   MAX_FRAME_BYTES,
@@ -213,8 +215,8 @@ export type MediaProcessOptions = {
 /** Paths needed by the media encoder, with a fixed locale and no application or judge credentials. */
 export function mediaEnvironment(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
   const result: Record<string, string> = { LC_ALL: 'C' }
-  for (const name of ['PATH', 'TMPDIR']) {
-    const value = env[name]
+  for (const name of encoderVariables) {
+    const value = hostVariable(env, name)
     if (value !== undefined) result[name] = value
   }
   return result
@@ -346,7 +348,8 @@ export function captureEncoderOwnership(worker: OwnedProcessGroup, encoderPid: n
 
 /**
  * Retest's media process, `retest-media`, run as a child in a process group of its own; each encoder it starts
- * leads a group of its own too. Frames go to it over a pipe with their bytes untouched; each recording ends with
+ * leads a group of its own too. On Windows the process is held in a job of its own instead, and its encoders are born
+ * in that job. Frames go to it over a pipe with their bytes untouched; each recording ends with
  * exactly one `Ended` from the process. The client never invents an outcome: if the process ends before a
  * recording does, the client stops only the encoder processes whose launch ownership it recorded, and the promise
  * rejects with how the process ended and any file left. Unreadable or changed ownership is a cleanup failure.
@@ -429,8 +432,15 @@ export class MediaProcess {
     for (const value of [options.maxPendingBytes, options.maxPendingRequests]) {
       if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) throw new RangeError('media admission limits must be positive whole numbers')
     }
-    const child = spawn(options.executable, options.args ?? [], { stdio: 'pipe', detached: true, env: options.env ?? mediaEnvironment(process.env) })
-    const ownership = child.pid === undefined ? undefined : new OwnedProcessGroup(child.pid, process.pid, mediaOwnershipSystem(child.pid))
+    try {
+      prepareOwnedLaunch()
+    } catch (error) {
+      throw new MediaProcessError(errorMessage(error), { cause: error })
+    }
+    // On Windows a runner without a console would otherwise give the media process a console window of its own.
+    const child = spawn(options.executable, options.args ?? [], { stdio: 'pipe', detached: consolesDetached, windowsHide: true, env: options.env ?? mediaEnvironment(process.env) })
+    // On Windows the media process is held in a job of its own, and its encoders are born in it.
+    const ownership = child.pid === undefined ? undefined : launchesHeldByJob ? holdLaunch(child) : new OwnedProcessGroup(child.pid, process.pid, mediaOwnershipSystem(child.pid))
     const ownershipProblems = ownership?.capture() ?? []
     const reader = new ReplyReader()
     const greeting = deferred<Hello>()

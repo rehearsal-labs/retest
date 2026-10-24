@@ -67,28 +67,30 @@ test('opens nothing through a proxy that asks for credentials', { apps: ['challe
     const found = testNamed(run, name)
     return [found.status, found.failure?.class]
   }
+  // What a test's failure said, for a run whose outcome is not the one expected.
+  const said = (name: string): string => JSON.stringify(testNamed(run, name).failure ?? null)
 
   // The app refuses a request without the proxy's header, so the page, its fetch, its service worker's fetch and its
   // frame of another site each answered only because the proxy carried them.
-  assert.deepEqual(outcome('sends every request of the page through the proxy'), ['passed', undefined])
+  assert.deepEqual(outcome('sends every request of the page through the proxy'), ['passed', undefined], said('sends every request of the page through the proxy'))
   for (const path of ['', 'data', 'worker.js', 'from-worker']) {
     assert.ok(carried(proxy).includes(`GET ${app.url}${PROXY_CHECK_PATH}${path}`), `the proxy carried ${PROXY_CHECK_PATH}${path}`)
   }
   assert.ok(carried(proxy).includes(`GET http://localhost:${port}${PROXY_CHECK_PATH}frame`), 'the proxy carried the frame of another site')
 
   // The app answered the bypassed address with its refusal, so the request reached it without the proxy's header.
-  assert.deepEqual(outcome('sends a host in the bypass list around the proxy'), ['passed', undefined])
+  assert.deepEqual(outcome('sends a host in the bypass list around the proxy'), ['passed', undefined], said('sends a host in the bypass list around the proxy'))
   assert.ok(!carried(proxy).includes(`GET ${bypassed}`), 'the proxy never saw the bypassed address')
   assert.ok(app.refused() >= 1)
 
-  assert.deepEqual(outcome('opens nothing through a proxy that refuses the connection'), ['error', 'setup_failed'])
+  assert.deepEqual(outcome('opens nothing through a proxy that refuses the connection'), ['error', 'setup_failed'], said('opens nothing through a proxy that refuses the connection'))
   assert.equal(
     testNamed(run, 'opens nothing through a proxy that refuses the connection').failure?.message,
     `Could not open ${app.url}/ through the proxy ${closed}: net::ERR_PROXY_CONNECTION_FAILED. The proxy failed, not the app.`,
   )
 
   // Retest answers no challenge. Chrome then gives the error it gives for a site's own, so the failure is the page's.
-  assert.deepEqual(outcome('opens nothing through a proxy that asks for credentials'), ['failed', 'not_actionable'])
+  assert.deepEqual(outcome('opens nothing through a proxy that asks for credentials'), ['failed', 'not_actionable'], said('opens nothing through a proxy that asks for credentials'))
   assert.equal(
     testNamed(run, 'opens nothing through a proxy that asks for credentials').failure?.message,
     `Could not open ${app.url}/: net::ERR_INVALID_AUTH_CREDENTIALS.`,

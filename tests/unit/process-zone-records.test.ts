@@ -17,6 +17,9 @@ import { takeDesktopLock } from '../../src/native/desktop-lock.ts'
 import { systemTools } from '../../src/native/processes.ts'
 import { sweepOwnedFolders } from '../../src/native/temporary-folders.ts'
 import { processRuns } from '../../src/runner/media-leftovers.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+const zones = unixOnly('a start read through ps in a time zone exists only on Unix; Windows keeps each process start as UTC ticks')
 
 async function fixture(t: TestContext): Promise<{ root: string; pid: number; localStart: string; stop: () => Promise<void> }> {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'retest-zone-record-'))
@@ -36,7 +39,7 @@ async function fixture(t: TestContext): Promise<{ root: string; pid: number; loc
   return { root, pid: child.pid, stop, localStart: reading.stdout.trim().replace(/\s+/g, ' ') }
 }
 
-test('a pre-change Firefox record cannot confirm a live launcher and never ends its recorded process', async (t) => {
+test('a pre-change Firefox record cannot confirm a live launcher and never ends its recorded process', { skip: zones }, async (t) => {
   const { root, pid, localStart } = await fixture(t)
   const folder = join(root, `retest-firefox-${pid}-legacy`)
   await mkdir(join(folder, 'profile'), { recursive: true })
@@ -54,7 +57,7 @@ test('a pre-change Firefox record cannot confirm a live launcher and never ends 
   process.kill(pid, 0)
 })
 
-test('a complete pre-change Firefox record with both live identities in local time is unconfirmed', async (t) => {
+test('a complete pre-change Firefox record with both live identities in local time is unconfirmed', { skip: zones }, async (t) => {
   const launcher = await fixture(t)
   const firefox = await fixture(t)
   const folder = join(launcher.root, `retest-firefox-${launcher.pid}-local`)
@@ -73,7 +76,7 @@ test('a complete pre-change Firefox record with both live identities in local ti
   process.kill(firefox.pid, 0)
 })
 
-test('a pre-change WebKit home stays whole even if its launcher is reported absent', async (t) => {
+test('a pre-change WebKit home stays whole even if its launcher is reported absent', { skip: zones }, async (t) => {
   const { root, pid, localStart } = await fixture(t)
   const path = join(root, `retest-webkit-${pid}-legacy`)
   await mkdir(path)
@@ -85,7 +88,7 @@ test('a pre-change WebKit home stays whole even if its launcher is reported abse
   process.kill(pid, 0)
 })
 
-test('a pre-change native folder owner cannot be mistaken for a gone live process', async (t) => {
+test('a pre-change native folder owner cannot be mistaken for a gone live process', { skip: zones }, async (t) => {
   const { root, pid, localStart } = await fixture(t)
   const folder = join(root, 'retest-ios-legacy')
   await mkdir(folder)
@@ -116,13 +119,13 @@ test('a pre-change desktop record is refused and preserved before any start comp
   }
 })
 
-test('a pre-change media owner mark is unconfirmed even when its pid is live', async (t) => {
+test('a pre-change media owner mark is unconfirmed even when its pid is live', { skip: zones }, async (t) => {
   const { pid, localStart } = await fixture(t)
   assert.equal(await processRuns({ pid, startedAt: localStart }), undefined)
   process.kill(pid, 0)
 })
 
-test('a live legacy install generation is refused by file and kept byte for byte, then replaced after whole-table absence', async (t) => {
+test('a live legacy install generation is refused by file and kept byte for byte, then replaced after whole-table absence', { skip: zones }, async (t) => {
   const { root, pid, localStart, stop } = await fixture(t)
   const path = join(root, 'install.lock')
   await mkdir(path)

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { after, describe, test } from 'node:test'
 import {
   ArtifactSequences,
@@ -25,6 +25,7 @@ import {
   resultArtifactReferences,
 } from '../../src/store/artifacts.ts'
 import { readEvents } from '../../src/store/read-run-folder.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
 const identity: RecordIdentity = { testId: 'tests/login.retest.ts > signs in as {{password}}', attemptId: 'k3v9q0x2mb', app: 'web', sessionId: 'k3v9q0x2mb:web', observationId: 'o7' }
 const megabyte = 1024 * 1024
@@ -203,9 +204,9 @@ describe('safe reads', () => {
 
   test('a reference with .., an absolute path or a backslash is refused before the disk is looked at', () => {
     const run = folder('read-lexical')
-    put(join(run, '..'), `${run.split('/').at(-1) ?? ''}-sibling.txt`, 'sibling')
+    put(join(run, '..'), `${basename(run)}-sibling.txt`, 'sibling')
     temporary.push(`${run}-sibling.txt`)
-    for (const reference of ['../secret.txt', `../${run.split('/').at(-1) ?? ''}-sibling.txt`, '/etc/passwd', 'artifacts\\..\\x', '']) {
+    for (const reference of ['../secret.txt', `../${basename(run)}-sibling.txt`, '/etc/passwd', 'artifacts\\..\\x', '']) {
       const read = readArtifactFile(run, reference, limits)
       assert.equal(read.ok ? '' : read.reason, 'invalid_reference', reference)
     }
@@ -252,15 +253,20 @@ describe('safe reads', () => {
     assert.equal(nameOf(readArtifactFile(run, 'artifacts/one.png', limits)), 'hard_link')
   })
 
-  test('a folder, a pipe and a file over the stated size are refused by name', () => {
-    const run = folder('read-kinds')
-    mkdirSync(join(run, 'artifacts', 'k3'), { recursive: true })
+  test('a pipe is refused by name', { skip: unixOnly('a Windows file system has no FIFOs') }, () => {
+    const run = folder('read-pipe')
+    mkdirSync(join(run, 'artifacts'), { recursive: true })
     execFileSync('mkfifo', [join(run, 'artifacts', 'pipe.png')])
-    put(run, 'artifacts/big.png', 'x'.repeat(2048))
-    assert.equal(nameOf(readArtifactFile(run, 'artifacts/k3', limits)), 'not_regular_file')
     const pipe = readArtifactFile(run, 'artifacts/pipe.png', limits)
     assert.equal(nameOf(pipe), 'not_regular_file')
     assert.match(pipe.ok ? '' : pipe.message, /a pipe/)
+  })
+
+  test('a folder and a file over the stated size are refused by name', () => {
+    const run = folder('read-kinds')
+    mkdirSync(join(run, 'artifacts', 'k3'), { recursive: true })
+    put(run, 'artifacts/big.png', 'x'.repeat(2048))
+    assert.equal(nameOf(readArtifactFile(run, 'artifacts/k3', limits)), 'not_regular_file')
     const big = readArtifactFile(run, 'artifacts/big.png', { maxBytes: 2047 })
     assert.equal(nameOf(big), 'too_large')
     assert.match(big.ok ? '' : big.message, /2048 bytes, over the limit of 2047/)
@@ -320,17 +326,26 @@ describe('a swap between the check and the open', () => {
     assert.match(opened.ok ? '' : opened.message, /"artifacts" was replaced/)
   })
 
-  test('the file swapped for a link, for another file, or for a pipe is refused', () => {
+  test('the file swapped for a pipe is refused', { skip: unixOnly('a Windows file system has no FIFOs') }, () => {
+    const run = folder('swap-pipe')
+    put(run, 'artifacts/c.png', 'inside c')
+    const c = checkArtifact(run, 'artifacts/c.png', limits)
+    assert.ok(c.ok)
+    rmSync(join(run, 'artifacts', 'c.png'))
+    execFileSync('mkfifo', [join(run, 'artifacts', 'c.png')])
+    const piped = c.artifact.open()
+    assert.equal(nameOf(piped), 'changed', 'opening a pipe in the file\'s place does not wait for a writer')
+  })
+
+  test('the file swapped for a link or for another file is refused', () => {
     const run = folder('swap-file')
     const outside = folder('swap-file-outside')
     writeFileSync(join(outside, 'secret.txt'), 'outside secret')
     put(run, 'artifacts/a.png', 'inside a')
     put(run, 'artifacts/b.png', 'inside b')
-    put(run, 'artifacts/c.png', 'inside c')
     const a = checkArtifact(run, 'artifacts/a.png', limits)
     const b = checkArtifact(run, 'artifacts/b.png', limits)
-    const c = checkArtifact(run, 'artifacts/c.png', limits)
-    assert.ok(a.ok && b.ok && c.ok)
+    assert.ok(a.ok && b.ok)
     rmSync(join(run, 'artifacts', 'a.png'))
     symlinkSync(join(outside, 'secret.txt'), join(run, 'artifacts', 'a.png'))
     const linked = a.artifact.open()
@@ -339,10 +354,6 @@ describe('a swap between the check and the open', () => {
     put(run, 'artifacts/replacement.png', 'replacement')
     renameSync(join(run, 'artifacts', 'replacement.png'), join(run, 'artifacts', 'b.png'))
     assert.equal(nameOf(b.artifact.open()), 'changed')
-    rmSync(join(run, 'artifacts', 'c.png'))
-    execFileSync('mkfifo', [join(run, 'artifacts', 'c.png')])
-    const piped = c.artifact.open()
-    assert.equal(nameOf(piped), 'changed', 'opening a pipe in the file\'s place does not wait for a writer')
   })
 
   test('the run folder itself swapped for a link is refused', () => {
@@ -494,7 +505,6 @@ describe('what a run folder holds against what its records name', () => {
     symlinkSync(join(outside, 'secret.txt'), join(run, 'artifacts', 'k3v9q0x2mb', 'web', 'link.png'))
     symlinkSync(join(outside, 'secret.txt'), join(run, 'artifacts', 'k3v9q0x2mb', 'web', 'named-link.png'))
     linkSync(join(outside, 'secret.txt'), join(run, 'artifacts', 'hard.png'))
-    execFileSync('mkfifo', [join(run, 'artifacts', 'pipe')])
     const references: ArtifactReference[] = [
       ...eventArtifactReferences(events()),
       ...resultArtifactReferences(result()),
@@ -518,9 +528,21 @@ describe('what a run folder holds against what its records name', () => {
     assert.deepEqual(inventory.refused.map((entry) => [entry.reference, entry.reason]), [
       ['artifacts/hard.png', 'hard_link'],
       ['artifacts/k3v9q0x2mb/web/link.png', 'outside_run_folder'],
-      ['artifacts/pipe', 'not_regular_file'],
     ])
     assert.equal(inventory.truncated, false)
+  })
+
+  test('the listing refuses a pipe as not a regular file, in its place among the others', { skip: unixOnly('a Windows file system has no FIFOs') }, () => {
+    const run = folder('inventory-pipe')
+    const outside = folder('inventory-pipe-outside')
+    writeFileSync(join(outside, 'secret.txt'), 'outside')
+    mkdirSync(join(run, 'artifacts'))
+    linkSync(join(outside, 'secret.txt'), join(run, 'artifacts', 'hard.png'))
+    execFileSync('mkfifo', [join(run, 'artifacts', 'pipe')])
+    assert.deepEqual(inventoryArtifacts(run, []).refused.map((entry) => [entry.reference, entry.reason]), [
+      ['artifacts/hard.png', 'hard_link'],
+      ['artifacts/pipe', 'not_regular_file'],
+    ])
   })
 
   test('a link under one of the run\'s own names is listed as a link, not skipped as the run\'s own', () => {

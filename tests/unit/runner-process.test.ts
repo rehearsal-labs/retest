@@ -3,9 +3,10 @@ import { describe, test } from 'node:test'
 import { newAttemptId } from '../../src/runner/attempt-id.ts'
 import { bounded } from '../../src/runner/bounded.ts'
 import { loadTests } from '../../src/runner/load-tests.ts'
-import { conditionArguments, endedCleanly, TestFileProcess } from '../../src/runner/test-file-process.ts'
+import { conditionArguments, endedCleanly, testFileEnvironment, TestFileProcess } from '../../src/runner/test-file-process.ts'
 import { describeExit } from '../../src/shared/process-exit.ts'
 import { isRunning, rootDir, supportFile } from '../support/run-harness.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
 describe('conditionArguments', () => {
   test('keeps --conditions in each of its forms and drops everything else', () => {
@@ -15,6 +16,18 @@ describe('conditionArguments', () => {
     )
     assert.deepEqual(conditionArguments(['--conditions']), [])
     assert.deepEqual(conditionArguments([]), [])
+  })
+})
+
+describe('testFileEnvironment', () => {
+  // NODE_COMPILE_CACHE turns Node's compile cache on as a process starts, before child.ts could keep it off on Windows.
+  test("leaves NODE_COMPILE_CACHE out of a test file's environment on Windows only, with the hidden variables", () => {
+    const environment = { Node_Compile_Cache: 'C:\\cache', PATH: 'C:\\Windows', RETEST_PASSWORD: 'hunter2' }
+    assert.deepEqual(testFileEnvironment({ environment, hiddenVariables: ['RETEST_PASSWORD'] }, 'win32'), { PATH: 'C:\\Windows' })
+    assert.deepEqual(testFileEnvironment({ environment }, 'win32'), { PATH: 'C:\\Windows', RETEST_PASSWORD: 'hunter2' })
+    for (const platform of ['darwin', 'linux'] as const) {
+      assert.deepEqual(testFileEnvironment({ environment: { NODE_COMPILE_CACHE: '/cache', RETEST_PASSWORD: 'hunter2' }, hiddenVariables: ['RETEST_PASSWORD'] }, platform), { NODE_COMPILE_CACHE: '/cache' })
+    }
   })
 })
 
@@ -92,7 +105,7 @@ describe('TestFileProcess', () => {
     assert.equal(child.killed, true)
   })
 
-  test('closes a bounded time after it exits, though a process it started still holds its output pipes', async () => {
+  test('closes a bounded time after it exits, though a process it started still holds its output pipes', { skip: unixOnly("on Windows Node puts a child's own children in a job that ends with it, so none outlives the test file to hold its pipes") }, async () => {
     const file = supportFile('grandchild.retest.ts')
     const output: string[] = []
     const child = TestFileProcess.spawn({ onOutput: (_stream, text) => output.push(text) })

@@ -13,6 +13,7 @@ import { ChromiumProcess } from '../../src/browser/chromium-process.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { errorCode } from '../../src/shared/error-code.ts'
 import { readProcessTable } from '../../src/shared/process-ownership.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
 function object(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 
@@ -41,7 +42,7 @@ function identity(record: OwnedProcessIdentity | undefined, fixture: string) {
   return record === undefined ? null : { pid: record.pid, parentPid: record.parentPid, groupId: record.groupId, startedAt: record.startedAt, state: record.state ?? null, commandMatchesFixture: record.command.includes(fixture) }
 }
 
-test('real inherited stderr: a detached writer ends itself, and reader shutdown preserves ownership and redaction', { timeout: 30000 }, async (context) => {
+test('real inherited stderr: a detached writer ends itself, and reader shutdown preserves ownership and redaction', { timeout: 30000, skip: unixOnly('a writer Retest cannot trace to its launch exists only where a process group proves nothing; on Windows the job holds and ends every writer the launch started') }, async (context) => {
   const retainedProof = process.env['RETEST_READER_PROOF_OUT']
   const proofRoot = retainedProof ?? tmpdir()
   await mkdir(proofRoot, { recursive: true })

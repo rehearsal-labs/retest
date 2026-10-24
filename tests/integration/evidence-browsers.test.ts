@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { servePages } from './browser-harness.ts'
 import { budgets, configSource, eventsOf, filesHolding, runProject, writeProject } from './cli-harness.ts'
 import { engineUnderTest } from './engines.ts'
-import { binary, decoder, ffmpeg, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
+import { binary, decoder, ffmpeg, importOption, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
 import { recordingSkip } from './recording-harness.ts'
 
 const source = `import { expect, secret, test } from '@rehearsal-labs/retest'
@@ -49,7 +49,7 @@ test(`recorded evidence on real ${engineUnderTest().label}, secret pixels withhe
     'evidence.retest.ts': source,
   })
   mkdirSync(proofRoot, { recursive: true })
-  const run = await runProject(t, await make(true), { timeouts: budgets({ test: 30000, setup: 30000, cleanup: 15000 }), env: { RETEST_EVIDENCE_SECRET: secret, RETEST_MEDIA_BINARY: binary, RETEST_FFMPEG: ffmpeg, NODE_OPTIONS: `--import=${loader}` } })
+  const run = await runProject(t, await make(true), { timeouts: budgets({ test: 30000, setup: 30000, cleanup: 15000 }), env: { RETEST_EVIDENCE_SECRET: secret, RETEST_MEDIA_BINARY: binary, RETEST_FFMPEG: ffmpeg, NODE_OPTIONS: importOption(loader) } })
   assert.equal(run.stderr.includes(secret) || run.stdout.includes(secret), false)
   writeFileSync(join(observed, 'cli-output.json'), JSON.stringify({exit:run.exit, stderr:run.stderr, stdout:run.stdout}, null, 2))
   // Save before verification, so a failed check retains its complete real-target run.

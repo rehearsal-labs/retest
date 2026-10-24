@@ -19,6 +19,7 @@ import { Deadline } from '../../src/protocol/deadline.ts'
 import { sameProcessIdentity, unverifiedMembersProblem } from '../../src/shared/process-ownership.ts'
 import { useMetadataWorkerModule } from '../../src/shared/metadata-process.ts'
 import { endedInOrder, readCommands, readHelpers, readListening, readStart, warmUp, writeStandIn } from './firefox-stand-in.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
 // Review F-4: the spawn route, the default way Retest starts Firefox, had never started a process anywhere. This Mac's
 // host app may not read Firefox's data folder, so a real Firefox spawned here never starts, and no test called the
@@ -41,7 +42,9 @@ const cases: StandInCase[] = []
 const leftovers: string[] = []
 const hiddenVariable = 'RETEST_STAND_IN_HIDDEN'
 const keptVariable = 'RETEST_STAND_IN_KEPT'
-const caseTimeout = { timeout: 30_000 }
+// The stand-in is a script its first line starts, which Windows does not run, and its processes are read through ps. On
+// Windows firefox-driver.test.ts drives the pinned Firefox through the same spawn route instead, where the setup names it.
+const caseTimeout = { timeout: 30_000, skip: unixOnly('the Firefox stand-in is a script its first line starts, which Windows does not run; on Windows firefox-driver.test.ts drives the pinned Firefox through the same route') }
 
 async function standIn(t: TestContext, choices: Partial<Omit<StandInConfig, 'reports'>> & Pick<StandInConfig, 'behaviour'>): Promise<StandInCase> {
   const folder = await mkdtemp(join(await realpath(tmpdir()), 'retest-spawn-stand-in-'))

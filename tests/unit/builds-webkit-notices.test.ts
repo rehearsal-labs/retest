@@ -10,7 +10,7 @@ import { app } from '../../src/config/define.ts'
 import { runCommand } from '../../src/native/processes.ts'
 import { fileSha256 } from '../../src/browser/builds.ts'
 import { tempFolder } from '../support/temp-folder.ts'
-import { standInFiles, standInPin, temporaryCache, writeEntries } from './builds-fixtures.ts'
+import { homeEnvironment, standInFiles, standInPin, temporaryCache, writeEntries } from './builds-fixtures.ts'
 import { loadedConfig } from './cli-fixtures.ts'
 
 test('all nine bundled notices survive a synthetic archive install and are checked from its record, with the source pointers', { skip: process.platform === 'darwin' ? false : "unverified: the stand-in archive is packed and unpacked with macOS's ditto, as the macOS WebKit pin is installed" }, async () => {
@@ -76,7 +76,7 @@ test('doctor names all nine WebKit notices, their checksums and source pointers 
   assert.ok(real?.kind === 'archive' && real.licences.inspected)
   const { home } = temporaryCache()
   const config = loadedConfig(tempFolder('retest-webkit-notice-doctor-'), { apps: { web: app({ targets: { webkit: { browser: 'webkit' } } }) } })
-  const rows = await checkBuilds(config, { HOME: home }, { platform: 'mac-arm64' })
+  const rows = await checkBuilds(config, homeEnvironment(home), { platform: 'mac-arm64' })
   assert.equal(rows.length, 1)
   const row = rows[0]
   assert.equal(row?.ok, false)
@@ -92,7 +92,7 @@ test('doctor still reports supplied notices when a WebKit target names a build o
   const { home } = temporaryCache()
   const configured = tempFolder('retest-webkit-configured-notice-build-')
   const config = loadedConfig(tempFolder('retest-webkit-configured-notice-doctor-'), { apps: { web: app({ targets: { webkit: { browser: 'webkit', executablePath: configured } } }) } })
-  const rows = await checkBuilds(config, { HOME: home }, { platform: 'mac-arm64' })
+  const rows = await checkBuilds(config, homeEnvironment(home), { platform: 'mac-arm64' })
   assert.equal(rows.length, 1)
   const row = rows[0]
   assert.equal(row?.ok, true, 'this row verifies the notice pin; the target row checks the configured build')

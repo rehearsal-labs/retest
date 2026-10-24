@@ -85,7 +85,8 @@ process.exit(1)
   }
 
   function serverLog(root: string): string {
-    const log = filesUnder(join(root, '.retest')).find((file) => file.endsWith(appLogFile('web')))
+    // The log is named as a record names it, with forward slashes; the file found on disk is named as this platform writes it.
+    const log = filesUnder(join(root, '.retest')).find((file) => file.endsWith(join(appLogFile('web'))))
     assert.ok(log !== undefined, 'doctor kept the log of the server that failed')
     return readFileSync(log, 'utf8')
   }

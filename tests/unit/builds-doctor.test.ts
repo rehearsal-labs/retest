@@ -11,7 +11,7 @@ import { app, chrome, chromium, electron } from '../../src/config/define.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
 import { tempFolder } from '../support/temp-folder.ts'
-import { installStandIn, standInPin, temporaryCache } from './builds-fixtures.ts'
+import { homeEnvironment, installStandIn, standInPin, temporaryCache } from './builds-fixtures.ts'
 import { fakeBrowser, loadedConfig } from './cli-fixtures.ts'
 import { fakeTools } from './native-fake-tools.ts'
 
@@ -57,12 +57,12 @@ describe("doctor's builds rows", () => {
     const { folder } = await installStandIn(folders, chromiumPin, archive)
     const executablePath = installedExecutablePath(folder, chromiumPin)
     const config = loadedConfig(project, { apps: { web: chromium({ executablePath }) } })
-    assert.deepEqual(await rows(config, { HOME: home }, pins), [
+    assert.deepEqual(await rows(config, homeEnvironment(home), pins), [
       { group: 'builds', subject: 'chromium', ok: true, text: `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}`, detail: executablePath },
     ])
-    assert.deepEqual(await rows(config, { HOME: home, RETEST_CHROMIUM: '/elsewhere' }, pins), await rows(config, { HOME: home }, pins), "the target's own path wins over RETEST_CHROMIUM")
+    assert.deepEqual(await rows(config, { ...homeEnvironment(home), RETEST_CHROMIUM: '/elsewhere' }, pins), await rows(config, homeEnvironment(home), pins), "the target's own path wins over RETEST_CHROMIUM")
     const fromVariable = loadedConfig(project, { apps: { web: chromium() } })
-    assert.equal((await rows(fromVariable, { HOME: home, RETEST_CHROMIUM: executablePath }, pins))[0]?.text, `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}`)
+    assert.equal((await rows(fromVariable, { ...homeEnvironment(home), RETEST_CHROMIUM: executablePath }, pins))[0]?.text, `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}`)
   })
 
   test('say a configured path wins over an installed build, and say nothing of one when none is installed', async () => {
@@ -70,23 +70,23 @@ describe("doctor's builds rows", () => {
     const elsewhere = join(tempFolder('retest-own-browser-'), 'chrome')
     await writeFile(elsewhere, 'a browser of my own')
     const config = loadedConfig(project, { apps: { web: chromium({ executablePath: elsewhere }) } })
-    assert.deepEqual(await rows(config, { HOME: home }), [], 'nothing installed, nothing to say')
+    assert.deepEqual(await rows(config, homeEnvironment(home)), [], 'nothing installed, nothing to say')
     const pins = pinsFor()
     const [chromiumPin] = pins
     assert.ok(chromiumPin?.kind === 'archive')
     await installStandIn(folders, chromiumPin, archive)
-    assert.deepEqual(await rows(config, { HOME: home }, pins), [{ group: 'builds', subject: 'chromium', ok: true, text: 'found at a configured path, which wins over the installed Chrome for Testing 1.0.0', detail: elsewhere }])
+    assert.deepEqual(await rows(config, homeEnvironment(home), pins), [{ group: 'builds', subject: 'chromium', ok: true, text: 'found at a configured path, which wins over the installed Chrome for Testing 1.0.0', detail: elsewhere }])
     const missingPath = loadedConfig(project, { apps: { web: chromium({ executablePath: '/nonexistent/chrome' }) } })
-    assert.deepEqual(await rows(missingPath, { HOME: home }, pins), [], "a path with nothing at it is left to the target's own row")
+    assert.deepEqual(await rows(missingPath, homeEnvironment(home), pins), [], "a path with nothing at it is left to the target's own row")
   })
 
   test('point a chromium() target with no path at the installed build, or say it is not installed and how to install it', async () => {
     const { home, folders } = temporaryCache()
     const config = loadedConfig(project, { apps: { web: chromium() } })
-    assert.deepEqual(await rows(config, { HOME: home }), [
+    assert.deepEqual(await rows(config, homeEnvironment(home)), [
       { group: 'builds', subject: 'chromium', ok: false, text: 'Chrome for Testing 1.0.0 is not installed, and the target names no build', fix: 'Run npx retest install chromium, then give the target its executablePath or set RETEST_CHROMIUM.' },
     ])
-    const real = await checkBuilds(config, { HOME: home }, { platform: 'mac-arm64' })
+    const real = await checkBuilds(config, homeEnvironment(home), { platform: 'mac-arm64' })
     assert.deepEqual(real, [
       { group: 'builds', subject: 'chromium', ok: false, text: 'Chrome for Testing 153.0.8010.12 is not installed, and the target names no build', fix: 'Run npx retest install chromium, then give the target its executablePath or set RETEST_CHROMIUM.' },
     ], 'with the real pin, the row names the usable install command')
@@ -94,7 +94,7 @@ describe("doctor's builds rows", () => {
     const [chromiumPin] = pins
     assert.ok(chromiumPin?.kind === 'archive')
     const { folder } = await installStandIn(folders, chromiumPin, archive)
-    assert.deepEqual(await rows(config, { HOME: home }, pins), [
+    assert.deepEqual(await rows(config, homeEnvironment(home), pins), [
       { group: 'builds', subject: 'chromium', ok: true, text: `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}; the target runs it once its executablePath, or RETEST_CHROMIUM, names this path`, detail: installedExecutablePath(folder, chromiumPin) },
     ])
     assert.deepEqual(await rows(config, {}, pins), [], 'without a home folder there is no cache to read')
@@ -108,7 +108,7 @@ describe("doctor's builds rows", () => {
     const { folder } = await installStandIn(folders, electronPin, archive)
     await rm(join(folder, 'build/LICENSE'))
     const config = loadedConfig(project, { apps: { desk: electron({ executablePath: installedExecutablePath(folder, electronPin), appPath: '/work/app' }) } })
-    const [row] = await rows(config, { HOME: home }, pins)
+    const [row] = await rows(config, homeEnvironment(home), pins)
     assert.equal(row?.ok, false)
     assert.match(row?.text ?? '', /^Electron 1\.0\.0 in .+ does not match its record: .+LICENSE is missing\.$/)
     assert.equal(row?.fix, `Remove ${folder} and run npx retest install electron again.`)
@@ -118,15 +118,15 @@ describe("doctor's builds rows", () => {
     const { home, folders } = temporaryCache()
     const config = loadedConfig(project, { apps: { web: app({ targets: { firefox: { browser: 'firefox' }, webkit: { browser: 'webkit' } } }) } })
     const driven = (): boolean => true
-    assert.deepEqual(await rows(config, { HOME: home }, pinsFor(), driven), [
+    assert.deepEqual(await rows(config, homeEnvironment(home), pinsFor(), driven), [
       { group: 'builds', subject: 'webkit', ok: false, text: 'WebKit 1.0.0 is not installed, and the target names no build', fix: 'npx retest install webkit refuses it: WebKit 1.0.0 for macOS arm64 is published without these licence notices: licenses/NOTICE.txt (a notice the build lacks). Retest installs it only once they ship with it. Give the target an executablePath instead.' },
     ])
     const pins = pinsFor()
     const firefoxPin = pins[2]
     assert.ok(firefoxPin?.kind === 'archive')
     const { folder } = await installStandIn(folders, firefoxPin, archive)
-    assert.deepEqual((await rows(config, { HOME: home }, pins, driven))[0], { group: 'builds', subject: 'firefox', ok: true, text: `Firefox 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}; the target runs it, since it names no executablePath`, detail: installedExecutablePath(folder, firefoxPin) })
-    assert.deepEqual(await checkBuilds(config, { HOME: home }, { pins, platform: 'linux-x64', driven }), [], 'no row for an engine with no pin on this platform')
+    assert.deepEqual((await rows(config, homeEnvironment(home), pins, driven))[0], { group: 'builds', subject: 'firefox', ok: true, text: `Firefox 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}; the target runs it, since it names no executablePath`, detail: installedExecutablePath(folder, firefoxPin) })
+    assert.deepEqual(await checkBuilds(config, homeEnvironment(home), { pins, platform: 'linux-x64', driven }), [], 'no row for an engine with no pin on this platform')
   })
 
   test('read a WebKit build named by RETEST_WEBKIT_BUILD, the folder or the executable, as a configured path', async () => {
@@ -135,8 +135,8 @@ describe("doctor's builds rows", () => {
     const { folder } = await installStandIn(folders, webkit, archive)
     const config = loadedConfig(project, { apps: { web: app({ targets: { webkit: { browser: 'webkit' } } }) } })
     const expected = [{ group: 'builds', subject: 'webkit', ok: true, text: `WebKit 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}`, detail: installedExecutablePath(folder, webkit) }]
-    assert.deepEqual(await rows(config, { HOME: home, RETEST_WEBKIT_BUILD: join(folder, 'build') }, [webkit], () => true), expected)
-    assert.deepEqual(await rows(config, { HOME: home, RETEST_WEBKIT_BUILD: installedExecutablePath(folder, webkit) }, [webkit], () => true), expected)
+    assert.deepEqual(await rows(config, { ...homeEnvironment(home), RETEST_WEBKIT_BUILD: join(folder, 'build') }, [webkit], () => true), expected)
+    assert.deepEqual(await rows(config, { ...homeEnvironment(home), RETEST_WEBKIT_BUILD: installedExecutablePath(folder, webkit) }, [webkit], () => true), expected)
   })
 
   test('never call a build of a pin install refuses installed, and give it a fix the install accepts', async () => {
@@ -149,23 +149,23 @@ describe("doctor's builds rows", () => {
     const webkitFolder = (await installStandIn(folders, webkitPin, archive)).folder
     const webkitPath = installedExecutablePath(webkitFolder, webkitPin)
     const config = loadedConfig(project, { apps: { web: app({ targets: { chromium: chromium(), webkit: { browser: 'webkit', executablePath: webkitPath } } }) } })
-    const checks = await rows(config, { HOME: home }, pins, () => true)
+    const checks = await rows(config, homeEnvironment(home), pins, () => true)
     assert.deepEqual(checks, [
       { group: 'builds', subject: 'chromium', ok: false, text: `Chrome for Testing 1.0.0 is not installed: ${chromiumFolder} holds a build Retest did not install or check, and no run launches it`, fix: `Remove ${chromiumFolder}. npx retest install chromium refuses it: No checksum is pinned for the archive of Chrome for Testing 1.0.0 for macOS arm64, so Retest has nothing to check a download against and downloads nothing. Give the target an executablePath instead.` },
       { group: 'builds', subject: 'webkit', ok: true, text: `found at a configured path in ${webkitFolder}, which holds a build Retest does not install and never checked`, detail: webkitPath },
     ])
     for (const check of checks) assert.ok(!check.text.includes('installed by Retest'), check.text)
     await rm(join(chromiumFolder, 'build/LICENSE'))
-    const [damaged] = await rows(config, { HOME: home }, pins, () => true)
+    const [damaged] = await rows(config, homeEnvironment(home), pins, () => true)
     assert.ok(!(damaged?.fix ?? '').includes('install chromium again'), 'no fix runs an install that refuses')
   })
 
   test('give no row to Chrome or Edge, which run the browser the machine has, or to a target doctor refuses', async () => {
     const { home } = temporaryCache()
     const branded = loadedConfig(project, { apps: { web: app({ targets: { chrome: chrome(), beta: chrome({ channel: 'beta' }) } }) } })
-    assert.deepEqual(await rows(branded, { HOME: home }, pinsFor(), () => true), [])
+    assert.deepEqual(await rows(branded, homeEnvironment(home), pinsFor(), () => true), [])
     const firefox = loadedConfig(project, { apps: { web: app({ targets: { firefox: { browser: 'firefox' } } }) } })
-    assert.deepEqual(await rows(firefox, { HOME: home }, pinsFor(), () => false), [], 'a target with no driver is refused by its own row, and nothing is added for it')
+    assert.deepEqual(await rows(firefox, homeEnvironment(home), pinsFor(), () => false), [], 'a target with no driver is refused by its own row, and nothing is added for it')
   })
 
   test('check a native target as a run drives it, by the executor build in the cache, and start nothing', async (t) => {
@@ -195,7 +195,7 @@ describe("doctor's builds rows", () => {
         },
         probeReady: async () => true,
         startAppServer: () => Promise.reject(new Error('no server is started')),
-        env: { HOME: home },
+        env: homeEnvironment(home),
         signal: new AbortController().signal,
       },
       timeouts: defaultTimeouts,
@@ -218,7 +218,7 @@ describe("doctor's builds rows", () => {
         launchBrowser: async (options) => fakeBrowser(options.executablePath),
         probeReady: async () => true,
         startAppServer: () => Promise.reject(new Error('no server is started')),
-        env: { HOME: home },
+        env: homeEnvironment(home),
         signal: new AbortController().signal,
       },
       timeouts: defaultTimeouts,

@@ -2,15 +2,17 @@ import type { MediaPrebuiltPin } from '../../src/cli/install/media-pins.ts'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { before, after, test } from 'node:test'
 import { installMedia } from '../../src/cli/install/media-install.ts'
 import { mediaDoctorRows } from '../../src/cli/install/media-doctor.ts'
 import { inspectMedia, mediaFolder, mediaLockPath, mediaPackageRoot } from '../../src/cli/install/media-record.ts'
-import { mediaSourceDigest, mediaTarget, mediaVersion } from '../../src/cli/install/media-pins.ts'
+import { mediaExecutableName, mediaSourceDigest, mediaTarget, mediaVersion } from '../../src/cli/install/media-pins.ts'
 import { probeMediaBinary, runMediaTool } from '../../src/cli/install/media-tools.ts'
+import { hostVariable, notAnEncoder } from '../../src/media/host.ts'
 import { locateMedia } from '../../src/media/locate.ts'
+import { windowsStandIn } from '../support/stand-in-program.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
 import { readRecordText } from '../../src/shared/regular-file.ts'
 
@@ -23,6 +25,24 @@ let packed = ''
 let binary = ''
 let env: Record<string, string | undefined> = {}
 const signal = new AbortController().signal
+// Windows runs npm as a batch file, which a program cannot start without a shell, so npm's own script runs under Node
+// there; and its tar is the one in the system folder.
+const npm = process.platform === 'win32' ? [process.execPath, join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')] : ['npm']
+const tar = process.platform === 'win32' ? join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar'
+// The variables the media cache is found from: HOME on macOS and Linux, LOCALAPPDATA on Windows.
+const cacheHome = (folder: string): { HOME: string; LOCALAPPDATA: string } => ({ HOME: folder, LOCALAPPDATA: folder })
+
+// What a packed CLI needs beyond the toolchain's variables `runMediaTool` passes: on Windows its cache folder, which is
+// LOCALAPPDATA there, and the retest-supervisor the shard names, without which Windows starts nothing. Elsewhere none
+// of them is set, and nothing is added.
+function cliVariables(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  const variables: Record<string, string> = {}
+  for (const name of ['LOCALAPPDATA', 'RETEST_SUPERVISOR_BINARY', 'SystemRoot']) {
+    const value = hostVariable(env, name)
+    if (value !== undefined) variables[name] = value
+  }
+  return variables
+}
 
 before(async () => {
   if (unverified !== false) return
@@ -35,23 +55,24 @@ before(async () => {
   }
   const compiled = await runMediaTool(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', join(root, 'tsconfig.build.json'), '--outDir', join(stage, 'dist')], { env: process.env, signal, timeoutMs: 120_000 })
   assert.equal(compiled.code, 0, compiled.stdout + compiled.stderr)
-  const pack = await runMediaTool('npm', ['--cache', join(folder, 'npm-cache'), 'pack', '--offline', '--ignore-scripts', '--json', '--pack-destination', folder], { env: process.env, signal, cwd: stage, timeoutMs: 60_000 })
+  const [npmCommand = 'npm', ...npmArguments] = npm
+  const pack = await runMediaTool(npmCommand, [...npmArguments, '--cache', join(folder, 'npm-cache'), 'pack', '--offline', '--ignore-scripts', '--json', '--pack-destination', folder], { env: process.env, signal, cwd: stage, timeoutMs: 60_000 })
   assert.equal(pack.code, 0, pack.stdout + pack.stderr)
   const archive = (await readdir(folder)).find((name) => name.endsWith('.tgz')) ?? assert.fail('the packed archive')
-  const unpack = await runMediaTool('/usr/bin/tar', ['-xzf', join(folder, archive), '-C', folder], { env: process.env, signal })
+  const unpack = await runMediaTool(tar, ['-xzf', join(folder, archive), '-C', folder], { env: process.env, signal })
   assert.equal(unpack.code, 0, unpack.stderr)
   packed = join(folder, 'package')
   await rm(stage, { recursive: true })
   const home = join(folder, 'host-home')
   await mkdir(home)
-  env = { ...process.env, HOME: home, CARGO_HOME: process.env['CARGO_HOME'] ?? join(process.env['HOME'] ?? assert.fail('HOME'), '.cargo'), RUSTUP_HOME: process.env['RUSTUP_HOME'] ?? join(process.env['HOME'] ?? assert.fail('HOME'), '.rustup'), CARGO_TARGET_DIR: join(folder, 'fresh-target'), RETEST_MEDIA_BINARY: undefined, RETEST_FFMPEG: undefined, RETEST_DOWNLOAD_MIRROR: undefined }
+  env = { ...process.env, ...cacheHome(home), CARGO_HOME: process.env['CARGO_HOME'] ?? join(homedir(), '.cargo'), RUSTUP_HOME: process.env['RUSTUP_HOME'] ?? join(homedir(), '.rustup'), CARGO_TARGET_DIR: join(folder, 'fresh-target'), RETEST_MEDIA_BINARY: undefined, RETEST_FFMPEG: undefined, RETEST_DOWNLOAD_MIRROR: undefined }
 })
 after(async () => { if (folder !== '') await rm(folder, { recursive: true, force: true }) })
 
 test('the npm packed copy alone builds offline into a fresh target and cache, runs protocol 2, and leaves a released generation lock', { skip: unverified, timeout: 180_000 }, async (t) => {
   assert.ok(target !== undefined)
   const args = [join(packed, 'dist/cli/main.js'), 'install', 'media', '--offline']
-  const installed = await runMediaTool(process.execPath, args, { env, signal, cwd: folder, timeoutMs: 180_000 })
+  const installed = await runMediaTool(process.execPath, args, { env, signal, cwd: folder, timeoutMs: 180_000, environment: cliVariables(env) })
   assert.equal(installed.code, 0, installed.stdout + installed.stderr)
   const inspected = await inspectMedia(env, { verify: true })
   assert.equal(inspected?.state, 'installed')
@@ -72,11 +93,11 @@ test('the npm packed copy alone builds offline into a fresh target and cache, ru
   assert.ok(lockText.kind === 'text')
   const lock = JSON.parse(lockText.text) as { token: string }
   assert.ok(names.includes(`${generation.slice(0, -5)}.${lock.token}.released`), 'the newest generation is released under its token')
-  const list = await runMediaTool(process.execPath, [join(packed, 'dist/cli/main.js'), 'install', '--list', '--verify', '--json'], { env, signal, cwd: folder })
+  const list = await runMediaTool(process.execPath, [join(packed, 'dist/cli/main.js'), 'install', '--list', '--verify', '--json'], { env, signal, cwd: folder, environment: cliVariables(env) })
   assert.equal(list.code, 0, list.stdout + list.stderr)
   const listed = JSON.parse(list.stdout) as { builds: { engine: string; state: string; binarySha256?: string }[] }
   assert.equal(listed.builds.find((build) => build.engine === 'media')?.binarySha256, inspected.record.binarySha256)
-  const again = await runMediaTool(process.execPath, args, { env: { ...env, PATH: '/usr/bin:/bin' }, signal, cwd: folder })
+  const again = await runMediaTool(process.execPath, args, { env: { ...env, PATH: '/usr/bin:/bin' }, signal, cwd: folder, environment: cliVariables(env) })
   assert.equal(again.code, 0, again.stdout + again.stderr)
   assert.match(again.stdout, /was already installed/)
   assert.equal((await readdir(dirname(inspected.folder))).some((name) => name.includes('.staging-')), false)
@@ -96,7 +117,7 @@ test('an exact pinned stand-in prebuilt is served only on 127.0.0.1, verified be
   const address = server.address(); assert.ok(address !== null && typeof address !== 'string')
   const mirror = `http://127.0.0.1:${address.port}`
   const pin: MediaPrebuiltPin = { target, version: mediaVersion, protocol: 2, sourceDigest: mediaSourceDigest, sha256: sha256Hex(bytes), size: bytes.length, url: 'https://media.invalid/retest-media' }
-  const prebuiltEnv = { ...env, HOME: join(folder, 'prebuilt-home') }
+  const prebuiltEnv = { ...env, ...cacheHome(join(folder, 'prebuilt-home')) }
   const installed = await installMedia({ env: prebuiltEnv, signal, version: '0.1.0', report: () => {}, mirror, pins: [pin] })
   assert.equal(installed.ok, true, installed.ok ? '' : installed.message)
   assert.equal(requests, 1)
@@ -107,13 +128,13 @@ test('an exact pinned stand-in prebuilt is served only on 127.0.0.1, verified be
   assert.equal((await inspectMedia(prebuiltEnv))?.state, 'unverifiable')
   const again = await installMedia({ env: prebuiltEnv, signal, version: '0.1.0', report: () => {}, mirror, pins: [pin] })
   assert.equal(again.ok, true); assert.equal(requests, 1)
-  const wrongEnv = { ...env, HOME: join(folder, 'wrong-prebuilt-home') }
+  const wrongEnv = { ...env, ...cacheHome(join(folder, 'wrong-prebuilt-home')) }
   const bad = await installMedia({ env: wrongEnv, signal, version: '0.1.0', report: () => {}, mirror, pins: [{ ...pin, sha256: '0'.repeat(64) }] })
   assert.equal(bad.ok, false)
   if (!bad.ok) assert.match(bad.message, /pinned SHA-256/)
   assert.equal((await inspectMedia(wrongEnv))?.state, 'missing')
   assert.equal(requests, 2)
-  const localEnv = { ...env, HOME: join(folder, 'path-prebuilt-home') }
+  const localEnv = { ...env, ...cacheHome(join(folder, 'path-prebuilt-home')) }
   const local = await installMedia({ env: localEnv, signal, version: '0.1.0', report: () => {}, binary, pins: [pin] })
   assert.equal(local.ok, true, local.ok ? '' : local.message)
   assert.equal(requests, 2)
@@ -123,20 +144,21 @@ test('a changed shipped lock, a missing cargo and an unusable encoder are named 
   const changed = join(folder, 'changed-package')
   await cp(packed, changed, { recursive: true })
   await writeFile(join(changed, 'media/Cargo.lock'), 'changed lock')
-  const install = await runMediaTool(process.execPath, [join(changed, 'dist/cli/main.js'), 'install', 'media', '--offline'], { env: { ...env, HOME: join(folder, 'changed-home') }, signal, cwd: folder })
+  const changedEnv = { ...env, ...cacheHome(join(folder, 'changed-home')) }
+  const install = await runMediaTool(process.execPath, [join(changed, 'dist/cli/main.js'), 'install', 'media', '--offline'], { env: changedEnv, signal, cwd: folder, environment: cliVariables(changedEnv) })
   assert.equal(install.code, 2)
   assert.match(install.stdout, /Cargo.lock has SHA-256.*not the pinned/)
-  const missingEnv = { HOME: join(folder, 'no-cargo-home'), PATH: '/usr/bin:/bin' }
+  const missingEnv = { ...cacheHome(join(folder, 'no-cargo-home')), PATH: '/usr/bin:/bin' }
   const missing = await installMedia({ env: missingEnv, signal, version: '0.1.0', report: () => {}, packageRoot: packed, offline: true })
   assert.equal(missing.ok, false)
   if (!missing.ok) assert.match(missing.message, /cargo is missing.*Rust 1.88.*Edition 2024.*1.85/)
   assert.equal((await inspectMedia(missingEnv))?.state, 'missing')
   assert.ok(target !== undefined)
-  const probe = await probeMediaBinary(binary, '/usr/bin/false', target, 15_000, true)
+  const probe = await probeMediaBinary(binary, notAnEncoder, target, 15_000, true)
   assert.equal(probe.ok, true)
   if (probe.ok) assert.equal(probe.encoder?.state, 'failed')
   const cache = mediaFolder(env, target) ?? assert.fail('cache')
-  await writeFile(join(cache, 'retest-media'), 'damaged')
+  await writeFile(join(cache, mediaExecutableName(target)), 'damaged')
   const bad = await locateMedia({ env })
   assert.equal(bad.ok, false)
   if (!bad.ok) assert.match(bad.message, /not the recorded.*Remove .*install media/)
@@ -146,11 +168,14 @@ test('explicit binaries with a wrong version, protocol or target fail setup by n
   assert.ok(target !== undefined)
   const badFolder = join(folder, 'wrong-greetings'); await mkdir(badFolder)
   for (const [name, protocol, version, buildTarget] of [['version', 2, '9.0.0', target], ['protocol', 1, mediaVersion, target], ['target', 2, mediaVersion, 'wrong-host']] as const) {
-    const path = join(badFolder, `${name}.mjs`)
     const hello = { type: 'hello', protocol, version, build: { target: buildTarget, profile: 'release' }, ffmpeg: '/usr/bin/false', encoder: { state: 'probing' } }
-    const body = `#!/usr/bin/env node\nfunction frame(value) { const header = Buffer.from(JSON.stringify(value)); const prefix = Buffer.alloc(8); prefix.writeUInt32BE(header.length, 0); return Buffer.concat([prefix, header]); }\nprocess.stdout.write(frame(${JSON.stringify(hello)}));\nprocess.stdin.once('data', () => process.stdout.write(frame({type:'bye',stopped:0}), () => process.exit(0)));\nprocess.stdin.resume();\n`
-    await writeFile(path, body, { mode: 0o755 })
-    const result = await locateMedia({ executable: path, ffmpeg: '/usr/bin/false', env: { ...env, HOME: join(folder, 'explicit-home') } })
+    const script = `function frame(value) { const header = Buffer.from(JSON.stringify(value)); const prefix = Buffer.alloc(8); prefix.writeUInt32BE(header.length, 0); return Buffer.concat([prefix, header]); }\nprocess.stdout.write(frame(${JSON.stringify(hello)}));\nprocess.stdin.once('data', () => process.stdout.write(frame({type:'bye',stopped:0}), () => process.exit(0)));\nprocess.stdin.resume();\n`
+    // A probe that does not close cleanly fails with its own sentence, so each match below also says the probe closed.
+    // Windows runs only programs, so there the script runs behind a stand-in program.
+    const path = join(badFolder, process.platform === 'win32' ? `${name}.exe` : `${name}.mjs`)
+    if (process.platform === 'win32') windowsStandIn(path, script)
+    else await writeFile(path, `#!/usr/bin/env node\n${script}`, { mode: 0o755 })
+    const result = await locateMedia({ executable: path, ffmpeg: notAnEncoder, env: { ...env, ...cacheHome(join(folder, 'explicit-home')) } })
     assert.equal(result.ok, false)
     if (!result.ok) assert.match(result.message, name === 'version' ? /expected 0.1.0/ : name === 'protocol' ? /protocol 1.*protocol 2|protocol 1.*speaks 2/ : /expected .* in release/)
   }

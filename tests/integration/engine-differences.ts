@@ -80,6 +80,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     case: ['each editing key edits a field once', 'Home then X'],
     reason: "Firefox on macOS follows the system's key bindings, where Home leaves the caret at the end of a text field.",
     documented: { item: 3, title: 'Home moves no caret in a text field on macOS.' },
+    platforms: ['darwin'],
     observed: 'abcdX',
   },
   {
@@ -99,22 +100,9 @@ export const suiteDifferences: readonly SuiteDifference[] = [
   {
     engine: 'firefox',
     suite: 'browser-actions',
-    case: ['the wheel turned on the terms scrolls them to their end, which enables Accept'],
-    reason: 'Firefox scrolls an element by at most one page for one wheel event, so a 2000 pixel turn moves the terms without reaching their end.',
-    documented: { item: 5, title: 'One wheel event moves at most one page.' },
-    observed: {
-      scrolled: { ok: true, kind: 'scroll', page: { url: '{origin}/actions/scroll', title: 'Scroll' } },
-      moved: true,
-      accept: 'disabled',
-      clicked: { ok: false, failure: { class: 'not_actionable', message: "Could not click getByTestId('accept') within 2000 ms: it is disabled.", details: { check: 'enabled', covering: null, waitedMs: 2000 } } },
-    },
-  },
-  {
-    engine: 'firefox',
-    suite: 'browser-actions',
     case: ['a scroll delta is in CSS pixels, also on a phone page zoomed out to fit, where the wheel still scrolls'],
-    reason: 'WebDriver BiDi in Firefox 133 offers no touch screen and no mobile layout, so a page asked to emulate a phone is refused as it opens.',
-    documented: { item: 6, title: 'No phone or touch screen.' },
+    reason: 'WebDriver BiDi in Firefox 158 offers no touch screen and no mobile layout, so a page asked to emulate a phone is refused as it opens.',
+    documented: { item: 5, title: 'No phone or touch screen.' },
     observed: { plain: 'moved by 60', phone: { refused: { class: 'unsupported', message: firefoxPhone } } },
   },
   {
@@ -130,7 +118,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-locators',
     case: ['role without a name finds every element with it, and a role Chrome names its own way is found by its WAI-ARIA name', 'img Logo'],
     reason: "Firefox's accessibility tree treats an image that did not load otherwise than Chrome's, so a lookup such an image could answer is refused by name.",
-    documented: { item: 7, title: "Roles and names Firefox's tree computes its own way are refused by name." },
+    documented: { item: 6, title: "Roles and names Firefox's tree computes its own way are refused by name." },
     observed: {
       ok: false,
       failure: {
@@ -145,7 +133,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-navigation',
     case: ['an address nobody answers fails with the browser navigation error'],
     reason: "Firefox names a refused connection by its error page's reason, connectionFailure, which the driver passes on.",
-    documented: { item: 8, title: "A failed navigation is told in Firefox's words." },
+    documented: { item: 7, title: "A failed navigation is told in Firefox's words." },
     observed: 'Could not open {origin}/: connectionFailure.',
   },
   {
@@ -153,7 +141,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-navigation',
     case: ["an address nobody answers names the address without its query and the browser's error in its details"],
     reason: "Firefox names a refused connection by its error page's reason, connectionFailure, which the driver passes on.",
-    documented: { item: 8, title: "A failed navigation is told in Firefox's words." },
+    documented: { item: 7, title: "A failed navigation is told in Firefox's words." },
     observed: { url: '{origin}/', errorText: 'connectionFailure' },
   },
   {
@@ -177,7 +165,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-navigation',
     case: ['a title reaches the parent as the page has it, a C1 control character and all', 'the goto hands over the title'],
     reason: "Firefox's document.title keeps an ESC character where Chrome's reads it as a space.",
-    documented: { item: 9, title: 'A title keeps the control characters `document.title` keeps.' },
+    documented: { item: 8, title: 'A title keeps the control characters `document.title` keeps.' },
     observed: { ok: true, kind: 'goto', url: '{origin}/titles/echo', page: { url: '{origin}/titles/echo', title: titleWithEscape } },
   },
   {
@@ -185,7 +173,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-navigation',
     case: ['a title reaches the parent as the page has it, a C1 control character and all', 'the navigation hands over the title'],
     reason: "Firefox's document.title keeps an ESC character where Chrome's reads it as a space.",
-    documented: { item: 9, title: 'A title keeps the control characters `document.title` keeps.' },
+    documented: { item: 8, title: 'A title keeps the control characters `document.title` keeps.' },
     observed: [titleWithEscape],
   },
   {
@@ -227,17 +215,9 @@ export const suiteDifferences: readonly SuiteDifference[] = [
   {
     engine: 'firefox',
     suite: 'browser-secrets',
-    case: ['a page that sets off for another origin as the field takes focus is kept where it is, and the secret is never typed', 'the page hears that its navigation was cancelled'],
-    reason: 'Firefox 133 gives a page no Navigation API, so the page cannot listen for the navigation Retest cancelled and never reports it.',
-    documented: { item: 10, title: "A page's script has no Navigation API." },
-    observed: 0,
-  },
-  {
-    engine: 'firefox',
-    suite: 'browser-secrets',
     case: ['a fill bound to its origin still lets the page move within the document, and leave once the text has arrived', 'the page leaves after receiving the text once', 'the text reached one request'],
     reason: 'Firefox cancels the request a page sends just before it leaves for another document, so that request never reaches the server.',
-    documented: { item: 11, title: 'A request the page starts as it leaves is cancelled.' },
+    documented: { item: 9, title: 'A request the page starts as it leaves is cancelled.' },
     observed: 0,
   },
   {
@@ -245,7 +225,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-actions',
     case: ['a click that opens an alert nothing waited for fails at once, and the next command and a screenshot do not wait on it'],
     reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on Firefox the alert holds the page and every command fails at once.',
-    documented: { item: 12, title: 'A JavaScript dialog holds the page.' },
+    documented: { item: 10, title: 'A JavaScript dialog holds the page.' },
     observed: {
       click: { class: 'unsupported', message: heldDialog("click getByTestId('warn')"), details: { dialog: 'alert', inputSent: true } },
       next: { dialog: 'alert', inputSent: false },
@@ -257,7 +237,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-secrets',
     case: ['a dialog that opens while a secret is typed names the secret by its label'],
     reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on Firefox the alert holds the page and the fill fails as unsupported.',
-    documented: { item: 12, title: 'A JavaScript dialog holds the page.' },
+    documented: { item: 10, title: 'A JavaScript dialog holds the page.' },
     observed: { class: 'unsupported', message: heldDialog("fill getByTestId('field') with {{password}}") },
   },
   {
@@ -285,7 +265,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-navigation',
     case: ['a page that opens a dialog while loading fails its goto at once, naming the dialog, rather than as slow'],
     reason: 'Retest hands dialogs to a test and answers those nothing waited for on Chrome and Chromium only, so on Firefox the confirm holds the page and the goto fails as unsupported.',
-    documented: { item: 12, title: 'A JavaScript dialog holds the page.' },
+    documented: { item: 10, title: 'A JavaScript dialog holds the page.' },
     observed: {
       class: 'unsupported',
       message: 'The page opened a confirm dialog while Retest tried to open {origin}/. Retest does not answer dialogs yet, and the dialog blocks the page.',
@@ -309,7 +289,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-shadow-dom',
     case: ['role and label find through open shadow roots, two deep, and never into a closed one'],
     reason: "Firefox's accessibility locator does not look inside shadow roots, so a role or label lookup whose search holds an open root that could hold a match is refused by name.",
-    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    documented: { item: 11, title: 'Role and label lookups stop at shadow roots.' },
     observed: shadowLookups('Firefox'),
   },
   {
@@ -317,7 +297,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-shadow-dom',
     case: ['an action by label on a field inside a shadow root'],
     reason: "Firefox's accessibility locator does not look inside shadow roots, so a fill found by label whose search holds an open root that could hold the field is refused by name and types nothing.",
-    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    documented: { item: 11, title: 'Role and label lookups stop at shadow roots.' },
     observed: shadowRefusal('Firefox', "fill getByLabel('Card number')", '<card-field>'),
   },
   {
@@ -325,7 +305,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-shadow-dom',
     case: ['a button that shows its host’s text or element through a slot takes a click found by its role'],
     reason: "Firefox's accessibility locator does not look inside shadow roots, so a click found by role whose search holds an open root that could hold the button is refused by name and sends nothing.",
-    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    documented: { item: 11, title: 'Role and label lookups stop at shadow roots.' },
     observed: slottedClicks('Firefox'),
   },
   {
@@ -333,7 +313,7 @@ export const suiteDifferences: readonly SuiteDifference[] = [
     suite: 'browser-locators',
     case: ['role finds through an open shadow root, in the order the page shows, and stays out of frames, as test id and text do'],
     reason: "Firefox's accessibility locator does not look inside shadow roots, so a role lookup whose search holds an open root that could hold a match is refused by name.",
-    documented: { item: 13, title: 'Role and label lookups stop at shadow roots.' },
+    documented: { item: 11, title: 'Role and label lookups stop at shadow roots.' },
     observed: treeLookups('Firefox'),
   },
   {
@@ -391,29 +371,15 @@ export const conformanceDifferences: readonly ConformanceDifference[] = [
   },
   {
     engine: 'firefox',
-    case: 'A7',
-    reason: 'Firefox scrolls an element by at most one page for one wheel event, so a 2000 pixel turn moves the terms without reaching their end.',
-    documented: { item: 5, title: 'One wheel event moves at most one page.' },
-    outcome: {
-      status: 'failed',
-      class: 'check_failed',
-      operation: 'toBeEnabled',
-      at: { holding: 'toBeEnabled(' },
-      message: "getByTestId('accept') is disabled. Looked {looks} times in 1500 ms.",
-    },
-    facts: [{ kind: 'deadline', ms: 1500 }],
-  },
-  {
-    engine: 'firefox',
     case: 'F8.1a',
-    reason: "Firefox's accessibility tree does not name a cell from its text, so the driver refuses a cell looked up by such a name.",
-    documented: { item: 7, title: "Roles and names Firefox's tree computes its own way are refused by name." },
+    reason: "Retest's Firefox driver refuses a cell looked up by name, since Firefox's cell names have not been compared with Chrome's across the role pages.",
+    documented: { item: 6, title: "Roles and names Firefox's tree computes its own way are refused by name." },
     outcome: {
       status: 'error',
       class: 'unsupported',
       operation: 'toBeVisible',
       at: { holding: "getByRole('cell', { name: 'Grace Hopper' })" },
-      message: "Could not look up getByRole('cell', { name: 'Grace Hopper' }): Chrome names a cell from its text, and Firefox's accessibility tree does not, so Retest refuses the lookup rather than find less on Firefox. Find it with getByText() or getByTestId(), or by its position with nth().",
+      message: "Could not look up getByRole('cell', { name: 'Grace Hopper' }): on Firefox, Retest does not look up a cell by its name, since it has not checked that Firefox names cells as Chrome does. Find it with getByText() or getByTestId(), or by its position with nth().",
     },
     facts: [
       { kind: 'detail', key: 'role', value: 'cell' },

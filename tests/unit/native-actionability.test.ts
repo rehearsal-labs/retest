@@ -4,6 +4,11 @@ import { syncBuiltinESMExports } from 'node:module'
 import { test } from 'node:test'
 import { earlyClock } from './early-waits-clock.ts'
 import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
+// which Windows, where a config that names a native app is refused, does not run.
+const macDriver = { skip: unixOnly("the macOS driver's own machinery") }
 
 // Actionability against a stand-in executor: one match in the session's own tree, visible, enabled where the action
 // needs it, resolved by the executor with an exact predicate whose count equals the tree's, inside the owned window on
@@ -35,7 +40,7 @@ test('on iOS an element is resolved by an exact predicate, its identifier read b
   assert.ok(source !== undefined && rect !== undefined && rect.at - source.at >= 100, `the frame was read again ${rect === undefined || source === undefined ? 'never' : Math.round(rect.at - source.at)} ms after the tree`)
 })
 
-test('on macOS the identifier is read back as identifier, and the app must be in front with nothing of another process over the element', async (t) => {
+test('on macOS the identifier is read back as identifier, and the app must be in front with nothing of another process over the element', macDriver, async (t) => {
   const { app, interaction, windows } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   assert.equal((await interaction.resolve({ by: 'testId', value: 'sign-in-button' }, 2000)).ok, true)
   // The window is resolved first and its identifier read back; the element is looked for inside it only.
@@ -122,7 +127,7 @@ test('a lost executor during a lookup loses the session, and nothing more is sen
   assert.equal(!state.ok && state.failure.class, 'session_lost', 'the session refuses every later request')
 })
 
-test('a tree with no window yet, as just after a launch, is looked at again until the window comes, for an action and for a check', async (t) => {
+test('a tree with no window yet, as just after a launch, is looked at again until the window comes, for an action and for a check', macDriver, async (t) => {
   const { app, interaction } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   app.windowHidden = true
   setTimeout(() => {
@@ -170,7 +175,7 @@ test('an ancestor an element is resolved inside has its identifier read back fir
   assert.equal(app.on(click).length, 0)
 })
 
-test('on macOS only the full-screen Automation Mode overlay and the window server\'s pointer pass over an element; a smaller overlay window or another process at the pointer layer covers it', async (t) => {
+test('on macOS only the full-screen Automation Mode overlay and the window server\'s pointer pass over an element; a smaller overlay window or another process at the pointer layer covers it', macDriver, async (t) => {
   const { app, interaction, windows } = await openFake(t, { platform: 'macos', screen: deskSignIn })
   const frame = app.windowFrame
   const own = [app.pid, 0, frame.x, frame.y, frame.width, frame.height] as const

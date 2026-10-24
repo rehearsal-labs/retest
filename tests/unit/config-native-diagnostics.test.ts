@@ -1,7 +1,7 @@
 import type { LoadedConfig, LoadedNativeTarget } from '../../src/config/loaded.ts'
 import assert from 'node:assert/strict'
 import { existsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { after, describe, test } from 'node:test'
 import { app, defineConfig } from '../../src/config/define.ts'
 import { validateConfig } from '../../src/config/validate.ts'
@@ -53,7 +53,7 @@ describe('a native app declares where its diagnostics come from', () => {
   test('each target of an app keeps its own declaration', () => {
     const config = loaded(defineConfig({ apps: { desk: app({ targets: { logged: { ...desk, diagnostics: { logs: 'stdout' } }, quiet: { ...desk, diagnostics: { logs: 'none', network: { path: '/var/service/network.jsonl', client: 'macos' } } } } }) } }))
     assert.deepEqual(target(config, 'desk', 'logged').diagnostics, { logs: 'stdout' })
-    assert.deepEqual(target(config, 'desk', 'quiet').diagnostics, { logs: 'none', network: { path: '/var/service/network.jsonl', client: 'macos' } })
+    assert.deepEqual(target(config, 'desk', 'quiet').diagnostics, { logs: 'none', network: { path: resolve(folder, '/var/service/network.jsonl'), client: 'macos' } })
   })
 
   test('a declaration of the wrong shape is refused by key, and so is one on a browser', () => {

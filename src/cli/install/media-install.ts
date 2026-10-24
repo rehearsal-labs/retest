@@ -1,8 +1,9 @@
+import type { ChangeOptions } from './file-changes.ts'
 import type { MediaEnvironment, MediaToolRunner } from './media-tools.ts'
 import type { MediaInspection, MediaRecord } from './media-record.ts'
 import type { MediaPrebuiltPin, MediaTarget } from './media-pins.ts'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { MEDIA_PROTOCOL_VERSION } from '../../media/protocol.ts'
 import { describeCommand } from '../../native/processes.ts'
@@ -10,9 +11,11 @@ import { errorMessage } from '../../protocol/failures.ts'
 import { Deadline } from '../../protocol/deadline.ts'
 import { openRegularFile, readFileSha256, readRecordText } from '../../shared/regular-file.ts'
 import { downloadFile, mirroredUrl } from './download.ts'
+import { removePath, renamePath } from './file-changes.ts'
 import { takeInstallLock } from './lock.ts'
+import { mediaBuildFolder, notAnEncoder } from '../../media/host.ts'
 import { checkMediaSource, inspectMedia, mediaFolder, mediaLockPath, mediaNoticePins, mediaPackageRoot } from './media-record.ts'
-import { maximumMediaBinaryBytes, mediaPrebuiltPins, mediaSourceDigest, mediaSourceFiles, mediaTarget, mediaVersion } from './media-pins.ts'
+import { maximumMediaBinaryBytes, mediaExecutableName, mediaPrebuiltPins, mediaSourceDigest, mediaSourceFiles, mediaTarget, mediaVersion } from './media-pins.ts'
 import { probeMediaBinary, readRustTools, runMediaTool } from './media-tools.ts'
 import { mirrorProblem } from './report.ts'
 
@@ -27,7 +30,7 @@ export type MediaInstallResult = { readonly ok: true; readonly action: 'installe
 export async function installMedia(options: MediaInstallOptions): Promise<MediaInstallResult> {
   const refuse = (message: string): MediaInstallResult => ({ ok: false, message, stopped: options.signal.aborted })
   const target = options.target ?? mediaTarget()
-  if (target === undefined) return refuse(`No media build path for ${process.platform} ${process.arch}. macOS arm64 is exercised; Linux x64 is planned and unverified.`)
+  if (target === undefined) return refuse(`Retest builds retest-media for macOS arm64, Linux x64 and Windows x64, and this machine is ${process.platform} ${process.arch}.`)
   const pins = options.pins ?? mediaPrebuiltPins
   const prebuilt = options.binary !== undefined || options.mirror !== undefined
   const pin = prebuilt ? pins.find((candidate) => candidate.target === target && candidate.version === mediaVersion && candidate.protocol === MEDIA_PROTOCOL_VERSION && candidate.sourceDigest === mediaSourceDigest) : undefined
@@ -47,13 +50,20 @@ export async function installMedia(options: MediaInstallOptions): Promise<MediaI
   let result: MediaInstallResult
   let cleanupProblem: string | undefined
   const staging = `${folder}.staging-${process.pid}-${randomUUID()}`
+  const build = mediaBuildFolder(staging)
   try {
-    result = await installLocked(options, target, folder, root, staging, pin)
+    result = await installLocked(options, target, folder, root, staging, build, pin)
   } catch (error) { result = refuse(`Media install failed: ${errorMessage(error)} Nothing was installed.`) }
   finally {
-    try { await rm(staging, { recursive: true, force: true }) }
-    catch (error) { cleanupProblem = `Media staging cleanup failed at ${staging}: ${errorMessage(error)}.` }
-    finally {
+    try {
+      // A removal settles without throwing, so the staging folder is removed even when the build folder could not be.
+      const problems: string[] = []
+      for (const path of [build, staging]) {
+        const removed = await removePath(path, changeOptions(options))
+        if (!removed.ok) problems.push(`Media staging cleanup failed at ${path}: ${removed.reason}.`)
+      }
+      if (problems.length > 0) cleanupProblem = problems.join(' ')
+    } finally {
       const problem = await lock.release()
       if (problem !== undefined) options.report(problem)
     }
@@ -64,7 +74,7 @@ export async function installMedia(options: MediaInstallOptions): Promise<MediaI
   return result
 }
 
-async function installLocked(options: MediaInstallOptions, target: MediaTarget, folder: string, root: string, staging: string, pin: MediaPrebuiltPin | undefined): Promise<MediaInstallResult> {
+async function installLocked(options: MediaInstallOptions, target: MediaTarget, folder: string, root: string, staging: string, build: string, pin: MediaPrebuiltPin | undefined): Promise<MediaInstallResult> {
   const refuse = (message: string): MediaInstallResult => ({ ok: false, message, stopped: options.signal.aborted })
   const before = await inspectMedia(options.env, { target, pins: options.pins ?? mediaPrebuiltPins, verify: true, signal: options.signal })
   if (before?.state === 'installed') return { ok: true, action: 'already_installed', inspection: before }
@@ -72,7 +82,7 @@ async function installLocked(options: MediaInstallOptions, target: MediaTarget, 
   if (options.signal.aborted) return refuse('Media install was stopped before it built or copied anything.')
   let rustcVersion: string | null = null
   await mkdir(staging, { recursive: true })
-  const executable = join(staging, 'retest-media')
+  const executable = join(staging, mediaExecutableName(target))
   if (pin === undefined) {
     const run = options.run ?? runMediaTool
     const tools = await readRustTools(options.env, options.signal, run)
@@ -90,17 +100,20 @@ async function installLocked(options: MediaInstallOptions, target: MediaTarget, 
     }
     const copiedProblem = await checkMediaSource(source, { signal: options.signal })
     if (copiedProblem !== undefined) return refuse(copiedProblem)
-    const targetDir = join(staging, 'target')
-    const args = ['build', '--release', '--locked', ...(options.offline === true ? ['--offline'] : []), '--manifest-path', join(source, 'media', 'Cargo.toml'), '--target', target, '--target-dir', targetDir]
+    const args = ['build', '--release', '--locked', ...(options.offline === true ? ['--offline'] : []), '--manifest-path', join(source, 'media', 'Cargo.toml'), '--target', target, '--target-dir', build]
     options.report(`Building retest-media ${mediaVersion} with ${tools.rustcVersion}; Cargo.lock is pinned. ffmpeg is a separate host prerequisite.`)
-    const built = await run(tools.cargo, args, { env: options.env, signal: options.signal, cwd: source, timeoutMs: 30 * 60_000, environment: { RUSTC: tools.rustc, CARGO_TARGET_DIR: targetDir } })
+    const built = await run(tools.cargo, args, { env: options.env, signal: options.signal, cwd: source, timeoutMs: 30 * 60_000, environment: { RUSTC: tools.rustc, CARGO_TARGET_DIR: build } })
     const afterProblem = await checkMediaSource(source, { signal: options.signal })
     if (afterProblem !== undefined) return refuse(`The build changed the pinned source or Cargo.lock. ${afterProblem}`)
-    if (built.code !== 0 || built.stopped || built.timedOut || built.cleanupProblems.length > 0) return refuse(`${describeCommand('cargo build --release --locked', built)}. Nothing was installed.`)
-    const placed = await copyRegularBinary(join(targetDir, target, 'release', 'retest-media'), executable)
+    // Cargo's last line only says the build failed; its first error says why.
+    const cause = built.stderr.split('\n').find((line) => line.startsWith('error')) ?? ''
+    if (built.code !== 0 || built.stopped || built.timedOut || built.cleanupProblems.length > 0) return refuse(`${describeCommand('cargo build --release --locked', built)}.${cause === '' ? '' : ` ${cause.slice(0, 300)}`} Nothing was installed.`)
+    const placed = await copyRegularBinary(join(build, target, 'release', mediaExecutableName(target)), executable)
     if (placed !== undefined) return refuse(placed)
-    await rm(source, { recursive: true })
-    await rm(targetDir, { recursive: true })
+    for (const path of [source, build]) {
+      const removed = await removePath(path, changeOptions(options))
+      if (!removed.ok) return refuse(`Retest could not remove ${path} after the build: ${removed.reason}. Nothing was installed.`)
+    }
   } else {
     if (options.binary !== undefined) {
       const copied = await copyRegularBinary(options.binary, executable, pin.size)
@@ -115,7 +128,7 @@ async function installLocked(options: MediaInstallOptions, target: MediaTarget, 
   }
   if (options.signal.aborted) return refuse('Media install was stopped before the binary probe. Nothing was installed.')
   await chmod(executable, 0o755)
-  const probe = await probeMediaBinary(executable, '/usr/bin/false', target)
+  const probe = await probeMediaBinary(executable, notAnEncoder, target)
   if (!probe.ok) return refuse(probe.message)
   if (options.signal.aborted) return refuse('Media install was stopped after its build. Nothing was installed.')
   const hash = await readFileSha256(executable, { maximumBytes: maximumMediaBinaryBytes, deadline: new Deadline(15_000, { signal: options.signal }) })
@@ -130,9 +143,16 @@ async function installLocked(options: MediaInstallOptions, target: MediaTarget, 
   if (sourceProblem !== undefined) return refuse(sourceProblem)
   const record: MediaRecord = { schemaVersion: 1, version: mediaVersion, protocol: MEDIA_PROTOCOL_VERSION, sourceDigest: mediaSourceDigest, target, method: pin === undefined ? 'source' : 'prebuilt', rustcVersion, binarySha256: hash.sha256, notices: mediaNoticePins(), installedAt: new Date().toISOString(), installedBy: options.version }
   await writeFile(join(staging, 'build.json'), `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx' })
-  await rename(staging, folder)
+  const moved = await renamePath(staging, folder, changeOptions(options))
+  if (!moved.ok) return refuse(`Retest could not move the built media folder into ${folder}: ${moved.reason}. Nothing was installed.`)
   const after = await inspectMedia(options.env, { target, pins: options.pins ?? mediaPrebuiltPins, verify: true, signal: options.signal })
   return after?.state === 'installed' ? { ok: true, action: 'installed', inspection: after } : refuse(`The media folder did not read as installed: ${after?.problems.join(' ') ?? 'no cache'}.`)
+}
+
+// Windows refuses to rename or remove a file a virus scanner holds open, as it does a freshly built retest-media.exe, so
+// each change the install makes in the cache is tried again there for a while.
+function changeOptions(options: MediaInstallOptions): ChangeOptions {
+  return { platform: process.platform, signal: options.signal }
 }
 
 async function copyRegularBinary(from: string, to: string, expectedSize?: number): Promise<string | undefined> {

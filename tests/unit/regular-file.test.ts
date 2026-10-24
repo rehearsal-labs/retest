@@ -8,6 +8,7 @@ import { describe, test } from 'node:test'
 import { maximumRecordBytes, openRegularFile, readFileSha256, readRecordText } from '../../src/shared/regular-file.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
 // Something put at a path between the check that found a regular file there and the open. Each case swaps the file at
@@ -25,7 +26,7 @@ function recordAt(text = '{"kept":true}\n'): string {
 }
 
 describe('opening a file that is swapped between its check and its open', () => {
-  test('a FIFO put there is opened without waiting and refused as replaced', { timeout: 10_000 }, async () => {
+  test('a FIFO put there is opened without waiting and refused as replaced', { timeout: 10_000, skip: unixOnly('a Windows file system has no FIFOs') }, async () => {
     const path = recordAt()
     const opened = await openRegularFile(path, { afterCheck: async () => { rmSync(path); mkfifo(path) } })
     assert.equal(opened.kind, 'replaced')
@@ -119,12 +120,15 @@ describe('reading a record', () => {
     assert.deepEqual(hashed, { kind: 'file', sha256: sha256Hex('three'), identity: { device: stats.dev.toString(), inode: stats.ino.toString() } })
   })
 
-  test('a path that stays swapped is judged after a bounded number of attempts, for what it has become', { timeout: 10_000 }, async () => {
+  test('a path swapped for a FIFO is judged at the second look, for what it has become', { timeout: 10_000, skip: unixOnly('a Windows file system has no FIFOs') }, async () => {
     const path = recordAt()
     let attempts = 0
     const reading = await readRecordText(path, { afterCheck: async () => { attempts += 1; rmSync(path); mkfifo(path) } })
     assert.deepEqual(reading, { kind: 'unreadable', problem: 'it is a FIFO, not a file' })
     assert.equal(attempts, 1, 'the second look found the FIFO before any open')
+  })
+
+  test('a path that stays swapped is judged after a bounded number of attempts, for what it has become', async () => {
     let swaps = 0
     const churning = recordAt()
     const settled = await readRecordText(churning, { afterCheck: async () => { swaps += 1; writeFileSync(`${churning}.new`, `{"swap":${swaps}}\n`); renameSync(`${churning}.new`, churning) } })

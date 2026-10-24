@@ -1,19 +1,33 @@
+import type { FileHandle } from 'node:fs/promises'
 import type { ArchiveFormat } from '../../browser/builds.ts'
-import { lstat, mkdtemp, realpath, rmdir } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { lstat, mkdtemp, open, realpath, rmdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { crc32 } from 'node:zlib'
+import { environmentVariable } from '../../browser/builds.ts'
 import { describeCommand, runCommand } from '../../native/processes.ts'
 import { Deadline } from '../../protocol/deadline.ts'
+import { errorMessage } from '../../protocol/failures.ts'
 import { errorCode, isMissingFile } from '../../shared/error-code.ts'
+import { removePath } from './file-changes.ts'
 
 // Unpacks an archive whose checksum was already verified, with the system's own tools: ditto on macOS, unzip on Linux,
-// and hdiutil for a macOS disk image. Nothing is unpacked before its bytes match the pin.
+// hdiutil for a macOS disk image, and on Windows its own tar.exe, which is libarchive's bsdtar. It reads zip, and the
+// 7-Zip archive in Firefox's installer, packed with LZMA, when it was built with liblzma: the tar.exe 3.8.9 of Windows
+// Server 2025 was, and is the one this was verified with. Nothing is unpacked before its bytes match the pin, and
+// nothing from an archive is ever run.
 
 /** The tools that unpack archives, by absolute path. */
-export type UnpackTools = { readonly ditto: string; readonly unzip: string; readonly hdiutil: string }
+export type UnpackTools = { readonly ditto: string; readonly unzip: string; readonly hdiutil: string; readonly tar: string }
 
-export const systemUnpackTools: UnpackTools = { ditto: '/usr/bin/ditto', unzip: '/usr/bin/unzip', hdiutil: '/usr/bin/hdiutil' }
+// The tar a Git shell puts first on PATH is GNU tar, which reads neither zip nor 7-Zip, so Windows' own is named by the
+// Windows folder.
+const windowsTar = win32.join(environmentVariable(process.env, 'SystemRoot', 'win32') ?? 'C:\\Windows', 'System32', 'tar.exe')
+
+export const systemUnpackTools: UnpackTools = { ditto: '/usr/bin/ditto', unzip: '/usr/bin/unzip', hdiutil: '/usr/bin/hdiutil', tar: windowsTar }
 
 /** What `unpackArchive` needs: the verified archive, how it is packed, an empty folder to unpack into, and the host. */
 export type UnpackRequest = {
@@ -24,20 +38,114 @@ export type UnpackRequest = {
   readonly tools: UnpackTools
   readonly signal: AbortSignal
   readonly timeoutMs: number
+  /** Where a line goes about something the unpack left behind without failing, such as a copy it could not remove. */
+  readonly report: (line: string) => void
 }
 
 /**
  * Unpacks a verified archive into an empty folder, and returns why it could not, or undefined once it has. A zip is
  * unpacked whole, keeping its links and modes; from a disk image, only the app bundle the pin names is copied, and the
- * image is detached again whatever happened.
+ * image is detached again whatever happened; from a Windows installer, only the folder the pin names is unpacked, out
+ * of the 7-Zip archive inside it, and its self-extracting stub never runs.
  *
- * @example await unpackArchive({ archive, format: { format: 'zip' }, into, platform: 'darwin', tools: systemUnpackTools, signal, timeoutMs: 600_000 })
+ * @example await unpackArchive({ archive, format: { format: 'zip' }, into, platform: 'darwin', tools: systemUnpackTools, signal, timeoutMs: 600_000, report: console.log })
  */
 export async function unpackArchive(request: UnpackRequest): Promise<string | undefined> {
   if (request.format.format === 'dmg') return request.platform === 'darwin' ? copyFromDiskImage(request, request.format.app) : 'A disk image is unpacked only on macOS.'
+  if (request.format.format === 'exe') return request.platform === 'win32' ? unpackInstaller(request, request.format.folder) : 'A Windows installer is unpacked only on Windows.'
+  if (request.platform === 'win32') return unpackWithTar(request, request.archive, [])
   if (request.platform === 'darwin') return run(request.tools.ditto, ['-x', '-k', request.archive, request.into], request, 'ditto')
   if (!(await exists(request.tools.unzip))) return `Unpacking a zip on Linux needs unzip at ${request.tools.unzip}. Install it, for example with apt-get install unzip, and run the install again.`
   return run(request.tools.unzip, ['-q', request.archive, '-d', request.into], request, 'unzip')
+}
+
+// bsdtar refuses a member whose path is absolute or climbs out with `..`, and makes no link a Windows build would need.
+async function unpackWithTar(request: UnpackRequest, archive: string, members: readonly string[]): Promise<string | undefined> {
+  if (!(await exists(request.tools.tar))) return `Unpacking on Windows needs its own tar.exe at ${request.tools.tar}, which Windows includes from Windows 10 version 1803.`
+  return run(request.tools.tar, ['-x', '-f', archive, '-C', request.into, ...members], request, 'tar')
+}
+
+// bsdtar names the libraries it was built with in its version line, and reads LZMA only with liblzma among them; asking
+// first names a tar.exe that lacks it, where the unpack itself would only end with an exit code.
+async function lzmaProblem(request: UnpackRequest): Promise<string | undefined> {
+  if (!(await exists(request.tools.tar))) return undefined
+  const version = await runCommand(request.tools.tar, ['--version'], { timeoutMs: 30_000, signal: request.signal })
+  if (version.code !== 0) return `Retest could not read which archives ${request.tools.tar} unpacks: ${clause(describeCommand('tar --version', version))}.`
+  if (/\bliblzma\//.test(version.stdout)) return undefined
+  const named = version.stdout.trim().split('\n')[0] ?? 'tar'
+  return `${request.tools.tar} (${named}) cannot unpack this installer, since it was built without LZMA. Update Windows, or give the target an executablePath.`
+}
+
+// The installer's stub is a program, and running it would install Firefox the way a person does, so the archive is
+// copied out of it byte for byte and only the named folder is unpacked from the copy. bsdtar finds the archive inside
+// a stub only at some offsets, and the copy has it at the start.
+async function unpackInstaller(request: UnpackRequest, folder: string): Promise<string | undefined> {
+  const start = await sevenZipStart(request.archive)
+  if (!start.ok) return start.problem
+  const lzma = await lzmaProblem(request)
+  if (lzma !== undefined) return lzma
+  const workspace = await mkdtemp(join(tmpdir(), 'retest-install-installer-'))
+  try {
+    const inner = join(workspace, 'installer.7z')
+    try {
+      await pipeline(createReadStream(request.archive, { start: start.offset }), createWriteStream(inner, { flags: 'wx' }), { signal: request.signal })
+    } catch (error) {
+      return `The archive inside the installer could not be copied out: ${errorMessage(error)}.`
+    }
+    const problem = await unpackWithTar(request, inner, [folder])
+    if (problem !== undefined) return problem
+    const unpacked = await lstat(join(request.into, folder)).then((stats) => stats.isDirectory(), () => false)
+    return unpacked ? undefined : `The installer holds no ${folder} folder.`
+  } finally {
+    // The copy is of no further use whether the unpack worked or not; one left behind is said, and changes neither.
+    const removed = await removePath(workspace, { platform: request.platform, signal: request.signal })
+    if (!removed.ok) request.report(`Retest could not remove ${workspace}: ${removed.reason}. Remove it by hand.`)
+  }
+}
+
+/** Where a 7-Zip archive starts inside a file, or why none was found there. */
+export type SevenZipStart = { readonly ok: true; readonly offset: number } | { readonly ok: false; readonly problem: string }
+
+const sevenZipSignature = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c])
+/** A self-extracting stub is a small program; the archive begins within this many bytes of the file's start. */
+const stubSearchBytes = 4 * 1024 * 1024
+/** No archive Retest pins has an index near this size. */
+const maximumIndexBytes = 64 * 1024 * 1024
+
+/**
+ * Where the 7-Zip archive inside a file begins: the first place its signature stands, within the stub's reach, with a
+ * start header whose checksum holds and whose index lies inside the file with the checksum the header gives it. A
+ * signature that is only bytes of the stub fails those checks and is passed over.
+ *
+ * @example await sevenZipStart('/…/Firefox Setup 158.0.1.exe') // { ok: true, offset: 131665 }
+ */
+export async function sevenZipStart(path: string): Promise<SevenZipStart> {
+  const handle = await open(path, 'r')
+  try {
+    const { size } = await handle.stat()
+    const head = Buffer.alloc(Math.min(size, stubSearchBytes))
+    await handle.read(head, 0, head.length, 0)
+    for (let at = head.indexOf(sevenZipSignature); at >= 0; at = head.indexOf(sevenZipSignature, at + 1)) {
+      if (await isArchiveStart(handle, size, at)) return { ok: true, offset: at }
+    }
+    return { ok: false, problem: `The installer holds no 7-Zip archive in its first ${stubSearchBytes / 1024 / 1024} MiB, so Retest cannot unpack it without running it.` }
+  } finally {
+    await handle.close()
+  }
+}
+
+// The start header is the signature, two version bytes, the CRC-32 of the next 20 bytes, then the index's offset from
+// the header's end, its size and its CRC-32, all little-endian.
+async function isArchiveStart(handle: FileHandle, size: number, at: number): Promise<boolean> {
+  const header = Buffer.alloc(32)
+  if ((await handle.read(header, 0, 32, at)).bytesRead !== 32 || header[6] !== 0) return false
+  if (crc32(header.subarray(12, 32)) !== header.readUInt32LE(8)) return false
+  const indexAt = BigInt(at + 32) + header.readBigUInt64LE(12)
+  const indexSize = header.readBigUInt64LE(20)
+  if (indexSize === 0n || indexSize > BigInt(maximumIndexBytes) || indexAt + indexSize > BigInt(size)) return false
+  const index = Buffer.alloc(Number(indexSize))
+  if ((await handle.read(index, 0, index.length, Number(indexAt))).bytesRead !== index.length) return false
+  return crc32(index) === header.readUInt32LE(28)
 }
 
 async function copyFromDiskImage(request: UnpackRequest, app: string): Promise<string | undefined> {
@@ -50,7 +158,7 @@ async function copyFromDiskImage(request: UnpackRequest, app: string): Promise<s
     // can still finish after hdiutil is gone. Whatever the helper attached from this archive is detached again.
     const left = await detachLeftAttach(request, mountPoint, attached.timedOut || attached.stopped ? leftAttachWaitMs : 0)
     const cleanup = left ?? (await removeMountPoint(mountPoint))
-    return `The disk image could not be attached: ${describeCommand('hdiutil attach', attached)}.${cleanup === undefined ? '' : ` ${cleanup}`}`
+    return `The disk image could not be attached: ${clause(describeCommand('hdiutil attach', attached))}.${cleanup === undefined ? '' : ` ${cleanup}`}`
   }
   let problem: string | undefined
   try {
@@ -73,7 +181,7 @@ async function detach(request: UnpackRequest, target: string): Promise<string | 
   if (first.code === 0) return undefined
   const forced = await runCommand(request.tools.hdiutil, ['detach', '-force', target], options)
   if (forced.code === 0) return undefined
-  return `The disk image is still attached at ${target}: ${describeCommand('hdiutil detach -force', forced)}. Detach it with hdiutil detach ${target}.`
+  return `The disk image is still attached at ${target}: ${clause(describeCommand('hdiutil detach -force', forced))}. Detach it with hdiutil detach ${target}.`
 }
 
 /** How long an empty mount point is tried again after a detach, while the system lets go of the volume. */
@@ -110,7 +218,7 @@ async function detachLeftAttach(request: UnpackRequest, mountPoint: string, wait
   const deadline = Date.now() + waitMs
   for (;;) {
     const info = await runCommand(request.tools.hdiutil, ['info'], { timeoutMs: 60_000 })
-    if (info.code !== 0) return `Retest could not read whether the image is still attached: ${describeCommand('hdiutil info', info)}. If hdiutil info lists ${request.archive}, detach it with hdiutil detach.`
+    if (info.code !== 0) return `Retest could not read whether the image is still attached: ${clause(describeCommand('hdiutil info', info))}. If hdiutil info lists ${request.archive}, detach it with hdiutil detach.`
     const devices = attachedDevices(info.stdout, names)
     if (devices.length > 0) return detachAll(request, devices)
     if (Date.now() >= deadline) return undefined
@@ -131,7 +239,7 @@ async function detachAll(request: UnpackRequest, devices: readonly string[]): Pr
  * The whole-disk devices `hdiutil info` lists for images mounted on one of `mountPoints`, or attached from one of
  * `images` with no mount point at all. An image mounted elsewhere is not counted.
  *
- * @example attachedDevices(text, { images: ['/…/Firefox 133.0.3.dmg'], mountPoints: ['/private/var/…/retest-install-image-a1b2'] }) // ['/dev/disk6']
+ * @example attachedDevices(text, { images: ['/…/Firefox 158.0.1.dmg'], mountPoints: ['/private/var/…/retest-install-image-a1b2'] }) // ['/dev/disk6']
  */
 export function attachedDevices(info: string, names: { readonly images: readonly string[]; readonly mountPoints: readonly string[] }): string[] {
   const devices: string[] = []
@@ -155,7 +263,12 @@ async function bothForms(path: string): Promise<string[]> {
 
 async function run(tool: string, args: readonly string[], request: UnpackRequest, name: string): Promise<string | undefined> {
   const result = await runCommand(tool, args, { timeoutMs: request.timeoutMs, signal: request.signal })
-  return result.code === 0 ? undefined : `Unpacking the archive failed: ${describeCommand(name, result)}.`
+  return result.code === 0 ? undefined : `Unpacking the archive failed: ${clause(describeCommand(name, result))}.`
+}
+
+// A command's account as a clause the sentence around it ends, without the full stop its last line may bring.
+function clause(text: string): string {
+  return text.replace(/\.+$/, '')
 }
 
 async function exists(path: string): Promise<boolean> {

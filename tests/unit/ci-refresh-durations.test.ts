@@ -47,7 +47,8 @@ test('the platform of a results file is read from the artifact name ci.yml gives
   assert.equal(platformOfArtifact('integration-macos-web-1-1'), 'macos-arm64')
   assert.equal(platformOfArtifact('integration-macos-native-1-3'), 'macos-arm64')
   assert.equal(platformOfArtifact('unit-windows-x64-2-1'), 'windows-x64')
-  for (const name of ['chromium-ticker-web-2-1', 'integration-windows-x64-1-1', 'integration-macos-arm64-1-1', 'integration-linux-x64-1', 'results']) assert.equal(platformOfArtifact(name), undefined, name)
+  assert.equal(platformOfArtifact('integration-windows-x64-3-1'), 'windows-x64')
+  for (const name of ['chromium-ticker-web-2-1', 'integration-windows-arm64-1-1', 'integration-macos-arm64-1-1', 'integration-linux-x64-1', 'results']) assert.equal(platformOfArtifact(name), undefined, name)
 })
 
 test('each file takes its slowest passing time on each platform, rounded up to whole seconds', async (context) => {
@@ -100,7 +101,7 @@ test('a file the repository no longer holds is dropped, and a file no artifact n
   assert.deepEqual(refreshed.durations, { 'tests/integration/conformance-chrome.test.ts': { 'macos-arm64': 257, 'linux-x64': 45 }, 'tests/unit/bravo.test.ts': { 'linux-x64': 1 } })
   assert.deepEqual(refreshed.dropped, ['tests/integration/conformance.test.ts'])
   assert.deepEqual(refreshed.kept, ['tests/integration/conformance-chrome.test.ts'])
-  assert.match(describeMissing(refreshed.missing), /^The artifacts have no passing time for 2 files on some platform: tests\/integration\/conformance-chrome\.test\.ts on macos-arm64, linux-x64, linux-arm64; tests\/unit\/bravo\.test\.ts on macos-arm64, linux-arm64, windows-x64\. .*--partial/)
+  assert.match(describeMissing(refreshed.missing), /^The artifacts have no passing time for 2 files on some platform: tests\/integration\/conformance-chrome\.test\.ts on macos-arm64, linux-x64, linux-arm64, windows-x64; tests\/unit\/bravo\.test\.ts on macos-arm64, linux-arm64, windows-x64\. .*--partial/)
 })
 
 test('results that are not what run-tests.ts writes, or whose folder names no platform, are refused by their path', async (context) => {
@@ -116,7 +117,7 @@ test('results that are not what run-tests.ts writes, or whose folder names no pl
     const artifacts = await folder(context)
     await mkdir(join(artifacts, name))
     await writeFile(join(artifacts, name, 'results.json'), JSON.stringify(document))
-    assert.throws(() => readShardResults(artifacts), new RegExp(`${name}/results\\.json`))
+    assert.throws(() => readShardResults(artifacts), (error: unknown) => error instanceof Error && error.message.includes(join(name, 'results.json')))
   }
   const empty = await folder(context)
   assert.throws(() => readShardResults(empty), /No results\.json/)
@@ -151,7 +152,7 @@ test('the command refuses a run that misses a platform for some file, unless tol
   await assert.rejects(execute(process.execPath, [refresher, 'artifacts'], { cwd: root, timeout: 10000 }), (error: unknown) => {
     assert.ok(error instanceof Error && 'code' in error && 'stderr' in error)
     assert.equal(error.code, 1)
-    assert.match(String(error.stderr), /no passing time for 2 files on some platform: tests\/integration\/browser-state\.test\.ts on linux-arm64; tests\/integration\/conformance-chrome\.test\.ts on macos-arm64, linux-x64, linux-arm64\..*Nothing was written\./)
+    assert.match(String(error.stderr), /no passing time for 2 files on some platform: tests\/integration\/browser-state\.test\.ts on linux-arm64, windows-x64; tests\/integration\/conformance-chrome\.test\.ts on macos-arm64, linux-x64, linux-arm64, windows-x64\..*Nothing was written\./)
     return true
   })
   assert.equal(await readFile(join(root, 'scripts/ci/test-durations.json'), 'utf8'), before)
@@ -165,8 +166,8 @@ test('the command refuses a run that misses a platform for some file, unless tol
   await writeEveryPlatform(join(root, 'complete'), { 'tests/integration/browser-state.test.ts': 30, 'tests/integration/conformance-chrome.test.ts': 40 })
   await execute(process.execPath, [refresher, 'complete'], { cwd: root, timeout: 10000 })
   assert.equal(await readFile(join(root, 'scripts/ci/test-durations.json'), 'utf8'), formatDurations({
-    'tests/integration/browser-state.test.ts': { 'macos-arm64': 30, 'linux-x64': 30, 'linux-arm64': 30 },
-    'tests/integration/conformance-chrome.test.ts': { 'macos-arm64': 40, 'linux-x64': 40, 'linux-arm64': 40 },
+    'tests/integration/browser-state.test.ts': { 'macos-arm64': 30, 'linux-x64': 30, 'linux-arm64': 30, 'windows-x64': 30 },
+    'tests/integration/conformance-chrome.test.ts': { 'macos-arm64': 40, 'linux-x64': 40, 'linux-arm64': 40, 'windows-x64': 40 },
   }))
   await assert.rejects(execute(process.execPath, [refresher], { cwd: root, timeout: 10000 }), (error: unknown) => {
     assert.ok(error instanceof Error && 'code' in error)

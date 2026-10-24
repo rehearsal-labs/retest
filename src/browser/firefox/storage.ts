@@ -7,6 +7,7 @@ import { readStorageFunction, writeStorageFunction } from '../page-scripts.ts'
 import { webOrigin } from '../storage-state.ts'
 import { readBidi } from './bidi-client.ts'
 import { callInSandbox } from './sandbox.ts'
+import { subscribedSchema, unsubscribeParameters } from './subscriptions.ts'
 import { inWindowOrder } from './window-order.ts'
 
 /** A cookie as `storage.getCookies` reports it, with only the fields saved state reads. */
@@ -144,8 +145,9 @@ export async function inFirefoxOriginDocuments<T>(
   const { context } = await inWindowOrder(client, deadline, () => client.request('browsingContext.create', { type: 'tab', userContext, background: true }, contextSchema, { ...options(), keepErrorMessage: true }))
   const stop = client.on('network.beforeRequestSent', (params) => answerPaused(client, context, params, deadline))
   let intercept: string | undefined
+  let subscription: string | undefined
   try {
-    await client.request('session.subscribe', { events: ['network.beforeRequestSent'], contexts: [context] }, s.object({}), options())
+    subscription = (await client.request('session.subscribe', { events: ['network.beforeRequestSent'], contexts: [context] }, subscribedSchema, options())).subscription
     intercept = (await client.request('network.addIntercept', { phases: ['beforeRequestSent'], contexts: [context] }, interceptSchema, options())).intercept
     const results: T[] = []
     for (const origin of origins) {
@@ -156,7 +158,7 @@ export async function inFirefoxOriginDocuments<T>(
   } finally {
     stop()
     if (intercept !== undefined) await client.send('network.removeIntercept', { intercept }, options()).catch(() => undefined)
-    await client.send('session.unsubscribe', { events: ['network.beforeRequestSent'], contexts: [context] }, options()).catch(() => undefined)
+    await client.send('session.unsubscribe', unsubscribeParameters({ id: subscription, events: ['network.beforeRequestSent'], contexts: [context] }), options()).catch(() => undefined)
     await inWindowOrder(client, deadline, () => client.send('browsingContext.close', { context }, options())).catch(() => {
       // Removing the user context closes the tab with it, and the error that matters is the work's own.
     })

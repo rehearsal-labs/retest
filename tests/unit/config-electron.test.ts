@@ -1,6 +1,6 @@
 import type { LoadedConfig } from '../../src/config/loaded.ts'
 import assert from 'node:assert/strict'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { app, chromium, defineConfig, electron } from '../../src/config/define.ts'
 import { validateConfig } from '../../src/config/validate.ts'
@@ -39,8 +39,8 @@ describe('electron(): an Electron app in the config', () => {
         {
           name: 'electron',
           browser: 'electron',
-          executablePath: `/work/${binary}`,
-          appPath: '/apps/desktop',
+          executablePath: resolve('/work', binary),
+          appPath: resolve('/apps/desktop'),
           args: [],
         },
       ],
@@ -66,12 +66,12 @@ describe('electron(): an Electron app in the config', () => {
     assert.deepEqual(desktop?.targets.get('electron'), {
       name: 'electron',
       browser: 'electron',
-      executablePath: '/opt/Electron.app/Contents/MacOS/Electron',
-      appPath: '/work/desktop/main.js',
+      executablePath: resolve('/opt/Electron.app/Contents/MacOS/Electron'),
+      appPath: resolve('/work/desktop/main.js'),
       args: ['--tasks=3', '--theme', 'dark'],
-      userDataDir: '/work/.data/desktop',
+      userDataDir: resolve('/work/.data/desktop'),
     })
-    assert.deepEqual(desktop?.start, { command: 'node service.ts', ready: 'http://127.0.0.1:4100/', cwd: '/work' })
+    assert.deepEqual(desktop?.start, { command: 'node service.ts', ready: 'http://127.0.0.1:4100/', cwd: resolve('/work') })
   })
 
   test('an app may hold several Electron targets, such as two builds of the same app', () => {

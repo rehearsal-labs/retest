@@ -23,6 +23,7 @@ import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
+import { heldLaunches, launchesHeldByJob, launchOwnership } from '../../src/shared/process-system.ts'
 import { engineUnderTest } from './engines.ts'
 
 /** The budgets these tests give opening a page and closing the browser. */
@@ -317,7 +318,11 @@ export async function timed<T>(work: Promise<T>): Promise<{ value: T; ms: number
   return { value, ms: performance.now() - start }
 }
 
-/** Reports whether any process of a group this test started is still there, reaped or not. */
+/**
+ * Reports whether any process of a group this test started is still there, reaped or not. On Windows, which has no
+ * groups, a launch this process holds is read from its job, and any other pid, such as one a command under test
+ * reported, only as that one process: what it started is the command's own to confirm ended, and ends with its job.
+ */
 export function groupExists(pgid: number): boolean {
   return signalGroup(pgid, 0)
 }
@@ -356,16 +361,70 @@ export async function waitForGroupEnd(pgid: number, timeoutMs = 5000): Promise<v
   }
 }
 
+// Windows has no `ps`; its own process list gives each process's command line through PowerShell.
+async function windowsCommandLines(filter: string): Promise<string> {
+  const { stdout } = await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process ${filter} | ForEach-Object { "$($_.ProcessId) 0 $($_.CommandLine)" }`], { maxBuffer: 256 * 1024 * 1024 })
+  return stdout
+}
+
+function stillRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The process group of each line `processesUsing` gave: its own field on macOS and Linux; on Windows, which has no
+ * groups, the pid of the launch held by this process that holds that process, in its job or by its parent, or 0 for
+ * none. A process that ended after it was listed is left out.
+ */
+export function groupsOf(lines: readonly string[]): string[] {
+  const pidOf = (line: string): number => Number(line.trim().split(/\s+/)[0])
+  if (!launchesHeldByJob) return lines.map((line) => line.trim().split(/\s+/)[1] ?? '')
+  const holder = launchHoldings()
+  // The launches are read after the lines were listed: a process listed that has ended since was the browser's while it
+  // ran, but nothing is left of it to read, so it has no group; one still running outside every launch reads as 0.
+  return lines.flatMap((line) => {
+    const pid = pidOf(line)
+    const root = holder.get(pid)
+    if (root !== undefined) return [String(root)]
+    return stillRunning(pid) ? ['0'] : []
+  })
+}
+
+// Each process a launch holds, by the pid of the launch that holds it, as that launch reads itself: its job's members,
+// and, for a launch that holds processes by their parents, those too.
+function launchHoldings(): Map<number, number> {
+  const launches = heldLaunches()
+  const supervisor = launches?.supervisor
+  const holder = new Map<number, number>()
+  for (const { job, root } of supervisor?.launches ?? []) {
+    for (const member of supervisor?.members(job) ?? []) holder.set(member.pid, root.pid)
+    if ((launches?.launchOf(root.pid)?.byParent.length ?? 0) === 0) continue
+    const owner = launchOwnership(root.pid)
+    if (owner.capture().length === 0) for (const entry of owner.stillThere) holder.set(entry.pid, root.pid)
+  }
+  return holder
+}
+
 /** The profile folder a running browser was started with, read from its command line. */
 export async function profileOf(pid: number): Promise<string> {
-  const { stdout } = await promisify(execFile)('ps', ['-ww', '-o', 'command=', '-p', String(pid)])
+  const { stdout } = process.platform === 'win32' ? { stdout: await windowsCommandLines(`-Filter "ProcessId=${pid}"`) } : await promisify(execFile)('ps', ['-ww', '-o', 'command=', '-p', String(pid)])
   const match = /--user-data-dir=(\S+)/.exec(stdout)
   assert.ok(match?.[1] !== undefined, `pid ${pid} has no --user-data-dir`)
   return match[1]
 }
 
-/** Lines of `ps` that mention a path, which every browser process carries in its command line. */
+/**
+ * Lines of `ps` that mention a path, which every browser process carries in its command line. On Windows each line is
+ * `<pid> 0 <command line>`, the 0 standing for a process group, which Windows does not have.
+ */
 export async function processesUsing(path: string): Promise<string[]> {
+  // Windows lists a process that has ended while anything still holds it open; only a running one is in use.
+  if (process.platform === 'win32') return (await windowsCommandLines('')).split(/\r?\n/).filter((line) => line.includes(path) && stillRunning(Number(line.trim().split(/\s+/)[0])))
   // Every process's whole command line: on a busy machine the table runs to megabytes, past execFile's default buffer.
   const { stdout } = await promisify(execFile)('ps', ['-axww', '-o', 'pid=,pgid=,command='], { maxBuffer: 256 * 1024 * 1024 })
   return stdout.split('\n').filter((line) => line.includes(path))

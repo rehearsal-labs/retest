@@ -28,7 +28,7 @@ for (const mode of ['deadline', 'cancellation'] as const) {
     syncBuiltinESMExports()
     t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
     const controller = new AbortController()
-    const options = { env: { HOME: '/nonexistent-bounded-media-home', PATH: '' }, mode: 'discover' as const, timeoutMs: 10, signal: controller.signal }
+    const options = { env: { HOME: '/nonexistent-bounded-media-home', LOCALAPPDATA: '/nonexistent-bounded-media-home', PATH: '' }, mode: 'discover' as const, timeoutMs: 10, signal: controller.signal }
     const pending = locateMedia(options)
     const entering = setTimeout(() => entered.reject(new Error(`media discovery never inspected the cache: fs.promises.lstat was not called within ${inspectionStartMs} ms`)), inspectionStartMs)
     try { await entered.promise } finally { clearTimeout(entering) }

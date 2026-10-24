@@ -54,6 +54,7 @@ jobs:
       unit: ${{ steps.plan.outputs.unit }}
       linux: ${{ steps.plan.outputs.linux }}
       macos: ${{ steps.plan.outputs.macos }}
+      windows: ${{ steps.plan.outputs.windows }}
       requested: ${{ steps.plan.outputs.requested }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -120,6 +121,15 @@ jobs:
           node-version: ${{ matrix.platform == 'macos-arm64' && '24.12.0' || '24' }}
       - run: npm ci --no-audit --no-fund
       - run: npm run build
+      # Windows starts every process through retest-supervisor, which holds it in a Job Object; the unit files that start
+      # processes need the real one. The runner image has Rust; the crate's locked dependencies are fetched once.
+      - name: Build the process supervisor
+        if: ${{ matrix.platform == 'windows-x64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path supervisor/Cargo.toml
+          CARGO_NET_OFFLINE=true node dist/cli/main.js install supervisor
       - name: Run assigned unit files one at a time
         env:
           RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
@@ -223,9 +233,39 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+  windows:
+    name: Integration Windows ${{ matrix.shard }}/${{ matrix.total }}
+    needs: [commit, checks]
+    if: ${{ needs.commit.outputs.windows != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.commit.outputs.windows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.commit.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-windows-integration
+      - name: Run assigned integration files one at a time
+        env:
+          RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
+        shell: bash
+        run: node scripts/ci/run-tests.ts "$RETEST_CI_FILES" "$RUNNER_TEMP/retest-ci-results"
+      - name: Keep file results and timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: integration-windows-x64-${{ matrix.shard }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retest-ci-results/results.json
+          if-no-files-found: ignore
+          retention-days: 7
+
   result:
     name: Verify every requested job finished
-    needs: [commit, checks, unit, linux, macos]
+    needs: [commit, checks, unit, linux, macos, windows]
     if: ${{ always() && needs.commit.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -237,13 +277,14 @@ jobs:
       RETEST_CI_UNIT: ${{ needs.unit.result }}
       RETEST_CI_LINUX: ${{ needs.linux.result }}
       RETEST_CI_MACOS: ${{ needs.macos.result }}
+      RETEST_CI_WINDOWS: ${{ needs.windows.result }}
     steps:
       - name: Refuse failed, cancelled or missing requested jobs
         run: |
           node --input-type=module <<'JS'
           import { appendFileSync } from 'node:fs'
           const requested = JSON.parse(process.env.RETEST_CI_REQUESTED)
-          const results = { checks: process.env.RETEST_CI_CHECKS, unit: process.env.RETEST_CI_UNIT, linux: process.env.RETEST_CI_LINUX, macos: process.env.RETEST_CI_MACOS }
+          const results = { checks: process.env.RETEST_CI_CHECKS, unit: process.env.RETEST_CI_UNIT, linux: process.env.RETEST_CI_LINUX, macos: process.env.RETEST_CI_MACOS, windows: process.env.RETEST_CI_WINDOWS }
           for (const [name, result] of Object.entries(results)) {
             const count = requested[name]
             if (!Number.isInteger(count) || count < 0) throw new Error(`${name}: the plan gave no job count`)

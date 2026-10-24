@@ -59,6 +59,11 @@ export const filesAnswerSchema: Schema<FilesAnswer> = s.union([
 
 // A name a file may take in a folder: no separator, and not one of the names that mean a folder itself.
 const separators = /[/\\\0]/
+// An absolute folder as the test file's process writes one: `/…` on macOS and Linux; on Windows a drive (`C:\…`) or a
+// share (`\\server\share\…`). On Windows a drive with no separator after it, such as `C:tests`, is read against that
+// drive's working folder, and `\tests` or `/tests` against the working folder's drive, so none of them is one; on macOS
+// and Linux `C:\tests` and `\\server\tests` are names in the working folder.
+const absoluteFolder: Readonly<Record<'posix' | 'windows', RegExp>> = { posix: /^\//, windows: /^(?:[A-Za-z]:[\\/]|\\\\[^\\/])/ }
 const base64Text = /^[A-Za-z0-9+/]*={0,2}$/
 
 /**
@@ -84,18 +89,18 @@ function describeInputFile(file: InputFileRecord): string {
  *
  * @example inputFilesProblem([{ name: 'a/b.txt', base64: '' }], 'setInputFiles') // { class: 'usage', … }
  */
-export function inputFilesProblem(files: readonly InputFileRecord[], method: string): Failure | undefined {
+export function inputFilesProblem(files: readonly InputFileRecord[], method: string, platform: NodeJS.Platform = process.platform): Failure | undefined {
   for (const file of files) {
-    const problem = 'path' in file ? pathProblem(file) : contentProblem(file)
+    const problem = 'path' in file ? pathProblem(file, platform) : contentProblem(file)
     if (problem !== undefined) return failure('usage', `${method}() ${problem}`)
   }
   return undefined
 }
 
-function pathProblem({ path, folder }: Extract<InputFileRecord, { path: string }>): string | undefined {
+function pathProblem({ path, folder }: Extract<InputFileRecord, { path: string }>, platform: NodeJS.Platform): string | undefined {
   if (path === '' || path.includes('\0')) return 'takes a path to a file, received an empty path.'
-  // The folder is the calling file's, which the test file's process reads as an absolute POSIX path.
-  return folder.startsWith('/') ? undefined : `received the path ${JSON.stringify(path)} with a folder Retest cannot resolve it against.`
+  // The folder is the calling file's, which the test file's process gives as an absolute path of this platform's.
+  return absoluteFolder[platform === 'win32' ? 'windows' : 'posix'].test(folder) ? undefined : `received the path ${JSON.stringify(path)} with a folder Retest cannot resolve it against.`
 }
 
 function contentProblem({ name, mimeType, base64 }: Extract<InputFileRecord, { base64: string }>): string | undefined {

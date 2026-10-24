@@ -7,6 +7,10 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 import { PIPE_QUERY_MAXIMUM_BYTES, PIPE_QUERY_TIMEOUT_MS, pipeDescriptor, pipeHoldersFromLsof, queryPipeHolders } from '../../scripts/ci/chrome-pipe-holders.ts'
+import { unixOnly } from '../support/platform-skip.ts'
+
+// The query is lsof on the macOS and Linux CI lanes; its stand-ins here are a script started by its #! line and yes.
+const lsofHost = { skip: unixOnly('the pipe-holder diagnostic runs lsof, which Windows does not have') }
 
 const fields = (...entries: string[]): string => `${entries.join('\0')}\0\n`
 const host = fields('p101', 'R1', 'g101', 'cnode', 'f9', 'au', 'tunix', 'd0x000a', 'n->0x000b')
@@ -63,7 +67,7 @@ async function gone(pid: number | null): Promise<void> {
   assert.fail('The diagnostic subprocess remained alive.')
 }
 
-test('a hung diagnostic is killed at its own limit, without its output being logged', async () => {
+test('a hung diagnostic is killed at its own limit, without its output being logged', lsofHost, async () => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-ci-pipe-timeout-'))
   try {
     const executable = join(folder, 'query')
@@ -77,7 +81,7 @@ test('a hung diagnostic is killed at its own limit, without its output being log
   } finally { await rm(folder, { recursive: true, force: true }) }
 })
 
-test('an overlarge diagnostic is killed at its byte limit', async () => {
+test('an overlarge diagnostic is killed at its byte limit', lsofHost, async () => {
   // A direct native writer avoids script-startup latency consuming the diagnostic's unchanged 200 ms budget.
   const result = await query('/usr/bin/yes', ['PRIVATE_FIXTURE_VALUE'])
   assert.equal(result.status, 'bytes-limit', JSON.stringify(result))
@@ -86,7 +90,7 @@ test('an overlarge diagnostic is killed at its byte limit', async () => {
   await gone(result.queryPid)
 })
 
-test('a pending diagnostic cannot keep its parent open and is killed on parent exit', async () => {
+test('a pending diagnostic cannot keep its parent open and is killed on parent exit', lsofHost, async () => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-ci-pipe-exit-'))
   try {
     const executable = join(folder, 'query')

@@ -1,8 +1,11 @@
 import type { NativeTools } from '../../native/processes.ts'
 import type { Infer } from '../../protocol/schema.ts'
+import type { FileHandle } from 'node:fs/promises'
 import type { Machine, ProcessStart, StartReader, StartReading } from './process-start.ts'
 import { createHash, randomBytes } from 'node:crypto'
+import { constants } from 'node:fs'
 import { link, lstat, mkdir, open, readdir, rm } from 'node:fs/promises'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { join } from 'node:path'
 import { processExists, systemTools } from '../../native/processes.ts'
 import { errorMessage } from '../../protocol/failures.ts'
@@ -10,6 +13,7 @@ import { parse, s } from '../../protocol/schema.ts'
 import { errorCode } from '../../shared/error-code.ts'
 import { entryKind, readRecordText } from '../../shared/regular-file.ts'
 import { readProcessTableAsync } from '../../shared/process-ownership.ts'
+import { launchesHeldByJob, readHeldProcess } from '../../shared/process-system.ts'
 import { compareStarts, readMachine, startReader } from './process-start.ts'
 
 // One install of a build at a time on one machine, using nothing only macOS has: the file system, and the start of a
@@ -22,6 +26,11 @@ import { compareStarts, readMachine, startReader } from './process-start.ts'
 // reading of the holder, a start that proves nothing, or one that cannot be read, keeps the lock where it is. Installs
 // from machines or containers sharing a cache are not coordinated: a generation of another one is refused, never
 // judged.
+//
+// On Windows, which has no `ps` and no start to read without the supervisor, a holder is told alive another way: before
+// its generation exists it opens `<n>.<token>.held` so that no other process can open it, and keeps it open until it
+// lets go. Windows closes that file when the holder ends, however it ends, so a taker that can open it knows the holder
+// is gone, and one that cannot knows it is not. No pid is read, so a pid given to another process proves nothing there.
 //
 // A taker holds the lock only once its generation is still the newest after it was made, so one made under a number a
 // slow taker read long ago steps back. Only generations older than the one before the newest are removed, by the taker
@@ -60,7 +69,7 @@ const generationSchema = s.object({
   machine: s.string(),
   host: s.string(),
   pid: s.number({ integer: true, min: 1 }),
-  start: s.object({ clock: s.enum(['boot-ticks', 'utc-seconds']), value: s.number({ integer: true, min: 0 }) }),
+  start: s.object({ clock: s.enum(['boot-ticks', 'utc-seconds', 'held-file']), value: s.number({ integer: true, min: 0 }) }),
   since: s.string(),
   command: s.string(),
 })
@@ -90,16 +99,17 @@ export async function takeInstallLock(path: string, options: InstallLockOptions 
   const stopped = (): Refusal => ({ ok: false, message: `The install was stopped while it took the install lock ${path}.`, stopped: true })
   if (stoppedBy(signal)) return stopped()
   const platform = options.platform ?? process.platform
+  const held = platform === 'win32'
   const readStart = options.readStart ?? startReader({ platform, tools: options.tools ?? systemTools, signal })
   const folder = await lockFolder(path)
   if (folder !== undefined) return { ok: false, message: folder }
   const machine = await readMachine({ platform, signal })
   if (stoppedBy(signal)) return stopped()
   if (!machine.ok) return { ok: false, message: `${machine.problem} The install lock ${path} records which machine holds it, so Retest installs nothing without it.` }
-  const own = await readStart(process.pid)
+  const own: StartReading = held ? { state: 'present', start: heldFileStart } : await readStart(process.pid)
   if (stoppedBy(signal)) return stopped()
   if (own.state !== 'present') return { ok: false, message: `Retest could not read when this process started (${own.state === 'unreadable' ? own.problem : 'it is not listed'}). The install lock ${path} names its holder by its start, so Retest installs nothing without it.` }
-  const context: Context = { path, machine: machine.machine, tag: machineTag(machine.machine), ownStart: own.start, readStart }
+  const context: Context = { path, machine: machine.machine, tag: machineTag(machine.machine), ownStart: own.start, readStart, held }
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (stoppedBy(signal)) return stopped()
     const outcome = await tryOnce(context)
@@ -118,7 +128,10 @@ function stoppedBy(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true
 }
 
-type Context = { readonly path: string; readonly machine: Machine; readonly tag: string; readonly ownStart: ProcessStart; readonly readStart: StartReader }
+type Context = { readonly path: string; readonly machine: Machine; readonly tag: string; readonly ownStart: ProcessStart; readonly readStart: StartReader; readonly held: boolean }
+
+// What a holder on Windows records as its start: none, since its held file is what tells it alive.
+const heldFileStart: ProcessStart = { clock: 'held-file', value: 0 }
 
 type Outcome = { readonly kind: 'held'; readonly lock: HeldLock } | { readonly kind: 'refused'; readonly message: string } | { readonly kind: 'again' }
 
@@ -137,10 +150,16 @@ async function tryOnce(context: Context): Promise<Outcome> {
       const legacy = reading.generation
       if (legacy.machine !== undefined && legacy.machine !== context.machine.id) return { kind: 'refused', message: `The install generation ${file} belongs to another machine or boot namespace, whose process table this machine cannot confirm. Remove ${file} once no install of this build is running there.` }
       try {
-        if ((await readProcessTableAsync()).some(entry => entry.pid === legacy.pid)) return { kind: 'refused', message: `Retest cannot confirm the recorded start time zone in the install generation ${file}; pid ${legacy.pid} is present. Remove ${file} once no install of this build is running.` }
+        // Windows has no `ps`; there the pid is read through retest-supervisor, as every process is.
+        const present = launchesHeldByJob ? readHeldProcess(legacy.pid) !== undefined : (await readProcessTableAsync()).some(entry => entry.pid === legacy.pid)
+        if (present) return { kind: 'refused', message: `Retest cannot confirm the recorded start time zone in the install generation ${file}; pid ${legacy.pid} is present. Remove ${file} once no install of this build is running.` }
       } catch (error) {
         return { kind: 'refused', message: `Retest cannot confirm absence for install generation ${file}: ${errorMessage(error)}. Remove ${file} once no install of this build is running.` }
       }
+    } else if (context.held) {
+      const generation = reading.generation
+      const decision = (await isReleased(path, newest, generation.token)) ? 'free' : await decideHeld(path, newest, generation, context)
+      if (decision !== 'free') return { kind: 'refused', message: describeBlocker(path, newest, decision) }
     } else {
       const generation = reading.generation
       const released = await isReleased(path, newest, generation.token)
@@ -166,11 +185,56 @@ async function tryOnce(context: Context): Promise<Outcome> {
   // that is still the newest holds the lock.
   const after = await listGenerations(context)
   if (!after.ok || after.newest !== newest + 1) {
-    await release(path, newest + 1, made.token)
+    await release(path, newest + 1, made.token, made.hold)
     return after.ok ? { kind: 'again' } : { kind: 'refused', message: after.message }
   }
   await removeOldGenerations(path, newest + 1)
-  return { kind: 'held', lock: heldLock(path, newest + 1, made.token) }
+  return { kind: 'held', lock: heldLock(path, newest + 1, made.token, made.hold) }
+}
+
+// Held files this process holds open, by path, so its own generation reads as its own rather than as another holder's.
+const holding = new Set<string>()
+
+// libuv's UV_FS_O_EXLOCK (uv/win.h): the file is opened sharing nothing, so every other open of it fails while this one
+// lasts. Node hands numeric flags to libuv as they are; only Windows reads this one.
+const openedAlone = 0x10000000
+
+function holdName(number: number, token: string): string {
+  return `${number}.${token}.held`
+}
+
+/**
+ * Whether a generation on Windows leaves the lock free: its holder's held file opens, so nothing holds it any more. One
+ * that does not open is held, by this process or another; one that is missing, or cannot be read, proves nothing.
+ */
+async function decideHeld(path: string, number: number, generation: Generation, context: Context): Promise<Blocker | 'free'> {
+  if (generation.machine !== context.machine.id) return { kind: 'foreign', generation }
+  const file = join(path, holdName(number, generation.token))
+  if (holding.has(file)) return { kind: 'self', generation }
+  const probe = await probeHeldFile(file)
+  if (probe === 'free') return 'free'
+  if (probe === 'held') return { kind: 'running', generation }
+  return { kind: 'unknown', generation, problem: probe === 'missing' ? `its held file ${file} is missing` : probe.problem }
+}
+
+// A held file that opens alone is held by no one. A virus scanner may hold it for a moment, so one that will not open is
+// asked again a few times before it counts as held.
+async function probeHeldFile(file: string): Promise<'free' | 'held' | 'missing' | { readonly problem: string }> {
+  for (let attempt = 1; ; attempt += 1) {
+    let handle: FileHandle
+    try {
+      handle = await open(file, constants.O_RDONLY | openedAlone)
+    } catch (error) {
+      const code = errorCode(error)
+      if (code === 'ENOENT') return 'missing'
+      if (code !== 'EBUSY') return { problem: `${file} cannot be opened: ${errorMessage(error)}` }
+      if (attempt >= 3) return 'held'
+      await sleep(20)
+      continue
+    }
+    await handle.close()
+    return 'free'
+  }
 }
 
 /** Why the newest generation keeps a taker out. */
@@ -280,17 +344,21 @@ async function isReleased(path: string, number: number, token: string): Promise<
 
 // A generation is made whole and on disk: written under a hidden name and flushed, then linked under its own, which
 // fails rather than replaces when another taker made that generation first, and the folder flushed after the link.
-async function makeGeneration(context: Context, number: number): Promise<{ readonly kind: 'made'; readonly token: string } | { readonly kind: 'taken' } | { readonly kind: 'failed'; readonly message: string }> {
+async function makeGeneration(context: Context, number: number): Promise<{ readonly kind: 'made'; readonly token: string; readonly hold: Hold | undefined } | { readonly kind: 'taken' } | { readonly kind: 'failed'; readonly message: string }> {
   const { path } = context
   const token = randomBytes(16).toString('hex')
   const generation: Generation = { version: 2, token, machine: context.machine.id, host: context.machine.host, pid: process.pid, start: context.ownStart, since: new Date().toISOString(), command: holderCommand() }
   const temporary = join(path, `.${context.tag}-${process.pid}-${randomBytes(8).toString('hex')}.tmp`)
+  let hold: Hold | undefined
   try {
+    // The held file is open before the generation that names it exists, so no taker ever reads it as let go.
+    if (context.held) hold = await holdFile(join(path, holdName(number, token)))
     await writeDurably(temporary, `${JSON.stringify(generation)}\n`)
     await link(temporary, join(path, `${number}.json`))
     await syncFolder(path)
-    return { kind: 'made', token }
+    return { kind: 'made', token, hold }
   } catch (error) {
+    if (hold !== undefined) await letGo(hold, { remove: true })
     if (errorCode(error) === 'EEXIST') return { kind: 'taken' }
     return { kind: 'failed', message: `Retest could not take the install lock ${path}: ${errorMessage(error)}.` }
   } finally {
@@ -298,23 +366,44 @@ async function makeGeneration(context: Context, number: number): Promise<{ reado
   }
 }
 
-function heldLock(path: string, number: number, token: string): HeldLock {
+/** A held file this process keeps open while it holds a generation on Windows. */
+type Hold = { readonly file: string; readonly handle: FileHandle }
+
+async function holdFile(file: string): Promise<Hold> {
+  const handle = await open(file, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | openedAlone)
+  holding.add(file)
+  return { file, handle }
+}
+
+// Closing the file is what tells other processes this holder let go; removing it is only tidying.
+async function letGo(hold: Hold, { remove }: { readonly remove: boolean }): Promise<void> {
+  holding.delete(hold.file)
+  await hold.handle.close().catch(() => undefined)
+  if (remove) await rm(hold.file, { force: true }).catch(() => undefined)
+}
+
+function heldLock(path: string, number: number, token: string, hold: Hold | undefined): HeldLock {
   let releasing: Promise<string | undefined> | undefined
-  return { ok: true, release: () => (releasing ??= release(path, number, token)) }
+  return { ok: true, release: () => (releasing ??= release(path, number, token, hold)) }
 }
 
 // Lets go of generation `number` only while it is still this holder's, by its token: a folder removed and made again
-// meanwhile holds another process's generation under that number, which this release must not free.
-async function release(path: string, number: number, token: string): Promise<string | undefined> {
-  const reading = await readGeneration(path, number)
-  if (reading.kind !== 'found' || reading.generation.token !== token) return `The install lock ${path} no longer holds this process's generation ${number}, so nothing there was let go.`
+// meanwhile holds another process's generation under that number, which this release must not free. A held file is
+// closed after the released mark is written, and whatever the release met, since a holder that let go holds nothing.
+async function release(path: string, number: number, token: string, hold?: Hold): Promise<string | undefined> {
   try {
-    await writeDurably(join(path, releasedName(number, token)), `${token}\n`)
-    await syncFolder(path)
-    return undefined
-  } catch (error) {
-    if (errorCode(error) === 'EEXIST') return undefined
-    return `The install lock ${path} was not let go: ${errorMessage(error)}. The next install passes it over once this process has ended.`
+    const reading = await readGeneration(path, number)
+    if (reading.kind !== 'found' || reading.generation.token !== token) return `The install lock ${path} no longer holds this process's generation ${number}, so nothing there was let go.`
+    try {
+      await writeDurably(join(path, releasedName(number, token)), `${token}\n`)
+      await syncFolder(path)
+      return undefined
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST') return undefined
+      return `The install lock ${path} was not let go: ${errorMessage(error)}. The next install passes it over once this process has ended.`
+    }
+  } finally {
+    if (hold !== undefined) await letGo(hold, { remove: false })
   }
 }
 

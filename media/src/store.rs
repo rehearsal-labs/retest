@@ -5,9 +5,14 @@
 //! reader never sees a place whose bytes are not there yet. The file is the process's own working file: it is
 //! removed when the recording is released, when the process shuts down, or, after the process was killed, by the
 //! client or by a `leftovers` request.
+//!
+//! A reader reads at an offset and never moves the writer's place. On Unix a cloned handle reads with `pread`; on
+//! Windows a cloned handle would share the writer's file pointer, which a positioned read moves, so a reader has a
+//! handle of its own on the same file.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -117,7 +122,7 @@ impl FrameStore {
             .as_ref()
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         Ok(StoreReader {
-            file: file.try_clone()?,
+            file: reading_handle(file)?,
         })
     }
 
@@ -146,9 +151,60 @@ pub struct StoreReader {
 impl StoreReader {
     pub fn read(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
         let mut bytes = vec![0u8; length as usize];
-        self.file.read_exact_at(&mut bytes, offset)?;
+        read_exact_at(&self.file, &mut bytes, offset)?;
         Ok(bytes)
     }
+}
+
+#[cfg(unix)]
+fn reading_handle(file: &File) -> io::Result<File> {
+    file.try_clone()
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+    file.read_exact_at(bytes, offset)
+}
+
+// ReOpenFile opens the very file the handle names, not its path, with a file pointer of its own. The writer's handle
+// was opened sharing reads, writes and removal, so this one can share them too.
+#[cfg(windows)]
+fn reading_handle(file: &File) -> io::Result<File> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile,
+    };
+    // SAFETY: the handle is the writer's live file handle; ReOpenFile returns a new handle or INVALID_HANDLE_VALUE.
+    let handle = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            FILE_GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            0,
+        )
+    };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the new handle is valid and owned by nothing else.
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut bytes: &mut [u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !bytes.is_empty() {
+        match file.seek_read(bytes, offset) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            Ok(read) => {
+                bytes = &mut bytes[read..];
+                offset += read as u64;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -174,6 +230,19 @@ mod tests {
         assert_eq!(reader.read(0, 5).expect("reads"), b"first");
         assert!(store.remove());
         assert!(!store.path().exists());
+    }
+
+    #[test]
+    fn reading_frames_back_never_moves_where_the_next_frame_is_written() {
+        let store = FrameStore::create(path("interleaved"), 1024).expect("created");
+        assert_eq!(store.append(b"first"), Ok(0));
+        let reader = store.reader().expect("opens");
+        assert_eq!(reader.read(0, 2).expect("reads"), b"fi");
+        assert_eq!(store.append(b"second"), Ok(5));
+        assert_eq!(reader.read(1, 3).expect("reads"), b"irs");
+        assert_eq!(store.append(b"third"), Ok(11));
+        assert_eq!(reader.read(0, 16).expect("reads"), b"firstsecondthird");
+        assert!(store.remove());
     }
 
     #[test]

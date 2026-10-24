@@ -13,7 +13,7 @@ import { parseArguments, value } from '../arguments.ts'
 import { defaultConfigFile, findConfig, missingConfig } from '../config-file.ts'
 import { runChecks } from '../doctor/checks.ts'
 import { UsageError } from '../errors.ts'
-import { shouldUseColor } from '../terminal.ts'
+import { shouldUseColor, terminalMarks } from '../terminal.ts'
 
 const options = {
   config: value({ placeholder: '<path>', description: `Config file. Default: ${defaultConfigFile}` }),
@@ -45,7 +45,7 @@ export const doctorCommand: Command = {
     const problems = checks.filter((check) => !check.ok).length
     if (dependencies.signal.aborted || !pointsInto(checks, logFolder)) removeLogs(logFolder)
     if (dependencies.signal.aborted) return interruptedExitCode(dependencies.signal)
-    const style = createStyle(shouldUseColor(dependencies.stdout, dependencies.env))
+    const style = createStyle(shouldUseColor(dependencies.stdout, dependencies.env), terminalMarks(dependencies.stdout, dependencies.env))
     dependencies.stdout.write(renderChecks(checks, config, style))
     return problems === 0 ? 0 : 2
   },
@@ -75,7 +75,7 @@ export function renderChecks(checks: readonly Check[], config: LoadedConfig, sty
   for (const check of shown) {
     const shownGroup = check.group === group ? '' : check.group
     group = check.group
-    const mark = check.ok ? style.green('✓') : style.red('✗')
+    const mark = check.ok ? style.green(style.marks.passed) : style.red(style.marks.failed)
     const text = check.detail === undefined ? check.text : `${check.text.padEnd(textWidth)}${style.dim(check.detail)}`
     lines.push(`  ${style.cyan(shownGroup.padEnd(groupWidth))}${check.subject.padEnd(subjectWidth)}${mark} ${text}`)
     if (check.fix !== undefined) lines.push(`${fixIndent}${check.fix}`)

@@ -12,7 +12,7 @@ import type { TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, join, sep } from 'node:path'
 import { describe, test } from 'node:test'
 import { BrowserError } from '../../src/browser/browser-error.ts'
 import { CdpConnection } from '../../src/browser/cdp/connection.ts'
@@ -47,10 +47,13 @@ import { openPage, saveState } from '../../src/runner/test-pages.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
 import { RunStore } from '../../src/store/run-store.ts'
 import { FakeBrowser, fakeLauncher } from '../support/fake-browser.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 import { fakeExecutable, tempProject } from '../support/project.ts'
 import { newRunFolder, quickTimeouts, readEvents } from '../support/run-harness.ts'
+import { windowsStandIn } from '../support/stand-in-program.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { mainFrame, protocolError, scriptedSession } from './browser-fixtures.ts'
+import { escapePattern } from './builds-fixtures.ts'
 
 const desktopTarget: LoadedElectronTarget = {
   name: 'electron',
@@ -92,9 +95,30 @@ describe('launching an Electron binary', () => {
   })
 
   // A shell script stands in for Electron: it gets the same group, pipes and environment, writes down what it was given,
-  // leaves a file in its data folder and ends without answering, as a binary that is not a browser would.
+  // leaves a file in its data folder and ends without answering, as a binary that is not a browser would. Windows runs
+  // the same steps as a Node script behind a stand-in program, which waits a moment rather than for the launcher's
+  // first message, since the extra pipes do not reach the script.
   async function standIn(folder: string): Promise<{ binary: string; record: string; app: string }> {
     const record = join(folder, 'record.txt')
+    const app = join(folder, 'desktop')
+    await mkdir(app)
+    await writeFile(join(app, 'package.json'), '{ "main": "main.js" }\n')
+    if (process.platform === 'win32') {
+      const binary = join(folder, 'electron.exe')
+      windowsStandIn(binary, [
+        "const { mkdirSync, writeFileSync } = require('node:fs')",
+        "const { join } = require('node:path')",
+        'const args = process.argv.slice(2)',
+        "const variable = (name) => process.env[name] ?? 'absent'",
+        `writeFileSync(${JSON.stringify(record)}, [...args.map((argument) => 'arg ' + argument), 'hidden ' + variable('RETEST_UNIT_JUDGE_KEY'), 'run-as-node ' + variable('ELECTRON_RUN_AS_NODE'), 'logging ' + variable('ELECTRON_ENABLE_LOGGING') + ' ' + variable('ELECTRON_LOG_FILE'), 'kept ' + variable('RETEST_UNIT_VISIBLE')].join('\\n') + '\\n')`,
+        "console.log('typed: the-typed-secret-41')",
+        "console.error('also typed: the-typed-secret-41')",
+        "for (const argument of args) if (argument.startsWith('--user-data-dir=')) { const data = argument.slice('--user-data-dir='.length); mkdirSync(data, { recursive: true }); writeFileSync(join(data, 'Local State'), 'app-data\\n') }",
+        'setTimeout(() => {}, 500)',
+        '',
+      ].join('\n'))
+      return { binary, record, app }
+    }
     const binary = join(folder, 'Electron')
     const script = [
       '#!/bin/sh',
@@ -109,9 +133,6 @@ describe('launching an Electron binary', () => {
     ].join('\n')
     await writeFile(binary, script)
     await chmod(binary, 0o755)
-    const app = join(folder, 'desktop')
-    await mkdir(app)
-    await writeFile(join(app, 'package.json'), '{ "main": "main.js" }\n')
     return { binary, record, app }
   }
 
@@ -134,7 +155,7 @@ describe('launching an Electron binary', () => {
     await assert.rejects(launchElectron(options, 5000), (error: unknown) => {
       assert.ok(error instanceof LaunchError)
       assert.equal(error.failure.class, 'setup_failed')
-      assert.match(error.message, new RegExp(`^${options.executablePath.replaceAll('/', '\\/')} (exited with exit code 0|closed its debugging pipe) before the app opened a window\\. Its output is in `))
+      assert.match(error.message, new RegExp(`^${escapePattern(options.executablePath)} (exited with exit code 0|closed its debugging pipe) before the app opened a window\\. Its output is in `))
       return true
     })
   }
@@ -190,15 +211,13 @@ describe('launching an Electron binary', () => {
     assert.match(readFileSync(raw.logFile, 'utf8'), /typed: the-typed-secret-41/, 'without a redactor the output is written as it came')
   })
 
-  test('a binary or app that is not there, or cannot run, is refused before anything starts', async (t) => {
+  test('a binary or app that is not there is refused before anything starts', async (t) => {
     const folder = await scratch(t)
     const app = join(folder, 'desktop')
     await mkdir(app)
     await writeFile(join(app, 'package.json'), '{}\n')
     const bundle = join(folder, 'Electron.app')
     await mkdir(join(bundle, 'Contents', 'MacOS'), { recursive: true })
-    const notExecutable = join(folder, 'plain')
-    await writeFile(notExecutable, '')
     const empty = join(folder, 'empty')
     await mkdir(empty)
     const executable = join(folder, 'Electron')
@@ -215,11 +234,13 @@ describe('launching an Electron binary', () => {
       target: 'electron',
       launch: 1,
     })
+    // Paths are written as this system writes them, and on Windows Electron's own binary is electron.exe.
+    const separator = escapePattern(sep)
+    const give = process.platform === 'win32' ? "Give the Electron binary: electron\\.exe in Electron's own build\\." : 'Give the Electron binary, inside Electron\\.app on macOS: Electron\\.app/Contents/MacOS/Electron\\.'
     const refusals: [ElectronLaunchOptions, RegExp][] = [
-      [options(join(folder, 'missing'), app), /^No Electron binary at .*\/missing\. Give the Electron binary, inside Electron\.app on macOS: Electron\.app\/Contents\/MacOS\/Electron\.$/],
-      [options(bundle, app), /Electron\.app is a folder\. Give the executable inside it: .*Electron\.app\/Contents\/MacOS\/Electron for Electron's own build\.$/],
-      [options(notExecutable, app), /plain is not executable\. Allow it to run, or give another Electron binary\.$/],
-      [options(executable, join(folder, 'nowhere')), /^No Electron app at .*\/nowhere: give the app's folder, which holds its package\.json, or its entry file\.$/],
+      [options(join(folder, 'missing'), app), new RegExp(`^No Electron binary at .*${separator}missing\\. ${give}$`)],
+      [options(bundle, app), new RegExp(`Electron\\.app is a folder\\. Give the executable inside it: .*Electron\\.app${separator}Contents${separator}MacOS${separator}Electron for Electron's own build\\.$`)],
+      [options(executable, join(folder, 'nowhere')), new RegExp(`^No Electron app at .*${separator}nowhere: give the app's folder, which holds its package\\.json, or its entry file\\.$`)],
       [options(executable, empty), /empty holds no package\.json or index\.js, so Electron would not find an app in it\.$/],
     ]
     for (const [given, message] of refusals) {
@@ -227,6 +248,18 @@ describe('launching an Electron binary', () => {
     }
     assert.equal(existsSync(join(folder, 'user-data')), false, 'nothing was started or made for a refused launch')
     assert.equal(existsSync(join(folder, 'electron.log')), false)
+  })
+
+  test('a binary that may not run is refused before anything starts', { skip: unixOnly('a Windows file has no execute bits, so any file there may be started') }, async (t) => {
+    const folder = await scratch(t)
+    const app = join(folder, 'desktop')
+    await mkdir(app)
+    await writeFile(join(app, 'package.json'), '{}\n')
+    const notExecutable = join(folder, 'plain')
+    await writeFile(notExecutable, '')
+    const given: ElectronLaunchOptions = { executablePath: notExecutable, appPath: app, args: [], userDataDir: join(folder, 'user-data'), windowsFile: join(folder, 'windows.json'), logFile: join(folder, 'electron.log'), app: 'desktop', target: 'electron', launch: 1 }
+    await assert.rejects(launchElectron(given, 5000), (error: unknown) => error instanceof LaunchError && /plain is not executable\. Allow it to run, or give another Electron binary\.$/.test(error.message))
+    assert.equal(existsSync(join(folder, 'user-data')), false, 'nothing was started or made for a refused launch')
   })
 
   test("reads the release from the framework's bundle, the version file, or the user agent, and refuses a binary none of them names", async (t) => {
@@ -568,14 +601,14 @@ describe('the pool and an Electron target', () => {
     assert.notEqual(first.value.browser, second.value.browser)
     assert.deepEqual(second.value.runtime, { kind: 'web', engine: 'chromium', product: 'Electron', version: '44.5.1', executablePath: target.executablePath, processIds: [7002] })
 
-    const folder = `/run/electron/${slug(variantKey({ desktop: 'electron' }))}`
+    const folder = join('/run', 'electron', slug(variantKey({ desktop: 'electron' })))
     assert.deepEqual(
       apps.map(({ options }) => options),
       [1, 2].map((launch) => ({
         executablePath: target.executablePath,
         appPath: target.appPath,
         args: ['--tasks=3'],
-        windowsFile: `${folder}/${launch}/windows.json`,
+        windowsFile: join(folder, String(launch), 'windows.json'),
         logFile: '/run/logs/browser-desktop-electron.log',
         app: 'desktop',
         target: 'electron',

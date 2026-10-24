@@ -16,6 +16,7 @@ import { retestEventSchema } from '../src/protocol/events.ts'
 import { runResultSchema } from '../src/protocol/result.ts'
 import { eventsFile, resultFile } from '../src/protocol/run-folder.ts'
 import { isArray, isPlainObject, parse } from '../src/protocol/schema.ts'
+import { npmCommand } from '../tests/support/npm-command.ts'
 import { browserPath } from '../tests/support/test-browser.ts'
 
 // Runs the Playwright compatibility corpus in fixtures/playwright-compat twice, from the same files: once under a
@@ -279,7 +280,7 @@ export async function installPlaywright(folder: string, log: Log): Promise<Insta
   writeFileSync(join(folder, 'package.json'), `${JSON.stringify({ name: installName, private: true, type: 'module' }, null, 2)}\n`)
   log(`packing @playwright/test ${pinnedPlaywright.version} into ${folder}`)
   const specs = pinnedPlaywright.packages.map((entry) => `${entry.name}@${pinnedPlaywright.version}`)
-  const packed = await runProgram(['npm', 'pack', ...specs, '--json', '--pack-destination', packs], { cwd: folder, env: npmEnvironment(), logFolder: join(folder, 'pack-logs'), limitMs: installLimitMs })
+  const packed = await runProgram([...npmCommand(), 'pack', ...specs, '--json', '--pack-destination', packs], { cwd: folder, env: npmEnvironment(), logFolder: join(folder, 'pack-logs'), limitMs: installLimitMs })
   if (packed.exitCode !== 0) throw new Error(`npm pack failed; its output is in ${join(folder, 'pack-logs')}.`)
   const tarballs = readPackedTarballs(readFileSync(join(folder, 'pack-logs', 'stdout.txt'), 'utf8'))
   if (!packsMatch(folder)) throw new Error(`The tarballs npm packed into ${packs} do not hash to the pinned checksums.`)
@@ -294,7 +295,7 @@ export async function installPlaywright(folder: string, log: Log): Promise<Insta
 // Installs the packed tarballs with no network, as the first install did.
 async function installPacks(folder: string, filenames: readonly string[]): Promise<void> {
   const install = await runProgram(
-    ['npm', 'install', '--offline', '--no-audit', '--no-fund', '--ignore-scripts', ...filenames.map((filename) => `./packs/${filename}`)],
+    [...npmCommand(), 'install', '--offline', '--no-audit', '--no-fund', '--ignore-scripts', ...filenames.map((filename) => `./packs/${filename}`)],
     { cwd: folder, env: npmEnvironment(), logFolder: join(folder, 'install-logs'), limitMs: installLimitMs },
   )
   if (install.exitCode !== 0) throw new Error(`npm install failed; its output is in ${join(folder, 'install-logs')}.`)

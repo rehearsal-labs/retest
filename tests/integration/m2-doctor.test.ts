@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { appLogFile } from '../../src/protocol/run-folder.ts'
 import { browserPath } from './browser-harness.ts'
@@ -71,7 +71,9 @@ test('doctor reports a missing browser, one that does not start, an app that doe
 
   assert.equal(doctor.exit.code, 2, doctor.stderr)
   const text = doctor.stdout
-  assert.match(text, /✗ No browser at \/nonexistent\/chromium, the path executablePath gives\. Install one there, or change the path\./)
+  // The config reads executablePath against its own folder, so on Windows the path is on that folder's drive.
+  const missing = resolve(root, '/nonexistent/chromium')
+  assert.ok(text.includes(`✗ No browser at ${missing}, the path executablePath gives. Install one there, or change the path.`), text)
   assert.match(text, new RegExp(`http://127\\.0\\.0\\.1:${deadPort} +✗ did not answer\\n +Start the app, or add start to the config so Retest starts it\\.`))
   assert.match(text, new RegExp(`✗ The server for api did not answer at ${silent} within 1000 ms\\.`))
   assert.match(text, /Check start in the config: its command, and ready, the address that answers once the app is up\./)

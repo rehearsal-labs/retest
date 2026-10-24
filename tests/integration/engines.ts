@@ -308,6 +308,18 @@ function webKitOptions(options: EngineLaunch) {
 }
 
 /**
+ * The skip for a file that drives a real Firefox, or false where one runs: macOS on Apple silicon, and Windows x64 with
+ * RETEST_TEST_FIREFOX naming the pinned build, since Windows has no place a Firefox is looked for by default.
+ *
+ * @example test('a refusal', { skip: firefoxHostSkip() }, () => {})
+ */
+export function firefoxHostSkip(): string | false {
+  if (process.platform === 'darwin' && process.arch === 'arm64') return false
+  if (process.platform === 'win32' && process.arch === 'x64' && (process.env['RETEST_TEST_FIREFOX'] ?? '') !== '') return false
+  return 'Retest runs Firefox on macOS on Apple silicon, and on Windows x64 with RETEST_TEST_FIREFOX naming the pinned build'
+}
+
+/**
  * The Firefox the tests drive: RETEST_TEST_FIREFOX, or Firefox where macOS installs it.
  *
  * @example firefoxPath() // '/Applications/Firefox.app/Contents/MacOS/firefox'

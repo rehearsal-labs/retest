@@ -12,6 +12,7 @@ import { failure } from '../protocol/failures.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { variantKey } from '../protocol/variant.ts'
 import { listWords } from '../shared/list-words.ts'
+import { platformPath, posixPath } from '../shared/posix-path.ts'
 import { bounded } from './bounded.ts'
 import { SharedLocks } from './locks.ts'
 import { sessionRefusal } from './sessions.ts'
@@ -131,7 +132,7 @@ export function describeLeasePart(part: LeasePart, variant?: Variant): string {
     case 'device':
       return `the simulator ${part.name}${of}`
     case 'data-folder':
-      return `the data folder ${part.name}${of}`
+      return `the data folder ${platformPath(part.name)}${of}`
     case 'sessions': {
       const count = part.count ?? 1
       return `${count} ${count === 1 ? 'session' : 'sessions'} of ${part.name}`
@@ -391,6 +392,17 @@ export class ResourceLease {
     this.#resources?.expire()
     for (const listener of this.#expiryListeners) listener(this.#expiry)
   }
+}
+
+/**
+ * A part as an event of the attempt records it: a data folder's name with forward slashes on every platform, so a run on
+ * Windows records what a run on macOS records; any other part as it is. It takes the part once its name is redacted, so
+ * a secret is looked for in the name as the platform wrote it.
+ *
+ * @example recordedPart({ kind: 'data-folder', name: 'C:\\work\\.data\\desk', apps: ['desk'] }) // name 'C:/work/.data/desk' on Windows
+ */
+export function recordedPart(part: LeasePart): LeasePart {
+  return part.kind === 'data-folder' ? { ...part, name: posixPath(part.name) } : part
 }
 
 /** A need as a part of a lease record. */

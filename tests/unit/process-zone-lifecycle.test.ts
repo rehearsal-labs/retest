@@ -13,8 +13,11 @@ import { Worker } from 'node:worker_threads'
 import { ChromiumProcess } from '../../src/browser/chromium-process.ts'
 import { killRecordedNow, OwnedProcess, systemTools } from '../../src/native/processes.ts'
 import { metadataComplete, metadataSuccess } from '../../src/shared/metadata-process.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
-test('the native ownership table and immediate async identity both read their real child in UTC0', async (t) => {
+const zones = unixOnly('a start read through ps in a time zone exists only on Unix; Windows keeps each process start as UTC ticks')
+
+test('the native ownership table and immediate async identity both read their real child in UTC0', { skip: zones }, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-native-zone-'))
   const requests = new Map<ArrayBufferLike, MetadataProcessRequest>()
   const readings: { readonly args: readonly string[]; readonly text: string }[] = []
@@ -64,7 +67,7 @@ test('the native ownership table and immediate async identity both read their re
   }
 })
 
-test('the native exit reader ends only its recorded real child using the UTC0 start', async () => {
+test('the native exit reader ends only its recorded real child using the UTC0 start', { skip: zones }, async () => {
   const child = spawn('/bin/sleep', ['60'], { detached: true, stdio: 'ignore', env: { TZ: 'Etc/GMT+12' } })
   const ended = once(child, 'exit')
   const zone = process.env['TZ']
@@ -84,7 +87,7 @@ test('the native exit reader ends only its recorded real child using the UTC0 st
   }
 })
 
-test('Chromium ownership closes its recorded real process across a caller TZ change', async () => {
+test('Chromium ownership closes its recorded real process across a caller TZ change', { skip: zones }, async () => {
   const child = spawn('/bin/sleep', ['60'], { detached: true, stdio: 'ignore', env: { TZ: 'Etc/GMT+12' } })
   const ended = once(child, 'exit')
   const zone = process.env['TZ']

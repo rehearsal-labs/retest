@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { statesFolder } from '../../src/protocol/run-folder.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
@@ -48,10 +48,14 @@ function project(setupExpects = 'Signed in'): string {
 const files = ['tests/archive.retest.ts', 'tests/sign-in.retest.ts']
 
 describe('a setup that passes', async () => {
-  const record = await runProject(project(), { files, fake: {
+  // The config's executable paths, made absolute from its folder as this platform writes them.
+  const root = project()
+  const stable = resolve(root, '/fake/stable')
+  const beta = resolve(root, '/fake/beta')
+  const record = await runProject(root, { files, fake: {
     sessionCookieValue: (executablePath) => {
-      assert.ok(executablePath === '/fake/stable' || executablePath === '/fake/beta')
-      return executablePath === '/fake/stable' ? 'stable-session-2718' : 'beta-session-3141'
+      assert.ok(executablePath === stable || executablePath === beta)
+      return executablePath === stable ? 'stable-session-2718' : 'beta-session-3141'
     },
   } })
   const tests = record.result.files.flatMap((file) => file.tests)
@@ -66,7 +70,7 @@ describe('a setup that passes', async () => {
 
   test('the saved state is restored into the new page of each test that names it, for its own target', () => {
     const restored = record.browsers.map((browser) => browser.pages[1]?.options.storageState?.cookies.map((cookie) => cookie.value))
-    assert.deepEqual(record.browsers.map((browser) => browser.launchOptions.executablePath), ['/fake/stable', '/fake/beta'])
+    assert.deepEqual(record.browsers.map((browser) => browser.launchOptions.executablePath), [stable, beta])
     assert.deepEqual(record.browsers.map((browser) => browser.pages[0]?.cookies.map((cookie) => cookie.value)), [['stable-session-2718'], ['beta-session-3141']])
     assert.deepEqual(restored, [['stable-session-2718'], ['beta-session-3141']])
     assert.ok(record.browsers.every((browser) => browser.pages[2]?.options.storageState === undefined), 'a test without state starts signed out')

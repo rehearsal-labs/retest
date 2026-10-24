@@ -307,13 +307,14 @@ impl Recording {
             plan.fps,
             &plan.partial_path(),
         );
-        let mut child = encoder::spawn_in_group(ffmpeg, &arguments, Stdio::piped(), Stdio::null())
-            .map_err(|error| EncoderFailure {
-                message: format!("{} could not be started: {error}", ffmpeg.display()),
-                exit: None,
-            })?;
+        let (mut child, mut ownership) =
+            encoder::spawn_owned(ffmpeg, &arguments, Stdio::piped(), Stdio::null()).map_err(
+                |error| EncoderFailure {
+                    message: format!("{} could not be started: {error}", ffmpeg.display()),
+                    exit: None,
+                },
+            )?;
         let encoder_pid = child.id();
-        let mut ownership = Ownership::new(encoder_pid);
         let mut problems = ownership.capture();
         if !problems.is_empty() {
             drop(child.stdin.take());
@@ -1364,6 +1365,13 @@ fn finalize_within(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    // A media process started without a console would give the finalizer a console window of its own, which on a
+    // desktop opens at each recording's end and can take the focus from a browser under test.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
     #[cfg(debug_assertions)]
     for name in [
         "RETEST_MEDIA_TEST_NO_HARD_LINKS",
@@ -1399,7 +1407,7 @@ fn finalize_within(
         };
         match status {
             Some(status) => {
-                #[cfg(debug_assertions)]
+                #[cfg(all(debug_assertions, unix))]
                 if std::env::var_os("RETEST_MEDIA_TEST_KILL_DURING_COPY").is_some()
                     && encoder::signal_of(status) == Some(9)
                 {

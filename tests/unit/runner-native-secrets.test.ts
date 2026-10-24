@@ -20,6 +20,7 @@ import { RunningTest } from '../../src/runner/running-test.ts'
 import { SecretFiller } from '../../src/runner/secrets.ts'
 import { ScriptedProcess } from '../support/scripted-process.ts'
 import { deskSignIn, openFake, phoneSignIn } from './native-interaction-fake.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
 // A secret reaches a native app only when `secretOrigins` names that app's bundle id, as the installed app names it.
 // These run the parent's path as the run session wires it: the test process sends the secret's name, `RunningTest`
@@ -80,7 +81,8 @@ function inputRequests(fake: FakeInteraction): string[] {
 }
 
 for (const [platform, app, bundle, screen] of [['ios-simulator', 'phone', phoneBundle, phoneSignIn], ['macos', 'desk', deskBundle, deskSignIn]] as const) {
-  test(`${platform}: a secret is typed into the app whose bundle id secretOrigins names, and recorded by name`, async (t) => {
+  // The macOS fill reads which windows are in front with a stand-in osascript, a shell script Windows does not run.
+  test(`${platform}: a secret is typed into the app whose bundle id secretOrigins names, and recorded by name`, { skip: platform === 'macos' ? unixOnly("the macOS driver's own machinery") : false }, async (t) => {
     const { fake, redactor } = await openWithRedactor(t, platform, screen)
     const value = freshValue()
     const filler = new SecretFiller(new Map<string, ResolvedSecret>([['password', { value }]]), declared([...appOrigins, bundle]), redactor)

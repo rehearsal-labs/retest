@@ -99,7 +99,7 @@ describe('the Firefox page', () => {
   test("follows the tab's events, and has every document run Retest's script in its sandbox before the page's own", async () => {
     const opened = await page()
     const subscribed = endpoint.commands('session.subscribe').map((command) => command.params['events'])
-    assert.deepEqual(subscribed, [['browsingContext', 'script'], ['network.responseStarted']])
+    assert.deepEqual(subscribed, [['browsingContext', 'script'], ['network.beforeRequestSent', 'network.responseStarted']])
     const [preload] = endpoint.commands('script.addPreloadScript')
     assert.equal(preload?.params['sandbox'], 'retest')
     assert.deepEqual(preload?.params['contexts'], [context])

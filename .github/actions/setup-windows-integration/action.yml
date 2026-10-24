@@ -1,0 +1,80 @@
+name: Set up Windows integration
+description: Prepare the checked source and the same pinned browsers for each isolated shard on Windows x64.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      with:
+        node-version: 24.12.0
+        cache: npm
+    - run: npm ci --no-audit --no-fund
+      shell: bash
+    - run: npm run build
+      shell: bash
+    # The supervisor and the media process are built from the checked commit's pinned source with the oldest Rust the
+    # crates support; the image has rustup. ffmpeg and ffprobe come from Chocolatey, as Homebrew gives them on macOS.
+    - name: Install Rust and the recording tools
+      shell: bash
+      env:
+        RETEST_CI_RUST: '1.88.0'
+      run: |
+        set -euo pipefail
+        rustup toolchain install "$RETEST_CI_RUST" --profile minimal
+        rust_tools="$(dirname "$(rustup which --toolchain "$RETEST_CI_RUST" cargo)")"
+        echo "$rust_tools" >> "$GITHUB_PATH"
+        "$rust_tools/rustc" --version
+        "$rust_tools/cargo" --version
+        choco install ffmpeg -y --no-progress
+        echo "C:\\ProgramData\\chocolatey\\bin" >> "$GITHUB_PATH"
+        "$rust_tools/cargo" fetch --locked --manifest-path supervisor/Cargo.toml
+        "$rust_tools/cargo" fetch --locked --manifest-path media/Cargo.toml
+    # The archive cache key comes from the product's own pins. It names every archive's address, size and SHA-256, so a
+    # changed pin starts a new cache, and an archive is reused only when its size and SHA-256 match the pin. The archive
+    # cache is saved as soon as it is made, so a shard whose tests fail still leaves it; setup-node saves npm's cache
+    # only when the job succeeds.
+    - name: Read the archive cache key
+      id: pins
+      shell: bash
+      run: node scripts/ci/windows-cache-keys.ts
+    - name: Restore the pinned browser archives
+      id: archive-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/retest-archive-cache
+        key: ${{ steps.pins.outputs.archives-key }}
+    - name: Prepare pinned integration archives and paths
+      shell: bash
+      run: node scripts/ci/prepare-windows-integration.ts "$RUNNER_TEMP/retest-integration" "$RUNNER_TEMP/retest-archive-cache"
+    - name: Save the pinned browser archives
+      if: ${{ steps.archive-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/retest-archive-cache
+        key: ${{ steps.archive-cache.outputs.cache-primary-key }}
+    # The installer unpacks with Windows' own tar.exe; the tar a Git shell puts first on PATH is GNU tar.
+    - name: Install the supervisor, the pinned browsers and media
+      shell: bash
+      env:
+        CARGO_NET_OFFLINE: 'true'
+      run: node dist/cli/main.js install supervisor chromium firefox electron media
+    - name: Name the installed supervisor to the harnesses
+      shell: bash
+      run: node scripts/ci/supervisor-path.ts
+    # Chrome, Firefox and Electron are windowed programs on Windows and print no version, so their files say it.
+    - name: Verify integration prerequisites
+      shell: bash
+      run: |
+        set -euo pipefail
+        cmd //c ver
+        powershell -NoProfile -Command '& (Join-Path $env:SystemRoot System32\tar.exe) --version'
+        node dist/cli/main.js install --list --verify
+        "$RETEST_TEST_MEDIA_BINARY" --version
+        "$RETEST_TEST_FFMPEG" -version | head -1
+        "$RETEST_TEST_FFPROBE" -version | head -1
+        for variable in RETEST_TEST_BROWSER RETEST_TEST_SECOND_BROWSER RETEST_TEST_FIREFOX RETEST_TEST_ELECTRON; do
+          echo "$variable=${!variable}"
+          RETEST_CI_BINARY="${!variable}" powershell -NoProfile -Command '(Get-Item -LiteralPath $env:RETEST_CI_BINARY).VersionInfo.ProductVersion'
+        done
+    - name: Verify media reply delivery
+      shell: bash
+      run: cargo test --locked --offline --manifest-path media/Cargo.toml replies::tests

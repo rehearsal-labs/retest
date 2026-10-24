@@ -107,7 +107,7 @@ function consoleLine(entry: ConsoleRecord | RuntimeErrorRecord, clock: TimelineC
   const kind = entry.type === 'runtime_error' ? (entry.kind === 'uncaught' ? 'uncaught' : 'rejection') : entry.consoleType
   const mark = level === 'error' ? style.red(level.padEnd(7)) : level === 'warning' ? style.yellow(level.padEnd(7)) : level.padEnd(7)
   const origin = entry.type === 'console' && entry.origin !== 'page' ? ` ${entry.origin}` : ''
-  const text = oneLine(entry.type === 'runtime_error' ? entry.message.text : entry.text.text)
+  const text = oneLine(entry.type === 'runtime_error' ? entry.message.text : entry.text.text, style.marks.lineBreak)
   const place = entry.url === undefined ? '' : `  ${style.dim(`${printable(entry.url)}${entry.line === undefined ? '' : `:${entry.line}`}`)}`
   const during = elapsed === undefined ? undefined : clock.during(elapsed)
   const action = during === undefined ? '' : `  ${style.dim(`during ${during}`)}`
@@ -170,8 +170,8 @@ function describeScope(scope: KindScope): string {
   return `${words(scope.covered) || 'nothing'}; not ${words(scope.notCovered) || 'anything else'}`
 }
 
-function oneLine(text: string): string {
-  const flat = printable(text.replace(/\s*\n\s*/g, ' ⏎ '))
+function oneLine(text: string, lineBreak: string): string {
+  const flat = printable(text.replace(/\s*\n\s*/g, ` ${lineBreak} `))
   return flat.length > textWidth ? `${flat.slice(0, textWidth)}…` : flat
 }
 

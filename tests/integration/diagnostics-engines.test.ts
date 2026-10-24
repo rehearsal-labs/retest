@@ -809,7 +809,8 @@ eachEngine('a declared strict policy fails a test that otherwise passed, in the 
   // Only what the allow list leaves counts: the 404 is allowed, the 500 is not.
   const http = await project(t, engine, { 'tests/main.retest.ts': mainTest }, "{ strict: { httpErrors: true, allow: ['/diagnostics/missing'] } }")
   const httpRun = await run(t, engine, http.root)
-  assert.equal(httpRun.exit.code, 1, httpRun.stderr)
+  // The run's own failure says why when the exit is not a test's failure, as a cleanup that failed would make it 2.
+  assert.equal(httpRun.exit.code, 1, JSON.stringify({ stderr: httpRun.stderr, failure: httpRun.result?.failure, counts: httpRun.result?.counts }))
   const httpResult = testNamed(httpRun, 'emits every record')
   assert.match(httpResult.failure?.message ?? '', /1 HTTP error response, and the policy allows none\./)
   const named = /Records: \S+:web (n\d+) in /.exec(httpResult.failure?.message ?? '')?.[1]
