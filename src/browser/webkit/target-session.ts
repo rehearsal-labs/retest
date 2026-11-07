@@ -88,12 +88,17 @@ const remoteObjectSchema = s.object({
   result: s.object({ type: s.string(), objectId: s.optional(s.string()), description: s.optional(s.string()) }),
   wasThrown: s.optional(s.boolean()),
 })
+// A call goes into a world by its context, or onto an object a call into one made.
 const callSchema = s.object({
   functionDeclaration: s.string(),
-  executionContextId: s.number({ integer: true }),
+  executionContextId: s.optional(s.number({ integer: true })),
+  objectId: s.optional(s.string()),
   returnByValue: s.optional(s.boolean()),
   awaitPromise: s.optional(s.boolean()),
+  objectGroup: s.optional(s.string()),
 })
+const inputFilesSchema = s.object({ files: s.array(s.string()), objectId: s.string() })
+const adoptedSchema = s.object({ object: s.object({ objectId: s.optional(s.string()) }) })
 const evaluateSchema = s.object({ expression: s.string(), contextId: s.number({ integer: true }), objectGroup: s.optional(s.string()) })
 const worldRequestSchema = s.object({ frameId: s.string() })
 const queryTreeSchema = s.object({ objectId: s.string(), role: s.string() })
@@ -119,8 +124,9 @@ export class WebKitTargetSession {
   readonly #worlds = new Map<number, World>()
   // The latest user world of each frame of each target, by `targetId frameId`.
   readonly #latest = new Map<string, World>()
-  // Objects the role lookup made in a world, each with its object group.
-  readonly #objects = new Map<string, { world: World; group: string | undefined }>()
+  // Objects the bridge made in a world, each with its object group, and whether WebKit holds it in no group, so the
+  // bridge releases it by itself with its group.
+  readonly #objects = new Map<string, { world: World; group: string | undefined; ungrouped?: true }>()
   readonly #looks = new Map<string, Look>()
   readonly #elements = new Map<number, FoundElement>()
   readonly #turns = new Map<string, Turns>()
@@ -251,6 +257,8 @@ export class WebKitTargetSession {
         return this.#queryTree(command, params, options)
       case 'DOM.resolveNode':
         return this.#resolveNode(command, params, options)
+      case 'DOM.setFileInputFiles':
+        return this.#setInputFiles(command, params, options)
       case 'Input.dispatchMouseEvent':
         return this.#input(command, mouseInput(params), options)
       case 'Input.dispatchKeyEvent':
@@ -346,16 +354,89 @@ export class WebKitTargetSession {
     return installing
   }
 
+  // A call into a world runs on its global object, and a call onto an object on that object, in the world it was made
+  // in. A result kept as an object, as the shared file input code keeps an input, is handed out as Chrome hands one out,
+  // and goes with its world or its group: WebKit puts a call's result in the group of the object it was called on, which
+  // for a world's global is none, so the bridge releases each such result by itself with its group.
   async #call(command: CommandIdentity, params: object | undefined, options: SendOptions | undefined): Promise<unknown> {
     const call = readProtocol(callSchema, params, command)
-    const world = this.#liveWorld(call.executionContextId, command)
     const deadline = callDeadline(options)
-    const objectId = await this.#global(world, command, deadline)
+    let world: World
+    let objectId: string
+    if (call.objectId !== undefined) {
+      world = this.#worldOfObject(call.objectId, command)
+      objectId = call.objectId
+    } else if (call.executionContextId !== undefined) {
+      world = this.#liveWorld(call.executionContextId, command)
+      objectId = await this.#global(world, command, deadline)
+    } else {
+      throw new CdpProtocolError(command, { code: -32602, message: 'Runtime.callFunctionOn names neither a context nor an object', data: undefined })
+    }
     // The arguments go as the shared code made them: JSON values, and objects made in this same world.
     const args = isRecord(params) && Array.isArray(params['arguments']) ? params['arguments'] : []
-    const sent = { objectId, functionDeclaration: call.functionDeclaration, arguments: args, returnByValue: call.returnByValue ?? false, awaitPromise: call.awaitPromise ?? false }
+    const byValue = call.returnByValue ?? false
+    const sent = { objectId, functionDeclaration: call.functionDeclaration, arguments: args, returnByValue: byValue, awaitPromise: call.awaitPromise ?? false }
     const answer = await this.#toTarget(command, world.targetId, 'Runtime.callFunctionOn', sent, sendWithin(deadline, command), world)
-    return chromeAnswer(answer, command)
+    if (byValue) return chromeAnswer(answer, command)
+    const { result, wasThrown } = readProtocol(remoteObjectSchema, answer, command)
+    if (wasThrown === true) return chromeAnswer(answer, command)
+    if (result.objectId !== undefined) this.#objects.set(result.objectId, { world, group: call.objectGroup, ungrouped: true })
+    return { result }
+  }
+
+  // An object a call made, in a world that is still the page's; one the bridge does not hold, or whose world went, is
+  // answered as Chrome answers a call into a context that is gone.
+  #worldOfObject(objectId: string, command: CommandIdentity): World {
+    const object = this.#objects.get(objectId)
+    if (object === undefined || object.world.destroyed.signal.aborted || object.world.targetId !== this.#targetId) throw goneContext(command, 'neverRan')
+    return object.world
+  }
+
+  // Chrome's `DOM.setFileInputFiles` on an input a call made an object of. WebKit's web process reads a file it is given
+  // only once the page is granted access to it: without that, the input shows the file and a form sends none of it. So
+  // the access goes first, then the files, to the input's own target.
+  async #setInputFiles(command: CommandIdentity, params: object | undefined, options: SendOptions | undefined): Promise<unknown> {
+    const { files, objectId } = readProtocol(inputFilesSchema, params, command)
+    const world = this.#worldOfObject(objectId, command)
+    const deadline = callDeadline(options)
+    if (files.length > 0) {
+      const within = sendWithin(deadline, command)
+      await this.#guarded(command, (signal) => this.#connection.send('Playwright.grantFileReadAccess', { pageProxyId: this.#pageProxyId, paths: files }, { ...timeoutOf(within), signal }), within, world)
+    }
+    return this.#toTarget(command, world.targetId, 'DOM.setInputFiles', { objectId, paths: files }, sendWithin(deadline, command), world)
+  }
+
+  /**
+   * Makes the element a main-world object names, as an event of the page hands one out, an object of Retest's world of
+   * its frame, in `objectGroup`, so the shared code reads it where no script of the page can change what it reports.
+   * Undefined when its frame, or its document, is gone.
+   */
+  async adopt(objectId: string, frameId: string, objectGroup: string, options: SendOptions): Promise<string | undefined> {
+    const command = { method: 'DOM.resolveNode', sessionId: this.session.id }
+    this.#refuseIfStopped(command)
+    const targetId = this.#targetId
+    const world = targetId === undefined ? undefined : this.#latest.get(`${targetId} ${frameId}`)
+    if (world === undefined || world.destroyed.signal.aborted) return undefined
+    const deadline = callDeadline(options)
+    try {
+      await withinCall(this.#install(world), deadline, command)
+      const answer = await this.#toTarget(command, world.targetId, 'DOM.resolveNode', { objectId, executionContextId: world.contextId, objectGroup }, sendWithin(deadline, command), world)
+      const adopted = readProtocol(adoptedSchema, answer, command).object.objectId
+      if (adopted !== undefined) this.#objects.set(adopted, { world, group: objectGroup })
+      return adopted
+    } catch (error) {
+      if (world.destroyed.signal.aborted || isGoneWorld(error) || (error instanceof CdpProtocolError && isMissingNode(error.protocolMessage))) return undefined
+      throw error
+    }
+  }
+
+  /** Lets go of an object an event of the page handed out, in the world it lives in; one already gone needs nothing. */
+  release(objectId: string): void {
+    const targetId = this.#targetId
+    if (targetId === undefined || this.#channel.closeReason !== undefined) return
+    this.#connection.sendToTarget(this.#pageProxyId, targetId, 'Runtime.releaseObject', { objectId }).catch(() => {
+      // An object goes with its document, so a release that fails holds it only until the document goes.
+    })
   }
 
   // Chrome's `Runtime.evaluate` in a context, which the role lookup sends to make the document an object of the world.
@@ -376,6 +457,11 @@ export class WebKitTargetSession {
       if (object.group !== objectGroup) continue
       this.#objects.delete(objectId)
       this.#looks.delete(objectId)
+      if (object.ungrouped === true && !object.world.destroyed.signal.aborted) {
+        this.#connection.sendToTarget(this.#pageProxyId, object.world.targetId, 'Runtime.releaseObject', { objectId }).catch(() => {
+          // An object goes with its document, so a release that fails holds it only until the document goes.
+        })
+      }
     }
     for (const [key, element] of [...this.#elements]) if (element.group === objectGroup) this.#elements.delete(key)
     const targetId = this.#targetId
