@@ -387,7 +387,7 @@ export function popupsUnsupported(engine: string): Failure {
 /**
  * The refusal of `close()` on a page of an engine that cannot close one yet.
  *
- * @example closeUnsupported('Firefox').class // 'unsupported'
+ * @example closeUnsupported('WebKit').class // 'unsupported'
  */
 export function closeUnsupported(engine: string): Failure {
   return { class: 'unsupported', message: `Retest closes a page on Chrome, Chromium and WebKit only, and not on ${engine} yet, so it closed nothing.`, details: { inputSent: false } }
