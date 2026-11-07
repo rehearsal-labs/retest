@@ -358,6 +358,9 @@ async function lookFor(world: IsolatedWorld, locator: LocatorRecipe, deadline: D
 
 type Giving = { command: ResolvedInputFiles; deadline: Deadline; dispatch: Dispatch }
 
+/** What giving an input files needs: the session and the input, an object of Retest's world, and the command's own. */
+export type InputGiving = Giving & { session: CdpSession; objectId: string }
+
 // The input the look held, as an object in the document it was found in. Undefined when that document went away, or
 // the input with it, before it could be taken: the input is then looked for again.
 async function giveHeld(session: CdpSession, context: number, giving: Giving): Promise<CommandResult | undefined> {
@@ -383,7 +386,7 @@ async function giveHeld(session: CdpSession, context: number, giving: Giving): P
 // outcome: `files` are those the event carried, as the browser named, sized and typed each, and `kept` what the input
 // holds once the page's own listeners ran, when that differs, as when a page clears an input it has read. A type the
 // test named that the browser did not give fails, since the page reads the browser's.
-async function giveFiles({ session, objectId, command, deadline, dispatch }: Giving & { session: CdpSession; objectId: string }): Promise<CommandResult> {
+export async function giveFiles({ session, objectId, command, deadline, dispatch }: InputGiving): Promise<CommandResult> {
   await session.send('Runtime.callFunctionOn', { objectId, functionDeclaration: listenFunction }, sendOptions(deadline))
   if (command.paths.length === 0) await dispatch.send(session, 'Runtime.callFunctionOn', { objectId, functionDeclaration: clearFunction }, deadline)
   else await dispatch.send(session, 'DOM.setFileInputFiles', { files: command.paths, objectId }, deadline)
@@ -453,7 +456,8 @@ function unready(last: Unready, locator: LocatorRecipe, described: string, waite
   }
 }
 
-function oneFileOnly(described: string, given: number): Failure {
+/** The refusal of more files than an input that takes one, before any is given. */
+export function oneFileOnly(described: string, given: number): Failure {
   const message = `Could not ${described}: it takes one file, and it was given ${given}. Pass one file, or add the multiple attribute to the input.`
   return { class: 'usage', message, details: { files: given, inputSent: false } }
 }
@@ -489,10 +493,10 @@ export function withPickerAdvice(result: CommandResult, advice: string): Command
 export function filesRefused(what: 'upload' | 'chooser' | 'download', where: string): Failure {
   switch (what) {
     case 'upload':
-      return { class: 'unsupported', message: `Retest gives a file input files on Chrome and Chromium only, and not ${where} yet, so it gave none.`, details: { inputSent: false } }
+      return { class: 'unsupported', message: `Retest gives a file input files on Chrome, Chromium and WebKit only, and not ${where} yet, so it gave none.`, details: { inputSent: false } }
     case 'chooser':
-      return { class: 'unsupported', message: `Retest catches a file picker on Chrome and Chromium only, and not ${where} yet, so it waited for none.` }
+      return { class: 'unsupported', message: `Retest catches a file picker on Chrome, Chromium and WebKit only, and not ${where} yet, so it waited for none.` }
     case 'download':
-      return { class: 'unsupported', message: `Retest saves downloads on Chrome and Chromium only, and not ${where} yet, so it waited for none.` }
+      return { class: 'unsupported', message: `Retest saves downloads on Chrome, Chromium and WebKit only, and not ${where} yet, so it waited for none.` }
   }
 }
