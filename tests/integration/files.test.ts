@@ -173,7 +173,10 @@ for (const app of ['fox', 'kit']) {
     await expect(page.getByLabel('Choose File')).toHaveCount(0)
     await expect(page.getByLabel('Browse…')).toHaveCount(0)
   })
+}
 
+// WebKit takes files, catches pickers and saves downloads; webkit-files.test.ts runs them there.
+for (const app of ['fox']) {
   test(app + ' gives no input files', { apps: [app] }, async (pages) => {
     const page = pages[app]
     await page.goto('/files')
@@ -197,7 +200,7 @@ for (const app of ['fox', 'kit']) {
 // Firefox and WebKit are pinned for macOS: elsewhere this case skips by name, as the per-engine suites do.
 const enginesAbsent = engineAbsence('firefox') ?? engineAbsence('webkit') ?? false
 
-test('Firefox and WebKit refuse uploads, the picker and downloads, each naming the engine', { skip: enginesAbsent }, async (t) => {
+test('Firefox refuses uploads, the picker and downloads, naming the engine, and Firefox and WebKit find a file input by its label', { skip: enginesAbsent }, async (t) => {
   const app = await openApp(t)
   const baseUrl = JSON.stringify(app.url)
   const root = await writeProject(t, {
@@ -205,14 +208,14 @@ test('Firefox and WebKit refuse uploads, the picker and downloads, each naming t
     'tests/engines.retest.ts': engineTests,
   })
   const run = await runProject(t, root, { env: { RETEST_FIREFOX_ROUTE: testFirefoxRoute() } })
-  for (const [app, engine] of [['fox', 'Firefox'], ['kit', 'WebKit']] as const) {
-    const refused = (name: string) => {
-      const result = testNamed(run, `${app} ${name}`)
-      return [result.status, result.failure?.class, result.failure?.message]
-    }
-    assert.deepEqual(refused('gives no input files'), ['error', 'unsupported', `Retest gives a file input files on Chrome and Chromium only, and not on ${engine} yet, so it gave none.`])
-    assert.deepEqual(refused('catches no picker'), ['error', 'unsupported', `Retest catches a file picker on Chrome and Chromium only, and not on ${engine} yet, so it waited for none.`])
-    assert.deepEqual(refused('saves no download'), ['error', 'unsupported', `Retest saves downloads on Chrome and Chromium only, and not on ${engine} yet, so it waited for none.`])
+  const refused = (name: string) => {
+    const result = testNamed(run, `fox ${name}`)
+    return [result.status, result.failure?.class, result.failure?.message]
+  }
+  assert.deepEqual(refused('gives no input files'), ['error', 'unsupported', 'Retest gives a file input files on Chrome, Chromium and WebKit only, and not on Firefox yet, so it gave none.'])
+  assert.deepEqual(refused('catches no picker'), ['error', 'unsupported', 'Retest catches a file picker on Chrome, Chromium and WebKit only, and not on Firefox yet, so it waited for none.'])
+  assert.deepEqual(refused('saves no download'), ['error', 'unsupported', 'Retest saves downloads on Chrome, Chromium and WebKit only, and not on Firefox yet, so it waited for none.'])
+  for (const app of ['fox', 'kit']) {
     const labelled = testNamed(run, `${app} finds a field by its label beside a submit input, and a file input by its label alone`)
     assert.equal(labelled.status, 'passed', JSON.stringify(labelled.failure))
   }
@@ -307,6 +310,6 @@ test('an Electron app takes files through a run and refuses downloads by name', 
   const taken = testNamed(run, 'the window takes files by label and through its picker')
   assert.equal(taken.status, 'passed', JSON.stringify(taken.failure))
   const refused = testNamed(run, 'the window saves no download')
-  assert.deepEqual([refused.status, refused.failure?.class, refused.failure?.message], ['error', 'unsupported', 'Retest saves downloads on Chrome and Chromium only, and not in an Electron app yet, so it waited for none.'])
+  assert.deepEqual([refused.status, refused.failure?.class, refused.failure?.message], ['error', 'unsupported', 'Retest saves downloads on Chrome, Chromium and WebKit only, and not in an Electron app yet, so it waited for none.'])
   assert.equal(run.exit.code, 2, run.stderr)
 })
