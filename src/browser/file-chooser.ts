@@ -356,7 +356,8 @@ async function lookFor(world: IsolatedWorld, locator: LocatorRecipe, deadline: D
   }
 }
 
-type Giving = { command: ResolvedInputFiles; deadline: Deadline; dispatch: Dispatch }
+/** A command's files, its time, and the dispatch that records how far its input got. */
+export type Giving = { command: ResolvedInputFiles; deadline: Deadline; dispatch: Dispatch }
 
 /** What giving an input files needs: the session and the input, an object of Retest's world, and the command's own. */
 export type InputGiving = Giving & { session: CdpSession; objectId: string }
@@ -382,10 +383,14 @@ async function giveHeld(session: CdpSession, context: number, giving: Giving): P
   }
 }
 
-// The files go to the input once. The browser confirms them and fires the input's `change`, which is the action's
-// outcome: `files` are those the event carried, as the browser named, sized and typed each, and `kept` what the input
-// holds once the page's own listeners ran, when that differs, as when a page clears an input it has read. A type the
-// test named that the browser did not give fails, since the page reads the browser's.
+/**
+ * Gives the input `objectId` names the files, once. The browser confirms them and fires the input's `change`, which is
+ * the action's outcome: `files` are those the event carried, as the browser named, sized and typed each, and `kept` what
+ * the input holds once the page's own listeners ran, when that differs, as when a page clears an input it has read. A
+ * type the test named that the browser did not give fails, since the page reads the browser's.
+ *
+ * @example const result = await giveFiles({ session, objectId, command, deadline, dispatch })
+ */
 export async function giveFiles({ session, objectId, command, deadline, dispatch }: InputGiving): Promise<CommandResult> {
   await session.send('Runtime.callFunctionOn', { objectId, functionDeclaration: listenFunction }, sendOptions(deadline))
   if (command.paths.length === 0) await dispatch.send(session, 'Runtime.callFunctionOn', { objectId, functionDeclaration: clearFunction }, deadline)
@@ -456,7 +461,7 @@ function unready(last: Unready, locator: LocatorRecipe, described: string, waite
   }
 }
 
-/** The refusal of more files than an input that takes one, before any is given. */
+/** The refusal of more files than an input that takes one, before any is sent. */
 export function oneFileOnly(described: string, given: number): Failure {
   const message = `Could not ${described}: it takes one file, and it was given ${given}. Pass one file, or add the multiple attribute to the input.`
   return { class: 'usage', message, details: { files: given, inputSent: false } }
@@ -464,12 +469,15 @@ export function oneFileOnly(described: string, given: number): Failure {
 
 // Each caller says what it can do about a picker, since a test, a Playwright test file and an agent session can each do
 // something else: `withPickerAdvice` adds it.
-function pickerDuring(described: string): Failure {
+
+/** The failure of an action during which the page opened a file picker nobody waited for, which was closed. */
+export function pickerDuring(described: string): Failure {
   const message = `The page opened a file picker as Retest went to ${described}, and nothing was waiting for one. Retest closed the picker.`
   return { class: 'not_actionable', message, details: { picker: 'file', inputSent: true } }
 }
 
-function pickerBefore(described: string): Failure {
+/** The failure of an action after which the page opened a file picker nobody waited for, which was closed. */
+export function pickerBefore(described: string): Failure {
   const message = `The page opened a file picker after the action before this one, and nothing was waiting for one. Retest closed the picker, and did not ${described}.`
   return { class: 'not_actionable', message, details: { picker: 'file', inputSent: false } }
 }

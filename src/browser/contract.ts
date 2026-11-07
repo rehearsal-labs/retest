@@ -362,11 +362,12 @@ export interface OwnedPage extends NavigationCapability, StorageStateCapability 
   /** Hears each dialog the page answered itself because nothing waited for it. Returns a function that stops listening. */
   onUnwaitedDialog?(listener: (dialog: UnwaitedDialog) => void): () => void
   /**
-   * Popups, a capability of Chromium and WebKit pages: arms the page for the next page it opens, which it hands to the test as a
-   * page of its own, held before its first document. A page that cannot answers `unsupported`, naming its engine.
+   * Popups, a capability of Chromium, Firefox and WebKit pages: arms the page for the next page it opens, which it hands
+   * to the test as a page of its own, held before its first document, or on Firefox set up before it. A page that cannot
+   * answers `unsupported`, naming its engine.
    */
   armPopup?(options: PopupWaitOptions): Promise<PopupArming>
-  /** File pickers and downloads, a capability of Chromium and WebKit pages. Absent on a driver that has neither. */
+  /** File pickers and downloads, a capability of Chromium, Firefox and WebKit pages. Absent on a driver that has neither. */
   readonly files?: FilesCapability | undefined
   /**
    * Mocked responses, a capability of Chromium pages: adds a route, which answers every request of the page whose
@@ -391,11 +392,12 @@ export type ChooserArm = { readonly opened: Promise<CaughtChooser>; release(): v
 
 /**
  * How a download ended, as the browser said: the file it saved, or that it stopped, with how many bytes had arrived of
- * how many, and, from a browser that gives one, its own words for why it stopped.
+ * how many when the browser says so, and, from a browser that gives one, its own words for why it stopped. Firefox
+ * gives neither count for a download it stopped, and they are absent then.
  */
 export type DownloadEnd =
   | { readonly state: 'completed'; readonly filePath: string; readonly receivedBytes: number; readonly totalBytes: number }
-  | { readonly state: 'canceled'; readonly receivedBytes: number; readonly totalBytes: number; readonly reason?: string }
+  | { readonly state: 'canceled'; readonly receivedBytes?: number; readonly totalBytes?: number; readonly reason?: string }
 
 /** Where a download began, when not in the page itself or a frame inside it: a page it opened, or another page. */
 export type DownloadStart = 'popup' | 'other'
@@ -404,7 +406,7 @@ export type DownloadStart = 'popup' | 'other'
  * A download a page began, as the browser told it: its id, the address it comes from, the name the browser suggests
  * for it, where it began when that was not the page itself or a frame inside it, and its end once the browser says it
  * completed or stopped. `progress` is how many bytes had arrived of how many when the browser last said; a total of 0
- * means the server gave none.
+ * means the server gave none. It is undefined from a browser that tells no progress, as Firefox does.
  */
 export type PageDownload = {
   readonly guid: string
@@ -412,7 +414,7 @@ export type PageDownload = {
   readonly suggestedFilename: string
   readonly startedIn?: DownloadStart
   readonly ended: Promise<DownloadEnd>
-  progress(): { readonly receivedBytes: number; readonly totalBytes: number }
+  progress(): { readonly receivedBytes: number; readonly totalBytes: number } | undefined
 }
 
 /**

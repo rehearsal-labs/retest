@@ -161,7 +161,9 @@ export class AttemptFiles {
     if (saved.status === 'failed') return refused(failureOf(saved.error))
     if (saved.status === 'stopped') return refused(stoppedBy(budget.signal, 'Retest stopped waiting for the download to be saved.'))
     const name = this.#redact(kept.download.suggestedFilename)
-    const message = `The download of ${name} was not saved within ${budget.timeoutMs} ms: ${describeProgress(kept.download.progress())} had arrived.`
+    const progress = kept.download.progress()
+    const arrived = progress === undefined ? ', and the browser does not say how much of it had arrived.' : `: ${describeProgress(progress)} had arrived.`
+    const message = `The download of ${name} was not saved within ${budget.timeoutMs} ms${arrived}`
     return refused({ ...failure('timeout', message), details: { timeoutMs: budget.timeoutMs } })
   }
 
@@ -176,7 +178,7 @@ export class AttemptFiles {
     for (const kept of this.#kept.values()) {
       if (kept.done) continue
       kept.done = true
-      this.#write(kept, { state: 'unfinished', ...kept.download.progress() })
+      this.#write(kept, { state: 'unfinished', ...(kept.download.progress() ?? {}) })
     }
     rmSync(join(this.#options.runFolder, uploadsFolder, this.#options.attemptId), { recursive: true, force: true })
     removeQuietly(join(this.#options.runFolder, uploadsFolder), rmdirSync)
@@ -215,11 +217,17 @@ export class AttemptFiles {
     kept.done = true
     if (end.state === 'canceled') {
       removeQuietly(join(folder.folder, `${kept.download.guid}.crdownload`))
+      const { receivedBytes, totalBytes } = end
+      // Firefox says neither how much had arrived nor of how much, so a stopped download of its says so.
+      const counted = receivedBytes === undefined || totalBytes === undefined ? undefined : { receivedBytes, totalBytes }
+      // WebKit gives its own words for why it stopped one; Chromium and Firefox give none.
       const reason = end.reason === undefined ? undefined : this.#redact(end.reason)
-      const why = reason === undefined ? ', and gives no reason.' : `: ${reason}${/[.!?]$/.test(reason) ? '' : '.'}`
-      const message = `The browser stopped the download of ${name} after ${describeProgress(end)} had arrived${why} Retest saved nothing.`
-      const stopped = { ...failure('not_actionable', message), details: { download: name, receivedBytes: end.receivedBytes, totalBytes: end.totalBytes } }
-      this.#write(kept, { state: 'canceled', receivedBytes: end.receivedBytes, totalBytes: end.totalBytes, failure: stopped })
+      const said = reason === undefined ? undefined : `${reason}${/[.!?]$/.test(reason) ? '' : '.'}`
+      const message = counted === undefined
+        ? `The browser stopped the download of ${name}${said === undefined ? ', and says neither why nor how much of it had arrived.' : `: ${said} It does not say how much of it had arrived.`} Retest saved nothing.`
+        : `The browser stopped the download of ${name} after ${describeProgress(counted)} had arrived${said === undefined ? ', and gives no reason.' : `: ${said}`} Retest saved nothing.`
+      const stopped = { ...failure('not_actionable', message), details: { download: name, ...counted } }
+      this.#write(kept, { state: 'canceled', ...counted, failure: stopped })
       return { ok: false, failure: stopped }
     }
     if (resolve(dirname(end.filePath)) !== resolve(folder.folder)) {
@@ -292,8 +300,8 @@ export class AttemptFiles {
 type DownloadEnding =
   | { state: 'completed'; path: string; size: number }
   | { state: 'withheld'; size: number; failure: Failure }
-  | { state: 'canceled'; receivedBytes: number; totalBytes: number; failure: Failure }
-  | { state: 'unfinished'; receivedBytes: number; totalBytes: number }
+  | { state: 'canceled'; receivedBytes?: number; totalBytes?: number; failure: Failure }
+  | { state: 'unfinished'; receivedBytes?: number; totalBytes?: number }
 
 /**
  * A name in `folder` no file holds yet: `name` itself, or with `-2`, `-3` and so on before its extension.

@@ -1,3 +1,5 @@
+import type { DownloadEnd, FilesCapability, PageDownload } from '../../src/browser/contract.ts'
+import type { EventBody } from '../../src/protocol/events.ts'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -9,7 +11,7 @@ import { describeInputFiles, filesAnswerSchema, inputFilesProblem } from '../../
 import { childMessageSchema } from '../../src/protocol/messages.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { describeDownload } from '../../src/reporters/format.ts'
-import { freeName } from '../../src/runner/files.ts'
+import { AttemptFiles, freeName } from '../../src/runner/files.ts'
 import { artifactPath, downloadFileName, downloadsFolder, referenceProblem } from '../../src/store/artifacts.ts'
 
 const identity = { testId: 'tests/a.retest.ts > a', attemptId: 'k3v9q0x2mb', app: 'web', sessionId: 'k3v9q0x2mb:web' }
@@ -110,4 +112,41 @@ test('a download reads as its name and how it ended', () => {
   assert.equal(describeDownload({ suggestedFilename: 'one.txt', state: 'completed', size: 1 }), 'download one.txt, 1 byte')
   assert.equal(describeDownload({ suggestedFilename: 'broken.csv', state: 'canceled', receivedBytes: 11, totalBytes: 100000 }), 'download broken.csv stopped after 11 of 100000 bytes')
   assert.equal(describeDownload({ suggestedFilename: 'big.zip', state: 'unfinished', receivedBytes: 0, totalBytes: 0 }), 'download big.zip unfinished when the test ended, 0 bytes')
+  // Firefox says nothing of the bytes of a download it stopped, or of one on its way.
+  assert.equal(describeDownload({ suggestedFilename: 'broken.csv', state: 'canceled' }), 'download broken.csv stopped')
+  assert.equal(describeDownload({ suggestedFilename: 'big.zip', state: 'unfinished' }), 'download big.zip unfinished when the test ended')
+})
+
+test('a download whose browser tells no bytes is written down without a count, and its waits say the browser does not say', async () => {
+  const runFolder = mkdtempSync(join(tmpdir(), 'retest-files-unit-'))
+  try {
+    const listeners: ((download: PageDownload) => void)[] = []
+    const ends: ((end: DownloadEnd) => void)[] = []
+    const onDownload = (listener: (download: PageDownload) => void): (() => void) => {
+      listeners.push(listener)
+      return () => {}
+    }
+    const files: FilesCapability = { armFileChooser: () => ({ opened: new Promise(() => {}), release: () => {} }), onDownload }
+    const events: EventBody[] = []
+    const pages = new Map([['web', { files, where: 'on Firefox', sessionId: 'a1:web', downloads: { folder: join(runFolder, 'downloads'), reference: 'artifacts/a1/web/downloads' } }]])
+    const attempt = new AttemptFiles({ pages, runFolder, testId: 't', attemptId: 'a1', emit: (body) => events.push(body) })
+    const begin = (name: string): void => {
+      const ended = Promise.withResolvers<DownloadEnd>()
+      ends.push(ended.resolve)
+      for (const listener of listeners) listener({ guid: name, url: `http://127.0.0.1/${name}`, suggestedFilename: name, ended: ended.promise, progress: () => undefined })
+    }
+    const signal = new AbortController().signal
+    const waiting = attempt.download('web', { timeoutMs: 1000, signal })
+    begin('broken.csv')
+    const began = await waiting
+    assert.ok(began.ok && began.kind === 'download')
+    assert.deepEqual(await attempt.saved(began.download, { timeoutMs: 20, signal }), { ok: false, failure: { class: 'timeout', message: 'The download of broken.csv was not saved within 20 ms, and the browser does not say how much of it had arrived.', details: { timeoutMs: 20 } } })
+    ends[0]?.({ state: 'canceled' })
+    assert.deepEqual(await attempt.saved(began.download, { timeoutMs: 1000, signal }), { ok: false, failure: { class: 'not_actionable', message: 'The browser stopped the download of broken.csv, and says neither why nor how much of it had arrived. Retest saved nothing.', details: { download: 'broken.csv' } } })
+    begin('slow.csv')
+    attempt.close()
+    assert.deepEqual(events.map((event) => (event.type === 'download' ? [event.suggestedFilename, event.state, event.receivedBytes, event.totalBytes] : [])), [['broken.csv', 'canceled', undefined, undefined], ['slow.csv', 'unfinished', undefined, undefined]])
+  } finally {
+    rmSync(runFolder, { recursive: true, force: true })
+  }
 })
