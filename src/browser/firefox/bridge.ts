@@ -36,9 +36,14 @@ import {
 // answers exactly those over WebDriver BiDi, so Firefox runs the same page code and the same rules, and the protocol
 // difference stays here:
 //
-// - `Page.createIsolatedWorld`: the realm of sandbox `retest` in the tab's current document, numbered.
+// - `Page.createIsolatedWorld`: the realm of sandbox `retest` in the current document of the tab, or of a frame in it,
+//   numbered.
 // - `Runtime.callFunctionOn`: `script.callFunction` in that realm. JSON values travel as one JSON string and elements as
-//   BiDi shared references, and the answer comes back as JSON, so nothing depends on BiDi's value serialization.
+//   BiDi shared references, and the answer comes back as JSON, so nothing depends on BiDi's value serialization. A call
+//   asked to answer by reference (`returnByValue: false`) hands an element over as its shared reference, kept with the
+//   realm and browsing context it came from; a call on such an element (`objectId`) runs in that realm with the element
+//   as `this`.
+// - `DOM.setFileInputFiles`: `input.setFiles` on such an element, in its browsing context.
 // - `Runtime.releaseObjectGroup`: nothing; shared references need no release.
 // - `Runtime.evaluate` of `document`, `Accessibility.queryAXTree` and `DOM.resolveNode`: the elements of a role with
 //   the names Firefox computed (`accessible-names.ts`), handed over as shared references.
@@ -64,6 +69,25 @@ const callSchema = s.object({
   result: s.optional(s.object({ type: s.string(), value: s.optional(s.string()) })),
   exceptionDetails: s.optional(s.object({ text: s.string() })),
 })
+const objectCallSchema = s.object({
+  type: s.enum(['success', 'exception']),
+  result: s.optional(s.object({ type: s.string(), sharedId: s.optional(s.string()) })),
+  exceptionDetails: s.optional(s.object({ text: s.string() })),
+})
+const missingObjectMessage = 'Could not find object with given id'
+
+// A page function whose answer leaves the page as a remote value, not as JSON: the one way an element is handed over.
+// Its arguments arrive as `wrapped` sends them, and it claims the document as every call does.
+const byReference = (functionDeclaration: string): string => `function retestByReference(plan, ...references) {
+  globalThis.retestClaim?.()
+  const values = JSON.parse(plan).map((entry) => ('e' in entry ? references[entry.e] : entry.v))
+  return (${functionDeclaration})(...values)
+}`
+
+// A page function run with an element as `this`, the element arriving as the first reference.
+const onElement = (functionDeclaration: string): string => `function retestOnElement(element, ...values) {
+  return (${functionDeclaration}).apply(element, values)
+}`
 
 /** A page function call's arguments as one JSON plan: each a JSON value, or the index of an element reference. */
 type PlanEntry = { v: unknown } | { e: number }
@@ -90,6 +114,10 @@ export class FirefoxBridge {
   readonly #client: BidiClient
   readonly #context: string
   readonly #realms = new Map<number, string>()
+  // The browsing context each world's realm was made in, and the realm and context of each element handed over by
+  // reference, by its shared id, until the tab's document changes.
+  readonly #worldContexts = new Map<string, string>()
+  readonly #objects = new Map<string, { realm: string; context: string }>()
   readonly #nodes = new Map<number, string>()
   readonly #nodeIds = new Map<string, number>()
   readonly #waiting = new Set<(reason: string) => void>()
@@ -198,6 +226,21 @@ export class FirefoxBridge {
     this.#nodes.clear()
     this.#nodeIds.clear()
     this.#realms.clear()
+    this.#worldContexts.clear()
+    this.#objects.clear()
+  }
+
+  /**
+   * Keeps an element Firefox named by its shared id, such as the input of a file picker it told of, as an object of the
+   * world `executionContextId` names, so the shared helpers can call on it and give it files as on Chromium. False when
+   * that world is gone.
+   */
+  holdElement(sharedId: string, executionContextId: number): boolean {
+    const realm = this.#realms.get(executionContextId)
+    const context = realm === undefined ? undefined : this.#worldContexts.get(realm)
+    if (realm === undefined || context === undefined) return false
+    this.#objects.set(sharedId, { realm, context })
+    return true
   }
 
   async #send(method: string, params: object, options: SendOptions): Promise<unknown> {
@@ -225,8 +268,21 @@ export class FirefoxBridge {
     switch (method) {
       case 'Page.createIsolatedWorld':
         return this.#createWorld(stringField(params, 'frameId', method), stringField(params, 'worldName', method), sending)
-      case 'Runtime.callFunctionOn':
+      case 'Runtime.callFunctionOn': {
+        const objectId: unknown = Reflect.get(params, 'objectId')
+        if (typeof objectId === 'string') return this.#callOn(objectId, params, sending)
+        if (Reflect.get(params, 'returnByValue') === false) return this.#callForElement(functionCall(params), sending)
         return this.#callFunction(functionCall(params), sending)
+      }
+      case 'DOM.setFileInputFiles': {
+        const objectId = stringField(params, 'objectId', method)
+        const files: unknown = Reflect.get(params, 'files')
+        if (!Array.isArray(files) || !files.every((file) => typeof file === 'string')) throw new TypeError(`${method} was sent files that are not a list of paths.`)
+        const held = this.#objects.get(objectId)
+        if (held === undefined) throw new CdpProtocolError({ method, sessionId: this.session.id }, { code: -32000, message: missingObjectMessage, data: undefined })
+        await this.#inRealm(held.realm, () => this.#client.send('input.setFiles', { context: held.context, element: { sharedId: objectId }, files }, sending))
+        return {}
+      }
       case 'Runtime.releaseObjectGroup':
         return {}
       case 'Runtime.evaluate': {
@@ -254,25 +310,56 @@ export class FirefoxBridge {
     const id = this.#nextRealm
     this.#nextRealm += 1
     this.#realms.set(id, realm)
+    this.#worldContexts.set(realm, frameId)
     return { executionContextId: id }
   }
 
   async #callFunction(call: FunctionCall, options: Sending): Promise<unknown> {
     const realm = this.#realms.get(call.executionContextId)
     if (realm === undefined) throw new CdpProtocolError({ method: 'Runtime.callFunctionOn', sessionId: this.session.id }, { code: -32000, message: neverRanMessage, data: undefined })
-    const references: { sharedId: string }[] = []
-    const plan: PlanEntry[] = call.arguments.map((argument) => {
-      if ('objectId' in argument) {
-        references.push({ sharedId: argument.objectId })
-        return { e: references.length - 1 }
-      }
-      return { v: argument.value }
-    })
+    return this.#callInRealm(realm, call.functionDeclaration, call.arguments, options)
+  }
+
+  // A call on an element handed over by reference runs in the realm it came from, with the element as `this`.
+  async #callOn(objectId: string, params: object, options: Sending): Promise<unknown> {
+    const held = this.#objects.get(objectId)
+    if (held === undefined) throw new CdpProtocolError({ method: 'Runtime.callFunctionOn', sessionId: this.session.id }, { code: -32000, message: missingObjectMessage, data: undefined })
+    const given = functionArguments(params)
+    return this.#callInRealm(held.realm, onElement(stringField(params, 'functionDeclaration', 'Runtime.callFunctionOn')), [{ objectId }, ...given], options)
+  }
+
+  // A call whose answer is an element, handed over as its shared reference and kept with its realm; an answer of no
+  // element hands over nothing. Only an element crosses this way: any other object stays in the page.
+  async #callForElement(call: FunctionCall, options: Sending): Promise<unknown> {
+    const method = 'Runtime.callFunctionOn'
+    const realm = this.#realms.get(call.executionContextId)
+    const context = realm === undefined ? undefined : this.#worldContexts.get(realm)
+    if (realm === undefined || context === undefined) throw new CdpProtocolError({ method, sessionId: this.session.id }, { code: -32000, message: neverRanMessage, data: undefined })
+    const { plan, references } = planOf(call.arguments)
+    const params = {
+      functionDeclaration: byReference(call.functionDeclaration),
+      arguments: [{ type: 'string', value: JSON.stringify(plan) }, ...references],
+      target: { realm },
+      awaitPromise: false,
+      resultOwnership: 'none',
+      serializationOptions: { maxDomDepth: 0 },
+    }
+    const answer = await this.#inRealm(realm, () => this.#client.request('script.callFunction', params, objectCallSchema, { ...options, keepErrorMessage: true }))
+    if (answer.type === 'exception') return { exceptionDetails: { text: answer.exceptionDetails?.text ?? 'the page script threw' } }
+    const result = answer.result
+    if (result === undefined || result.type === 'null' || result.type === 'undefined') return { result: {} }
+    if (result.type !== 'node' || result.sharedId === undefined) throw new CdpInvalidResponseError({ method, sessionId: this.session.id }, `the page function answered ${result.type}, and the Firefox driver hands over only an element`)
+    this.#objects.set(result.sharedId, { realm, context })
+    return { result: { objectId: result.sharedId } }
+  }
+
+  async #callInRealm(realm: string, functionDeclaration: string, args: FunctionCall['arguments'], options: Sending): Promise<unknown> {
+    const { plan, references } = planOf(args)
     const id = String(this.#nextCall)
     this.#nextCall += 1
     const started = { type: 'channel', value: { channel: this.#startedChannel, ownership: 'none' } }
     const params = {
-      functionDeclaration: wrapped(call.functionDeclaration),
+      functionDeclaration: wrapped(functionDeclaration),
       arguments: [{ type: 'string', value: JSON.stringify(plan) }, { type: 'string', value: id }, started, ...references],
       target: { realm },
       awaitPromise: true,
@@ -366,15 +453,32 @@ function numberField(params: object, key: string, method: string): number {
 
 function functionCall(params: object): FunctionCall {
   const method = 'Runtime.callFunctionOn'
+  return { functionDeclaration: stringField(params, 'functionDeclaration', method), executionContextId: numberField(params, 'executionContextId', method), arguments: functionArguments(params) }
+}
+
+function functionArguments(params: object): FunctionCall['arguments'] {
+  const method = 'Runtime.callFunctionOn'
   const given: unknown = Reflect.get(params, 'arguments') ?? []
   if (!Array.isArray(given)) throw new TypeError(`${method} was sent arguments that are not a list.`)
-  const args = given.map((argument: unknown): { value: unknown } | { objectId: string } => {
+  return given.map((argument: unknown): { value: unknown } | { objectId: string } => {
     if (!isPlainObject(argument)) throw new TypeError(`${method} was sent an argument that is not an object.`)
     const objectId = argument['objectId']
     if (typeof objectId === 'string') return { objectId }
     return { value: argument['value'] }
   })
-  return { functionDeclaration: stringField(params, 'functionDeclaration', method), executionContextId: numberField(params, 'executionContextId', method), arguments: args }
+}
+
+// A call's arguments as one JSON plan, each a value or the index of an element reference that follows it.
+function planOf(args: FunctionCall['arguments']): { plan: PlanEntry[]; references: { sharedId: string }[] } {
+  const references: { sharedId: string }[] = []
+  const plan: PlanEntry[] = args.map((argument) => {
+    if ('objectId' in argument) {
+      references.push({ sharedId: argument.objectId })
+      return { e: references.length - 1 }
+    }
+    return { v: argument.value }
+  })
+  return { plan, references }
 }
 
 /**

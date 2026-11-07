@@ -73,6 +73,11 @@ export const unguardedTyping: readonly string[] = ['keydown', 'keypress', 'befor
  * of its first. So the relays are added once in each document a sandbox runs in, and a guard or claim left from the
  * document before goes with that document.
  *
+ * A window can outlive its document too: a popup `window.open` opened at an address of its opener's origin keeps the
+ * window of its first, empty document for the document that replaces it, with the listeners the script added there,
+ * which came before any of the page's. On that window the relays already added are kept, since relays added now would
+ * come after the page's own listeners.
+ *
  * `claimType` must be in scope where the script runs.
  */
 export const relayScript: string = `(() => {
@@ -81,6 +86,8 @@ export const relayScript: string = `(() => {
     for (const name of ['retestGuard', 'retestClaimed', 'retestUnclaimed', 'retestUnguardedStray']) delete globalThis[name];
   }
   globalThis.retestRelaysDocument = globalThis.document;
+  if (globalThis.retestRelays !== undefined && globalThis.retestRelaysWindow === window) return;
+  globalThis.retestRelaysWindow = window;
   const relays = new Map();
   const typing = new Set(${JSON.stringify(unguardedTyping)});
   window.addEventListener(claimType, () => {

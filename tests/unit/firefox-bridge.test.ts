@@ -342,6 +342,44 @@ describe('the Firefox bridge', () => {
     assert.equal(error.protocolMessage, 'unknown error: deniedPortAccess')
   })
 
+  test('an element a call hands over by reference is kept with its realm, called on as `this` there, and given files through input.setFiles in its own browsing context', async () => {
+    scriptCalls((plan, params) => {
+      const declaration = String(params['functionDeclaration'])
+      if (declaration.startsWith('function retestByReference')) return { result: { realm: 'realm', type: 'success', result: { type: 'node', sharedId: 'input-7' } } }
+      return answered(declaration.includes('function first()') ? 1 : plan.length)
+    })
+    endpoint.accept('input.setFiles')
+    const { bridge: made, world } = bridge()
+    const { context: world7 } = await world.enter('function first() { return 1 }', [], s.number(), new Deadline(2000))
+    const taken = await made.session.send('Runtime.callFunctionOn', { functionDeclaration: 'function take() { return globalThis.held }', executionContextId: world7, returnByValue: false, objectGroup: 'files' })
+    assert.deepEqual(taken, { result: { objectId: 'input-7' } })
+    const [byReference] = endpoint.commands('script.callFunction').filter((command) => String(command.params['functionDeclaration']).startsWith('function retestByReference'))
+    assert.deepEqual([byReference?.params['awaitPromise'], byReference?.params['serializationOptions']], [false, { maxDomDepth: 0 }])
+    await made.session.send('Runtime.callFunctionOn', { objectId: 'input-7', functionDeclaration: 'function listen() { return this.files.length }', returnByValue: true })
+    const [onElement] = endpoint.commands('script.callFunction').filter((command) => String(command.params['functionDeclaration']).includes('function retestOnElement'))
+    assert.deepEqual(onElement?.params['target'], { realm: `realm-${realms}` }, 'the call runs in the realm the element came from')
+    const sent = Array.isArray(onElement?.params['arguments']) ? onElement.params['arguments'] : []
+    assert.deepEqual([sent[0], sent.at(-1)], [{ type: 'string', value: JSON.stringify([{ e: 0 }]) }, { sharedId: 'input-7' }], 'the element travels as a shared reference, never as a value')
+    const dispatch = new Dispatch()
+    await dispatch.send(made.session, 'DOM.setFileInputFiles', { files: ['/tmp/report.pdf'], objectId: 'input-7' }, new Deadline(2000))
+    assert.equal(dispatch.input, 'sent')
+    assert.deepEqual(endpoint.commands('input.setFiles').map((command) => command.params), [{ context, element: { sharedId: 'input-7' }, files: ['/tmp/report.pdf'] }])
+    made.dispose()
+  })
+
+  test('a call by reference that answers no element hands over nothing, and one that answers another object is refused', async () => {
+    let answer: object = { type: 'null' }
+    scriptCalls((_plan, params) => (String(params['functionDeclaration']).startsWith('function retestByReference') ? { result: { realm: 'realm', type: 'success', result: answer } } : answered(1)))
+    const { bridge: made, world } = bridge()
+    const { context: world1 } = await world.enter('function first() { return 1 }', [], s.number(), new Deadline(2000))
+    assert.deepEqual(await made.session.send('Runtime.callFunctionOn', { functionDeclaration: 'function take() { return null }', executionContextId: world1, returnByValue: false }), { result: {} })
+    answer = { type: 'object', value: [] }
+    await assert.rejects(made.session.send('Runtime.callFunctionOn', { functionDeclaration: 'function take() { return {} }', executionContextId: world1, returnByValue: false }), /hands over only an element/)
+    await assert.rejects(made.session.send('DOM.setFileInputFiles', { files: ['/tmp/a'], objectId: 'never-handed' }), (error: unknown) => error instanceof CdpProtocolError && error.protocolMessage === 'Could not find object with given id')
+    assert.equal(endpoint.commands('input.setFiles').length, 0, 'an element never handed over is given nothing')
+    made.dispose()
+  })
+
   test('a DevTools method the helpers never send is refused by name', async () => {
     const { bridge: made } = bridge()
     await assert.rejects(made.session.send('Page.navigate', { url: 'http://127.0.0.1/' }), /The Firefox driver does not answer the DevTools method Page\.navigate\./)

@@ -9,7 +9,7 @@ import { guardScript } from '../../src/browser/page-scripts.ts'
 // and one that stops an event keeps the rest from hearing it, as listeners added to the window itself would.
 
 afterEach(() => {
-  for (const name of ['window', 'retestRelays', 'retestRelaysDocument', 'retestClaim', 'retestClaimed', 'retestUnclaimed']) Reflect.deleteProperty(globalThis, name)
+  for (const name of ['window', 'retestRelays', 'retestRelaysDocument', 'retestRelaysWindow', 'retestClaim', 'retestClaimed', 'retestUnclaimed']) Reflect.deleteProperty(globalThis, name)
 })
 
 function relays(): ReadonlyMap<string, { size: number }> | undefined {
@@ -157,16 +157,41 @@ test('a second sandbox the preload script ran in stops stopping typing once the 
   assert.equal(runInContext('globalThis.retestUnclaimed', other), true)
 })
 
-test('a sandbox that runs the script again in a new document adds its relays there and drops the guard it kept from the document before', () => {
+test('a sandbox that runs the script again in a new document of a new window adds its relays there and drops the guard it kept from the document before', () => {
+  Reflect.set(globalThis, 'window', new EventTarget())
+  Reflect.set(globalThis, 'document', { name: 'first' })
+  run(relayScript)
+  const first = relays()
+  Reflect.set(globalThis, 'retestGuard', { stray: null })
+  Reflect.set(globalThis, 'window', new EventTarget())
+  Reflect.set(globalThis, 'document', { name: 'second' })
+  run(relayScript)
+  assert.notEqual(relays(), first, 'the second document has relays of its own')
+  assert.equal(Reflect.get(globalThis, 'retestGuard'), undefined, "the first document's guard went with it")
+  Reflect.deleteProperty(globalThis, 'document')
+})
+
+// A popup `window.open` opened at its opener's origin keeps the window of its first, empty document for the next one.
+test('a new document on the window the relays were added to keeps them, ahead of the page, and drops the guard of the document before', () => {
   const window = new EventTarget()
   Reflect.set(globalThis, 'window', window)
   Reflect.set(globalThis, 'document', { name: 'first' })
   run(relayScript)
   const first = relays()
   Reflect.set(globalThis, 'retestGuard', { stray: null })
+  const pageHeard: string[] = []
+  window.addEventListener('keydown', () => pageHeard.push('page'), { capture: true })
   Reflect.set(globalThis, 'document', { name: 'second' })
   run(relayScript)
-  assert.notEqual(relays(), first, 'the second document has relays of its own')
+  assert.equal(relays(), first, 'the relays the window holds are kept, not added again after the page')
   assert.equal(Reflect.get(globalThis, 'retestGuard'), undefined, "the first document's guard went with it")
+  const order: string[] = []
+  const keydown: unknown = relays()?.get('keydown')
+  assert.ok(keydown instanceof Set)
+  keydown.add(() => order.push('guard'))
+  window.addEventListener('keydown', () => order.push('page'), { capture: true })
+  window.dispatchEvent(new Event('keydown'))
+  assert.deepEqual(order, ['guard', 'page'], 'the guard hears the key before the page')
+  assert.deepEqual(pageHeard, ['page'])
   Reflect.deleteProperty(globalThis, 'document')
 })

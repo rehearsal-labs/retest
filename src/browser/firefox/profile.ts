@@ -33,6 +33,11 @@ export const firefoxPreferences: Readonly<Record<string, string | number | boole
   // Every window of the browser behaves as the focused one, so a field Retest focused in one test's window takes the
   // keys typed into it while another test's window was opened later: pages of parallel tests share one Firefox.
   'focusmanager.testmode': true,
+  // A page a page opens, by a link with a target or by `window.open`, opens in a window of its own rather than a tab
+  // beside its opener, so the opener's document stays shown, as every window does here, and neither page hides the
+  // other.
+  'browser.link.open_newwindow': 2,
+  'browser.link.open_newwindow.restriction': 0,
   // A download lands in the launch's own folder, removed at close, never in the person's Downloads folder.
   'browser.download.folderList': 2,
   'browser.download.useDownloadDir': true,

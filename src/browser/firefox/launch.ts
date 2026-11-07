@@ -118,12 +118,13 @@ export async function launchFirefox(options: FirefoxLaunchOptions, timeoutMs: nu
 
 /**
  * Starts the connection's WebDriver BiDi session. User prompts are left as the page opened them, so a command meets
- * the prompt, as on Chromium, instead of one Retest answered.
+ * the prompt, as on Chromium, instead of one Retest answered. A file picker is the one prompt Firefox closes at once,
+ * so none is ever shown; Firefox still tells of it, naming its input, and the page hears its input's `cancel`.
  *
  * @example const facts = await startSession(client, deadline)
  */
 export async function startSession(client: BidiClient, deadline: Deadline): Promise<SessionFacts> {
-  const capabilities = { alwaysMatch: { unhandledPromptBehavior: { default: 'ignore' } } }
+  const capabilities = { alwaysMatch: { unhandledPromptBehavior: { default: 'ignore', file: 'dismiss' } } }
   const { sessionId, capabilities: given } = await client.request('session.new', { capabilities }, sessionSchema, { timeoutMs: deadline.commandTimeoutMs })
   return {
     sessionId,
