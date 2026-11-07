@@ -166,17 +166,18 @@ export function describeDownload(event: {
 }): string {
   const started = event.startedIn === undefined ? '' : event.startedIn === 'popup' ? ' from a page it opened' : ' from another page'
   const name = `download ${printable(event.suggestedFilename)}${started}`
-  const received = event.receivedBytes ?? 0
-  const arrived = event.totalBytes === undefined || event.totalBytes === 0 ? plural(received, 'byte') : `${received} of ${plural(event.totalBytes, 'byte')}`
+  // A browser that says nothing of the bytes that arrived, as Firefox does, leaves the count out.
+  const received = event.receivedBytes
+  const arrived = received === undefined ? undefined : event.totalBytes === undefined || event.totalBytes === 0 ? plural(received, 'byte') : `${received} of ${plural(event.totalBytes, 'byte')}`
   switch (event.state) {
     case 'completed':
       return `${name}, ${plural(event.size ?? 0, 'byte')}`
     case 'withheld':
       return `${name} not kept: it held a secret`
     case 'canceled':
-      return `${name} stopped after ${arrived}`
+      return arrived === undefined ? `${name} stopped` : `${name} stopped after ${arrived}`
     case 'unfinished':
-      return `${name} unfinished when the test ended, ${arrived}`
+      return arrived === undefined ? `${name} unfinished when the test ended` : `${name} unfinished when the test ended, ${arrived}`
   }
 }
 

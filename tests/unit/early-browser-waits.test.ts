@@ -46,11 +46,12 @@ async function enginePage(t: TestContext, engine: string): Promise<{ page: Owned
     const endpoint = await ScriptedBidi.start()
     const client = await BidiClient.connect(endpoint.url, { timeoutMs: 2000, onDiagnostic: () => {} })
     t.after(async () => { client.close(); await endpoint.close() })
-    endpoint.accept('session.subscribe', 'session.unsubscribe', 'script.removePreloadScript', 'input.performActions', 'input.releaseActions', 'browsingContext.activate')
+    endpoint.accept('session.subscribe', 'session.unsubscribe', 'script.removePreloadScript', 'input.performActions', 'input.releaseActions', 'browsingContext.activate', 'browsingContext.setViewport', 'browser.setDownloadBehavior')
     endpoint.on('script.addPreloadScript', () => ({ result: { script: 'preload' } }))
-    endpoint.on('browsingContext.getTree', () => ({ result: { contexts: [{ context: 'tab', url: 'about:blank', children: [] }] } }))
+    endpoint.on('browsingContext.getTree', () => ({ result: { contexts: [{ context: 'tab', url: 'about:blank', children: [], userContext: 'user' }] } }))
     endpoint.on('script.callFunction', () => {
-      endpoint.emit('script.message', { channel: 'retest-documented-tab', data: { type: 'string', value: 'about:blank' }, source: { realm: 'realm', context: 'tab' } })
+      // The document's own script tells of it on its user context's channel.
+      endpoint.emit('script.message', { channel: 'retest-documented-user', data: { type: 'string', value: 'about:blank' }, source: { realm: 'realm', context: 'tab' } })
       return { result: { type: 'success', realm: 'realm', result: { type: 'undefined' } } }
     })
     const page = await FirefoxPage.open({ client, context: 'tab', userContext: 'user', baseUrl: undefined, emulation: undefined, restoredOrigins: [], onListenerError: () => {} }, new Deadline(2000))

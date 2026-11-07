@@ -5,6 +5,7 @@ import type { FirefoxProcess } from './process.ts'
 import type { FirefoxRoute } from './route.ts'
 import type { Emulation } from '../../protocol/emulation.ts'
 import type { Failure } from '../../protocol/failures.ts'
+import { join } from 'node:path'
 import { Deadline } from '../../protocol/deadline.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { s } from '../../protocol/schema.ts'
@@ -18,7 +19,7 @@ import { restoreFirefoxState } from './storage.ts'
 import { inWindowOrder } from './window-order.ts'
 
 /** What the runtime reads and asks of the process it drives; a launch hands it the `FirefoxProcess` it started. */
-export type FirefoxProcessHandle = Pick<FirefoxProcess, 'pid' | 'route' | 'outputSettled' | 'gone' | 'exited' | 'recordDescendants' | 'expectExit' | 'stop'> & Partial<Pick<FirefoxProcess, 'crash'>>
+export type FirefoxProcessHandle = Pick<FirefoxProcess, 'pid' | 'route' | 'outputSettled' | 'gone' | 'exited' | 'recordDescendants' | 'expectExit' | 'stop'> & Partial<Pick<FirefoxProcess, 'crash' | 'folder'>>
 
 export type FirefoxBrowserOptions = {
   process: FirefoxProcessHandle
@@ -112,12 +113,16 @@ export class FirefoxBrowser implements WebRuntime {
   /**
    * Opens a tab in a new user context within `timeoutMs`. The context starts with no cookies or storage beyond a saved
    * state restored into it. A viewport and pixel ratio are applied through BiDi. A proxy, touch screen, mobile
-   * layout or user agent is refused by name.
+   * layout or user agent is refused by name. With a downloads folder, Firefox saves the user context's downloads in a
+   * folder of the launch's own on their way, and each completed one is moved into that folder; without one, Firefox
+   * refuses them.
    */
   async newPage(options: NewPageOptions, timeoutMs: number): Promise<WebSession> {
     if (this.#disconnectReason !== undefined) throw this.#lost(this.#disconnectReason)
     const refusal = refusedOptions(options)
     if (refusal !== undefined) throw new BrowserError(refusal)
+    const launchFolder = this.#process.folder
+    if (options.downloads !== undefined && launchFolder === undefined) throw new BrowserError({ class: 'setup_failed', message: 'This Firefox has no folder of its own to save downloads in on their way, so Retest cannot save its downloads.' })
     const deadline = new Deadline(timeoutMs)
     const send = () => ({ timeoutMs: deadline.commandTimeoutMs, signal: deadline.signal })
     let userContext: string | undefined
@@ -125,7 +130,8 @@ export class FirefoxBrowser implements WebRuntime {
       userContext = (await this.#client.request('browser.createUserContext', {}, userContextSchema, send())).userContext
       const restoredOrigins = options.storageState === undefined ? [] : await restoreFirefoxState(this.#client, userContext, options.storageState, deadline)
       const context = await openWindow(this.#client, userContext, deadline)
-      const pageOptions = { client: this.#client, context, userContext, baseUrl: options.baseUrl, emulation: options.emulation, restoredOrigins, onListenerError: this.#onListenerError }
+      const downloads = options.downloads === undefined || launchFolder === undefined ? undefined : { folder: options.downloads, staging: join(launchFolder, 'downloads', userContext) }
+      const pageOptions = { client: this.#client, context, userContext, baseUrl: options.baseUrl, emulation: options.emulation, restoredOrigins, onListenerError: this.#onListenerError, downloads }
       return await FirefoxPage.open(pageOptions, deadline)
     } catch (error) {
       if (userContext !== undefined) {

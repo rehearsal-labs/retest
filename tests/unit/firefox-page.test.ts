@@ -29,7 +29,7 @@ after(async () => {
 
 beforeEach(() => {
   endpoint.sent.length = 0
-  endpoint.accept('session.subscribe', 'session.unsubscribe', 'script.removePreloadScript', 'browser.removeUserContext', 'browsingContext.setViewport')
+  endpoint.accept('session.subscribe', 'session.unsubscribe', 'script.removePreloadScript', 'browser.removeUserContext', 'browsingContext.setViewport', 'browser.setDownloadBehavior')
   endpoint.on('script.addPreloadScript', () => ({ result: { script: 'preload-1' } }))
   endpoint.on('browsingContext.getTree', () => ({ result: { contexts: [{ context, url: 'about:blank', children: [], userContext: 'user-1' }] } }))
   // The tab's own script runs; every page function after it fails here, so the page reads no facts from a document,
@@ -49,9 +49,9 @@ async function page(): Promise<FirefoxPage> {
   return opened
 }
 
-// What the document's own script tells when it commits: the address, on the tab's channel.
-function documented(url: string): void {
-  endpoint.emit('script.message', { channel: `retest-documented-${context}`, data: { type: 'string', value: url }, source: { realm: 'realm', context } })
+// What the document's own script tells when it commits: the address, on its user context's channel, from the tab.
+function documented(url: string, userContext = `user-${tabs}`): void {
+  endpoint.emit('script.message', { channel: `retest-documented-${userContext}`, data: { type: 'string', value: url }, source: { realm: 'realm', context } })
 }
 
 function navigationEvent(method: string, navigation: string, url: string): void {
@@ -78,7 +78,7 @@ describe('the Firefox page', () => {
       await settle()
       assert.equal(returned, false, 'a protocol reply alone does not acknowledge the initial document')
     } finally {
-      documented('about:blank')
+      documented('about:blank', 'delayed-document')
       await (await opening).dispose(1000)
     }
   })
@@ -96,17 +96,20 @@ describe('the Firefox page', () => {
     assert.ok(performance.now() - startedAt < 150, 'page setup never receives another full command budget')
   })
 
-  test("follows the tab's events, and has every document run Retest's script in its sandbox before the page's own", async () => {
+  test("follows the events of the tab's user context, and has every document of it run Retest's script in its sandbox before the page's own", async () => {
     const opened = await page()
-    const subscribed = endpoint.commands('session.subscribe').map((command) => command.params['events'])
-    assert.deepEqual(subscribed, [['browsingContext', 'script'], ['network.beforeRequestSent', 'network.responseStarted']])
+    const userContext = `user-${tabs}`
+    const subscribed = endpoint.commands('session.subscribe').map((command) => [command.params['events'], command.params['userContexts']])
+    assert.deepEqual(subscribed, [[['browsingContext', 'script', 'input.fileDialogOpened'], [userContext]], [['network.beforeRequestSent', 'network.responseStarted'], [userContext]]])
     const [preload] = endpoint.commands('script.addPreloadScript')
     assert.equal(preload?.params['sandbox'], 'retest')
-    assert.deepEqual(preload?.params['contexts'], [context])
+    assert.deepEqual(preload?.params['userContexts'], [userContext])
     assert.deepEqual(preload?.params['arguments'], [
-      { type: 'channel', value: { channel: `retest-changed-${context}`, ownership: 'none' } },
-      { type: 'channel', value: { channel: `retest-documented-${context}`, ownership: 'none' } },
+      { type: 'channel', value: { channel: `retest-changed-${userContext}`, ownership: 'none' } },
+      { type: 'channel', value: { channel: `retest-documented-${userContext}`, ownership: 'none' } },
     ])
+    // A page given no downloads folder has Firefox refuse its user context's downloads.
+    assert.deepEqual(endpoint.commands('browser.setDownloadBehavior').map((command) => command.params), [{ downloadBehavior: { type: 'denied' }, userContexts: [userContext] }])
     assert.match(String(preload?.params['functionDeclaration']), /const claimType = "retest-claim-[0-9a-f-]{36}";/, 'the tab claims its documents with an event type of its own')
     assert.match(String(preload?.params['functionDeclaration']), /retestRelays/, 'the relays the guard listens through come first')
     const [initial] = endpoint.commands('script.callFunction')

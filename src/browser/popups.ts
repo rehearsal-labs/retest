@@ -381,7 +381,7 @@ function stopped(reason: unknown): Failure {
  * @example popupsUnsupported('Firefox').class // 'unsupported'
  */
 export function popupsUnsupported(engine: string): Failure {
-  return { class: 'unsupported', message: `Retest hands a test the pages a page opens on Chrome, Chromium and WebKit only, and not on ${engine} yet.` }
+  return { class: 'unsupported', message: `Retest hands a test the pages a page opens on Chrome, Chromium, Firefox and WebKit only, and not on ${engine} yet.` }
 }
 
 /**
@@ -390,5 +390,5 @@ export function popupsUnsupported(engine: string): Failure {
  * @example closeUnsupported('WebKit').class // 'unsupported'
  */
 export function closeUnsupported(engine: string): Failure {
-  return { class: 'unsupported', message: `Retest closes a page on Chrome, Chromium and WebKit only, and not on ${engine} yet, so it closed nothing.`, details: { inputSent: false } }
+  return { class: 'unsupported', message: `Retest closes a page on Chrome, Chromium, Firefox and WebKit only, and not on ${engine} yet, so it closed nothing.`, details: { inputSent: false } }
 }

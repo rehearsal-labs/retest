@@ -1,5 +1,6 @@
 import type { BidiClient } from './bidi-client.ts'
-import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, RequestResult, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
+import type { BrowserCommand, DispatchedCommand, ElementIdentity, FilesCapability, KeyedReading, PageDownload, PageNavigation, PageReading, RequestResult, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
+import type { PopupEnd, PopupWaitOptions } from '../popups.ts'
 import type { ActionTarget, ReadyTarget } from '../actionability.ts'
 import type { ActionIntent, PlannedKey, Pointer, SelectPlan, Selection } from '../element-queries.ts'
 import type { Guard, GuardedIntent, GuardVerdict } from '../input-guard.ts'
@@ -15,6 +16,7 @@ import type { PageFacts } from '../../protocol/page-facts.ts'
 import type { Infer, Schema } from '../../protocol/schema.ts'
 import type { StorageState, StoredOrigin } from '../../protocol/storage-state.ts'
 import { randomUUID } from 'node:crypto'
+import { mkdir } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { waitBeforeRead } from '../../assertions/wait-before-read.ts'
 import { FirefoxCollector } from '../../diagnostics/firefox-collector.ts'
@@ -42,12 +44,12 @@ import { originRefusal } from '../origin-refusal.ts'
 import { isGoneContext, IsolatedWorld } from '../isolated-world.ts'
 import { dragRefused } from '../drag.ts'
 import { routesRefused, type RouteRemoval } from '../routes.ts'
-import { filesRefused } from '../file-chooser.ts'
+import { setInputFiles } from '../file-chooser.ts'
 import { dialogsUnsupported, type DialogArming } from '../dialogs.ts'
 import { browserCommandLocators, framesUnreached } from '../frames.ts'
 import { rolesStopAtShadowRoots } from '../locate.ts'
 import { layoutUnmeasured } from '../layout.ts'
-import { closeUnsupported, popupsUnsupported, type PopupArming } from '../popups.ts'
+import { type PopupArming } from '../popups.ts'
 import { Listeners } from '../listeners.ts'
 import { NavigationCauses } from '../navigation-causes.ts'
 import { NavigationTitles } from '../navigation-titles.ts'
@@ -58,13 +60,15 @@ import { FirefoxFrameSource } from './capture.ts'
 import { readBidi } from './bidi-client.ts'
 import { BidiProtocolError } from './bidi-errors.ts'
 import { cdpError, FirefoxBridge } from './bridge.ts'
+import { FirefoxDownloads, FirefoxFileChoosers } from './files.ts'
+import { FirefoxPagePopups, FirefoxPopupWatch } from './popups.ts'
 import { clickAt, moveTo, pressedStrokes, pressKey, selectionProblem, toggleRefusal, typeText, typedStrokes, typingProblem, wheelAt, type Point } from './input.ts'
 import { NavigationHold } from './navigation-hold.ts'
 import { errorPageReason, navigate, NavigationWatcher, reload, traverse } from './navigation.ts'
 import { navigationShim, relayScript, sandboxName, wrapped } from './sandbox.ts'
 import { inWindowOrder } from './window-order.ts'
 import { readFirefoxCookies, readFirefoxOriginStorage } from './storage.ts'
-import { subscribedSchema, unsubscribeParameters } from './subscriptions.ts'
+import { subscribedSchema } from './subscriptions.ts'
 
 export type FirefoxPageOptions = {
   client: BidiClient
@@ -78,7 +82,42 @@ export type FirefoxPageOptions = {
   restoredOrigins: readonly string[]
   /** Receives errors thrown by navigation listeners. */
   onListenerError: (error: unknown) => void
+  /**
+   * Where the page's downloads go: the session's own folder, and the browser's own folder Firefox saves them in on
+   * their way. Without it, Firefox refuses every download of the user context.
+   */
+  downloads?: FirefoxPageDownloads | undefined
 }
+
+/** The two folders a Firefox page's downloads pass through: Firefox's own on their way, then the session's. */
+export type FirefoxPageDownloads = { readonly folder: string; readonly staging: string }
+
+/**
+ * What every page of one user context shares: the browser's connection and the user context, the channels Retest's
+ * document script speaks through, that script, which the user context's preload script runs, and the watch for the
+ * pages its pages open. The test's page made them as it opened; a popup is a page of the same user context.
+ */
+type UserContextScope = {
+  readonly client: BidiClient
+  readonly userContext: string
+  readonly baseUrl: string | undefined
+  readonly onListenerError: (error: unknown) => void
+  readonly channels: { readonly changed: string; readonly documented: string }
+  readonly script: string
+  readonly watch: FirefoxPopupWatch
+}
+
+/** One page of a user context: its tab, the storage it began with, and, for a popup, the address its tab held when Firefox told of it. */
+type PageParts = {
+  readonly scope: UserContextScope
+  readonly context: string
+  readonly restoredOrigins: readonly string[]
+  readonly popup?: { readonly url: string }
+  readonly downloads?: FirefoxPageDownloads | undefined
+}
+
+// The network events every page of a user context hears from its start, through the user context's own subscription.
+const userContextNetworkEvents = ['network.beforeRequestSent', 'network.responseStarted'] as const
 
 type PointerAction = Extract<BrowserCommand, { kind: 'click' | 'tap' }>
 /**
@@ -127,6 +166,8 @@ const requestSchema = s.object({
 const messageSchema = s.object({ channel: s.string(), data: s.object({ type: s.string(), value: s.optional(s.string()) }), source: s.object({ context: s.optional(s.string()) }) })
 const treeSchema = s.object({ contexts: s.array(s.object({ url: s.string() })) })
 const scriptSchema = s.object({ script: s.string() })
+const frameCreatedSchema = s.object({ context: s.string(), parent: s.nullable(s.string()) })
+const fileDialogSchema = s.object({ context: s.string(), element: s.optional(s.object({ sharedId: s.optional(s.string()) })), multiple: s.boolean() })
 const callAnswerSchema = s.object({ type: s.enum(['success', 'exception']), exceptionDetails: s.optional(s.object({ text: s.string() })) })
 
 // How often a document checks its own address, for a move within it that no action caused and that changed nothing in
@@ -141,16 +182,27 @@ const addressPollMs = 50
  *
  * The guard itself is installed by a call (`relayScript` says why): the moment Retest hears the document commit, and by
  * every action's own check if that call has not landed yet. Either way its listeners join the relays, which were there
- * before the page's own. `claimType` is the tab's own event type for the sandbox calls reach to claim the document,
- * written into the script, since a preload script takes nothing but channels; the page never sees the script.
+ * before the page's own. `claimType` is the user context's own event type for the sandbox calls reach to claim the
+ * document, written into the script, since a preload script takes nothing but channels; the page never sees the script.
+ *
+ * The script runs once in each document. A popup that `window.open` opened at an address of its opener's origin keeps
+ * the window of its first, empty document for the document that replaces it, and Firefox 158 runs no preload script in
+ * that document, so Retest runs this one there itself once Firefox tells the document committed; the relays and the
+ * timer the empty document's run left on that window stay, ahead of the page's own listeners, and the change observer
+ * is made again for the new document.
  */
 const documentScript = (claimType: string): string => `(changed, documented) => {
+  if (globalThis.retestDocumented === document) return;
+  globalThis.retestDocumented = document;
   const claimType = ${JSON.stringify(claimType)};
   ${relayScript}
   globalThis.retestChanged = () => changed(location.href);
+  if (globalThis.retestChangesDocument !== document) delete globalThis.retestChanges;
+  globalThis.retestChangesDocument = document;
   ${changeScript};
   let address = location.href;
-  setInterval(() => {
+  clearInterval(globalThis.retestAddressCheck);
+  globalThis.retestAddressCheck = setInterval(() => {
     if (location.href === address) return;
     address = location.href;
     changed(address);
@@ -215,13 +267,25 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   readonly #watchers = new Set<NavigationWatcher>()
   readonly #origins: Set<string>
   readonly #stops: (() => void)[] = []
-  readonly #channels: { changed: string; documented: string }
+  readonly #scope: UserContextScope
+  readonly #channels: { readonly changed: string; readonly documented: string }
+  // Set for a popup, a page of the user context that another of its pages opened.
+  readonly #popup: boolean
+  readonly #frames = new Set<string>()
+  readonly #choosers = new FirefoxFileChoosers()
+  readonly #downloads: FirefoxDownloads | undefined
+  readonly #popups: FirefoxPagePopups
+  readonly #ended = Promise.withResolvers<PopupEnd>()
+  #closedItself = false
+  // While the tab is being closed: what a prompt it opens does to the close.
+  #closingPrompt: ((type: string) => void) | undefined
   readonly #subscriptions = new Map<string, number>()
   // The id a later Firefox gave each counted event's subscription, and how many of each subscription's events are live.
   readonly #subscriptionIds = new Map<string, string>()
   readonly #liveEvents = new Map<string, number>()
-  // The id of the page's own subscription to its context's events, when the browser gave one.
+  // The ids of the user context's subscriptions to its pages' events and network events, which the test's page made.
   #pageSubscription: string | undefined
+  #networkSubscription: string | undefined
   #changes = 0
   #url: URL | undefined
   #commits = 0
@@ -247,7 +311,17 @@ export class FirefoxPage implements WebSession, ElementIdentity {
    * @example const page = await FirefoxPage.open({ client, context, userContext, baseUrl, emulation, restoredOrigins: [], onListenerError }, deadline)
    */
   static async open(options: FirefoxPageOptions, deadline: Deadline): Promise<FirefoxPage> {
-    const page = new FirefoxPage(options)
+    // The claim's event type is random, so no page can listen for it or send it.
+    const scope: UserContextScope = {
+      client: options.client,
+      userContext: options.userContext,
+      baseUrl: options.baseUrl,
+      onListenerError: options.onListenerError,
+      channels: { changed: `retest-changed-${options.userContext}`, documented: `retest-documented-${options.userContext}` },
+      script: documentScript(`retest-claim-${randomUUID()}`),
+      watch: new FirefoxPopupWatch(options.client, options.userContext, options.onListenerError),
+    }
+    const page = new FirefoxPage({ scope, context: options.context, restoredOrigins: options.restoredOrigins, downloads: options.downloads })
     try {
       await page.#start(options, deadline)
     } catch (error) {
@@ -259,16 +333,37 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     return page
   }
 
-  private constructor(options: FirefoxPageOptions) {
-    this.#client = options.client
-    this.#context = options.context
-    this.#userContext = options.userContext
-    this.#baseUrl = options.baseUrl
-    this.#origins = new Set(options.restoredOrigins)
-    this.#channels = { changed: `retest-changed-${options.context}`, documented: `retest-documented-${options.context}` }
+  // A popup's page is made the moment Firefox tells of its browsing context, and sends nothing as it is made: the user
+  // context's preload script, subscriptions and viewport are its already. Its tab holds its first, empty document.
+  static #popupOf(scope: UserContextScope, context: string, url: string): FirefoxPage {
+    return new FirefoxPage({ scope, context, restoredOrigins: [], popup: { url } })
+  }
+
+  private constructor(parts: PageParts) {
+    const { scope } = parts
+    const options = { client: scope.client, context: parts.context, onListenerError: scope.onListenerError }
+    this.#scope = scope
+    this.#client = scope.client
+    this.#context = parts.context
+    this.#userContext = scope.userContext
+    this.#baseUrl = scope.baseUrl
+    this.#origins = new Set(parts.restoredOrigins)
+    this.#channels = scope.channels
+    this.#popup = parts.popup !== undefined
     this.#navigations = new Listeners(options.onListenerError)
     this.#navigationStarts = new Listeners(options.onListenerError)
     this.#bridge = new FirefoxBridge({ client: options.client, context: options.context, onListenerError: (_event, error) => options.onListenerError(error) })
+    // The user context's own subscription brings these events from its start; a hold or a collector that asks for them
+    // again sends nothing, and one that ends leaves them on.
+    for (const event of userContextNetworkEvents) this.#subscriptions.set(event, 1)
+    const { downloads } = parts
+    this.#downloads = downloads === undefined ? undefined : new FirefoxDownloads({ client: scope.client, userContext: scope.userContext, context: parts.context, ...downloads, onListenerError: scope.onListenerError })
+    this.#popups = new FirefoxPagePopups({ watch: scope.watch, context: parts.context, open: (context, url) => FirefoxPage.#popupOf(scope, context, url), onListenerError: scope.onListenerError })
+    if (parts.popup !== undefined) {
+      this.#holdAddress(parts.popup.url)
+      // The empty document the popup opened with is the one it holds; the first that replaces it is its first navigation.
+      this.#documents = 0
+    }
     this.#world = new IsolatedWorld(this.#bridge.session, () => this.#context)
     this.#titles = new NavigationTitles({
       readable: () => this.#pending === undefined && this.#lostReason === undefined && this.#dialog === undefined,
@@ -285,9 +380,52 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     this.#listen('browsingContext.downloadWillBegin', navigationEventSchema, ({ navigation, url }) => this.#downloading(navigation, url))
     this.#listen('browsingContext.userPromptOpened', promptSchema, ({ type }) => this.#promptOpened(type))
     this.#listen('browsingContext.userPromptClosed', contextEventSchema, () => this.#promptClosed())
-    this.#listen('browsingContext.contextDestroyed', contextEventSchema, () => this.#lose('the page was closed'))
+    this.#listen('browsingContext.contextDestroyed', contextEventSchema, () => {
+      this.#closedItself = this.#client.closeReason === undefined
+      this.#ended.resolve(this.#closedItself ? { kind: 'closed' } : { kind: 'lost', reason: this.#client.closeReason ?? 'the browser went away' })
+      this.#lose('the page was closed')
+      // A popup that is gone hears nothing more, whether or not anyone disposes of it; its commands are refused as lost.
+      if (this.#popup) this.#stop()
+    })
+    // The frames inside the tab, whose file pickers are the page's.
+    this.#stops.push(
+      this.#client.on('browsingContext.contextCreated', (params) => {
+        const { context, parent } = readBidi(frameCreatedSchema, params, 'browsingContext.contextCreated')
+        if (parent !== null && (parent === this.#context || this.#frames.has(parent))) this.#frames.add(context)
+      }),
+      this.#client.on('browsingContext.contextDestroyed', (params) => {
+        this.#frames.delete(readBidi(contextEventSchema, params, 'browsingContext.contextDestroyed').context)
+      }),
+      this.#client.on('input.fileDialogOpened', (params) => {
+        const { context, element, multiple } = readBidi(fileDialogSchema, params, 'input.fileDialogOpened')
+        if (context === this.#context || this.#frames.has(context)) this.#choosers.opened(context, element?.sharedId, multiple)
+      }),
+    )
     this.#stops.push(this.#client.on('script.message', (params) => this.#message(params)))
-    this.#stops.push(this.#client.onDisconnect((reason) => this.#lose(reason)))
+    this.#stops.push(this.#client.onDisconnect((reason) => {
+      this.#ended.resolve({ kind: 'lost', reason })
+      this.#lose(reason)
+    }))
+  }
+
+  /** How the page's browsing context ended: closed while the browser stayed, or lost with the browser. */
+  get ended(): Promise<PopupEnd> {
+    return this.#ended.promise
+  }
+
+  /** Whether the page's browsing context closed while the browser stayed, as a popup that closes itself does. */
+  get closedItself(): boolean {
+    return this.#closedItself
+  }
+
+  /**
+   * The page's file pickers, and its downloads when its user context saves them. Every file picker the page opens is
+   * caught, since Firefox closes each one at once for Retest's session.
+   */
+  get files(): FilesCapability {
+    const downloads = this.#downloads
+    const saving = downloads === undefined ? {} : { onDownload: (listener: (download: PageDownload) => void) => downloads.onDownload(listener) }
+    return { armFileChooser: () => this.#choosers.armFileChooser(), ...saving }
   }
 
   get url(): string | undefined {
@@ -303,7 +441,9 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     const unreached = framesUnreached(browserCommandLocators(command), 'Firefox')
     if (unreached !== undefined) return { result: { ok: false, failure: unreached }, input: 'not_sent' }
     const dispatch = new Dispatch()
-    const result = await rolesStopAtShadowRoots('Firefox', () => this.#execute(command, { timeoutMs, signal, commandToken, dispatch }))
+    const acting = !command.kind.startsWith('observe')
+    const run = () => rolesStopAtShadowRoots('Firefox', () => this.#execute(command, { timeoutMs, signal, commandToken, dispatch }))
+    const result = await this.#choosers.around(acting, () => this.#describe(command), run)
     return { result, input: dispatch.input }
   }
 
@@ -427,9 +567,14 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     return { ok: false, failure: dialogsUnsupported('Firefox') }
   }
 
-  /** Firefox cannot hand a test the pages a page opens yet, so the page refuses by name. */
-  async armPopup(): Promise<PopupArming> {
-    return { ok: false, failure: popupsUnsupported('Firefox') }
+  /**
+   * Arms the page for the next page it opens, which it hands over as a page of its own, made the moment Firefox tells of
+   * it, with Retest's script in every document it opens from its first.
+   */
+  async armPopup(options: PopupWaitOptions): Promise<PopupArming> {
+    const blocked = this.#blocked('wait for a popup', false)
+    if (blocked !== undefined) return { ok: false, failure: blocked }
+    return this.#popups.arm(options)
   }
 
   /** Firefox cannot answer a page's requests with routes yet, so the page refuses by name and holds no route. */
@@ -493,32 +638,35 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     return this.#disposing
   }
 
+  // Everything the page sets up is its user context's, so a page it opens has it from its first document: the
+  // subscriptions to the pages' events, the preload script, the viewport, and where downloads go.
   async #start(options: FirefoxPageOptions, deadline: Deadline): Promise<void> {
     const send = () => ({ timeoutMs: deadline.commandTimeoutMs, signal: deadline.signal })
-    this.#pageSubscription = (await this.#client.request('session.subscribe', { events: ['browsingContext', 'script'], contexts: [this.#context] }, subscribedSchema, send())).subscription
-    const channels = [
-      { type: 'channel', value: { channel: this.#channels.changed, ownership: 'none' } },
-      { type: 'channel', value: { channel: this.#channels.documented, ownership: 'none' } },
-    ]
-    // The claim's event type is random, so no page can listen for it or send it.
-    const script = documentScript(`retest-claim-${randomUUID()}`)
+    const userContexts = [this.#userContext]
+    this.#pageSubscription = (await this.#client.request('session.subscribe', { events: ['browsingContext', 'script', 'input.fileDialogOpened'], userContexts }, subscribedSchema, send())).subscription
+    const channels = this.#channelArguments()
     // A navigation answered with no document is told by its response alone (`#responded`), and one Firefox 158 does not
     // announce by its document's request (`#requested`).
-    await this.#subscribe(['network.beforeRequestSent', 'network.responseStarted'], send())
-    const preload = await this.#client.request('script.addPreloadScript', { functionDeclaration: script, arguments: channels, sandbox: sandboxName, contexts: [this.#context] }, scriptSchema, send())
+    this.#networkSubscription = (await this.#client.request('session.subscribe', { events: userContextNetworkEvents, userContexts }, subscribedSchema, send())).subscription
+    const preload = await this.#client.request('script.addPreloadScript', { functionDeclaration: this.#scope.script, arguments: channels, sandbox: sandboxName, userContexts }, scriptSchema, send())
     this.#preload = preload.script
     const { emulation } = options
     if (emulation !== undefined) {
       const viewport = { width: emulation.viewport.width, height: emulation.viewport.height }
+      await this.#client.request('browsingContext.setViewport', { userContexts, viewport, devicePixelRatio: emulation.deviceScaleFactor }, s.object({}), send())
       await this.#client.request('browsingContext.setViewport', { context: this.#context, viewport, devicePixelRatio: emulation.deviceScaleFactor }, s.object({}), send())
     }
+    const { downloads } = options
+    if (downloads !== undefined) await mkdir(downloads.staging, { recursive: true })
+    const downloadBehavior = downloads === undefined ? { type: 'denied' } : { type: 'allowed', destinationFolder: downloads.staging }
+    await this.#client.request('browser.setDownloadBehavior', { downloadBehavior, userContexts }, s.object({}), send())
     const tree = await this.#client.request('browsingContext.getTree', { root: this.#context, maxDepth: 0 }, treeSchema, send())
     const current = tree.contexts[0]?.url
     if (current !== undefined) this.#holdAddress(current)
     // The document the tab opened with was there before the preload script; it runs the same script now. Its message
     // reports the document already held, so it is no navigation.
     this.#documents = -1
-    const initial = await this.#client.request('script.callFunction', { functionDeclaration: script, arguments: channels, target: { context: this.#context, sandbox: sandboxName }, awaitPromise: false, resultOwnership: 'none' }, callAnswerSchema, send())
+    const initial = await this.#client.request('script.callFunction', { functionDeclaration: this.#scope.script, arguments: channels, target: { context: this.#context, sandbox: sandboxName }, awaitPromise: false, resultOwnership: 'none' }, callAnswerSchema, send())
     if (initial.type === 'exception') throw new BrowserError({ class: 'setup_failed', message: `Retest's page script failed in the page's first document: ${initial.exceptionDetails?.text ?? 'it threw'}` })
     // The script's command reply can precede its channel message. Navigation must not overtake that initial message.
     while (this.#documents < 0 && !deadline.expired && this.#lostReason === undefined) {
@@ -527,6 +675,22 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     }
     deadline.signal?.throwIfAborted()
     if (this.#documents < 0) throw new BrowserError({ class: 'setup_failed', message: "Firefox did not acknowledge Retest's script in the page's first document before the setup deadline." })
+  }
+
+  // The channels Retest's document script speaks through, as BiDi hands them to a script.
+  #channelArguments(): { type: string; value: { channel: string; ownership: string } }[] {
+    return [
+      { type: 'channel', value: { channel: this.#channels.changed, ownership: 'none' } },
+      { type: 'channel', value: { channel: this.#channels.documented, ownership: 'none' } },
+    ]
+  }
+
+  // Runs Retest's document script in the document the popup holds now, which tells of it once if no run of the script
+  // in that document has. Firefox 158 runs no preload script in the document that replaces a popup's first, empty one on
+  // the same window, so its commit is told this way. A document that went before the call reached it needs none.
+  #runDocumentScript(): void {
+    const params = { functionDeclaration: this.#scope.script, arguments: this.#channelArguments(), target: { context: this.#context, sandbox: sandboxName }, awaitPromise: false, resultOwnership: 'none' }
+    this.#client.send('script.callFunction', params, { timeoutMs: guardInstallMs }).catch(() => undefined)
   }
 
   async #execute(command: BrowserCommand, { timeoutMs, signal, commandToken, dispatch }: Executing): Promise<CommandResult> {
@@ -577,7 +741,7 @@ export class FirefoxPage implements WebSession, ElementIdentity {
       case 'observeLayout':
         return { ok: false, failure: layoutUnmeasured('Firefox') }
       case 'close':
-        return { ok: false, failure: closeUnsupported('Firefox') }
+        return this.#close(deadline, dispatch)
       case 'press':
         return this.#pressKey(command, deadline, dispatch, commandToken)
       case 'tap':
@@ -597,11 +761,40 @@ export class FirefoxPage implements WebSession, ElementIdentity {
         return this.#check(command, deadline, dispatch, commandToken)
       case 'scroll':
         return this.#scroll(command, deadline, dispatch, commandToken)
-      case 'setInputFiles':
+      case 'setInputFiles': {
+        // The shared look finds the input and holds it in Retest's sandbox; the bridge hands it over by its shared
+        // reference, and its files go in through `input.setFiles`.
+        const page = { world: this.#world, session: this.#bridge.session, pendingNavigation: () => this.#pending }
+        return this.#bridge.resolving(command.locator, () => setInputFiles(page, command, deadline, dispatch))
+      }
       case 'setChooserFiles':
-        return { ok: false, failure: filesRefused('upload', 'on Firefox') }
+        return this.#choosers.setFiles(command, this.#bridge, deadline, dispatch)
       case 'dragTo':
         return { ok: false, failure: dragRefused('Firefox') }
+    }
+  }
+
+  // Closes the tab through `browsingContext.close`, which runs the page's `beforeunload` handlers first, and waits for
+  // Firefox to tell the tab is gone. A `beforeunload` dialog holds the page, as every dialog does on Firefox, so the
+  // close fails at once by name, its input sent. A tab still open past the command's time fails as a timeout.
+  async #close(deadline: Deadline, dispatch: Dispatch): Promise<CommandResult> {
+    const { promise, resolve } = Promise.withResolvers<CommandResult>()
+    // A browser lost while the tab closes took the tab with it, which says nothing of the close.
+    void this.#ended.promise.then((end) => resolve(end.kind === 'closed' ? { ok: true, kind: 'close' } : { ok: false, failure: connectionEnded('close the page', true, end.reason) }))
+    const timer = setTimeout(() => resolve({ ok: false, failure: { class: 'timeout', message: `Retest asked the page to close, and it was still open after ${deadline.budgetMs} ms.`, details: { inputSent: true } } }), deadline.waitToEndMs)
+    this.#closingPrompt = (type) => resolve({ ok: false, failure: dialogOpened('close the page', type, true) })
+    try {
+      try {
+        // The browser's windows open and close one at a time (`inWindowOrder` says why).
+        await inWindowOrder(this.#client, deadline, () => dispatch.send(this.#bridge.session, 'browsingContext.close', { context: this.#context, promptUnload: true }, deadline))
+      } catch (error) {
+        // A tab that went as it was asked to may take the answer with it, and a prompt it opened holds the answer back.
+        if (!this.#closedItself && this.#dialog === undefined) throw error
+      }
+      return await promise
+    } finally {
+      clearTimeout(timer)
+      this.#closingPrompt = undefined
     }
   }
 
@@ -1100,8 +1293,21 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     this.#titles.dispose()
     this.#wake()
     for (const watcher of [...this.#watchers]) watcher.onStopped(this.#lostReason)
+    this.#popups.lost(this.#lostReason)
+    // The pages this page opened while nothing waited close first; a popup the test was given is the runner's to close.
+    await this.#popups.disposeUnwaited(deadline)
+    if (this.#popup) return this.#disposePopup(deadline)
     this.#stop()
     this.#bridge.channel.close(this.#lostReason)
+    this.#scope.watch.dispose()
+    try {
+      await this.#removeUserContext(deadline)
+    } finally {
+      await this.#downloads?.close()
+    }
+  }
+
+  async #removeUserContext(deadline: Deadline): Promise<void> {
     if (this.#client.closeReason !== undefined) return
     const options = () => ({ timeoutMs: deadline.commandTimeoutMs })
     const problems: string[] = []
@@ -1116,10 +1322,38 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     }
     const preload = this.#preload
     if (preload !== undefined) await attempt("remove the page's preload script", () => this.#client.send('script.removePreloadScript', { script: preload }, options()))
-    const subscription = { id: this.#pageSubscription, events: ['browsingContext', 'script'], contexts: [this.#context] }
-    await attempt("stop following the page's events", () => this.#client.send('session.unsubscribe', unsubscribeParameters(subscription), options()))
+    // Firefox 158 names every subscription; one it gave no id ends with the user context, whose events stop with it.
+    for (const id of [this.#pageSubscription, this.#networkSubscription]) {
+      if (id !== undefined) await attempt("stop following the page's events", () => this.#client.send('session.unsubscribe', { subscriptions: [id] }, options()))
+    }
     await attempt("close the page's user context", () => inWindowOrder(this.#client, deadline, () => this.#client.send('browser.removeUserContext', { userContext: this.#userContext }, options())))
     if (problems.length > 0) throw new BrowserError({ class: 'cleanup_failed', message: problems.join(' ') })
+  }
+
+  // A popup shares its opener's user context: disposing it closes its own tab, without running its `beforeunload`
+  // handlers, and waits within the deadline for Firefox to tell the tab is gone. A tab that is gone already, or a browser
+  // that is, needs nothing.
+  async #disposePopup(deadline: Deadline): Promise<void> {
+    try {
+      if (this.#closedItself || this.#client.closeReason !== undefined) return
+      try {
+        await inWindowOrder(this.#client, deadline, () => this.#client.send('browsingContext.close', { context: this.#context, promptUnload: false }, { timeoutMs: deadline.commandTimeoutMs }))
+      } catch (error) {
+        // A tab that closed between the check and the call is gone, as asked.
+        const gone = this.#closedItself || this.#client.closeReason !== undefined || (error instanceof BidiProtocolError && error.error === 'no such frame')
+        if (!gone) throw new BrowserError({ class: 'cleanup_failed', message: `Could not close the popup: ${errorMessage(error)}` }, { cause: error })
+        return
+      }
+      let timer: NodeJS.Timeout | undefined
+      await Promise.race([this.#ended.promise, new Promise<void>((resolve) => (timer = setTimeout(resolve, deadline.waitToEndMs)))])
+      clearTimeout(timer)
+      if (!this.#closedItself && this.#client.closeReason === undefined) {
+        throw new BrowserError({ class: 'cleanup_failed', message: `Could not close the popup: it was still open ${deadline.budgetMs} ms after Retest asked.` })
+      }
+    } finally {
+      this.#stop()
+      this.#bridge.channel.close(this.#lostReason ?? 'the page was closed')
+    }
   }
 
   #operationError(command: string, error: unknown, timeoutMs: number): unknown {
@@ -1195,6 +1429,8 @@ export class FirefoxPage implements WebSession, ElementIdentity {
   // either way. What the commit adds is the address of Firefox's error page, which names its reason, before the page's
   // own events say it.
   #navigationCommitted(navigation: string | null, url: string): void {
+    // A popup's document whose own run of the script has not told of it yet may be one Firefox runs no preload script in.
+    if (this.#popup && navigation !== null && this.#pendingNamed(navigation) !== undefined) this.#runDocumentScript()
     if (errorPageReason(url) === undefined) return
     const id = this.#documentOf(navigation, url)
     for (const watcher of [...this.#watchers]) watcher.onContentLoaded(id, url)
@@ -1292,6 +1528,7 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     const reason = `a JavaScript ${type} dialog holds the page`
     this.#bridge.channel.block(reason)
     for (const watcher of [...this.#watchers]) watcher.onStopped(reason)
+    this.#closingPrompt?.(type)
   }
 
   #promptClosed(): void {
@@ -1306,6 +1543,7 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     this.#titles.dispose()
     this.#wake()
     for (const watcher of [...this.#watchers]) watcher.onStopped(reason)
+    this.#popups.lost(reason)
   }
 
   // Retest's own script speaks through two channels of this tab: a document committed, and the document changed. A
@@ -1323,8 +1561,8 @@ export class FirefoxPage implements WebSession, ElementIdentity {
     const href = read.data.value
     if (read.channel === this.#channels.documented) {
       // Firefox 158 runs the script in a passing document with no address while a navigation moves to another process;
-      // only a document with an address committed.
-      if (href !== '') this.#committed(href)
+      // only a document with an address committed. A popup's first, empty document is the one its page began with.
+      if (href !== '' && !(this.#popup && this.#documents === 0 && href === 'about:blank')) this.#committed(href)
       return
     }
     if (read.channel !== this.#channels.changed) return

@@ -501,10 +501,10 @@ export function withPickerAdvice(result: CommandResult, advice: string): Command
 export function filesRefused(what: 'upload' | 'chooser' | 'download', where: string): Failure {
   switch (what) {
     case 'upload':
-      return { class: 'unsupported', message: `Retest gives a file input files on Chrome, Chromium and WebKit only, and not ${where} yet, so it gave none.`, details: { inputSent: false } }
+      return { class: 'unsupported', message: `Retest gives a file input files on Chrome, Chromium, Firefox and WebKit only, and not ${where} yet, so it gave none.`, details: { inputSent: false } }
     case 'chooser':
-      return { class: 'unsupported', message: `Retest catches a file picker on Chrome, Chromium and WebKit only, and not ${where} yet, so it waited for none.` }
+      return { class: 'unsupported', message: `Retest catches a file picker on Chrome, Chromium, Firefox and WebKit only, and not ${where} yet, so it waited for none.` }
     case 'download':
-      return { class: 'unsupported', message: `Retest saves downloads on Chrome, Chromium and WebKit only, and not ${where} yet, so it waited for none.` }
+      return { class: 'unsupported', message: `Retest saves downloads on Chrome, Chromium, Firefox and WebKit only, and not ${where} yet, so it waited for none.` }
   }
 }
