@@ -1,5 +1,5 @@
 import type { ActionTarget, PendingNavigation, ReadyTarget } from '../actionability.ts'
-import type { BrowserCommand, DispatchedCommand, ElementIdentity, KeyedReading, PageNavigation, PageReading, RequestResult, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
+import type { BrowserCommand, DispatchedCommand, ElementIdentity, FilesCapability, KeyedReading, PageDownload, PageNavigation, PageReading, RequestResult, SessionIdentity, TextQuery, WebSession } from '../contract.ts'
 import type { ActionIntent, PlannedKey, Pointer, Selection } from '../element-queries.ts'
 import type { Guard, GuardedIntent, GuardVerdict } from '../input-guard.ts'
 import type { Point } from '../input.ts'
@@ -13,6 +13,8 @@ import type { PageFacts } from '../../protocol/page-facts.ts'
 import type { StorageState, StoredOrigin } from '../../protocol/storage-state.ts'
 import type { RoleDoubt } from './accessibility-reading.ts'
 import type { PageProxyEvent, TargetEvent, WebKitConnection } from './connection.ts'
+import type { WebKitPageDownloads } from './downloads.ts'
+import type { PopupPage } from './popups.ts'
 import type { FrameEvent, Traversal, WebKitNavigationContext } from './navigation.ts'
 import type { WebKitScreen } from './screen.ts'
 import type { ListPlanRequest } from './select.ts'
@@ -50,12 +52,12 @@ import { disarmGuard, guardFailure, guardInput } from '../input-guard.ts'
 import { IsolatedWorld, isGoneContext } from '../isolated-world.ts'
 import { dragRefused } from '../drag.ts'
 import { routesRefused, type RouteRemoval } from '../routes.ts'
-import { filesRefused } from '../file-chooser.ts'
+import { setInputFiles } from '../file-chooser.ts'
 import { dialogsUnsupported, type DialogArming } from '../dialogs.ts'
 import { browserCommandLocators, framesUnreached } from '../frames.ts'
 import { rolesStopAtShadowRoots } from '../locate.ts'
 import { layoutUnmeasured } from '../layout.ts'
-import { closeUnsupported, popupsUnsupported, type PopupArming } from '../popups.ts'
+import type { PopupArming, PopupEnd, PopupWaitOptions } from '../popups.ts'
 import { Listeners } from '../listeners.ts'
 import { NavigationCauses } from '../navigation-causes.ts'
 import { NavigationTitles } from '../navigation-titles.ts'
@@ -63,7 +65,9 @@ import { pageFactsFunction, pageLookFunction, readPageFunction } from '../page-s
 import { originAndPath } from '../page-url.ts'
 import { locatorArguments } from '../locate.ts'
 import { readLocalStorage } from '../storage-state.ts'
+import { WebKitFileChoosers } from './file-chooser.ts'
 import { navigate, reload, traverse } from './navigation.ts'
+import { WebKitPopups } from './popups.ts'
 import { bootstrapScript } from './relay.ts'
 import { doubtedRole, genericRefusal, roleRefusal } from './roles.ts'
 import { listKey, listPlanFunction, listPlanSchema } from './select.ts'
@@ -82,6 +86,8 @@ export type WebKitPageSetup = {
   /** Origins whose storage the page's context already holds, from a restored state. */
   restoredOrigins: readonly string[]
   serveEmptyDocuments?: true
+  /** The downloads of the context's test page, when its context saves them; a popup's are its opener's. */
+  downloads?: WebKitPageDownloads
 }
 
 export type WebKitPageOptions = {
@@ -96,6 +102,16 @@ export type WebKitPageOptions = {
   /** Opens a page in the same context for Retest's own use, such as reading another origin's storage. */
   openSidePage: (deadline: Deadline) => Promise<SidePage>
   onListenerError: (error: unknown) => void
+  /**
+   * The page proxy of the page that opened this one, for a popup: it shares its opener's context, and closing it closes
+   * its own page and leaves the context.
+   */
+  openerId?: string | undefined
+  /**
+   * The kind of a JavaScript dialog another page of this page's browser context shows, if one does. WebKit holds every
+   * page of a web process while a dialog of one is open, and the pages a page opens to its own site share its process.
+   */
+  dialogElsewhere?: (() => string | undefined) | undefined
 }
 
 /** A WebKit screenshot as a capture: its PNG, its source, the session that took it, and when it came back. */
@@ -117,6 +133,8 @@ type Acting = {
 type PointerAction = Extract<BrowserCommand, { kind: 'click' | 'tap' }>
 
 const worldName = 'retest'
+// WebKit's answer to `Page.createUserWorld` in a web process that already has a world of that name.
+const userWorldExists = 'World with the given name already exists'
 const changeBinding = 'retestChanged'
 const retryPauseMs = 20
 const loadedPageReadMs = 1000
@@ -179,9 +197,13 @@ export function waitedWholeBudget(failure: Failure, budgetMs: number): boolean {
 const pinnedList = new AsyncLocalStorage<string>()
 
 /** One page of a WebKit browser context: a web session that tells one element from another. */
-export class WebKitPage implements WebSession, ElementIdentity {
+export class WebKitPage implements WebSession, ElementIdentity, PopupPage {
   readonly pageProxyId: string
   readonly browserContextId: string
+  /** The page proxy of the page that opened this one, for a popup. */
+  readonly openerId: string | undefined
+  /** Settles with how the page ended: its page closed while the browser stayed, or the connection to the browser ended. */
+  readonly gone: Promise<PopupEnd>
   /** Settles once the first page target is set up and running, and rejects if the page fails before that. */
   readonly ready: Promise<void>
   readonly #connection: WebKitConnection
@@ -224,11 +246,20 @@ export class WebKitPage implements WebSession, ElementIdentity {
   #dialog: string | undefined
   #disposing: Promise<void> | undefined
   #identity: RecordIdentity | undefined
+  readonly #choosers: WebKitFileChoosers
+  readonly #popups: WebKitPopups
+  readonly #ended = Promise.withResolvers<PopupEnd>()
+  readonly #dialogOpenings: Listeners<string>
+  readonly #dialogElsewhere: () => string | undefined
+  #closedInBrowser = false
 
   constructor(options: WebKitPageOptions) {
     this.#connection = options.connection
     this.pageProxyId = options.pageProxyId
     this.browserContextId = options.browserContextId
+    this.openerId = options.openerId
+    this.#dialogElsewhere = options.dialogElsewhere ?? (() => undefined)
+    this.gone = this.#ended.promise
     const { setup } = options
     if (setup instanceof Promise) {
       this.#setupApplied = setup.then((applied) => this.#applySetup(applied))
@@ -245,6 +276,8 @@ export class WebKitPage implements WebSession, ElementIdentity {
     this.#frameEvents = new Listeners(options.onListenerError)
     this.#events = new Listeners(options.onListenerError)
     this.#losses = new Listeners(options.onListenerError)
+    this.#dialogOpenings = new Listeners(options.onListenerError)
+    this.#popups = new WebKitPopups(options.onListenerError)
     this.#bridge = new WebKitTargetSession({
       connection: this.#connection,
       pageProxyId: this.pageProxyId,
@@ -254,6 +287,7 @@ export class WebKitPage implements WebSession, ElementIdentity {
     })
     this.#browserSession = new CdpSession('webkit browser', new Channel(undefined, (_event, error) => options.onListenerError(error)), (method, params, sendOptions) => this.#connection.send(method, params, sendOptions))
     this.#world = new IsolatedWorld(this.#bridge.session, () => this.#mainFrameId)
+    this.#choosers = new WebKitFileChoosers(this.#bridge, setupTimeoutMs)
     this.#titles = new NavigationTitles({
       readable: () => this.#pendingNavigation === undefined && this.#lostReason === undefined && this.#dialog === undefined,
       read: async (deadline) => pageTitleOf((await this.#world.call(pageFactsFunction, [], documentFactsSchema, deadline)).title),
@@ -266,6 +300,65 @@ export class WebKitPage implements WebSession, ElementIdentity {
 
   get url(): string | undefined {
     return this.#address()
+  }
+
+  /**
+   * The page's file pickers, which every WebKit page catches, and its downloads, when it is the test's page of a context
+   * that saves them.
+   */
+  get files(): FilesCapability {
+    const downloads = this.#appliedSetup?.downloads
+    const saving = downloads === undefined ? {} : { onDownload: (listener: (download: PageDownload) => void) => downloads.onDownload(listener) }
+    return { armFileChooser: () => this.#choosers.armFileChooser(), ...saving }
+  }
+
+  /** The kind of the JavaScript dialog that holds this page, while one does. */
+  get dialog(): string | undefined {
+    return this.#dialog
+  }
+
+  // A command whose page did not answer in time while another page of the context showed a dialog says so: WebKit may
+  // hold this page with that one, as it holds the pages of one web process, and Retest answers no dialog on WebKit.
+  #heldElsewhere(result: CommandResult): CommandResult {
+    if (result.ok || result.failure.class !== 'timeout' || this.#dialog !== undefined) return result
+    const dialog = this.#dialogElsewhere()
+    if (dialog === undefined) return result
+    const message = `${result.failure.message} Another page of this test shows ${/^[aeiou]/.test(dialog) ? 'an' : 'a'} ${dialog} dialog, and WebKit holds every page of a web process while one of them shows a dialog, which Retest does not answer on WebKit yet.`
+    return { ok: false, failure: { ...result.failure, message, details: { ...result.failure.details, dialogElsewhere: dialog } } }
+  }
+
+  /** Whether the page's proxy was destroyed while the browser stayed: it closed itself, or Retest closed it. */
+  get closedInBrowser(): boolean {
+    return this.#closedInBrowser
+  }
+
+  /** Whether the page saves its context's downloads, as the test's page of a context that saves them does. */
+  get savesDownloads(): boolean {
+    return this.#appliedSetup?.downloads !== undefined
+  }
+
+  /** The setup a page this page opens runs with: this page's screen and address base, and no restored origins. */
+  setupForPopup(): Promise<WebKitPageSetup> {
+    return this.#setupApplied.then((setup) => ({ baseUrl: setup.baseUrl, screen: setup.screen, restoredOrigins: [] }))
+  }
+
+  /** This page opened `page`, whose first target the browser holds: it goes to a wait for it, or is kept. The browser calls it. */
+  popupOpened(page: PopupPage): void {
+    this.#popups.opened(page)
+  }
+
+  /** The browser destroyed the page's proxy, as when the page closed itself. The browser calls it. */
+  pageDestroyed(): void {
+    const closeReason = this.#connection.closeReason
+    this.#closedInBrowser = closeReason === undefined
+    this.markClosed('the page was closed')
+    this.#ended.resolve(closeReason === undefined ? { kind: 'closed' } : { kind: 'lost', reason: closeReason })
+  }
+
+  /** The connection to the browser ended, which takes the page with it. The browser calls it. */
+  connectionEnded(reason: string): void {
+    this.markClosed(`the browser connection ended: ${reason}`)
+    this.#ended.resolve({ kind: 'lost', reason })
   }
 
   // The page's setup once the browser has said which page it is; a page is handed out only after that.
@@ -332,6 +425,7 @@ export class WebKitPage implements WebSession, ElementIdentity {
       this.#crashed = crashed
       this.#losses.emit({ reason, crashed })
     }
+    this.#popups.lost(this.#lostReason)
     this.#bridge.close(reason)
     this.#titles.dispose()
     this.#readyResolvers.reject(new BrowserError({ class: 'session_lost', message: `The page was lost before it was ready: ${reason}.` }))
@@ -355,8 +449,9 @@ export class WebKitPage implements WebSession, ElementIdentity {
     const unreached = framesUnreached(browserCommandLocators(command), 'WebKit')
     if (unreached !== undefined) return { result: { ok: false, failure: unreached }, input: 'not_sent' }
     const dispatch = new Dispatch()
-    const result = await rolesStopAtShadowRoots('WebKit', () => this.#execute(command, { timeoutMs, signal, commandToken, dispatch }))
-    return { result, input: dispatch.input }
+    const acting = !command.kind.startsWith('observe')
+    const result = await this.#choosers.around(acting, () => this.#describe(command), () => rolesStopAtShadowRoots('WebKit', () => this.#execute(command, { timeoutMs, signal, commandToken, dispatch })))
+    return { result: this.#heldElsewhere(result), input: dispatch.input }
   }
 
   /**
@@ -501,9 +596,14 @@ export class WebKitPage implements WebSession, ElementIdentity {
     return { ok: false, failure: dialogsUnsupported('WebKit') }
   }
 
-  /** WebKit cannot hand a test the pages a page opens yet, so the page refuses by name. */
-  async armPopup(): Promise<PopupArming> {
-    return { ok: false, failure: popupsUnsupported('WebKit') }
+  /**
+   * Arms the page for the next page it opens, which the browser holds before its first document and hands to it. A page
+   * that is lost or held by a dialog refuses, as any command to it does.
+   */
+  async armPopup(options: PopupWaitOptions): Promise<PopupArming> {
+    const blocked = this.#blocked('wait for a popup', false)
+    if (blocked !== undefined) return { ok: false, failure: blocked }
+    return this.#popups.arm(options)
   }
 
   /** WebKit cannot answer a page's requests with routes yet, so the page refuses by name and holds no route. */
@@ -656,7 +756,7 @@ export class WebKitPage implements WebSession, ElementIdentity {
       case 'observeLayout':
         return { ok: false, failure: layoutUnmeasured('WebKit') }
       case 'close':
-        return { ok: false, failure: closeUnsupported('WebKit') }
+        return this.#close(deadline, dispatch)
       case 'press':
         return this.#pressKey(command, deadline, dispatch, commandToken)
       case 'tap':
@@ -686,10 +786,43 @@ export class WebKitPage implements WebSession, ElementIdentity {
       case 'scroll':
         return this.#scroll(command, deadline, dispatch, commandToken)
       case 'setInputFiles':
+        return setInputFiles({ world: this.#world, session: this.#bridge.session, pendingNavigation: () => this.#pendingNavigation }, command, deadline, dispatch)
       case 'setChooserFiles':
-        return { ok: false, failure: filesRefused('upload', 'on WebKit') }
+        return this.#choosers.setFiles(command, deadline, dispatch)
       case 'dragTo':
         return { ok: false, failure: dragRefused('WebKit') }
+    }
+  }
+
+  // Closes the page through `Playwright.closePage`, which runs its `beforeunload` handlers first, and waits for its proxy
+  // to go. WebKit hands no dialog to a test, so a `beforeunload` dialog the close opens holds the page, and the close fails
+  // at once, naming it, with its input sent. A page still open past the command's time fails as a timeout, its input sent.
+  // Build 2359 closes a page that way only once it runs `beforeunload` listeners, and leaves open, saying nothing, a page
+  // that has none (probe: a popup with no listener stayed open 5 s; with one, it closed after its listener ran). So
+  // Retest's own world first listens for `beforeunload` itself, doing nothing, which the page cannot see.
+  async #close(deadline: Deadline, dispatch: Dispatch): Promise<CommandResult> {
+    const described = 'close the page'
+    if (this.#closedInBrowser) return { ok: false, failure: { class: 'not_actionable', message: 'Retest could not close the page: it was closed already.', details: { inputSent: false } } }
+    await this.#world.call(closeListenerFunction, [], s.boolean(), deadline)
+    const { promise, resolve } = Promise.withResolvers<CommandResult>()
+    void this.gone.then((end) => resolve(end.kind === 'closed' ? { ok: true, kind: 'close' } : { ok: false, failure: connectionEnded(described, true, end.reason) }))
+    const stopDialogs = this.#dialogOpenings.add((dialog) => resolve({ ok: false, failure: dialogOpened(described, dialog, true) }))
+    const stop = (): void => resolve({ ok: false, failure: commandStopped(described, true, deadline.signal?.reason) })
+    const message = `Retest asked the page to close, and it was still open after ${deadline.budgetMs} ms.`
+    const timer = setTimeout(() => resolve({ ok: false, failure: { class: 'timeout', message, details: { inputSent: true } } }), deadline.waitToEndMs)
+    try {
+      await dispatch.send(this.#browserSession, 'Playwright.closePage', { pageProxyId: this.pageProxyId, runBeforeUnload: true }, deadline)
+      deadline.signal?.addEventListener('abort', stop, { once: true })
+      if (deadline.signal?.aborted === true) stop()
+      return await promise
+    } catch (error) {
+      // A page that went as it was asked to close may take the answer with it.
+      if (!this.#closedInBrowser) throw error
+      return { ok: true, kind: 'close' }
+    } finally {
+      stopDialogs()
+      clearTimeout(timer)
+      deadline.signal?.removeEventListener('abort', stop)
     }
   }
 
@@ -1058,19 +1191,45 @@ export class WebKitPage implements WebSession, ElementIdentity {
     }
   }
 
+  // A popup shares its opener's context: the pages it opened while nothing waited close first, then its own page. The
+  // test's own page takes every page of its context with the context.
   async #dispose(deadline: Deadline): Promise<void> {
     this.#lostReason ??= 'the page was closed'
+    this.#popups.lost(this.#lostReason)
+    this.#appliedSetup?.downloads?.close()
     this.#bridge.close(this.#lostReason)
     this.#titles.dispose()
     this.#wake()
     // A context whose deletion fails leaves its page proxy behind; the page hears nothing of it from now on.
     for (const stop of this.#stopListening) stop()
     if (this.#connection.closeReason !== undefined) return
+    if (this.openerId !== undefined) {
+      await this.#popups.disposeUnwaited(deadline)
+      return this.#closeOwnPage(deadline)
+    }
     try {
       await this.#connection.send('Playwright.deleteContext', { browserContextId: this.browserContextId }, { timeoutMs: deadline.commandTimeoutMs })
     } catch (error) {
       if (error instanceof CdpDisconnectedError || error instanceof CdpClosedError) return
       throw new BrowserError({ class: 'cleanup_failed', message: `Could not close the page's browser context: ${errorMessage(error)}` }, { cause: error })
+    }
+  }
+
+  // Closes this popup's page without its `beforeunload` handlers, and waits within the deadline for its proxy to go. A page
+  // that is gone already, or a browser that is, needs nothing.
+  async #closeOwnPage(deadline: Deadline): Promise<void> {
+    if (this.#closedInBrowser || this.#connection.closeReason !== undefined) return
+    try {
+      await this.#connection.send('Playwright.closePage', { pageProxyId: this.pageProxyId }, { timeoutMs: deadline.commandTimeoutMs })
+    } catch (error) {
+      if (error instanceof CdpDisconnectedError || error instanceof CdpClosedError || this.#closedInBrowser) return
+      throw new BrowserError({ class: 'cleanup_failed', message: `Could not close the popup: ${errorMessage(error)}` }, { cause: error })
+    }
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([this.gone, new Promise<void>((resolve) => (timer = setTimeout(resolve, deadline.waitToEndMs)))])
+    clearTimeout(timer)
+    if (!this.#closedInBrowser && this.#connection.closeReason === undefined) {
+      throw new BrowserError({ class: 'cleanup_failed', message: `Could not close the popup: it was still open ${deadline.budgetMs} ms after Retest asked.` })
     }
   }
 
@@ -1102,6 +1261,9 @@ export class WebKitPage implements WebSession, ElementIdentity {
         return
       case 'Runtime.bindingCalled':
         if (readProtocol(bindingSchema, params, { method }).name === changeBinding) this.#changed()
+        return
+      case 'Page.fileChooserOpened':
+        if (targetId === this.#targetId) this.#choosers.opened(params)
         return
       case 'Page.frameNavigated':
         this.#frameNavigated(targetId, params)
@@ -1161,7 +1323,18 @@ export class WebKitPage implements WebSession, ElementIdentity {
     )
   }
 
+  // A target whose setup failed is still let run, so a page that shares its web process, as the page that opened it
+  // does, is not held with it; the failure is the page's, as its ready promise says.
   async #attach(targetId: string, provisional: boolean, paused: boolean): Promise<void> {
+    try {
+      await this.#setUpTarget(targetId, provisional, paused)
+    } catch (error) {
+      if (paused && this.#lostReason === undefined) this.#connection.sendToPageProxy(this.pageProxyId, 'Target.resume', { targetId }).catch(() => undefined)
+      throw error
+    }
+  }
+
+  async #setUpTarget(targetId: string, provisional: boolean, paused: boolean): Promise<void> {
     // A page whose setup has not come stays paused; one lost meanwhile ends here, as its ready promise says.
     await Promise.race([this.#setupApplied, this.ready.then(() => this.#setupApplied)])
     const options = { timeoutMs: setupTimeoutMs }
@@ -1172,7 +1345,12 @@ export class WebKitPage implements WebSession, ElementIdentity {
       send('Runtime.enable'),
       send('Network.enable'),
       send('Console.enable'),
-      send('Page.createUserWorld', { name: worldName }),
+      // A user world is named once per web process, so a page opened into the process of the page that opened it, as
+      // `window.open` opens one, finds Retest's world already made there, and is told of its contexts all the same.
+      send('Page.createUserWorld', { name: worldName }).catch((error: unknown) => {
+        if (!(error instanceof CdpProtocolError && error.protocolMessage === userWorldExists)) throw error
+      }),
+      send('Page.setInterceptFileChooserDialog', { enabled: true }),
       send('Runtime.addBinding', { name: changeBinding }),
       send('Page.setBootstrapScript', { source: bootstrapScript(this.#secret) }),
       // A desktop page has no touch screen, as Chromium's has none unless one is emulated.
@@ -1235,6 +1413,7 @@ export class WebKitPage implements WebSession, ElementIdentity {
     const reason = `a JavaScript ${type} dialog holds the page`
     this.#bridge.block(reason)
     this.#frameEvents.emit({ kind: 'stopped', reason })
+    this.#dialogOpenings.emit(type)
   }
 
   #dialogClosed(): void {
@@ -1351,6 +1530,13 @@ export class WebKitPage implements WebSession, ElementIdentity {
     }
   }
 }
+
+// A `beforeunload` listener of Retest's world that does nothing, so WebKit runs the page's own before it closes the page.
+const closeListenerFunction = `function listenBeforeClose() {
+  globalThis.retestBeforeClose ??= () => {}
+  addEventListener('beforeunload', globalThis.retestBeforeClose)
+  return true
+}`
 
 // What a page reads before the browser has said which page it is: nothing reads it then, since a page is handed out only
 // once its setup is applied.

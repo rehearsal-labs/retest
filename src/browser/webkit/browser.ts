@@ -2,6 +2,7 @@ import type { PipeStreams, Transport } from '../cdp/transport.ts'
 import type { NewPageOptions, OutputRedactor, WebRuntime, WebRuntimeIdentity, WebSession } from '../contract.ts'
 import type { Deadline } from '../../protocol/deadline.ts'
 import type { WebKitBuild } from './build.ts'
+import type { DownloadPlace } from './downloads.ts'
 import type { WebKitPageSetup } from './page.ts'
 import type { SidePage } from './storage.ts'
 import { tmpdir } from 'node:os'
@@ -19,6 +20,7 @@ import { launchOutput, logLength, logWriter } from '../launch.ts'
 import { Listeners } from '../listeners.ts'
 import { describeBuildVersion, findWebKitBuild } from './build.ts'
 import { WebKitConnection } from './connection.ts'
+import { WebKitDownloads } from './downloads.ts'
 import { WebKitPage } from './page.ts'
 import { WebKitProcess } from './process.ts'
 import { defaultScreen, webKitScreen } from './screen.ts'
@@ -40,11 +42,13 @@ export type WebKitLaunchOptions = {
 }
 
 const launchTimeoutMs = 30_000
+// How far a download's page is followed back through the pages that opened it: a popup's popup is two steps.
+const maxOpenerSteps = 8
 // The setup of a page the browser opened on its own.
 const popupSetup: WebKitPageSetup = { baseUrl: undefined, screen: defaultScreen, restoredOrigins: [] }
 const pageProxySchema = s.object({ pageProxyId: s.string() })
 const contextSchema = s.object({ browserContextId: s.string() })
-const proxyCreatedSchema = s.object({ pageProxyId: s.string(), browserContextId: s.string() })
+const proxyCreatedSchema = s.object({ pageProxyId: s.string(), browserContextId: s.string(), openerId: s.optional(s.string()) })
 const proxyDestroyedSchema = s.object({ pageProxyId: s.string() })
 const loadFailedSchema = s.object({ pageProxyId: s.string(), loaderId: s.string(), error: s.string() })
 const userAgentSchema = s.object({ result: s.object({ value: s.string() }) })
@@ -122,6 +126,10 @@ export class WebKitBrowser implements WebRuntime {
   // function that hands it its setup, and so lets its first target run.
   readonly #unclaimed = new Map<string, { readonly browserContextId: string; readonly apply: (setup: WebKitPageSetup) => void }>()
   readonly #cleanupProblems: string[] = []
+  // The page that opened each page proxy, if one did, and its context, kept while a page of its context is open, so a
+  // download a popup's popup begins is placed after the popup between them has closed.
+  readonly #openers = new Map<string, { readonly opener: string | undefined; readonly context: string }>()
+  readonly #downloads: WebKitDownloads
   #userAgent = ''
   #disconnectReason: string | undefined
   #closeRequested = false
@@ -139,12 +147,14 @@ export class WebKitBrowser implements WebRuntime {
     this.#onListenerError = parts.onListenerError
     this.#log = parts.log
     this.#disconnects = new Listeners(parts.onListenerError)
+    this.#downloads = new WebKitDownloads(this.#connection, (pageProxyId) => this.#placeOf(pageProxyId), parts.onListenerError)
     this.#connection.onBrowserEvent('Playwright.pageProxyCreated', (params) => this.#pageCreated(params))
     this.#connection.onBrowserEvent('Playwright.pageProxyDestroyed', (params) => {
       const { pageProxyId } = readProtocol(proxyDestroyedSchema, params, { method: 'Playwright.pageProxyDestroyed' })
-      this.#pages.get(pageProxyId)?.markClosed('the page was closed')
+      this.#pages.get(pageProxyId)?.pageDestroyed()
       this.#pages.delete(pageProxyId)
       this.#unclaimed.delete(pageProxyId)
+      this.#forgetOpeners(pageProxyId)
     })
     this.#connection.onBrowserEvent('Playwright.provisionalLoadFailed', (params) => {
       const { pageProxyId, loaderId, error } = readProtocol(loadFailedSchema, params, { method: 'Playwright.provisionalLoadFailed' })
@@ -213,7 +223,8 @@ export class WebKitBrowser implements WebRuntime {
         await restoreCookies(this.#connection, context, state.cookies, deadline)
         restoredOrigins = await restoreOrigins(this.#sidePages(context), state.origins, deadline)
       }
-      const page = await this.#openPage(context, { baseUrl: options.baseUrl, screen: screen.screen, restoredOrigins }, deadline)
+      const downloads = options.downloads === undefined ? {} : { downloads: await this.#downloads.save(context, options.downloads, deadline) }
+      const page = await this.#openPage(context, { baseUrl: options.baseUrl, screen: screen.screen, restoredOrigins, ...downloads }, deadline)
       await this.#recordHelpers()
       return page
     } catch (error) {
@@ -314,11 +325,17 @@ export class WebKitBrowser implements WebRuntime {
     }
   }
 
+  // A page a page of Retest's opened, by `window.open` or a link or a form with a target, names its opener: it runs with
+  // its opener's setup, and goes to its opener at once, before its first target runs, to be handed to a test waiting for
+  // it or kept. Any other page is one `Playwright.createPage` made, which its answer names; one no answer names is set up
+  // with the default screen and let run.
   #pageCreated(params: unknown): void {
-    const { pageProxyId, browserContextId } = readProtocol(proxyCreatedSchema, params, { method: 'Playwright.pageProxyCreated' })
-    // A page the browser opened on its own, as a popup, is set up and let run, and never handed to a test.
+    const { pageProxyId, browserContextId, openerId } = readProtocol(proxyCreatedSchema, params, { method: 'Playwright.pageProxyCreated' })
+    this.#openers.set(pageProxyId, { opener: openerId, context: browserContextId })
+    const opener = openerId === undefined ? undefined : this.#pages.get(openerId)
     const setup = Promise.withResolvers<WebKitPageSetup>()
-    if ((this.#creating.get(browserContextId) ?? 0) > 0) this.#unclaimed.set(pageProxyId, { browserContextId, apply: setup.resolve })
+    if (opener !== undefined) opener.setupForPopup().then(setup.resolve, setup.reject)
+    else if ((this.#creating.get(browserContextId) ?? 0) > 0) this.#unclaimed.set(pageProxyId, { browserContextId, apply: setup.resolve })
     else setup.resolve(popupSetup)
     const page = new WebKitPage({
       connection: this.#connection,
@@ -327,8 +344,36 @@ export class WebKitBrowser implements WebRuntime {
       setup: setup.promise,
       openSidePage: this.#sidePages(browserContextId),
       onListenerError: this.#onListenerError,
+      dialogElsewhere: () => [...this.#pages.values()].find((other) => other.pageProxyId !== pageProxyId && other.browserContextId === browserContextId && other.dialog !== undefined)?.dialog,
+      ...(opener === undefined ? {} : { openerId }),
     })
     this.#pages.set(pageProxyId, page)
+    opener?.popupOpened(page)
+  }
+
+  // Where a download a page proxy began began: in the context's test page, the page that saves its downloads, in a page
+  // it opened or one such a page opened, or in another page of the context.
+  #placeOf(pageProxyId: string): DownloadPlace | undefined {
+    const context = this.#openers.get(pageProxyId)?.context
+    if (context === undefined) return undefined
+    let current: string | undefined = pageProxyId
+    for (let steps = 0; current !== undefined && steps < maxOpenerSteps; steps += 1) {
+      const known = this.#openers.get(current)
+      if (known?.opener === undefined) {
+        const home = this.#pages.get(current)?.savesDownloads === true
+        return { context, startedIn: home ? (steps === 0 ? undefined : 'popup') : 'other' }
+      }
+      current = known.opener
+    }
+    return { context, startedIn: 'other' }
+  }
+
+  // A context's openers are kept while any page of it is open, so a page a closed popup opened is still placed, and go
+  // with its last page.
+  #forgetOpeners(pageProxyId: string): void {
+    const context = this.#openers.get(pageProxyId)?.context
+    if (context === undefined || [...this.#pages.values()].some((page) => page.browserContextId === context)) return
+    for (const [id, each] of [...this.#openers]) if (each.context === context) this.#openers.delete(id)
   }
 
   async #recordHelpers(): Promise<void> {
@@ -348,7 +393,7 @@ export class WebKitBrowser implements WebRuntime {
   #disconnected(reason: string): void {
     if (this.#disconnectReason !== undefined) return
     this.#disconnectReason = this.#closeRequested ? 'Retest closed the browser' : reason
-    for (const page of this.#pages.values()) page.markClosed(`the browser connection ended: ${this.#disconnectReason}`)
+    for (const page of this.#pages.values()) page.connectionEnded(this.#disconnectReason)
     this.#disconnects.emit(this.#disconnectReason)
   }
 }

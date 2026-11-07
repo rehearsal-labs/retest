@@ -134,12 +134,17 @@ export class AttemptFiles {
     if (page?.files?.onDownload === undefined || page.downloads === undefined) return refused(filesRefused('download', page?.where ?? 'on this app'))
     if (this.#waiting.has(app)) return refused(failure('usage', 'page.download() is already waiting for a download on this app. Await it before you wait for the next.'))
     const began = Promise.withResolvers<Kept>()
-    this.#waiting.set(app, began.resolve)
+    // The download is the test's as soon as it is taken, so its event says so even when it ends at once, before the
+    // wait has handed it over, as a small file on WebKit does.
+    const take = (kept: Kept): void => {
+      kept.given = { stepId: budget.stepId, location: budget.location }
+      began.resolve(kept)
+    }
+    this.#waiting.set(app, take)
     const waited = await bounded(began.promise, budget.timeoutMs, aborted(budget.signal))
-    if (this.#waiting.get(app) === began.resolve) this.#waiting.delete(app)
+    if (this.#waiting.get(app) === take) this.#waiting.delete(app)
     if (waited.status === 'done') {
       const kept = waited.value
-      kept.given = { stepId: budget.stepId, location: budget.location }
       return { ok: true, kind: 'download', download: kept.id, suggestedFilename: this.#redact(kept.download.suggestedFilename) }
     }
     if (waited.status === 'stopped') return refused(stoppedBy(budget.signal, 'Retest stopped waiting for a download.'))
@@ -210,7 +215,9 @@ export class AttemptFiles {
     kept.done = true
     if (end.state === 'canceled') {
       removeQuietly(join(folder.folder, `${kept.download.guid}.crdownload`))
-      const message = `The browser stopped the download of ${name} after ${describeProgress(end)} had arrived, and gives no reason. Retest saved nothing.`
+      const reason = end.reason === undefined ? undefined : this.#redact(end.reason)
+      const why = reason === undefined ? ', and gives no reason.' : `: ${reason}${/[.!?]$/.test(reason) ? '' : '.'}`
+      const message = `The browser stopped the download of ${name} after ${describeProgress(end)} had arrived${why} Retest saved nothing.`
       const stopped = { ...failure('not_actionable', message), details: { download: name, receivedBytes: end.receivedBytes, totalBytes: end.totalBytes } }
       this.#write(kept, { state: 'canceled', receivedBytes: end.receivedBytes, totalBytes: end.totalBytes, failure: stopped })
       return { ok: false, failure: stopped }

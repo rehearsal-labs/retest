@@ -1363,10 +1363,10 @@ export class RunSession {
     }
   }
 
-  // A Chromium page saves its downloads in its session's folder of the run. An Electron app saves them its own way, and
-  // another engine's page and a native app have none Retest keeps.
+  // A Chromium or WebKit page saves its downloads in its session's folder of the run. An Electron app saves them its own
+  // way, and a Firefox page and a native app have none Retest keeps.
   #downloadsOf(described: Described, app: string, runtime: RuntimeIdentity, config: RunConfig): { folder: string; reference: string } | undefined {
-    if (runtime.kind !== 'web' || runtime.engine !== 'chromium' || isElectronTarget(targetOf(config, app, described.targets[app]))) return undefined
+    if (runtime.kind !== 'web' || runtime.engine === 'firefox' || isElectronTarget(targetOf(config, app, described.targets[app]))) return undefined
     const reference = downloadsFolder({ testId: described.testId, attemptId: described.attemptId, app, sessionId: formatSessionId(described.attemptId, app) })
     return { folder: join(this.#store.directory, reference), reference }
   }
