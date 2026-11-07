@@ -362,11 +362,11 @@ export interface OwnedPage extends NavigationCapability, StorageStateCapability 
   /** Hears each dialog the page answered itself because nothing waited for it. Returns a function that stops listening. */
   onUnwaitedDialog?(listener: (dialog: UnwaitedDialog) => void): () => void
   /**
-   * Popups, a capability of Chromium pages: arms the page for the next page it opens, which it hands to the test as a
+   * Popups, a capability of Chromium and WebKit pages: arms the page for the next page it opens, which it hands to the test as a
    * page of its own, held before its first document. A page that cannot answers `unsupported`, naming its engine.
    */
   armPopup?(options: PopupWaitOptions): Promise<PopupArming>
-  /** File pickers and downloads, a capability of Chromium pages. Absent on a driver that has neither. */
+  /** File pickers and downloads, a capability of Chromium and WebKit pages. Absent on a driver that has neither. */
   readonly files?: FilesCapability | undefined
   /**
    * Mocked responses, a capability of Chromium pages: adds a route, which answers every request of the page whose
@@ -389,10 +389,13 @@ export type CaughtChooser = { readonly id: string; readonly multiple: boolean }
  */
 export type ChooserArm = { readonly opened: Promise<CaughtChooser>; release(): void }
 
-/** How a download ended, as the browser said: the file it saved, or that it stopped, with how many bytes had arrived of how many. */
+/**
+ * How a download ended, as the browser said: the file it saved, or that it stopped, with how many bytes had arrived of
+ * how many, and, from a browser that gives one, its own words for why it stopped.
+ */
 export type DownloadEnd =
   | { readonly state: 'completed'; readonly filePath: string; readonly receivedBytes: number; readonly totalBytes: number }
-  | { readonly state: 'canceled'; readonly receivedBytes: number; readonly totalBytes: number }
+  | { readonly state: 'canceled'; readonly receivedBytes: number; readonly totalBytes: number; readonly reason?: string }
 
 /** Where a download began, when not in the page itself or a frame inside it: a page it opened, or another page. */
 export type DownloadStart = 'popup' | 'other'
