@@ -346,7 +346,7 @@ test('a page opened without a downloads folder refuses downloads, and the refusa
   const { page } = await filesPage(t)
   assert.equal(filesOf(page).onDownload, undefined)
   const answer = await attemptFiles(page, await scratchFolder(t), []).download('web', { timeoutMs: 500, signal: new AbortController().signal })
-  assert.deepEqual(answer, { ok: false, failure: { class: 'unsupported', message: 'Retest saves downloads on Chrome, Chromium and WebKit only, and not on this browser yet, so it waited for none.' } })
+  assert.deepEqual(answer, { ok: false, failure: { class: 'unsupported', message: 'Retest saves downloads on Chrome, Chromium, Firefox and WebKit only, and not on this browser yet, so it waited for none.' } })
 })
 
 test('a label finds a file input only through a label the page wrote, never through the browser\'s own button text', async (t) => {

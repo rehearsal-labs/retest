@@ -302,7 +302,8 @@ test('a second wait on a page that already waits is refused', async (t) => {
   assert.equal((await first.opened).ok, false)
 })
 
-test('Firefox and WebKit refuse page.dialog(), and Firefox page.popup() and close(), by name, and send nothing', async (t) => {
+// Both hand a test the pages a page opens and close them: firefox-popups.test.ts and webkit-popups.test.ts run that.
+test('Firefox and WebKit refuse page.dialog() by name, and send nothing', async (t) => {
   for (const [engine, label] of [['firefox', 'Firefox'], ['webkit', 'WebKit']] as const) {
     await t.test(label, async (t) => {
       const absent = engineAbsence(engine)
@@ -319,10 +320,6 @@ test('Firefox and WebKit refuse page.dialog(), and Firefox page.popup() and clos
       })
       const page = await openPage(t, owned)
       assert.deepEqual(page.armDialog?.(1000), { ok: false, failure: { class: 'unsupported', message: `Retest hands dialogs to a test on Chrome and Chromium only, and not on ${label} yet.` } })
-      // WebKit hands a test its popups and closes them; webkit-popups.test.ts runs them there.
-      if (engine === 'webkit') return
-      assert.deepEqual(await page.armPopup?.({ timeoutMs: 1000, setupMs: 1000 }), { ok: false, failure: { class: 'unsupported', message: `Retest hands a test the pages a page opens on Chrome, Chromium and WebKit only, and not on ${label} yet.` } })
-      assert.deepEqual(failureOf(await page.execute({ kind: 'close' }, 1000)), { class: 'unsupported', message: `Retest closes a page on Chrome, Chromium and WebKit only, and not on ${label} yet, so it closed nothing.`, details: { inputSent: false } })
     })
   }
 })
