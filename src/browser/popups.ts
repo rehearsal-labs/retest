@@ -276,7 +276,7 @@ export class PagePopups implements PopupOpener {
  * A popup's first navigation, which the page tells when it commits, within `timeoutMs`. Undefined when none came in time,
  * or the popup went first.
  */
-async function firstNavigation(follow: OpenedPopup['follow'], gone: Promise<PopupEnd>, timeoutMs: number): Promise<PageNavigation | undefined> {
+export async function firstNavigation(follow: OpenedPopup['follow'], gone: Promise<PopupEnd>, timeoutMs: number): Promise<PageNavigation | undefined> {
   const { promise, resolve } = Promise.withResolvers<PageNavigation | undefined>()
   const stop = follow(resolve)
   const timer = setTimeout(() => resolve(undefined), timeoutMs)
@@ -378,10 +378,10 @@ function stopped(reason: unknown): Failure {
 /**
  * The refusal of `page.popup()` on a page of an engine that cannot hand a test the pages it opens yet.
  *
- * @example popupsUnsupported('WebKit').class // 'unsupported'
+ * @example popupsUnsupported('Firefox').class // 'unsupported'
  */
 export function popupsUnsupported(engine: string): Failure {
-  return { class: 'unsupported', message: `Retest hands a test the pages a page opens on Chrome and Chromium only, and not on ${engine} yet.` }
+  return { class: 'unsupported', message: `Retest hands a test the pages a page opens on Chrome, Chromium and WebKit only, and not on ${engine} yet.` }
 }
 
 /**
@@ -390,5 +390,5 @@ export function popupsUnsupported(engine: string): Failure {
  * @example closeUnsupported('Firefox').class // 'unsupported'
  */
 export function closeUnsupported(engine: string): Failure {
-  return { class: 'unsupported', message: `Retest closes a page on Chrome and Chromium only, and not on ${engine} yet, so it closed nothing.`, details: { inputSent: false } }
+  return { class: 'unsupported', message: `Retest closes a page on Chrome, Chromium and WebKit only, and not on ${engine} yet, so it closed nothing.`, details: { inputSent: false } }
 }
