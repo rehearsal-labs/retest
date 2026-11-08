@@ -21,8 +21,18 @@ import { Listeners } from './listeners.ts'
 // new page of the browser until Retest lets it go, and every popup of a test's page stays attached, waited for or not,
 // so a dialog it opens is answered and told.
 
+/**
+ * What watches for the pages a browser's pages open: Chrome's `PopupWatch`, or an Electron app's watch of its windows.
+ * `register` lets the pages target `targetId` opens reach `opener`, until the function it returns is called; `start`
+ * asks the browser, once, to hold every new page target from then on.
+ */
+export interface PopupSource {
+  register(targetId: string, opener: PopupOpener): () => void
+  start(deadline: Deadline): Promise<void>
+}
+
 /** Where a page's popups are watched for: the browser's watch, and the target the page is. */
-export type PopupHome = { readonly watch: PopupWatch; readonly targetId: string }
+export type PopupHome = { readonly watch: PopupSource; readonly targetId: string }
 
 /**
  * How a popup's page ended: `closed` when its target ended while the browser stayed, as a page that closes itself does,
@@ -59,9 +69,14 @@ export type PopupWaitOptions = { readonly timeoutMs: number; readonly setupMs: n
 /** A new page target the browser holds, by the flat session it attached and the target it is. */
 export type HeldTarget = { readonly sessionId: string; readonly targetId: string }
 
-/** A page whose popups the watch hands over: it takes a new page it opened, or leaves it to run on. */
+/**
+ * A page whose popups the watch hands over: it takes a new page it opened, or leaves it to run on. `claimWaited` takes a
+ * new page the browser names no opener for, only for a wait armed on this page, and leaves it otherwise: an Electron
+ * app's main process opens such windows.
+ */
 export interface PopupOpener {
   claim(target: HeldTarget): boolean
+  claimWaited?(target: HeldTarget): boolean
 }
 
 const attachedSchema = s.object({
@@ -80,7 +95,7 @@ const unwaitedSetupMs = 10_000
  * hands each to the page that opened it when that page waits for one; it lets every other page run on at once,
  * Retest's own new pages among them.
  */
-export class PopupWatch {
+export class PopupWatch implements PopupSource {
   readonly #connection: CdpConnection
   readonly #openers = new Map<string, PopupOpener>()
   #starting: Promise<void> | undefined
@@ -135,6 +150,11 @@ export type PagePopupsOptions = {
   readonly onListenerError: (error: unknown) => void
   /** Tells the opener's dialogs of a dialog Retest answered in a popup nothing waited for. */
   readonly forward: (dialog: UnwaitedDialog) => void
+  /**
+   * Wraps the page of a popup given to a test, with its target, as an Electron app wraps each of its windows. Without
+   * it, the popup is its page as Retest set it up.
+   */
+  readonly present?: ((page: WebSession, targetId: string) => WebSession) | undefined
 }
 
 /** A wait armed for a popup: how it settles, how it is taken once a popup came, and how long the popup's setup may take. */
@@ -211,6 +231,12 @@ export class PagePopups implements PopupOpener {
     return true
   }
 
+  /** Takes a new page the browser names no opener for, only for the wait armed: without one, it is left to run on. */
+  claimWaited(target: HeldTarget): boolean {
+    if (this.#lostReason !== undefined || this.#waiter === undefined) return false
+    return this.claim(target)
+  }
+
   /** This page went away: a wait fails with the reason, and the pages it opens from now on run on unwatched. */
   lost(reason: string): void {
     this.#lostReason ??= reason
@@ -261,7 +287,8 @@ export class PagePopups implements PopupOpener {
       return heard.add(listener)
     }
     try {
-      const page = await this.#options.open(session, home, new Deadline(waiter.setupMs), ready)
+      const opened = await this.#options.open(session, home, new Deadline(waiter.setupMs), ready)
+      const page = this.#options.present?.(opened, targetId) ?? opened
       const closed = (): boolean => session.detachReason !== undefined && connection.closeReason === undefined
       waiter.settle({ ok: true, popup: { page, follow, first: (timeoutMs) => firstNavigation(follow, gone, timeoutMs), gone, closed } })
     } catch (error) {
