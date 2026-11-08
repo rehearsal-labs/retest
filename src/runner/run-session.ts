@@ -1210,7 +1210,7 @@ export class RunSession {
         return state
       }
       const baseUrl = runtime.kind === 'web' ? config.apps.get(app)?.baseUrl : undefined
-      const downloads = this.#downloadsOf(described, app, runtime, config)
+      const downloads = this.#downloadsOf(described, app, runtime)
       const options: NewPageOptions = {
         ...(baseUrl === undefined ? {} : { baseUrl }),
         ...(emulation === undefined ? {} : { emulation }),
@@ -1369,10 +1369,10 @@ export class RunSession {
     return electron.has(this.#popupRoots.get(app) ?? app)
   }
 
-  // A Chromium, Firefox or WebKit page saves its downloads in its session's folder of the run. An Electron app saves
-  // them its own way, and a native app has none Retest keeps.
-  #downloadsOf(described: Described, app: string, runtime: RuntimeIdentity, config: RunConfig): { folder: string; reference: string } | undefined {
-    if (runtime.kind !== 'web' || isElectronTarget(targetOf(config, app, described.targets[app]))) return undefined
+  // Every browser's page, an Electron app's window included, saves its downloads in its session's folder of the run. A
+  // native app has none Retest keeps.
+  #downloadsOf(described: Described, app: string, runtime: RuntimeIdentity): { folder: string; reference: string } | undefined {
+    if (runtime.kind !== 'web') return undefined
     const reference = downloadsFolder({ testId: described.testId, attemptId: described.attemptId, app, sessionId: formatSessionId(described.attemptId, app) })
     return { folder: join(this.#store.directory, reference), reference }
   }
@@ -1380,14 +1380,15 @@ export class RunSession {
   // An app's page as the attempt's files see it, with where it runs, for a refusal that names it.
   #filesPage(described: Described, config: RunConfig, { app, page, session }: AppPage): FilesPage {
     const { runtime } = session
-    const downloads = this.#downloadsOf(described, app, runtime, config)
+    const downloads = this.#downloadsOf(described, app, runtime)
+    const electron = isElectronTarget(targetOf(config, app, described.targets[app]))
     const where =
       runtime.kind !== 'web' ? 'in a native app'
-      : isElectronTarget(targetOf(config, app, described.targets[app])) ? 'in an Electron app'
+      : electron ? 'in an Electron app'
       : runtime.engine === 'firefox' ? 'on Firefox'
       : runtime.engine === 'webkit' ? 'on WebKit'
       : 'on this browser'
-    return { files: page.files, where, sessionId: session.sessionId, ...(downloads === undefined ? {} : { downloads }) }
+    return { files: page.files, where, sessionId: session.sessionId, ...(downloads === undefined ? {} : { downloads }), ...(electron ? { electron: true as const } : {}) }
   }
 
   // An interrupted run waits for nothing more.

@@ -23,14 +23,21 @@ const pieceOverlap = 64 * 1024
 /**
  * One app's page as the attempt's files see it: its file pickers and downloads, when it has them, where it runs, for a
  * refusal that names it, such as `on Firefox` or `in an Electron app`, its session, and, when it saves downloads, the
- * folder they go to, absolute and as a reference in the run folder.
+ * folder they go to, absolute and as a reference in the run folder. `electron` marks an Electron app's window, whose
+ * main process can stop or hold a download where Retest cannot see it, so a failure says so.
  */
 export type FilesPage = {
   readonly files: FilesCapability | undefined
   readonly where: string
   readonly sessionId: string
   readonly downloads?: { readonly folder: string; readonly reference: string } | undefined
+  readonly electron?: true
 }
+
+// What a failure adds, in an Electron app's window, of what the app's main process can do unseen.
+const electronCancel = "The Electron app's main process can cancel a download in its will-download handler, and Retest cannot see whether it did."
+const electronPause = "The Electron app's main process can pause a download in its will-download handler, and Retest cannot see whether it did."
+const electronUnseen = "A download the Electron app's main process starts with session.downloadURL() belongs to no window, and Chromium tells Retest nothing of it."
 
 export type AttemptFilesOptions = {
   readonly pages: ReadonlyMap<string, FilesPage>
@@ -131,6 +138,8 @@ export class AttemptFiles {
   /** Waits for the next download the app's page begins, within the budget, and answers with it. */
   async download(app: string, budget: FilesBudget): Promise<FilesAnswer> {
     const page = this.#options.pages.get(app)
+    const refusal = page?.files?.downloadsRefused
+    if (refusal !== undefined) return refused(refusal)
     if (page?.files?.onDownload === undefined || page.downloads === undefined) return refused(filesRefused('download', page?.where ?? 'on this app'))
     if (this.#waiting.has(app)) return refused(failure('usage', 'page.download() is already waiting for a download on this app. Await it before you wait for the next.'))
     const began = Promise.withResolvers<Kept>()
@@ -148,7 +157,7 @@ export class AttemptFiles {
       return { ok: true, kind: 'download', download: kept.id, suggestedFilename: this.#redact(kept.download.suggestedFilename) }
     }
     if (waited.status === 'stopped') return refused(stoppedBy(budget.signal, 'Retest stopped waiting for a download.'))
-    const message = `No download began within ${budget.timeoutMs} ms of page.download(). Check that its action starts one, as a link to a file does.`
+    const message = `No download began within ${budget.timeoutMs} ms of page.download(). Check that its action starts one, as a link to a file does.${page.electron === true ? ` ${electronUnseen}` : ''}`
     return refused({ ...failure('timeout', message), details: { timeoutMs: budget.timeoutMs } })
   }
 
@@ -163,7 +172,7 @@ export class AttemptFiles {
     const name = this.#redact(kept.download.suggestedFilename)
     const progress = kept.download.progress()
     const arrived = progress === undefined ? ', and the browser does not say how much of it had arrived.' : `: ${describeProgress(progress)} had arrived.`
-    const message = `The download of ${name} was not saved within ${budget.timeoutMs} ms${arrived}`
+    const message = `The download of ${name} was not saved within ${budget.timeoutMs} ms${arrived}${kept.page.electron === true ? ` ${electronPause}` : ''}`
     return refused({ ...failure('timeout', message), details: { timeoutMs: budget.timeoutMs } })
   }
 
@@ -223,9 +232,11 @@ export class AttemptFiles {
       // WebKit gives its own words for why it stopped one; Chromium and Firefox give none.
       const reason = end.reason === undefined ? undefined : this.#redact(end.reason)
       const said = reason === undefined ? undefined : `${reason}${/[.!?]$/.test(reason) ? '' : '.'}`
-      const message = counted === undefined
-        ? `The browser stopped the download of ${name}${said === undefined ? ', and says neither why nor how much of it had arrived.' : `: ${said} It does not say how much of it had arrived.`} Retest saved nothing.`
-        : `The browser stopped the download of ${name} after ${describeProgress(counted)} had arrived${said === undefined ? ', and gives no reason.' : `: ${said}`} Retest saved nothing.`
+      const message = kept.page.electron === true && counted !== undefined
+        ? `The download of ${name} stopped after ${describeProgress(counted)} had arrived, and Chromium gives no reason. ${electronCancel} Retest saved nothing.`
+        : counted === undefined
+          ? `The browser stopped the download of ${name}${said === undefined ? ', and says neither why nor how much of it had arrived.' : `: ${said} It does not say how much of it had arrived.`} Retest saved nothing.`
+          : `The browser stopped the download of ${name} after ${describeProgress(counted)} had arrived${said === undefined ? ', and gives no reason.' : `: ${said}`} Retest saved nothing.`
       const stopped = { ...failure('not_actionable', message), details: { download: name, ...counted } }
       this.#write(kept, { state: 'canceled', ...counted, failure: stopped })
       return { ok: false, failure: stopped }

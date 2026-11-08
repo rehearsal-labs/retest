@@ -45,6 +45,7 @@ import { readProtocol, request, sendOptions } from './cdp-results.ts'
 import { ChromiumProcess } from './chromium-process.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { worldName } from './isolated-world.ts'
+import { ElectronDownloads } from './electron-downloads.ts'
 import { acts, armWindow, ElectronPopupWindow } from './electron-popups.ts'
 import { ElectronWindowWatch } from './electron-window-watch.ts'
 import { describeDiagnostic, handshake, launchOutput, logLength, logWriter } from './launch.ts'
@@ -200,6 +201,7 @@ export async function launchElectron(
   try {
     const write = logWriter(options.logFile)
     const log = redact === undefined ? write : (line: string) => write(redact(line))
+    const onListenerError = (error: unknown) => log(`a listener failed: ${errorMessage(error)}`)
     for (const problem of staleProfileProblems) log(problem)
     // Every command Retest sends names its own timeout; the launch budget bounds any that would not.
     connection = new CdpConnection(transport(child.pipe), { timeoutMs, onDiagnostic: (diagnostic) => log(describeDiagnostic(diagnostic)) })
@@ -210,6 +212,14 @@ export async function launchElectron(
     // Checked before any window is set up as a page, so a browser given in place of Electron is refused at once.
     const electron = await readElectronVersion(executable, version.userAgent)
     if (electron === undefined) throw new NotElectronError(executable)
+    // Downloads are refused until a test's page names its folder, so none goes the app's own way into the person's
+    // Downloads folder.
+    const note = (text: string) => {
+      windows.note(text)
+      log(text)
+    }
+    const downloads = new ElectronDownloads({ connection, app: options.app, target: options.target, onListenerError, note, log })
+    await downloads.start(deadline)
     // The windows open before discovery begins are told in the browser's own order, so they are marked as such.
     const { targetInfos } = await request(connection, 'Target.getTargets', undefined, targetsSchema, sendOptions(deadline))
     windows.alreadyOpen(targetInfos.map((target) => target.targetId))
@@ -218,14 +228,14 @@ export async function launchElectron(
     const attached = await watch.first(deadline)
     if (attached === undefined) throw new NoWindowError(deadline.budgetMs)
     const { session } = attached
-    const onListenerError = (error: unknown) => log(`a listener failed: ${errorMessage(error)}`)
     const pageOptions = { connection, session, browserContextId: attached.browserContextId === '' ? first.browserContextId : attached.browserContextId, onListenerError }
+    downloads.window(pageOptions.browserContextId)
     const answeredDialogs = () => watch.handOver()
     // The windows the app opens later are held by the watch, and handed to the window that waits for one.
     const popups = { watch, targetId: attached.targetId }
     const reached = (targetId: string, page: string) => windows.reached(targetId, page)
     const presentPopup = (window: WebSession, targetId: string) => new ElectronPopupWindow({ window, app: options.app, target: options.target, targetId, waits: watch, reached })
-    const page = await ChromiumPage.open({ ...pageOptions, baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, answeredDialogs, popups, presentPopup }, deadline)
+    const page = await ChromiumPage.open({ ...pageOptions, baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, answeredDialogs, popups, presentPopup, downloads: downloads.browser }, deadline)
     // Chromium draws no animation frames for a window another window covers, or one left behind others, and every action
     // waits on frames to see its element stand still. A window on a test machine is often not in front, so the page is
     // made to act as focused, as a Chrome page is, which keeps its frames coming.
@@ -238,7 +248,7 @@ export async function launchElectron(
     const named = { app: options.app, target: options.target, launch: options.launch, windowsFile: options.windowsFile }
     const showing = (timeoutMs: number) => showsPage(session, timeoutMs)
     const opened = { targetId: attached.targetId, waits: watch }
-    return new ElectronApp({ process: child, connection, page, showsPage: showing, windows, first: opened, executablePath: executable, userAgent: version.userAgent, versions, named, onListenerError })
+    return new ElectronApp({ process: child, connection, page, showsPage: showing, windows, downloads, first: opened, executablePath: executable, userAgent: version.userAgent, versions, named, onListenerError })
   } catch (error) {
     const ended = error instanceof CdpDisconnectedError || error instanceof CdpClosedError
     // A program that closed its pipe is usually exiting; how it exits is the best explanation there is.
@@ -406,6 +416,7 @@ type AppOptions = {
   page: ChromiumPage
   showsPage: (timeoutMs: number) => Promise<boolean>
   windows: AppWindows
+  downloads: ElectronDownloads
   /** The first window's target, and the waits the app's windows share. */
   first: { targetId: string; waits: AppWindowWaits }
   executablePath: string
@@ -429,6 +440,7 @@ class ElectronApp implements ElectronRuntime {
   readonly #connection: CdpConnection
   readonly #page: ElectronWindowSession
   readonly #windows: AppWindows
+  readonly #downloads: ElectronDownloads
   readonly #named: AppOptions['named']
   readonly #onListenerError: (error: unknown) => void
   readonly #disconnects: Listeners<string>
@@ -449,11 +461,12 @@ class ElectronApp implements ElectronRuntime {
     this.#process = options.process
     this.#connection = options.connection
     this.#windows = options.windows
+    this.#downloads = options.downloads
     this.#named = options.named
     this.#onListenerError = options.onListenerError
     this.#disconnects = new Listeners(options.onListenerError)
     const { app, target } = this.#named
-    const parts = { window: options.page, app, target, ...options.first, showsPage: options.showsPage, firstClosed: () => this.#firstClosed(), quit: (timeoutMs: number) => this.close(timeoutMs) }
+    const parts = { window: options.page, app, target, ...options.first, showsPage: options.showsPage, firstClosed: () => this.#firstClosed(), quit: (timeoutMs: number) => this.close(timeoutMs), downloads: options.downloads }
     this.#page = new ElectronWindowSession(parts)
     this.#connection.onDisconnect((reason) => this.#disconnected(reason))
     if (this.#connection.closeReason !== undefined) this.#disconnected(this.#connection.closeReason)
@@ -479,9 +492,10 @@ class ElectronApp implements ElectronRuntime {
 
   /**
    * The app's first window, given once, as the test's page. The app has no address and keeps its own storage, so a
-   * base URL, an emulated screen, a proxy or a saved state is refused by name, never dropped.
+   * base URL, an emulated screen, a proxy or a saved state is refused by name, never dropped. The app's default session
+   * saves its downloads in the folder the options name from then on, and refuses them without one.
    */
-  async newPage(options: NewPageOptions, _timeoutMs: number): Promise<WebSession> {
+  async newPage(options: NewPageOptions, timeoutMs: number): Promise<WebSession> {
     const { app } = this.#named
     if (this.#disconnectReason !== undefined) {
       throw new BrowserError({ class: 'session_lost', message: `Could not reach the Electron app ${app}, because it is gone: ${this.#disconnectReason}.` })
@@ -490,6 +504,7 @@ class ElectronApp implements ElectronRuntime {
     if (refused !== undefined) throw new BrowserError({ class: 'unsupported', message: `The Electron app ${app} ${refused}`, details: { app, target: this.#named.target } })
     if (this.#pageGiven) throw new BrowserError({ class: 'setup_failed', message: `The first window of the Electron app ${app} is already a test's page.` })
     this.#pageGiven = true
+    await this.#downloads.save(options.downloads, timeoutMs)
     return this.#page
   }
 
@@ -526,6 +541,8 @@ class ElectronApp implements ElectronRuntime {
     try { this.#connection.close() }
     catch (error) { problems.push(`Could not close the Electron app's debugging pipe: ${errorMessage(error)}`) }
     problems.push(...await this.#process.stop(graceMs, ownershipDeadline), ...this.#cleanupProblems)
+    // Only once the app has quit can nothing more be saved in its downloads folder.
+    problems.push(...this.#downloads.sweep())
     const { app, target, launch, windowsFile } = this.#named
     const notes = this.#windows.notes
     const record: WindowsRecord = { app, target, launch, pid: this.pid, windows: this.#windows.records, ...(notes.length === 0 ? {} : { notes }) }
@@ -551,7 +568,8 @@ class ElectronApp implements ElectronRuntime {
  * What an Electron app's window session is made of: the window, a Chromium page in the app's own browser context; the
  * app and target the config names; the window's target, and the waits the app's windows share for the windows the app
  * opens; whether the window shows a page of the app's own, read from the window within a budget; whether it has
- * closed while the app runs on; and how to quit the app.
+ * closed while the app runs on; how to quit the app; and the app's downloads, which say what of the window's downloads
+ * a test may wait for. Without `downloads`, the window's files are given as the window gives them.
  */
 export type ElectronWindowParts = {
   window: WebSession
@@ -562,6 +580,7 @@ export type ElectronWindowParts = {
   showsPage: (timeoutMs: number) => Promise<boolean>
   firstClosed: () => boolean
   quit: (timeoutMs: number) => Promise<void>
+  downloads?: Pick<ElectronDownloads, 'files'>
 }
 
 /**
@@ -580,6 +599,7 @@ export class ElectronWindowSession implements WebSession {
   readonly #showsPage: (timeoutMs: number) => Promise<boolean>
   readonly #firstClosed: () => boolean
   readonly #quit: (timeoutMs: number) => Promise<void>
+  readonly #downloads: Pick<ElectronDownloads, 'files'> | undefined
 
   constructor(parts: ElectronWindowParts) {
     this.#window = parts.window
@@ -590,15 +610,19 @@ export class ElectronWindowSession implements WebSession {
     this.#showsPage = parts.showsPage
     this.#firstClosed = parts.firstClosed
     this.#quit = parts.quit
+    this.#downloads = parts.downloads
   }
 
   get url(): string | undefined {
     return this.#window.url
   }
 
-  /** The window's file pickers, caught as a browser's page catches them. The app saves its downloads its own way. */
+  /**
+   * The window's file pickers, caught as a browser's page catches them, and its downloads once the app's default
+   * session saves them in a folder of the run, or why a test cannot wait for one.
+   */
   get files(): FilesCapability | undefined {
-    return this.#window.files
+    return this.#downloads === undefined ? this.#window.files : this.#downloads.files(this.#window.files)
   }
 
   async execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult> {
