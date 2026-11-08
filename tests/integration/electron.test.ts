@@ -165,7 +165,7 @@ const windowsSchema = s.object({
   target: s.string(),
   launch: count,
   pid: count,
-  windows: s.array(s.object({ window: count, reachable: s.boolean(), openedMs: count, existing: s.optional(s.literal(true)), closedMs: s.optional(count) })),
+  windows: s.array(s.object({ window: count, reachable: s.boolean(), openedMs: count, existing: s.optional(s.literal(true)), opener: s.optional(count), page: s.optional(s.string()), closedMs: s.optional(count) })),
   notes: s.optional(s.array(s.string())),
 })
 
@@ -263,7 +263,7 @@ test('an Electron app is driven through the same locators, actions and checks as
   assert.match(testNamed(run, names.goto).failure?.message ?? '', /^goto\(\) is not available on the Electron app desktop \(target electron\): the app has no address/)
   assert.match(testNamed(run, names.secret).failure?.message ?? '', /^Retest did not type the secret "password"/)
   assert.deepEqual(filesHolding(run.output, password), [], 'the secret reached no file of the run, the app data included')
-  assert.match(testNamed(run, names.closed).failure?.message ?? '', /The Electron app closed its first window, and a test reaches no other window of it\.$/)
+  assert.match(testNamed(run, names.closed).failure?.message ?? '', /The Electron app closed its first window, which was the test's page; only a window page\.popup\(\) gave the test is still within its reach\.$/)
 
   // Each test launched the app afresh, and each launch is told with the Electron release and the Chromium it embeds,
   // as the binary itself states them.
@@ -289,7 +289,8 @@ test('an Electron app is driven through the same locators, actions and checks as
     )
   }
 
-  // Every window the app opened is recorded with the launch it belongs to; only the first was a page a test reached.
+  // Every window the app opened is recorded with the launch it belongs to; nothing waited for the second, so only the
+  // first was a page a test reached, and the second names no opener, since the main process made it.
   const records = windowsRecords(run)
   assert.deepEqual(
     records.map((record) => [record.launch, record.pid]),
@@ -311,7 +312,7 @@ test('an Electron app is driven through the same locators, actions and checks as
   assert.ok(closedFirst !== undefined, "the launch whose first window closed recorded when it closed")
   assert.equal(closedFirst.windows.length, 2)
   const log = readFileSync(join(run.output, targetBrowserLogFile(variantKey({ desktop: 'electron' }))), 'utf8')
-  assert.match(log, /\[retest\] the app opened window 2; a test reaches only the app's first window/)
+  assert.match(log, /\[retest\] the app opened window 2, from its main process; a test reaches it only through page\.popup\(\)/)
   assert.match(log, /\[retest\] the app closed its first window, which was the test's page/)
 
   // Each launch had a data folder of its own, which Retest made and removed once the app quit; none is in the run

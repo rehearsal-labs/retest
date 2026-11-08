@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'">
+    <title>Settings</title>
+  </head>
+  <body>
+    <h1 data-testid="settings-title">Settings</h1>
+    <input type="checkbox" id="dark">
+    <label for="dark">Dark mode</label>
+    <p>
+      <button type="button" data-testid="save">Save</button>
+      <button type="button" data-testid="reset">Reset</button>
+    </p>
+    <p data-testid="saved"></p>
+    <script src="settings.js"></script>
+  </body>
+</html>

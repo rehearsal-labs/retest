@@ -343,7 +343,7 @@ const ELECTRON_PAGE = `<!doctype html><meta charset="utf-8"><title>Desk</title>
 <button data-testid="open" onclick="window.open('about:blank')">Open</button>
 <p data-testid="status">Ready</p>`
 
-test("an Electron window hands its dialogs over and answers one nothing waited for, as a Chrome page does, and refuses popup() by name", { skip: noElectron }, async (t) => {
+test("an Electron window hands its dialogs over and answers one nothing waited for, as a Chrome page does, and arms for the windows it opens", { skip: noElectron }, async (t) => {
   const folder = await scratchFolder(t)
   const appPath = join(folder, 'app')
   mkdirSync(appPath)
@@ -364,5 +364,8 @@ test("an Electron window hands its dialogs over and answers one nothing waited f
   const unwaited = failureOf(await click(page, 'confirm'))
   assert.deepEqual([unwaited.class, unwaited.details?.['answered']], ['not_actionable', 'dismissed'])
   await observeUntil(page, 'status', (seen) => seen.text === 'Kept')
-  assert.deepEqual(await page.armPopup?.({ timeoutMs: 1000, setupMs: 1000 }), { ok: false, failure: { class: 'unsupported', message: 'A test reaches only the first window of the Electron app desk, so page.popup() is for a browser\'s page.' } })
+  // The window arms for the next window the app opens, as a Chrome page does; this app opens none, so the wait times out.
+  const arming = await page.armPopup?.({ timeoutMs: 300, setupMs: 1000 })
+  assert.ok(arming?.ok === true, JSON.stringify(arming))
+  assert.deepEqual(await arming.opened, { ok: false, failure: { class: 'timeout', message: 'No page opened within 300 ms.' } })
 })

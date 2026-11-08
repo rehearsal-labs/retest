@@ -1,0 +1,6 @@
+{
+  "name": "retest-electron-windows-fixture",
+  "private": true,
+  "description": "A small Electron app whose first window opens others, for Retest's tests of page.popup() in an Electron app.",
+  "main": "main.mjs"
+}
