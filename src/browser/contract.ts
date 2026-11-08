@@ -421,11 +421,13 @@ export type PageDownload = {
  * File pickers and downloads on a page. Every file picker the page opens is caught, and never shown: the one a test
  * armed for goes to it, and any other fails the action that opened it and is cancelled, as a person closing it would.
  * `onDownload` tells of every download its browser context makes, from the moment it is added, and returns a function
- * that removes the listener; it is absent on a page whose browser context refuses downloads.
+ * that removes the listener; it is absent on a page whose browser context refuses downloads. `downloadsRefused` says
+ * why a page that could otherwise save downloads saves none, as an Electron window in a session of its own does.
  */
 export interface FilesCapability {
   armFileChooser(): ChooserArm
   onDownload?(listener: (download: PageDownload) => void): () => void
+  readonly downloadsRefused?: Failure
 }
 
 /**

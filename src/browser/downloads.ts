@@ -72,16 +72,19 @@ export class BrowserDownloads {
   /**
    * Tells the browser what to do with a context's downloads: save each in `folder`, named by its id until Retest names
    * it, and say how each goes; or, without a folder, refuse them, so none lands in the person's own Downloads folder.
-   * The first context that saves them has the browser tell of every target it makes from then on.
+   * The first context that saves them has the browser tell of every target it makes from then on. `defaultContext`
+   * marks the browser's default context, as an Electron app's default session is: Electron refuses a behavior that
+   * names that context by its id, so the browser is told without one.
    *
    * @example await downloads.configure(browserContextId, '/run/artifacts/k3v9q0x2mb/web-1a2b/downloads', deadline)
    */
-  async configure(browserContextId: string, folder: string | undefined, deadline: Deadline): Promise<void> {
+  async configure(browserContextId: string, folder: string | undefined, deadline: Deadline, { defaultContext = false }: { defaultContext?: boolean } = {}): Promise<void> {
     if (folder !== undefined) {
       this.#folders.set(browserContextId, resolve(folder))
       await this.#discover(deadline)
     }
-    const behavior = folder === undefined ? { behavior: 'deny', browserContextId } : { behavior: 'allowAndName', browserContextId, downloadPath: folder, eventsEnabled: true }
+    const context = defaultContext ? {} : { browserContextId }
+    const behavior = folder === undefined ? { behavior: 'deny', ...context } : { behavior: 'allowAndName', ...context, downloadPath: folder, eventsEnabled: true }
     await request(this.#connection, 'Browser.setDownloadBehavior', behavior, s.object({}), sendOptions(deadline))
   }
 
