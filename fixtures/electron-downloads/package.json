@@ -1,0 +1,6 @@
+{
+  "name": "retest-electron-downloads-fixture",
+  "private": true,
+  "description": "A small Electron app whose window starts downloads, and whose main process handles each one as the window asks, for Retest's own download tests.",
+  "main": "main.mjs"
+}

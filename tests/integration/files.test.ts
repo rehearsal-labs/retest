@@ -267,12 +267,13 @@ test('the window takes files by label and through its picker', async ({ page }) 
   await expect(page.getByTestId('heard')).toHaveText('attachment change notes.txt 5 hidden-upload change b.txt 2')
 })
 
-test('the window saves no download', async ({ page }) => {
-  await page.download(() => page.getByRole('button', { name: 'Upload' }).hover())
+test('an action that starts no download fails page.download() when its time runs out', async ({ page }) => {
+  await page.download(() => page.getByRole('button', { name: 'Upload' }).hover(), { timeout: 400 })
 })
 `
 
-test('an Electron app takes files through a run and refuses downloads by name', { skip: noElectron }, async (t) => {
+// The window's downloads, and what the app's own handling of them changes, run in electron-downloads.test.ts.
+test('an Electron app takes files through a run, and waits for a download as a Chrome page does', { skip: noElectron }, async (t) => {
   const root = await writeProject(t, {
     'retest.config.ts': `import { defineConfig, electron } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: './app' }) } })\n`,
     'app/package.json': JSON.stringify({ name: 'retest-files-electron', private: true, main: 'main.mjs' }),
@@ -283,7 +284,11 @@ test('an Electron app takes files through a run and refuses downloads by name', 
   const run = await runProject(t, root)
   const taken = testNamed(run, 'the window takes files by label and through its picker')
   assert.equal(taken.status, 'passed', JSON.stringify(taken.failure))
-  const refused = testNamed(run, 'the window saves no download')
-  assert.deepEqual([refused.status, refused.failure?.class, refused.failure?.message], ['error', 'unsupported', 'Retest saves downloads on Chrome, Chromium, Firefox and WebKit only, and not in an Electron app yet, so it waited for none.'])
-  assert.equal(run.exit.code, 2, run.stderr)
+  const nothing = testNamed(run, 'an action that starts no download fails page.download() when its time runs out')
+  assert.deepEqual([nothing.status, nothing.failure?.class, nothing.failure?.message], [
+    'failed',
+    'timeout',
+    "No download began within 400 ms of page.download(). Check that its action starts one, as a link to a file does. A download the Electron app's main process starts with session.downloadURL() belongs to no window, and Chromium tells Retest nothing of it.",
+  ])
+  assert.equal(run.exit.code, 1, run.stderr)
 })

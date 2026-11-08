@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+    <title>Downloads</title>
+    <style>
+      body { font: 15px system-ui, sans-serif; margin: 24px; }
+      p { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 8px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Downloads</h1>
+    <p>
+      <a data-testid="export-csv" data-path="/files/tasks.csv">Export CSV</a>
+      <a data-testid="export-key" data-path="/files/key.txt">Export key</a>
+      <a data-testid="export-slow" data-path="/files/slow.csv">Export slowly</a>
+    </p>
+    <p>
+      <button type="button" data-testid="download-for-window">Download for the window</button>
+      <button type="button" data-testid="download-for-session">Download for no window</button>
+    </p>
+    <p>
+      The next download is handled: <span data-testid="handling">none</span>
+      <button type="button" data-testid="handle-none" data-handling="none">Leave it</button>
+      <button type="button" data-testid="handle-save-path" data-handling="save-path">Save it to a path of the app's own</button>
+      <button type="button" data-testid="handle-save-dialog" data-handling="save-dialog">Ask for a save dialog</button>
+      <button type="button" data-testid="handle-cancel" data-handling="cancel">Cancel it</button>
+      <button type="button" data-testid="handle-prevent" data-handling="prevent">Prevent it</button>
+      <button type="button" data-testid="handle-pause" data-handling="pause">Pause it</button>
+    </p>
+    <script src="renderer.js"></script>
+  </body>
+</html>
