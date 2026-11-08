@@ -20,6 +20,7 @@ import { resolve } from 'node:path'
 import { describeValue, isPlainObject, parse, s } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { deviceNames } from './devices.ts'
+import { nativeRuntimeKey } from './native-targets.ts'
 import { channels } from './types.ts'
 
 /** Where problems go, and the config's folder, which relative paths start from. */
@@ -84,8 +85,10 @@ const nativeDiagnostics = s.object({
 })
 const nativeLaunch = { arguments: s.optional(s.array(s.string())), environment: s.optional(s.record(s.string())), diagnostics: s.optional(nativeDiagnostics) }
 const nativeTargetSchema = s.discriminatedUnion('platform', [
-  s.object({ platform: s.literal('ios-simulator'), appPath: s.string(), device: s.string(), runtime: s.string(), ...nativeLaunch }),
+  s.object({ platform: s.literal('ios-simulator'), appPath: s.string(), device: s.string(), runtime: s.string(), driver: s.optional(s.enum(['webdriveragent', 'agent-device'])), ...nativeLaunch }),
   s.object({ platform: s.literal('macos'), appPath: s.string(), ...nativeLaunch }),
+  // Android runs through agent-device alone, and its launch settings and diagnostics are not built yet, so it takes none.
+  s.object({ platform: s.literal('android'), appPath: s.string(), package: s.string(), device: s.optional(s.string()), serial: s.optional(s.string()), driver: s.optional(s.literal('agent-device')) }),
 ])
 
 type ParsedTarget = Infer<typeof targetSchema>
@@ -161,7 +164,7 @@ function checkNetworkSources(apps: ReadonlyMap<string, LoadedApp>, entries: Reco
       const network = 'platform' in target ? target.diagnostics?.network : undefined
       if (network === undefined || !('platform' in target)) continue
       const path = [...(standalone ? ['apps', appName] : ['apps', appName, 'targets', targetName]), 'diagnostics', 'network']
-      declared.push({ app: appName, path, file: network.path, client: network.client, runsOn: target.platform === 'macos' ? 'macos' : `${target.device} (${target.runtime})` })
+      declared.push({ app: appName, path, file: network.path, client: network.client, runsOn: nativeRuntimeKey(target) })
     }
   }
   const first = new Map<string, Declared>()
@@ -196,7 +199,7 @@ function checkKinds(targets: ReadonlyMap<string, LoadedTarget>, settings: Loaded
   const kinds = new Set([...targets.values()].map(kindOf))
   if (kinds.size > 1) {
     const mixed = [...kinds].map(describeKind).join(' and ')
-    const rule = kinds.has('electron') ? "An app's targets are all of one kind" : "An app's targets are all browsers, all iOS simulators or all macOS apps"
+    const rule = kinds.has('electron') ? "An app's targets are all of one kind" : "An app's targets are all browsers, all iOS simulators, all macOS apps or all Android apps"
     problems.add([...path, 'targets'], `mixes ${mixed}. ${rule}: give each kind an app of its own`)
   }
   if (settings.baseUrl === undefined || kinds.has('web')) return
@@ -313,6 +316,7 @@ function switchName(argument: string): string {
 function loadNativeTarget(name: string, target: ParsedNativeTarget, path: Path, { problems, folder }: ReadContext): LoadedNativeTarget {
   problems.checkFilled([...path, 'appPath'], target.appPath, 'a path')
   const appPath = resolve(folder, target.appPath)
+  if (target.platform === 'android') return loadAndroidTarget(name, target, appPath, path, problems)
   const launch = { ...(target.arguments === undefined ? {} : { arguments: [...target.arguments] }), ...(target.environment === undefined ? {} : { environment: { ...target.environment } }) }
   for (const [index, argument] of (target.arguments ?? []).entries()) {
     const reserved = reservedArgumentProblem(argument)
@@ -328,7 +332,26 @@ function loadNativeTarget(name: string, target: ParsedNativeTarget, path: Path, 
   if (target.platform === 'macos') return { name, platform: 'macos', appPath, ...launch, ...diagnostics }
   problems.checkFilled([...path, 'device'], target.device, 'a device type such as "iPhone 17"')
   problems.checkFilled([...path, 'runtime'], target.runtime, 'an iOS version such as "26.0"')
-  return { name, platform: 'ios-simulator', appPath, device: target.device, runtime: target.runtime, ...launch, ...diagnostics }
+  if (target.driver !== 'agent-device') return { name, platform: 'ios-simulator', appPath, device: target.device, runtime: target.runtime, ...launch, ...diagnostics }
+  // agent-device launches the app with its arguments and no environment of Retest's, and the app's output and network
+  // file are read by Retest's own executor path alone, so an agent-device target refuses both by name.
+  if (target.environment !== undefined) problems.add([...path, 'environment'], "the agent-device driver launches the app with arguments only, so it takes no environment yet. Remove environment, or use driver: 'webdriveragent'")
+  if (target.diagnostics !== undefined) problems.add([...path, 'diagnostics'], "the agent-device driver keeps no app output or network file yet. Remove diagnostics, or use driver: 'webdriveragent'")
+  return { name, platform: 'ios-simulator', appPath, device: target.device, runtime: target.runtime, driver: 'agent-device', ...(target.arguments === undefined ? {} : { arguments: [...target.arguments] }) }
+}
+
+// An Android app names its device one way: by the name agent-device lists, or by its adb serial. Its package is the
+// application id the APK installs, read back from the install, and the one destination a secret may be typed into.
+function loadAndroidTarget(name: string, target: Extract<ParsedNativeTarget, { platform: 'android' }>, appPath: string, path: Path, problems: Problems): LoadedNativeTarget {
+  problems.checkFilled([...path, 'package'], target.package, 'an application id such as "com.example.tasks"')
+  if (target.package !== '' && !/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(target.package)) problems.add([...path, 'package'], 'expected an application id of two or more dot-separated names, such as "com.example.tasks"')
+  if ((target.device === undefined) === (target.serial === undefined)) {
+    problems.add(path, target.device === undefined ? "names no device: give device, the name agent-device lists, or serial, the adb serial such as 'emulator-5554'" : 'names its device twice: give device or serial, not both')
+  }
+  if (target.device !== undefined) problems.checkFilled([...path, 'device'], target.device, 'an emulator or device name')
+  if (target.serial !== undefined) problems.checkFilled([...path, 'serial'], target.serial, "an adb serial such as 'emulator-5554'")
+  const device = target.serial === undefined ? { name: target.device ?? '' } : { serial: target.serial }
+  return { name, platform: 'android', appPath, package: target.package, device, driver: 'agent-device' }
 }
 
 // The app's standard output unless the config says 'none', and the network file with its path made absolute.
@@ -346,6 +369,7 @@ function kindOf(target: LoadedTarget): Kind {
 function describeKind(kind: Kind): string {
   if (kind === 'web') return 'browsers'
   if (kind === 'electron') return 'Electron apps'
+  if (kind === 'android') return 'Android apps'
   return kind === 'ios-simulator' ? 'iOS simulators' : 'macOS apps'
 }
 
@@ -434,8 +458,11 @@ function loadStart(start: ParsedStart, path: Path, { problems, folder }: ReadCon
 function readNativeShape(value: Record<string, unknown>, path: Path, problems: Problems): ParsedNativeTarget | undefined {
   const parsed = parse(nativeTargetSchema, value)
   if (parsed.ok) return parsed.value
+  const android = value['platform'] === 'android'
   for (const issue of parsed.issues) {
-    if (issue.path.startsWith('$.arguments')) problems.add([...path, 'arguments'], 'expected a list of argument strings; argument values are withheld')
+    const key = /^\$\.(arguments|environment|diagnostics)\b/.exec(issue.path)?.[1]
+    if (android && key !== undefined) problems.add([...path, key], `an Android app takes no ${key === 'diagnostics' ? 'diagnostics' : `launch ${key}`} yet: Retest does not pass them through agent-device`)
+    else if (issue.path.startsWith('$.arguments')) problems.add([...path, 'arguments'], 'expected a list of argument strings; argument values are withheld')
     else if (issue.path.startsWith('$.environment')) problems.add([...path, 'environment'], 'expected environment variable names mapped to strings; values are withheld')
     else problems.issues.push({ key: configKey(path) + issue.path.slice(1), message: issue.message })
   }

@@ -2,7 +2,7 @@ import type { NativeRuntime, NativeRuntimeIdentity, ResetPolicy } from '../brows
 import type { Failure, FailureClass } from '../protocol/failures.ts'
 import type { DesktopLock } from './desktop-lock.ts'
 import type { ExecutorBuild, NativePinSet } from './executors.ts'
-import type { AppBundle, NativeExecutionIdentity, OperatingSystem } from './identity.ts'
+import type { AppBundle, OperatingSystem, PinnedExecutionIdentity } from './identity.ts'
 import type { NativeTools, RecordedProcess, StartedProcess } from './processes.ts'
 import type { AppProcessReading, CaptureSource, DriverAnswer, LaunchSpec, NativeAppDriver, NativeSessionOptions } from './session.ts'
 import type { ScopedSource } from './source-scope.ts'
@@ -352,11 +352,11 @@ export class MacosDesktop {
 export class MacosAppRuntime implements NativeRuntime {
   readonly desktop: MacosDesktop
   readonly bundle: AppBundle
-  readonly execution: NativeExecutionIdentity
+  readonly execution: PinnedExecutionIdentity
   readonly #sessions = new Set<NativeAppSession>()
   #closing: Promise<void> | undefined
 
-  constructor(desktop: MacosDesktop, bundle: AppBundle, execution: NativeExecutionIdentity) {
+  constructor(desktop: MacosDesktop, bundle: AppBundle, execution: PinnedExecutionIdentity) {
     this.desktop = desktop
     this.bundle = bundle
     this.execution = execution
@@ -410,7 +410,7 @@ class MacosAppDriver implements NativeAppDriver {
   readonly platform = 'macos' as const
   readonly captureSources: readonly CaptureSource[] = ['window-crop']
   readonly bundle: AppBundle
-  readonly identity: NativeExecutionIdentity
+  readonly identity: PinnedExecutionIdentity
   readonly resetPolicy: ResetPolicy
   readonly runtimeProcessIds: readonly number[]
   readonly #tools: NativeTools

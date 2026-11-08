@@ -109,13 +109,15 @@ export async function saveState(context: PagesContext, { app, page, session }: A
 /**
  * What takes a page's screenshot: its engine's own capture, the DevTools protocol's for Chromium, Electron's included,
  * WebDriver BiDi's for Firefox and the inspector protocol's for WebKit; a native session's executor screenshot, or on
- * macOS the image of its own window.
+ * macOS the image of its own window. An iOS simulator app driven through agent-device is captured by simctl from the
+ * simulator's display, Retest's own reading; an Android app through agent-device by agent-device's screenshot.
  *
  * @example screenshotSource(page.session.runtime) // 'chromium'
  */
 export function screenshotSource(runtime: RuntimeIdentity): CaptureSourceName | undefined {
   // Each web engine's page takes its screenshot through that engine's own protocol, so the engine names the capture.
   if (runtime.kind === 'web') return runtime.engine
+  if (runtime.kind === 'ios-simulator' && runtime.execution?.executor.name === 'agent-device') return 'simulator-display'
   return runtime.kind === 'macos' ? 'window-crop' : 'executor-screen'
 }
 

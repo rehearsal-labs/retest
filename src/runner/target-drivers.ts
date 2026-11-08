@@ -2,6 +2,7 @@ import type { DriverName } from '../browser/contract.ts'
 import type { LoadedApp, LoadedChromiumTarget, LoadedElectronTarget, LoadedFirefoxTarget, LoadedNativeTarget, LoadedTarget, LoadedWebKitTarget } from '../config/loaded.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { Variant } from '../protocol/variant.ts'
+import { describeAndroidDevice, nativeRuntimeKey } from '../config/native-targets.ts'
 
 /**
  * A target and the driver that runs it, or the setup failure that refuses it by name. `electron` is the Chromium
@@ -15,7 +16,7 @@ export type WebTargetDriver =
   | { ok: true; driver: 'webkit'; target: LoadedWebKitTarget }
   | { ok: false; failure: Failure }
 
-export type TargetDriver = WebTargetDriver | { ok: true; driver: 'ios-simulator' | 'macos'; target: LoadedNativeTarget }
+export type TargetDriver = WebTargetDriver | { ok: true; driver: 'ios-simulator' | 'macos' | 'android'; target: LoadedNativeTarget }
 
 const driverNames: Readonly<Record<DriverName, string>> = {
   chromium: 'Chromium',
@@ -23,6 +24,7 @@ const driverNames: Readonly<Record<DriverName, string>> = {
   webkit: 'WebKit',
   'ios-simulator': 'iOS simulator apps',
   macos: 'macOS apps',
+  android: 'Android apps',
 }
 
 /**
@@ -69,7 +71,7 @@ export function attemptRefusal(targets: Variant, apps: ReadonlyMap<string, Loade
       if (refused !== undefined) return refused
     }
     if (!('platform' in target)) continue
-    const key = target.platform === 'macos' ? 'macos' : `${target.device} (${target.runtime})`
+    const key = nativeRuntimeKey(target)
     const first = runtimes.get(key)
     if (first !== undefined) return sharedRuntime(first, app, target)
     runtimes.set(key, app)
@@ -80,8 +82,8 @@ export function attemptRefusal(targets: Variant, apps: ReadonlyMap<string, Loade
 // One test drives one app per native runtime: the desktop's runner and a simulator each serve one app session at a
 // time, and sharing one between the apps of a test is not built.
 function sharedRuntime(first: string, app: string, target: LoadedNativeTarget): Failure {
-  const where = target.platform === 'macos' ? "this Mac's desktop" : `one ${target.device ?? 'iPhone'} simulator on iOS ${target.runtime ?? ''}`.trimEnd()
-  const fix = target.platform === 'macos' ? 'Use one macOS app in a test.' : 'Give each app its own device type or runtime.'
+  const where = target.platform === 'macos' ? "this Mac's desktop" : target.platform === 'android' ? `the Android ${describeAndroidDevice(target.device)}` : `one ${target.device} simulator on iOS ${target.runtime}`
+  const fix = target.platform === 'macos' ? 'Use one macOS app in a test.' : target.platform === 'android' ? 'Give each app its own emulator or device.' : 'Give each app its own device type or runtime.'
   const message = `Not run: the apps ${first} and ${app} of this test both run on ${where}, and Retest drives one app there per test. ${fix}`
   return { class: 'unsupported', message, details: { apps: `${first}, ${app}`, target: target.name } }
 }
@@ -99,7 +101,7 @@ function setupRefusal(app: string, target: LoadedTarget): Failure | undefined {
 // anything starts for it, and the rest of the config runs. Its key is named as the config writes it.
 function nativeOnWindows(app: string, target: LoadedNativeTarget): WebTargetDriver {
   const key = target.name === target.platform ? `apps.${app}` : `apps.${app}.targets.${target.name}`
-  const kind = target.platform === 'macos' ? 'a macOS app, which Retest runs only on a Mac' : 'an iOS simulator app, which Retest runs only on a Mac with Xcode'
+  const kind = target.platform === 'macos' ? 'a macOS app, which Retest runs only on a Mac' : target.platform === 'android' ? 'an Android app, which Retest runs through agent-device only on macOS and Linux' : 'an iOS simulator app, which Retest runs only on a Mac with Xcode'
   return { ok: false, failure: { class: 'setup_failed', message: `${key} is ${kind}.`, details: { app, target: target.name, driver: target.platform } } }
 }
 

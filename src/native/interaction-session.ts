@@ -94,13 +94,48 @@ export type ResolvedElement = { readonly locator: LocatorRecipe; readonly refere
 /** Something told of each input request right before it goes. */
 export type InputListener = (sending: { readonly kind: NativeInputKind; readonly route: string; readonly reference: NativeReference }) => void
 
-type CaptureClearance = 'masked' | 'empty' | 'gone'
+/** Why a field that took a secret no longer shows it: it masks its text, reads empty, or is gone. */
+export type CaptureClearance = 'masked' | 'empty' | 'gone'
 type WithheldField = { readonly target: ActionTarget; readonly cleared: (change: CaptureClearance) => void; fillCompleted: boolean }
 /** Private capture facts only. A secret value never reaches these callbacks. */
-type SecretEntryObserver = {
+export type SecretEntryObserver = {
   readonly begin: (field: NativeSecretField) => void
   readonly end: (input: InputDispatch, verified: boolean) => void
   readonly cleared?: (change: CaptureClearance) => void
+}
+
+/**
+ * The interaction half of a native session as the runner holds it, whichever driver serves it: Retest's own executor
+ * session, `NativeInteractionSession`, or the agent-device session. Each request is bounded by its `timeoutMs` and never
+ * throws for an app or platform problem; the answer carries the failure and how far the input got. Input that may have
+ * gone is kept among `unknownOutcomes` and never sent again.
+ */
+export interface NativeInteraction {
+  readonly sessionId: string
+  readonly platform: NativeKind
+  /** The bundle id, or an Android app's package, read from the app this session installed: the one destination a secret may reach. */
+  readonly bundleId: string
+  readonly unknownOutcomes: readonly NativeUnknownOutcome[]
+  install(build: AppBuild, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  launch(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  activate(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  observe(locator: LocatorRecipe, timeoutMs: number, signal?: AbortSignal): Promise<{ readonly ok: true; readonly look: NativeLook } | { readonly ok: false; readonly failure: Failure }>
+  dispatch(command: NativeCommand, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedCommand>
+  gesture(gesture: Gesture, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  waitForKeyboard(timeoutMs: number, signal?: AbortSignal): Promise<{ readonly ok: true; readonly state: KeyboardState } | { readonly ok: false; readonly failure: Failure }>
+  dismissKeyboard(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  dismissFirstRunCard(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  answerAlert(answer: AlertAnswer, timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest>
+  capture(timeoutMs: number): Promise<{ readonly ok: true; readonly capture: NativeCapture } | { readonly ok: false; readonly failure: Failure }>
+  frameSource(identity: RecordIdentity): FrameSource
+  screenshot(timeoutMs: number): Promise<Uint8Array>
+  /** Why a reference cannot be used here, or undefined while it is current. */
+  checkReference(reference: NativeReference): Failure | undefined
+  /** Reads the next secret fill's exact owned target before its secret keys, and reports its read-back verdict. */
+  prepareSecretEntry(observer: SecretEntryObserver): void
+  cancel(reason: Failure): void
+  reconcile(timeoutMs: number): Promise<readonly NativeUnknownOutcome[]>
+  dispose(timeoutMs: number): Promise<void>
 }
 
 // The pointer's own window: the window server lists it over everything at this layer, owned by the window server
@@ -112,7 +147,7 @@ const windowServer = '/System/Library/PrivateFrameworks/SkyLight.framework/Resou
  * A native session's finds, actions and checks over a `NativeAppSession`. Each request is bounded by its `timeoutMs`
  * and never throws for an app or platform problem: the answer carries the failure and how far the input got.
  */
-export class NativeInteractionSession implements NativeSession<NativeCommand> {
+export class NativeInteractionSession implements NativeSession<NativeCommand>, NativeInteraction {
   readonly sessionId: string
   readonly platform: NativeKind
   readonly #session: NativeAppSession
@@ -143,6 +178,10 @@ export class NativeInteractionSession implements NativeSession<NativeCommand> {
 
   get resetPolicy(): ResetPolicy {
     return this.#session.resetPolicy
+  }
+
+  get bundleId(): string {
+    return this.#session.execution.app.bundleId
   }
 
   /**

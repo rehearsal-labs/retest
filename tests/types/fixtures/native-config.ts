@@ -12,7 +12,8 @@ export const accepted = defineConfig({
   },
 })
 
-export const unknownPlatform = defineConfig({ apps: { phone: { platform: 'android', appPath: 'build/app.apk' } } }) // type-error TS2322 Type '"android"' is not assignable to type
+export const unknownPlatform = defineConfig({ apps: { tv: { platform: 'tvos', appPath: 'build/app.app' } } }) // type-error TS2322 Type '"tvos"' is not assignable to type
+export const androidWithoutPackage = defineConfig({ apps: { phone: { platform: 'android', appPath: 'build/app.apk' } } }) // type-error TS2322 Property 'package' is missing
 export const withoutDevice = defineConfig({ apps: { phone: { platform: 'ios-simulator', appPath: 'build/Tasks.app', runtime: '26.0' } } }) // type-error TS2322 Property 'device' is missing
 export const nativeAddress = defineConfig({ apps: { mac: { platform: 'macos', appPath: 'build/Tasks.app', baseUrl: 'http://127.0.0.1:4173' } } }) // type-error TS2353 Object literal may only specify known properties
 export const unknownBrowser = defineConfig({ apps: { web: { browser: 'safari' } } }) // type-error TS2322 Type '"safari"' is not assignable to type

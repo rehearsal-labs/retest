@@ -7,15 +7,16 @@ import { parse, s } from '../protocol/schema.ts'
 import { readOwnStart, readProcessTable } from './processes.ts'
 
 // The folders a native run keeps in the temporary folder: an executor's result bundle and derived data, where XCTest
-// names its typing activities by the first characters typed, and each runtime's own folder. A close deletes them, and
+// names its typing activities by the first characters typed, each runtime's own folder, and the state folder of an
+// agent-device runtime, which holds its daemon's logs and records. A close deletes them, and
 // so does the exit hook; a SIGKILL runs neither. So each folder carries a record of the Retest process that made it, by
 // pid and start, and a later start deletes a folder whose maker is gone. A folder without a record, or whose maker runs
 // or cannot be read, is left alone.
 
 /** The kinds of folder a native run makes, by the prefix of its name. */
-export type OwnedFolderPrefix = 'retest-executor-' | 'retest-macos-' | 'retest-ios-'
+export type OwnedFolderPrefix = 'retest-executor-' | 'retest-macos-' | 'retest-ios-' | 'retest-agent-device-'
 
-const prefixes: readonly OwnedFolderPrefix[] = ['retest-executor-', 'retest-macos-', 'retest-ios-']
+const prefixes: readonly OwnedFolderPrefix[] = ['retest-executor-', 'retest-macos-', 'retest-ios-', 'retest-agent-device-']
 const ownerFile = 'retest-owner.json'
 const ownerSchema = s.object({ startTimeVersion: s.optional(s.number({ integer: true, min: 1 })), pid: s.number({ integer: true, min: 2 }), startedAt: s.string() })
 

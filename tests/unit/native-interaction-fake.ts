@@ -524,7 +524,7 @@ function escape(text: string): string {
 // The session's own driver over the stand-in: the lifecycle through the executor session, the app's process as the
 // stand-in's flag, and the tree cut by the session's scope.
 class FakeDriver implements NativeAppDriver {
-  readonly platform: NativeKind
+  readonly platform: 'ios-simulator' | 'macos'
   readonly bundle: AppBundle
   readonly identity: NativeExecutionIdentity
   readonly resetPolicy: ResetPolicy = { appData: 'kept', keychain: 'kept' }
@@ -537,11 +537,13 @@ class FakeDriver implements NativeAppDriver {
   constructor(app: FakeApp, executor: ExecutorSession) {
     this.#app = app
     this.#executor = executor
+    // The stand-in serves the executors' platforms. Android runs through agent-device, whose stand-in is its own.
+    if (app.platform === 'android') throw new Error('The stand-in executor serves iOS and macOS apps only.')
     this.platform = app.platform
     this.#target = { bundleId: app.bundleId }
     this.bundle = { appPath: `/fake/${app.appName}.app`, bundleId: app.bundleId, executable: app.appName, platforms: [app.platform === 'macos' ? 'MacOSX' : 'iPhoneSimulator'], sha256: '0'.repeat(64) }
     this.identity = {
-      platform: app.platform,
+      platform: this.platform,
       app: { bundleId: app.bundleId, path: this.bundle.appPath, sha256: this.bundle.sha256 },
       os: { name: app.platform === 'macos' ? 'macOS' : 'iOS', version: '26.5', build: 'fake' },
       executor: { name: app.platform === 'macos' ? 'mac2' : 'webdriveragent', version: '0', commit: '0', commitVerified: false, productsSha256: '0', origin: 'adopted' },

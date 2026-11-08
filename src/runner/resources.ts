@@ -16,6 +16,7 @@ import { platformPath, posixPath } from '../shared/posix-path.ts'
 import { bounded } from './bounded.ts'
 import { SharedLocks } from './locks.ts'
 import { sessionRefusal } from './sessions.ts'
+import { nativeRuntimeKey } from '../config/native-targets.ts'
 
 // What a test needs before it acts, and how it holds it. Every attempt acquires in one order: its locks, then the
 // interactive desktop, then simulator devices, then named Electron data folders, then its owner's sessions; within a
@@ -466,11 +467,12 @@ function targetOf(source: NeedsSource, app: string): LoadedTarget | undefined {
   return name === undefined ? undefined : source.config.get(app)?.targets.get(name)
 }
 
-// The desktop is one, the Mac Retest runs on; a simulator is one device and runtime; a data folder is its real path.
+// The desktop is one, the Mac Retest runs on; a simulator is one device and runtime, and an Android emulator or device is
+// one by its name or serial; a data folder is its real path.
 function targetResource(target: LoadedTarget): { kind: 'desktop' | 'device' | 'data-folder'; name: string; key: string } | undefined {
   if ('platform' in target) {
     if (target.platform === 'macos') return { kind: 'desktop', name: 'macos', key: 'macos' }
-    const name = `${target.device} (${target.runtime})`
+    const name = nativeRuntimeKey(target)
     return { kind: 'device', name, key: name }
   }
   if (target.browser === 'electron' && target.userDataDir !== undefined) return { kind: 'data-folder', name: target.userDataDir, key: folderKey(target.userDataDir) }

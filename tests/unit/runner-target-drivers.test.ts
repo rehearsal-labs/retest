@@ -127,7 +127,7 @@ describe('the config accepts targets that have no driver yet', () => {
     const iosTarget = { platform: 'ios-simulator', appPath: 'build/Tasks.app', device: 'iPhone 17', runtime: '26.0' } as const
     assert.match(
       problems({ apps: { tasks: app({ targets: { web: chromium(), phone: iosTarget } }) } }),
-      /apps\.tasks\.targets: mixes browsers and iOS simulators\. An app's targets are all browsers, all iOS simulators or all macOS apps: give each kind an app of its own$/,
+      /apps\.tasks\.targets: mixes browsers and iOS simulators\. An app's targets are all browsers, all iOS simulators, all macOS apps or all Android apps: give each kind an app of its own$/,
     )
     assert.match(problems({ apps: { mac: { platform: 'macos', appPath: 'build/Tasks.app', baseUrl: 'http://127.0.0.1:4173' } } }), /apps\.mac\.baseUrl: a native app has no address, so it takes no baseUrl$/)
     assert.match(problems({ apps: { phones: app({ baseUrl: 'http://127.0.0.1:4173', targets: { small: iosTarget } }) } }), /apps\.phones\.baseUrl: a native app has no address, so it takes no baseUrl$/)
@@ -145,13 +145,16 @@ describe('the config accepts targets that have no driver yet', () => {
         phone: { platform: 'ios-simulator', appPath: ' ', device: '', runtime: '26.0' },
         tablet: { platform: 'ios-simulator', appPath: 'build/Tasks.app', device: 'iPad Pro 11' },
         android: { platform: 'android', appPath: 'build/app.apk' },
+        tv: { platform: 'tvos', appPath: 'build/app.app' },
       },
     })
     assert.match(message, /apps\.mac\.emulate: unknown key/)
     assert.match(message, /apps\.phone\.appPath: expected a path, received " "/)
     assert.match(message, /apps\.phone\.device: expected a device type such as "iPhone 17", received ""/)
     assert.match(message, /apps\.tablet\.runtime: missing required key/)
-    assert.match(message, /apps\.android\.platform: expected one of "ios-simulator", "macos", received "android"/)
+    // An Android target runs through agent-device and needs the package its APK installs; another platform is refused.
+    assert.match(message, /apps\.android\.package: missing required key/)
+    assert.match(message, /apps\.tv\.platform: expected one of "ios-simulator", "macos", "android", received "tvos"/)
   })
 })
 

@@ -1,9 +1,9 @@
 import type { AppStateReading, BrowserCommand, DispatchedRequest, LaunchSpec, NativeRuntime, NativeRuntimeIdentity, NewPageOptions, OwnedBrowser, OwnedPage, PageNavigation, SessionOwner } from '../browser/contract.ts'
-import type { LoadedNativeTarget } from '../config/loaded.ts'
+import type { LoadedAgentDeviceTarget, LoadedNativeTarget } from '../config/loaded.ts'
 import type { ExecutorBuild, ExecutorName } from '../native/executors.ts'
 import type { AppBundle, NativeExecutionIdentity } from '../native/identity.ts'
 import type { NativeLook } from '../native/assertions.ts'
-import type { NativeInteractionOptions } from '../native/interaction-session.ts'
+import type { NativeInteraction, NativeInteractionOptions } from '../native/interaction-session.ts'
 import type { LoggedNativeLaunch, LoggedNativeLaunchOptions, NativeLogSource } from '../native/logs.ts'
 import type { NativeTools } from '../native/processes.ts'
 import type { DriverAnswer, NativeAppSession, NativeCapture, NativeLauncher, NativeSessionOptions } from '../native/session.ts'
@@ -35,6 +35,8 @@ import { launchLoggedNativeApp } from '../native/logs.ts'
 import { MacosDesktop } from '../native/macos-app.ts'
 import { listProcesses, systemTools } from '../native/processes.ts'
 import { resetPolicyFor } from '../native/reset-policy.ts'
+import { agentDeviceTarget, nativeRuntimeKey, throughAgentDevice } from '../config/native-targets.ts'
+import { AgentDeviceRuntime } from '../native/agent-device/runtime.ts'
 import { NativeError } from '../native/session.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -44,13 +46,15 @@ import { bounded } from './bounded.ts'
 /**
  * A runtime's lifecycle and the identity read from the installed app and executor. Its `openSession` hands over the
  * executor client and session it opened for the app, which the interaction session drives; a runtime that hands none
- * over gets no interaction session.
+ * over gets no interaction session. A runtime that drives its app itself, as the agent-device runtime does, opens its
+ * interaction with `openInteraction` instead, and its `openSession` refuses.
  */
 export type NativePoolRuntime = Omit<NativeRuntime, 'openSession'> & {
   readonly port: number
   readonly execution: NativeExecutionIdentity
   readonly bundle: AppBundle
   openSession(options: NativeSessionOptions, timeoutMs: number, signal?: AbortSignal): Promise<{ readonly ok: true; readonly session: NativeAppSession; readonly client?: ExecutorClient; readonly executor?: ExecutorSession } | { readonly ok: false; readonly failure: Failure }>
+  readonly openInteraction?: (options: NativeSessionOptions, timeoutMs: number, signal: AbortSignal) => Promise<Opened<NativeInteraction>>
 }
 export type NativeFactoryContext = { readonly tools: NativeTools; readonly logFolder: string; readonly timeoutMs: number; readonly signal: AbortSignal; readonly redact: (text: string) => string }
 export type StartNative = (target: LoadedNativeTarget, context: NativeFactoryContext) => Promise<{ readonly ok: true; readonly value: { readonly runtime: NativePoolRuntime; readonly close: (timeoutMs: number) => Promise<void> } } | { readonly ok: false; readonly failure: Failure; readonly idle?: true; readonly cleaned?: true }>
@@ -67,7 +71,7 @@ export type NativePoolOptions = {
   readonly onLost: (browser: OwnedBrowser, reason: string) => void
   readonly onEnded?: (browser: NativeBrowserAdapter) => void
   readonly start?: StartNative
-  readonly interact?: (runtime: NativePoolRuntime, options: NativeSessionOptions, timeoutMs: number, signal: AbortSignal, tools: NativeTools) => Promise<Opened<NativeInteractionSession>>
+  readonly interact?: (runtime: NativePoolRuntime, options: NativeSessionOptions, timeoutMs: number, signal: AbortSignal, tools: NativeTools) => Promise<Opened<NativeInteraction>>
   readonly launchWithLogs?: LaunchWithLogs
 }
 
@@ -98,7 +102,7 @@ export class NativePool {
     if (this.#closing || this.#options.signal.aborted) return refused('The native pool is closing.')
     const key = `${owner.attemptId}:${app}`
     if (this.#free.has(key)) return refused('This attempt already opened the native app.')
-    const runtimeKey = target.platform === 'macos' ? 'macos' : `${target.device} (${target.runtime})`
+    const runtimeKey = nativeRuntimeKey(target)
     if (this.#runtimeHolders.has(runtimeKey)) return refused('The native resource already has an active runtime. Its session must end before another can open.')
     const hidden = new Set(this.#options.hiddenVariables)
     for (const name of Object.keys(target.environment ?? {})) if (hidden.has(name)) return refused(`The native app cannot receive the hidden variable ${name}.`)
@@ -212,12 +216,15 @@ export class NativeBrowserAdapter implements OwnedBrowser {
   get connected(): boolean { return this.#closing === undefined && this.#options.runtime.connected }
   get ended(): Promise<void> { return this.#ended.promise }
   get startingState(): NativeStartingState {
-    const policy = resetPolicyFor(this.target.platform)
+    const policy = resetPolicyFor(this.target.platform, this.target.driver)
     return { ...policy.contract, boundary: policy.boundary, ...(this.target.arguments?.includes('-reset') === true ? { appReset: true as const } : {}), notIsolated: [...policy.leftToTheApp, ...policy.notIsolated].map((item) => `${item.state}: ${item.how}`) }
   }
   onDisconnect(listener: (reason: string) => void): () => void { return this.#options.runtime.onDisconnect(listener) }
-  /** Whether the app's launch keeps its standard output, as its target declares; it does unless `logs` is 'none'. */
-  get keepsStdout(): boolean { return (this.target.diagnostics?.logs ?? 'stdout') === 'stdout' }
+  /**
+   * Whether the app's launch keeps its standard output, as its target declares; it does unless `logs` is 'none'. A target
+   * that runs through agent-device keeps none: agent-device launches the app, and Retest reads no output of it yet.
+   */
+  get keepsStdout(): boolean { return (this.target.diagnostics?.logs ?? (throughAgentDevice(this.target) ? 'none' : 'stdout')) === 'stdout' }
   /**
    * The source the app's standard output goes to, given before the app launches. Without one, or for a target that
    * keeps no log, the executor launches the app.
@@ -232,7 +239,7 @@ export class NativeBrowserAdapter implements OwnedBrowser {
     const opened = await this.#options.interact(this.#options.runtime, { ...this.#options.options, launcher }, timeoutMs, this.#options.signal, this.#options.tools)
     if (!opened.ok) throw new NativeError(opened.failure)
     this.#page = new NativePageAdapter(opened.value)
-    if (this.target.platform === 'ios-simulator') {
+    if (this.target.platform === 'ios-simulator' || this.target.platform === 'android') {
       const installed = await opened.value.install({ appPath: this.target.appPath }, timeoutMs, this.#options.signal)
       if (!installed.result.ok) throw new NativeError(installed.result.failure)
     }
@@ -320,9 +327,9 @@ export class NativeBrowserAdapter implements OwnedBrowser {
 
 /** Commands route to the native locator layer; its tree, references, actionability and input ledger remain authoritative. */
 export class NativePageAdapter implements OwnedPage {
-  readonly native: NativeInteractionSession
+  readonly native: NativeInteraction
   readonly #looks = new WeakMap<object, NativeLook>()
-  constructor(native: NativeInteractionSession) { this.native = native }
+  constructor(native: NativeInteraction) { this.native = native }
   get recordedOutcomes(): NativeOutcomeRecord[] {
     return this.native.unknownOutcomes.map(({ source, outcome }) => {
       const reconciled = outcome.reconciled === undefined ? {} : { reconciled: outcome.reconciled.ok ? { running: outcome.reconciled.running, pids: [...outcome.reconciled.pids] } : { problem: outcome.reconciled.problem } }
@@ -330,7 +337,7 @@ export class NativePageAdapter implements OwnedPage {
     })
   }
   /** The bundle id the installed app names: a native app's only secret destination. */
-  get bundleId(): string { return this.native.session.execution.app.bundleId }
+  get bundleId(): string { return this.native.bundleId }
   get url(): undefined { return undefined }
   readPage(_queries: readonly TextQuery[], _timeoutMs: number): Promise<PageReading> { return Promise.reject(new BrowserError({ class: 'unsupported', message: 'Native apps have no web page address, title or CSS page queries.' })) }
   get committedUrl(): undefined { return undefined }
@@ -352,7 +359,7 @@ export class NativePageAdapter implements OwnedPage {
     if (command.kind === 'nativeKeyboard') {
       // The first-run keyboard card is an iOS screen. The types keep it off a macOS page; a caller that reaches it anyway
       // is refused here, before anything is read or pressed.
-      if (command.operation === 'dismissFirstRunCard' && this.native.session.execution.platform === 'macos') return unsupported('The first-run keyboard card is an iOS screen, and a macOS app has none, so Retest sent nothing.')
+      if (command.operation === 'dismissFirstRunCard' && this.native.platform === 'macos') return unsupported('The first-run keyboard card is an iOS screen, and a macOS app has none, so Retest sent nothing.')
       if (command.operation === 'wait') {
         const read = await this.native.waitForKeyboard(timeoutMs, signal)
         return read.ok ? { ok: true, kind: 'nativeKeyboard' } : read
@@ -405,7 +412,8 @@ function sameLaunch(left: LaunchSpec, right: LaunchSpec): boolean {
   return names.length === Object.keys(right.environment).length && names.every((name) => Object.hasOwn(right.environment, name) && left.environment[name] === right.environment[name])
 }
 
-async function openInteraction(runtime: NativePoolRuntime, options: NativeSessionOptions, timeoutMs: number, signal: AbortSignal, tools: NativeTools): Promise<Opened<NativeInteractionSession>> {
+async function openInteraction(runtime: NativePoolRuntime, options: NativeSessionOptions, timeoutMs: number, signal: AbortSignal, tools: NativeTools): Promise<Opened<NativeInteraction>> {
+  if (runtime.openInteraction !== undefined) return runtime.openInteraction(options, timeoutMs, signal)
   const opened = await runtime.openSession(options, timeoutMs, signal)
   if (!opened.ok) return opened
   // Input, secrets among it, goes only to the executor session the runtime opened for this app. Whatever session the
@@ -429,6 +437,9 @@ async function openInteraction(runtime: NativePoolRuntime, options: NativeSessio
 }
 
 async function startNative(target: LoadedNativeTarget, context: NativeFactoryContext): ReturnType<StartNative> {
+  const throughAgent = agentDeviceTarget(target)
+  if (throughAgent !== undefined) return startThroughAgentDevice(throughAgent, context)
+  if (target.platform === 'android') return { ...refused('An Android target runs through agent-device alone.'), idle: true }
   const bundle = await readAppBundle(target.appPath, target.platform, context.tools, context.signal)
   if (!bundle.ok) return { ...bundle, idle: true }
   const cache = join(homedir(), 'Library', 'Caches', 'retest-proofs')
@@ -437,6 +448,17 @@ async function startNative(target: LoadedNativeTarget, context: NativeFactoryCon
   if (!build.ok) return { ...build, idle: true }
   return startBuilt(target, context, build.build)
 }
+/**
+ * Starts the runtime of a target agent-device drives. agent-device builds its own runner, so Retest builds no executor
+ * for it; the runtime's refusals keep their proofs that nothing, or nothing left, was made.
+ */
+async function startThroughAgentDevice(target: LoadedAgentDeviceTarget, context: NativeFactoryContext): ReturnType<StartNative> {
+  const started = await AgentDeviceRuntime.start({ target, tools: context.tools, timeoutMs: context.timeoutMs, signal: context.signal, redact: context.redact })
+  if (!started.ok) return { ok: false, failure: started.failure, ...(started.idle === true ? { idle: true as const } : {}), ...(started.cleaned === true ? { cleaned: true as const } : {}) }
+  const { runtime } = started
+  return { ok: true, value: { runtime, close: (timeoutMs) => runtime.close(timeoutMs) } }
+}
+
 /** The runtimes a native start uses once its executor is built: Retest's own, unless a test gives stand-ins. */
 export type NativeRuntimeStarters = { readonly ios: typeof IosSimulatorRuntime.start; readonly macos: typeof MacosDesktop.start }
 
@@ -450,6 +472,7 @@ const runtimeStarters: NativeRuntimeStarters = { ios: (options) => IosSimulatorR
  * @example await startBuilt(target, context, build) // { ok: false, failure, idle: true } when another process holds the desktop
  */
 export async function startBuilt(target: LoadedNativeTarget, context: NativeFactoryContext, build: ExecutorBuild, starters: NativeRuntimeStarters = runtimeStarters): ReturnType<StartNative> {
+  if (target.platform === 'android') return { ...refused('An Android target runs through agent-device, which builds no executor of Retest\'s.'), idle: true }
   if (target.platform === 'ios-simulator') {
     if (target.device === undefined || target.runtime === undefined) return { ...refused('An iOS target needs a device type and runtime.'), idle: true }
     const started = await starters.ios({ target: { appPath: target.appPath, device: target.device, runtime: target.runtime }, build, ...context })

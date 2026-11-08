@@ -647,6 +647,7 @@ function hasFrameSource(page: OwnedPage): page is WebSession & { frameSource(ide
 function targetName({ session }: AppPage): string {
   const { runtime } = session
   if (runtime.kind === 'web') return runtime.engine === 'firefox' ? 'Firefox pages' : runtime.engine === 'webkit' ? 'WebKit pages' : 'this page'
+  if (runtime.kind === 'android') return 'Android apps'
   return runtime.kind === 'macos' ? 'macOS apps' : 'iOS simulator apps'
 }
 

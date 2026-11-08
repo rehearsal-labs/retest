@@ -85,6 +85,7 @@
     "@ai-sdk/anthropic": "^4.0.71",
     "@ai-sdk/azure": "^4.0.90",
     "@ai-sdk/openai": "^4.0.83",
+    "agent-device": "0.21.36",
     "ai": "^7.0.127"
   },
   "peerDependenciesMeta": {
@@ -97,12 +98,16 @@
     "@ai-sdk/openai": {
       "optional": true
     },
+    "agent-device": {
+      "optional": true
+    },
     "ai": {
       "optional": true
     }
   },
   "devDependencies": {
     "@types/node": "24.19.0",
+    "agent-device": "0.21.36",
     "typescript": "6.0.3",
     "typescript-7": "npm:typescript@7.0.2"
   }

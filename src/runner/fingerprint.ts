@@ -385,8 +385,11 @@ export function contentSha256(kind: RequirementCheck['kind'], content: unknown):
 
 function appSettings(target: LoadedTarget, headless: boolean): AppSettings {
   if ('platform' in target) {
+    // A target that runs through agent-device says so, since the driver changes how the test runs.
+    if (target.platform === 'android') return { target: target.name, kind: 'android', driver: 'agent-device', android: { ...('serial' in target.device ? { serial: target.device.serial } : { device: target.device.name }), package: target.package } }
+    const driver = target.driver === 'agent-device' ? { driver: 'agent-device' as const } : {}
     return target.platform === 'ios-simulator'
-      ? { target: target.name, kind: 'ios-simulator', simulator: { device: target.device, runtime: target.runtime } }
+      ? { target: target.name, kind: 'ios-simulator', ...driver, simulator: { device: target.device, runtime: target.runtime } }
       : { target: target.name, kind: 'macos' }
   }
   // An Electron app's binary and app folder say where things are on this machine, as a browser's executable does; the

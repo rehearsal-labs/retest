@@ -1183,7 +1183,7 @@ export class RunSession {
       const driver = targetDriver(name, target, { native: true })
       if (!driver.ok) return driver
       let browser: Opened<ReadyTarget>
-      if (driver.driver === 'macos' || driver.driver === 'ios-simulator') {
+      if (driver.driver === 'macos' || driver.driver === 'ios-simulator' || driver.driver === 'android') {
         const unready = await this.#servers.ensure(app)
         if (unready !== undefined) return { ok: false, failure: this.#interruption ?? unready }
         browser = await this.#native.ensure(name, driver.target, { runId: this.#runId, testId, attemptId, app: name }, lease)
@@ -1231,7 +1231,7 @@ export class RunSession {
         return opened
       }
       opened.value.identify?.(session)
-      pages.push({ app, page: opened.value, browser, touch: runtime.kind === 'ios-simulator' || emulation?.touch === true, session })
+      pages.push({ app, page: opened.value, browser, touch: runtime.kind === 'ios-simulator' || runtime.kind === 'android' || emulation?.touch === true, session })
       if (browser instanceof NativeBrowserAdapter) {
         const native = { sessionId: session.sessionId, app, target: targetsName(described.targets, app), product: browser.product, identity: browser.identity.execution }
         this.#nativeStarts.push(native)

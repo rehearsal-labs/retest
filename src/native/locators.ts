@@ -10,7 +10,9 @@ import { quoteText } from '../protocol/text.ts'
 // Native locators, read from the session's own scoped tree. A test id is the element's accessibility identifier, read
 // back from the element that matched: on macOS the runner writes `identifier` itself, and on iOS WebDriverAgent writes
 // `name`, which is the identifier, or the label when the identifier is empty, so a `name` equal to the `label` cannot be
-// told from a label and never counts as an identifier. A role is an element type, by the explicit table below; a role
+// told from a label and never counts as an identifier. A tree read through agent-device carries each element's test ids
+// beside its attributes, as `TestIdReading`: the iOS accessibility identifier, or Android's resource id and content
+// description, each read as agent-device reports it. A role is an element type, by the explicit table below; a role
 // with no type on a platform is refused by name. Label, name and text compare as the web's locators do. Nothing here
 // guesses: an element is found in the tree or it is not, and an action later resolves exactly that element on the
 // executor with a predicate whose count must equal the tree's.
@@ -90,6 +92,22 @@ export const nativeRoleTypes: Readonly<Record<NativeKind, Partial<Readonly<Recor
     tree: ['Outline'],
     treeitem: ['OutlineRow'],
   },
+  // An Android tree's element types are Retest's names for Android's widget classes, as `androidElementTypes` maps them
+  // when a tree is read through agent-device. Not yet checked against a real emulator or device.
+  android: {
+    button: ['Button'],
+    checkbox: ['CheckBox'],
+    combobox: ['PopUpButton'],
+    img: ['Image'],
+    list: ['CollectionView'],
+    progressbar: ['ProgressIndicator'],
+    radio: ['RadioButton'],
+    radiogroup: ['RadioGroup'],
+    slider: ['Slider'],
+    switch: ['Switch', 'Toggle'],
+    tablist: ['TabBar'],
+    textbox: ['TextField', 'SecureTextField'],
+  },
 }
 
 // The roles `getByLabel` finds, as the web's labelled form controls, mapped through the table above.
@@ -109,7 +127,15 @@ export const toggleTypes: ReadonlySet<string> = new Set(['Switch', 'Toggle', 'Ch
 export const selectableTypes: Readonly<Record<NativeKind, ReadonlySet<string>>> = {
   'ios-simulator': new Set(['Button', 'Cell', 'Tab']),
   macos: new Set(['Cell', 'TableRow', 'OutlineRow', 'Tab']),
+  android: new Set(['Button', 'Cell', 'Tab']),
 }
+
+/**
+ * The test ids a driver read for an element itself, beside its attributes: those that are the element's own test ids,
+ * and those that may be visible text instead, which never count as a test id. A tree Retest reads through agent-device
+ * carries them; a tree an executor wrote as XML does not, and its identifier is read from its attributes.
+ */
+export type TestIdReading = { readonly verified: readonly string[]; readonly unverifiable: readonly string[] }
 
 /** An element of a scoped tree: its type after the `XCUIElementType` prefix, its attributes, frame and place. */
 export type NativeElement = {
@@ -120,6 +146,7 @@ export type NativeElement = {
   readonly frame: Rect | undefined
   readonly parent: NativeElement | undefined
   readonly children: readonly NativeElement[]
+  readonly testIds?: TestIdReading
 }
 
 /** A scoped tree, parsed: its root and every element in document order. */
@@ -216,6 +243,12 @@ export type IdentifierReading = { readonly kind: 'verified'; readonly identifier
  * @example identifierOf(saveButton, 'macos') // { kind: 'verified', identifier: 'save-task' }
  */
 export function identifierOf(element: NativeElement, platform: NativeKind): IdentifierReading {
+  if (element.testIds !== undefined) {
+    const [verified] = element.testIds.verified
+    if (verified !== undefined) return { kind: 'verified', identifier: verified }
+    const [candidate] = element.testIds.unverifiable
+    return candidate === undefined ? { kind: 'none' } : { kind: 'unverifiable', candidate }
+  }
   if (platform === 'macos') {
     const identifier = attribute(element, 'identifier')
     return identifier === '' ? { kind: 'none' } : { kind: 'verified', identifier }
@@ -228,7 +261,7 @@ export function identifierOf(element: NativeElement, platform: NativeKind): Iden
 /** The element's accessible name, as `getByRole` reads it: its label, or on macOS its title when it has no label. */
 export function nameOf(element: NativeElement, platform: NativeKind): string {
   const label = attribute(element, 'label')
-  if (label !== '' || platform === 'ios-simulator') return label
+  if (label !== '' || platform !== 'macos') return label
   return attribute(element, 'title')
 }
 
@@ -296,9 +329,13 @@ export function valueReading(element: NativeElement, platform: NativeKind): Stat
   if (!holdsValue(element)) return { kind: 'none' }
   const value = element.attributes['value']
   if (value === undefined) return { kind: 'unreported', attribute: 'value' }
-  if (platform === 'ios-simulator' && fieldTypes.has(element.type)) {
+  if (platform !== 'macos' && fieldTypes.has(element.type)) {
+    // Android says whether a field shows its hint: one that does holds nothing, and one that does not holds its value
+    // even when that equals the hint. Where it does not say, the value cannot be told from the hint, as on iOS.
+    const hint = element.attributes['hintShowing']
+    if (platform === 'android' && hint === 'true') return { kind: 'read', value: '' }
     const placeholder = attribute(element, 'placeholderValue')
-    if (placeholder !== '' && value === placeholder) return { kind: 'placeholder', placeholder }
+    if (placeholder !== '' && value === placeholder && !(platform === 'android' && hint === 'false')) return { kind: 'placeholder', placeholder }
   }
   return { kind: 'read', value }
 }
@@ -310,7 +347,7 @@ export function valueReading(element: NativeElement, platform: NativeKind): Stat
  * when the element carries no frame at all.
  */
 export function visibilityReading(element: NativeElement, platform: NativeKind): StateReading<boolean> {
-  if (platform === 'ios-simulator') return booleanAttribute(element, 'visible')
+  if (platform !== 'macos') return booleanAttribute(element, 'visible')
   const frame = element.frame
   if (frame === undefined) return { kind: 'unreported', attribute: 'frame' }
   if (frame.width <= 0 || frame.height <= 0) return { kind: 'read', value: false }
@@ -343,7 +380,7 @@ export function textReading(element: NativeElement, platform: NativeKind): State
     if (label !== undefined) return { kind: 'read', value: label }
     return value === undefined ? { kind: 'unreported', attribute: 'value' } : { kind: 'read', value }
   }
-  if (label !== undefined && (label !== '' || platform === 'ios-simulator')) return { kind: 'read', value: label }
+  if (label !== undefined && (label !== '' || platform !== 'macos')) return { kind: 'read', value: label }
   if (platform === 'macos' && title !== undefined) return { kind: 'read', value: title }
   return label === undefined ? { kind: 'unreported', attribute: 'label' } : { kind: 'read', value: label }
 }
@@ -359,7 +396,7 @@ export function enabledReading(element: NativeElement): StateReading<boolean> {
  */
 export function selectedReading(element: NativeElement, platform: NativeKind): StateReading<boolean> {
   if (!selectableTypes[platform].has(element.type)) return { kind: 'none' }
-  if (platform === 'macos') return booleanAttribute(element, 'selected')
+  if (platform !== 'ios-simulator') return booleanAttribute(element, 'selected')
   const traits = element.attributes['traits']
   if (traits === undefined) return { kind: 'unreported', attribute: 'traits' }
   return { kind: 'read', value: traits.split(',').some((trait) => trait.trim() === 'Selected') }
@@ -461,6 +498,7 @@ function unsupported(message: string): Failure {
 
 /** How a platform is named in a message. */
 export function platformName(platform: NativeKind): string {
+  if (platform === 'android') return 'Android'
   return platform === 'macos' ? 'macOS' : 'iOS'
 }
 
@@ -471,6 +509,10 @@ function findStep(candidates: readonly NativeElement[], step: LocatorStep, platf
     case 'testId': {
       let unverified = 0
       const matches = candidates.filter((element) => {
+        if (element.testIds !== undefined) {
+          if (element.testIds.unverifiable.includes(step.value) && !element.testIds.verified.includes(step.value)) unverified += 1
+          return element.testIds.verified.includes(step.value)
+        }
         const reading = identifierOf(element, platform)
         if (reading.kind === 'unverifiable' && reading.candidate === step.value) unverified += 1
         return reading.kind === 'verified' && reading.identifier === step.value

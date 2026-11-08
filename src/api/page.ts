@@ -490,7 +490,7 @@ export interface NativeKeyboard<Platform extends NativePlatform = NativePlatform
    *
    * @example await phone.keyboard.wait()
    */
-  readonly wait: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no software keyboard.'>
+  readonly wait: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : Platform extends 'android' ? RetestTypeError<"An Android app's keyboard helpers are not built yet."> : RetestTypeError<'A macOS app has no software keyboard.'>
   /**
    * Dismisses the software keyboard by pressing its return key once, after the first-run card about sliding to type
    * when it shows, and waits for the keyboard to go. A keyboard that is not up passes and presses nothing; one whose
@@ -498,14 +498,14 @@ export interface NativeKeyboard<Platform extends NativePlatform = NativePlatform
    *
    * @example await phone.keyboard.dismiss()
    */
-  readonly dismiss: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no software keyboard.'>
+  readonly dismiss: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : Platform extends 'android' ? RetestTypeError<"An Android app's keyboard helpers are not built yet."> : RetestTypeError<'A macOS app has no software keyboard.'>
   /**
    * Presses Continue once on the keyboard's first-run card about sliding to type, when it shows, and waits for the card
    * to go. Without the card it passes and presses nothing.
    *
    * @example await phone.keyboard.dismissFirstRunCard()
    */
-  readonly dismissFirstRunCard: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no software keyboard.'>
+  readonly dismissFirstRunCard: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : Platform extends 'android' ? RetestTypeError<"An Android app's keyboard helpers are not built yet."> : RetestTypeError<'A macOS app has no software keyboard.'>
 }
 
 /**
@@ -540,7 +540,7 @@ export interface NativePage<Platform extends NativePlatform = NativePlatform> ex
    *
    * @example await phone.swipe('up')
    */
-  readonly swipe: Platform extends 'ios-simulator' ? (direction: SwipeDirection, options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app takes no swipe. Use scroll().'>
+  readonly swipe: Platform extends 'ios-simulator' ? (direction: SwipeDirection, options?: CallOptions) => Promise<void> : Platform extends 'android' ? RetestTypeError<'A swipe on an Android app is not built yet. Use scroll().'> : RetestTypeError<'A macOS app takes no swipe. Use scroll().'>
 }
 
 /** A recipe looked up afresh for each action and check in the owned app's tree. */
@@ -557,9 +557,9 @@ export interface NativeLocator<Platform extends NativePlatform = NativePlatform>
    *
    * @example await phone.getByTestId('task-list').swipe('left')
    */
-  readonly swipe: Platform extends 'ios-simulator' ? (direction: SwipeDirection, options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app takes no swipe. Use scroll().'>
-  readonly tap: Platform extends 'ios-simulator' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no touch screen. Use click().'>
-  readonly click: Platform extends 'macos' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'An iOS app takes taps. Use tap().'>
+  readonly swipe: Platform extends 'ios-simulator' ? (direction: SwipeDirection, options?: CallOptions) => Promise<void> : Platform extends 'android' ? RetestTypeError<'A swipe on an Android app is not built yet. Use scroll().'> : RetestTypeError<'A macOS app takes no swipe. Use scroll().'>
+  readonly tap: Platform extends 'ios-simulator' | 'android' ? (options?: CallOptions) => Promise<void> : RetestTypeError<'A macOS app has no touch screen. Use click().'>
+  readonly click: Platform extends 'macos' ? (options?: CallOptions) => Promise<void> : Platform extends 'android' ? RetestTypeError<'An Android app takes taps. Use tap().'> : RetestTypeError<'An iOS app takes taps. Use tap().'>
   readonly select: RetestTypeError<"select() is for a web page's <select>. A native app has none.">
   readonly check: RetestTypeError<'check() is for a web page. Tap or click the native control instead.'>
   readonly uncheck: RetestTypeError<'uncheck() is for a web page. Tap or click the native control instead.'>

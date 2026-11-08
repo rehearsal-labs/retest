@@ -1,7 +1,7 @@
 import type { AppBuild, NativeRuntime, NativeRuntimeIdentity, ResetPolicy } from '../browser/contract.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { ExecutorBuild, NativePinSet } from './executors.ts'
-import type { AppBundle, NativeExecutionIdentity, SimulatorDevice } from './identity.ts'
+import type { AppBundle, PinnedExecutionIdentity, SimulatorDevice } from './identity.ts'
 import type { CommandResult, NativeTools, RecordedProcess, StartedProcess } from './processes.ts'
 import type { AppProcessReading, CaptureSource, DriverAnswer, LaunchSpec, NativeAppDriver, NativeSessionOptions } from './session.ts'
 import type { ScopedSource } from './source-scope.ts'
@@ -262,7 +262,7 @@ export class IosSimulatorRuntime implements NativeRuntime {
   // The app as it is installed on the simulator now: the one the runtime started with, until a session installs a
   // build, whose copy on the simulator every later session names.
   #bundle: AppBundle
-  #execution: NativeExecutionIdentity
+  #execution: PinnedExecutionIdentity
   readonly #runner: OwnedProcess
   readonly #client: ExecutorClient
   readonly #sessions = new SerialLane()
@@ -359,7 +359,7 @@ export class IosSimulatorRuntime implements NativeRuntime {
     }
   }
 
-  private constructor(parts: { readonly options: IosRuntimeOptions; readonly udid: string; readonly port: number; readonly bundle: AppBundle; readonly execution: NativeExecutionIdentity; readonly runner: OwnedProcess; readonly runnerApps: readonly StartedProcess[]; readonly xcodebuild: StartedProcess; readonly folder: string; readonly lastResort: () => void }) {
+  private constructor(parts: { readonly options: IosRuntimeOptions; readonly udid: string; readonly port: number; readonly bundle: AppBundle; readonly execution: PinnedExecutionIdentity; readonly runner: OwnedProcess; readonly runnerApps: readonly StartedProcess[]; readonly xcodebuild: StartedProcess; readonly folder: string; readonly lastResort: () => void }) {
     this.#options = parts.options
     this.udid = parts.udid
     this.port = parts.port
@@ -391,7 +391,7 @@ export class IosSimulatorRuntime implements NativeRuntime {
   }
 
   /** What results name, from the copy installed on the simulator. */
-  get execution(): NativeExecutionIdentity {
+  get execution(): PinnedExecutionIdentity {
     return this.#execution
   }
 
@@ -405,7 +405,7 @@ export class IosSimulatorRuntime implements NativeRuntime {
   }
 
   /** Called by a session's driver after an install: the installed copy is what this runtime's sessions name from now. */
-  noteInstalled(bundle: AppBundle, execution: NativeExecutionIdentity): void {
+  noteInstalled(bundle: AppBundle, execution: PinnedExecutionIdentity): void {
     this.#bundle = bundle
     this.#execution = execution
   }
@@ -579,7 +579,7 @@ class IosAppDriver implements NativeAppDriver {
   readonly captureSources: readonly CaptureSource[] = ['executor-screen', 'simulator-display']
   readonly resetPolicy: ResetPolicy
   #bundle: AppBundle
-  #identity: NativeExecutionIdentity
+  #identity: PinnedExecutionIdentity
   readonly runtimeProcessIds: readonly number[]
   readonly #runtime: IosSimulatorRuntime
   readonly #tools: NativeTools
@@ -605,7 +605,7 @@ class IosAppDriver implements NativeAppDriver {
   }
 
   /** What results name, from the bundle that is installed. */
-  get identity(): NativeExecutionIdentity {
+  get identity(): PinnedExecutionIdentity {
     return this.#identity
   }
 

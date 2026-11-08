@@ -21,7 +21,8 @@ import { inputDispatch } from './webdriver-client.ts'
 // pressed once its button list names it alone. Once the press went, the alert counts as closed only when the tree
 // shows none and, on iOS, the alert route answers that no alert is open.
 
-const alertTypes: Readonly<Record<NativeKind, ReadonlySet<string>>> = { 'ios-simulator': new Set(['Alert']), macos: new Set(['Alert', 'Sheet', 'Dialog']) }
+// An Android tree read through agent-device names no alert type: its system dialogs are windows of other apps.
+const alertTypes: Readonly<Record<NativeKind, ReadonlySet<string>>> = { 'ios-simulator': new Set(['Alert']), macos: new Set(['Alert', 'Sheet', 'Dialog']), android: new Set() }
 
 /** An alert in the app's tree: the element, its text, and its buttons in tree order. */
 export type NativeAlert = { readonly element: NativeElement; readonly text: string; readonly buttons: readonly NativeElement[] }

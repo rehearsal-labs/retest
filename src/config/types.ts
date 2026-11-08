@@ -97,8 +97,7 @@ export type WebTargetConfig = ChromiumTarget | ChromeTarget | EdgeTarget | Firef
 /**
  * An app on an iOS simulator. `appPath` is the app's simulator build, its `.app` bundle, relative to the config's
  * folder. `device` and `runtime` name the simulator's device type and iOS version, such as 'iPhone 17' and '26.0'.
- * Retest has no iOS driver yet: the config accepts the target, and a run refuses every test that needs it before
- * starting anything for that test.
+ * Retest creates a simulator of its own for the target and deletes it at the end.
  */
 export type NativeLaunchSettings = {
   readonly arguments?: readonly string[] | undefined
@@ -127,6 +126,30 @@ export type IosSimulatorTarget = NativeTargetSettings & {
   readonly appPath: string
   readonly device: string
   readonly runtime: string
+  /**
+   * What drives the app: `'webdriveragent'`, the default, is Retest's WebDriverAgent driver; `'agent-device'` drives it
+   * through the agent-device package, an optional peer the project installs itself. An agent-device target takes no
+   * `environment` and no `diagnostics` yet.
+   */
+  readonly driver?: 'webdriveragent' | 'agent-device' | undefined
+}
+
+/**
+ * An Android app on an emulator or a device, driven through the agent-device package, an optional peer the project
+ * installs itself. `appPath` is the APK, relative to the config's folder, which Retest installs afresh for each runtime;
+ * `package` is the application id the APK installs, which Retest launches and which `secretOrigins` names for a
+ * secret to be typed into the app. `device` names an emulator or device as agent-device lists it, and `serial` names one
+ * by its adb serial, such as 'emulator-5554'; give one of the two. Android is built but has not run on a real emulator
+ * or device: treat it as unverified. It takes no launch `arguments`, `environment` or `diagnostics` yet.
+ */
+export type AndroidTarget = {
+  readonly platform: 'android'
+  readonly appPath: string
+  readonly package: string
+  readonly device?: string | undefined
+  readonly serial?: string | undefined
+  /** Android runs through agent-device only, so `'agent-device'` is the one driver and the default. */
+  readonly driver?: 'agent-device' | undefined
 }
 
 /**
@@ -137,7 +160,7 @@ export type IosSimulatorTarget = NativeTargetSettings & {
 export type MacosTarget = NativeTargetSettings & { readonly platform: 'macos'; readonly appPath: string }
 
 /** A native app's target: a native app has no address, so it never takes `baseUrl`. */
-export type NativeTargetConfig = IosSimulatorTarget | MacosTarget
+export type NativeTargetConfig = IosSimulatorTarget | MacosTarget | AndroidTarget
 
 /** The platforms a native target names. */
 export type NativePlatform = NativeTargetConfig['platform']
@@ -162,7 +185,8 @@ export type ElectronTarget = ElectronOptions & { readonly browser: 'electron' }
 
 /**
  * A target: a browser, an Electron app or a native app. The targets of one app are all browsers, all Electron apps,
- * all iOS simulators or all macOS apps, since a test's handle on the app offers what its targets can do.
+ * all iOS simulators, all macOS apps or all Android apps, since a test's handle on the app offers what its targets can
+ * do.
  */
 export type TargetConfig = WebTargetConfig | ElectronTarget | NativeTargetConfig
 
@@ -316,7 +340,7 @@ export type PixelsConfig = Readonly<Record<string, { readonly screenshots?: 'all
  *
  * - `apps`: each app is `app({ targets })`, or a target on its own, which may carry the app's settings. A target is
  *   a browser, an Electron app, `electron({ executablePath, appPath })`, or a native app:
- *   `{ platform: 'ios-simulator', ... }` or `{ platform: 'macos', ... }`.
+ *   `{ platform: 'ios-simulator', ... }`, `{ platform: 'macos', ... }` or `{ platform: 'android', ... }`.
  * - `defaultApp`: the app a test without `apps` uses; the only app, when there is one.
  * - `runs`: app to target name, one entry per combination a test with several multi-target apps runs.
  * - `secrets` and `secretOrigins`: a secret may be typed only on the origins of the test's apps' base URLs,

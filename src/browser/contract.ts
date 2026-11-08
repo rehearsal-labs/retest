@@ -28,9 +28,12 @@ export type { TextQuery } from '../protocol/host-check.ts'
 // share this contract; the runner supplies the native interaction layer for native sessions.
 
 /** The kinds of target a session runs on. The first web engine is Chromium; native targets use their own executor. */
-export type TargetKind = 'web' | 'ios-simulator' | 'macos'
+export type TargetKind = 'web' | 'ios-simulator' | 'macos' | 'android'
 
-/** The native kinds of target: an app on an iOS simulator, and an app on the Mac Retest runs on. */
+/**
+ * The native kinds of target: an app on an iOS simulator, an app on the Mac Retest runs on, and an Android app on an
+ * emulator or a device, which runs through agent-device.
+ */
 export type NativeKind = Exclude<TargetKind, 'web'>
 
 /** The engines a web target runs on. Chromium, Chrome and Edge are all the `chromium` engine. */
@@ -60,7 +63,8 @@ export type WebRuntimeIdentity = {
 /**
  * What a native session runs on: the app's bundle id and version as its bundle states them, the absolute path of
  * the app that was installed or launched, the processes it owns, and for an iOS simulator, its device and runtime
- * as the simulator names them. The runner embeds the execution identity read from the real target.
+ * as the simulator names them. An Android app's bundle id is its package, and its device is the emulator or device as
+ * agent-device names it. The runner embeds the execution identity read from the real target.
  */
 export type NativeRuntimeIdentity = { readonly execution?: NativeExecutionIdentity } & (
   | {
@@ -73,7 +77,7 @@ export type NativeRuntimeIdentity = { readonly execution?: NativeExecutionIdenti
       readonly processIds: readonly number[]
     }
   | { readonly kind: 'macos'; readonly bundleId: string; readonly appVersion?: string; readonly appPath: string; readonly processIds: readonly number[] }
-
+  | { readonly kind: 'android'; readonly bundleId: string; readonly appVersion?: string; readonly appPath: string; readonly device: string; readonly processIds: readonly number[] }
 )
 
 export type RuntimeIdentity = WebRuntimeIdentity | NativeRuntimeIdentity

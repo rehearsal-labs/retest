@@ -67,13 +67,18 @@ export type LoadedElectronTarget = {
 export type LoadedNativeDiagnostics = { readonly logs: 'stdout' | 'none'; readonly network?: NativeNetworkDeclaration }
 
 /**
- * A native app's target, which no driver runs yet. `appPath` is absolute. It never emulates a screen or goes through
- * a proxy: those belong to browsers.
+ * A native app's target. `appPath` is absolute. It never emulates a screen or goes through a proxy: those belong to
+ * browsers. `driver` is present only for a target that runs through agent-device: every Android target, and an iOS
+ * simulator target that asks for it. An Android target names its device by `device` or by `serial`, never both.
  */
 export type LoadedNativeTarget = { readonly arguments?: readonly string[]; readonly environment?: Readonly<Record<string, string>>; readonly diagnostics?: LoadedNativeDiagnostics; readonly name: string; readonly emulate?: never; readonly proxy?: never } & (
-  | { readonly platform: 'ios-simulator'; readonly appPath: string; readonly device: string; readonly runtime: string }
-  | { readonly platform: 'macos'; readonly appPath: string }
+  | { readonly platform: 'ios-simulator'; readonly appPath: string; readonly device: string; readonly runtime: string; readonly driver?: 'agent-device' }
+  | { readonly platform: 'macos'; readonly appPath: string; readonly driver?: never }
+  | { readonly platform: 'android'; readonly appPath: string; readonly package: string; readonly device: { readonly name: string } | { readonly serial: string }; readonly driver: 'agent-device' }
 )
+
+/** A native target that runs through agent-device: an iOS simulator target that asks for it, or any Android target. */
+export type LoadedAgentDeviceTarget = Exclude<LoadedNativeTarget, { readonly platform: 'macos' }> & { readonly driver: 'agent-device' }
 
 export type LoadedTarget = LoadedWebTarget | LoadedElectronTarget | LoadedNativeTarget
 

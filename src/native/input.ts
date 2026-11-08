@@ -371,7 +371,7 @@ async function focusForPress(port: NativePort, target: ActionTarget, locator: Lo
   return { ok: true, input: 'sent' }
 }
 
-type PlatformKeys = { readonly ok: true; readonly platform: 'macos'; readonly keys: readonly MacKey[] } | { readonly ok: true; readonly platform: 'ios-simulator'; readonly text: string } | { readonly ok: false; readonly failure: Failure }
+type PlatformKeys = { readonly ok: true; readonly platform: 'macos'; readonly keys: readonly MacKey[] } | { readonly ok: true; readonly platform: 'ios-simulator' | 'android'; readonly text: string } | { readonly ok: false; readonly failure: Failure }
 
 // What a parsed key sends on a platform: on macOS one runner key press with its modifier flags, on iOS the text the key
 // types, for the keys and characters iOS's typing route can send. A chord on iOS is refused by name: WebDriverAgent's

@@ -28,27 +28,47 @@ export type AppBundle = {
 }
 
 /** The operating system a native app ran on, as it names itself. */
-export type OperatingSystem = { readonly name: 'iOS' | 'macOS'; readonly version: string; readonly build: string }
+export type OperatingSystem = { readonly name: 'iOS' | 'macOS' | 'Android'; readonly version: string; readonly build: string }
 
 /** The simulator an iOS app ran on: its name, its device type and its id. */
 export type SimulatorDevice = { readonly name: string; readonly type: string; readonly udid: string }
 
+/** The Android emulator or device an app ran on, as agent-device names it: its name, its adb serial, which kind it is and its model when known. */
+export type AndroidDevice = { readonly name: string; readonly serial: string; readonly kind: 'emulator' | 'device'; readonly model?: string }
+
 /**
- * Everything a native result names about what ran: the app build, the operating system, the simulator for iOS, the
- * executor build and the Xcode it was built with.
+ * An executor Retest builds from a pinned commit. `commitVerified` is true for a build this cache compiled from the
+ * pinned commit, and false for one it took over, whose checkout is at the pinned commit but whose products do not say
+ * what they were compiled from.
+ */
+export type PinnedExecutor = { readonly name: string; readonly version: string; readonly commit: string; readonly commitVerified: boolean; readonly productsSha256: string; readonly codeDirectoryHash?: string; readonly origin: 'built' | 'adopted' }
+
+/**
+ * An executor the project installs as a package: agent-device, an optional peer of Retest, at the version Retest was
+ * checked with. Retest builds nothing of it; agent-device builds its own helpers.
+ */
+export type PackageExecutor = { readonly name: 'agent-device'; readonly version: string; readonly package: 'agent-device' }
+
+/**
+ * Everything a native result names about what ran: the app build, the operating system, the simulator for iOS or the
+ * emulator or device for Android, the executor and, on a Mac, the Xcode its runners were built with.
  */
 export type NativeExecutionIdentity = {
-  readonly platform: 'ios-simulator' | 'macos'
+  readonly platform: 'ios-simulator' | 'macos' | 'android'
   readonly app: { readonly bundleId: string; readonly version?: string; readonly build?: string; readonly path: string; readonly sha256: string }
   readonly os: OperatingSystem
   readonly device?: SimulatorDevice
-  /**
-   * The executor build. `commitVerified` is true for a build this cache compiled from the pinned commit, and false for
-   * one it took over, whose checkout is at the pinned commit but whose products do not say what they were compiled from.
-   */
-  readonly executor: { readonly name: string; readonly version: string; readonly commit: string; readonly commitVerified: boolean; readonly productsSha256: string; readonly codeDirectoryHash?: string; readonly origin: 'built' | 'adopted' }
-  readonly xcode: { readonly version: string; readonly build: string }
+  readonly android?: AndroidDevice
+  readonly executor: PinnedExecutor | PackageExecutor
+  /** Absent for an Android app, whose runtime needs no Xcode. */
+  readonly xcode?: { readonly version: string; readonly build: string }
 }
+
+/**
+ * The identity of a native app that ran on an executor Retest built from a pinned commit: an iOS simulator app on
+ * WebDriverAgent or a macOS app on the macOS runner, with the Xcode the executor was built with.
+ */
+export type PinnedExecutionIdentity = NativeExecutionIdentity & { readonly platform: 'ios-simulator' | 'macos'; readonly executor: PinnedExecutor; readonly xcode: { readonly version: string; readonly build: string } }
 
 const supportedPlatform: Readonly<Record<'ios-simulator' | 'macos', string>> = { 'ios-simulator': 'iPhoneSimulator', macos: 'MacOSX' }
 
@@ -129,7 +149,7 @@ export async function readMacosVersion(tools: NativeTools, signal?: AbortSignal)
  *
  * @example nativeExecutionIdentity({ platform: 'macos', bundle, os, build })
  */
-export function nativeExecutionIdentity(parts: { readonly platform: 'ios-simulator' | 'macos'; readonly bundle: AppBundle; readonly os: OperatingSystem; readonly device?: SimulatorDevice; readonly build: ExecutorBuild }): NativeExecutionIdentity {
+export function nativeExecutionIdentity(parts: { readonly platform: 'ios-simulator' | 'macos'; readonly bundle: AppBundle; readonly os: OperatingSystem; readonly device?: SimulatorDevice; readonly build: ExecutorBuild }): PinnedExecutionIdentity {
   const { bundle, build } = parts
   return {
     platform: parts.platform,
@@ -151,6 +171,7 @@ export function runtimeIdentity(identity: NativeExecutionIdentity, processIds: r
   const app = identity.app
   const version = app.version === undefined ? {} : { appVersion: app.version }
   if (identity.platform === 'macos') return { kind: 'macos', bundleId: app.bundleId, ...version, appPath: app.path, processIds: [...processIds] }
+  if (identity.platform === 'android') return { kind: 'android', bundleId: app.bundleId, ...version, appPath: app.path, device: identity.android?.name ?? 'unknown', processIds: [...processIds] }
   return { kind: 'ios-simulator', bundleId: app.bundleId, ...version, appPath: app.path, device: identity.device?.type ?? 'unknown', runtime: `${identity.os.name} ${identity.os.version} (${identity.os.build})`, processIds: [...processIds] }
 }
 

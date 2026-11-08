@@ -481,6 +481,10 @@ function capitalise(text: string): string {
  * element has no identifier, so a `name` equal to the label is not an identifier Retest can read back.
  */
 export function unverifiedSentence(unverified: UnverifiedIdentifiers, platform: NativeKind): string {
+  if (platform === 'android') {
+    const shown = unverified.count === 1 ? '1 element shows' : `${unverified.count} elements show`
+    return `${shown} ${quoteText(unverified.value)} as its label, which agent-device takes from a content description only when the element has no text, so Retest cannot tell it from text and does not count it as a test id. Give the element a resource id.`
+  }
   const elements = unverified.count === 1 ? '1 element has' : `${unverified.count} elements have`
   return `${elements} ${quoteText(unverified.value)} as both name and label: ${platformName(platform)}'s executor writes the label as the name of an element with no identifier, so Retest cannot read ${quoteText(unverified.value)} back as an identifier. Give the element an identifier that differs from its label.`
 }

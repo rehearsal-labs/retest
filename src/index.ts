@@ -84,6 +84,7 @@ export type {
   TestIdValue,
 } from './config/register.ts'
 export type {
+  AndroidTarget,
   AppConfig,
   AppSettings,
   BrandedOptions,
