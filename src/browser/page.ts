@@ -79,11 +79,13 @@ export type PageOptions = {
   proxyServer: string | undefined
   /** Receives errors thrown by navigation listeners. */
   onListenerError: (error: unknown) => void
-  /**
-   * Where the page's popups are watched for, and the target the page is. Absent where Retest cannot reach the pages a
-   * page opens, as in an Electron app's window.
-   */
+  /** Where the page's popups are watched for, and the target the page is. Absent where Retest cannot reach the pages a page opens. */
   popups?: PopupHome | undefined
+  /**
+   * Wraps each popup given to a test, with its target, as an Electron app wraps every window of its own. The popup's
+   * own popups are wrapped the same way. Without it, a popup is the page Retest set up.
+   */
+  presentPopup?: ((page: WebSession, targetId: string) => WebSession) | undefined
   /** Marks a popup, which shares its opener's browser context: disposing it closes its own target and leaves the context. */
   popup?: true | undefined
   /** The browser's downloads, when the page's context saves them; without it, the context refuses every download. */
@@ -129,6 +131,41 @@ const collectCommand = 'collect diagnostics'
 const frameTreeSchema = s.object({ frameTree: s.object({ frame: s.object({ id: s.string(), url: s.string() }) }) })
 // The function Chrome gives Retest's world in every document, which the change script calls.
 const changeBinding = 'retestChanged'
+
+// A page held before its first document opens with an empty one, and the document that replaces it takes over its window
+// when the two share an origin, as a window.open window's does. A script that starts the empty document's world, as an
+// Electron app's preload does, has Retest's scripts run there first. Measured on Electron 44.5.1, the browser then keeps
+// Retest's world, with the guard and the drag listener those scripts made, and runs no script again for the document
+// that took the window over; the listeners they added to the window hear none of its events until a listener of the
+// same type is added again, and the change observer still watches the empty document. So such a page marks the
+// document its scripts last ran in, and as its first document commits, one whose scripts ran in another wakes their
+// listeners by adding and removing one of each type, and starts the change observer on itself. The Navigation API's
+// listener needs no waking.
+const scriptsMarkScript = 'globalThis.retestScriptsDocument = document'
+
+/**
+ * The window events Retest's scripts listen for from the start of each document: the input guard's, and the drag
+ * listener's. The guard listens for the wheel only while a scroll is armed, and adds that listener in the document then.
+ */
+export const documentListenerTypes: readonly string[] = [
+  'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'touchstart', 'touchend', 'keydown', 'keypress', 'beforeinput', 'input', 'keyup',
+  'pointerover', 'pointermove', 'mouseover', 'mousemove', 'change', 'dragstart', 'drop',
+]
+
+const rerunScriptsFunction = `function rerunScripts() {
+  if (globalThis.retestScriptsDocument === document) return false
+  for (const type of ${JSON.stringify(documentListenerTypes)}) {
+    const wake = () => {}
+    addEventListener(type, wake, true)
+    removeEventListener(type, wake, true)
+  }
+  delete globalThis.retestChanges;
+  ${changeScript};
+  globalThis.retestScriptsDocument = document
+  return true
+}`
+const rerunScriptsMs = 5000
+
 const bindingCalledSchema = s.object({ name: s.string() })
 
 const frameNavigatedSchema = s.object({
@@ -181,6 +218,8 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // The target a popup closes when it is disposed; a page that opened its own context disposes that instead.
   readonly #popupTarget: string | undefined
   #disposing: Promise<void> | undefined
+  // True for a page held before its first document until that document commits, when its scripts may need to run again.
+  #heldFirstDocument = false
   // The session this page is, once the runner has named it: who holds it, and the identity its captures are recorded
   // as. Both are frozen copies, so neither what the caller holds nor a source the page hands out can change them.
   #named: { readonly owner: Readonly<SessionOwner>; readonly identity: Readonly<RecordIdentity> } | undefined
@@ -227,6 +266,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   static async openHeld(options: PageOptions, targetId: string, deadline: Deadline, ready: (page: ChromiumPage) => void): Promise<ChromiumPage> {
     const { session, emulation } = options
     const page = new ChromiumPage(options, { id: targetId, url: '' })
+    page.#heldFirstDocument = true
     ready(page)
     const sent = sendOptions(deadline)
     const setUp = [
@@ -240,6 +280,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       page.#world.addScript(guardScript, deadline),
       page.#world.addScript(changeScript, deadline),
       page.#world.addScript(dragListenerScript, deadline),
+      page.#world.addScript(scriptsMarkScript, deadline),
       page.#routes.follow(deadline),
       request(session, 'Runtime.runIfWaitingForDebugger', undefined, s.object({}), sent),
     ]
@@ -272,14 +313,16 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     // Taken before the page listens for dialogs, in the same turn, so no dialog is answered twice or not at all.
     this.#dialogs.answeredBefore(options.answeredDialogs?.() ?? [])
     this.#popupTarget = options.popup === true ? options.popups?.targetId : undefined
-    // A popup's page is opened as this page was, in this page's context, and watches for the pages it opens in turn.
+    // A popup's page is opened as this page was, in this page's context, and watches for the pages it opens in turn. The
+    // dialogs answered before this page was set up are this page's alone.
     const { popups } = options
     this.#popups = popups === undefined ? undefined : new PagePopups({
       connection: options.connection,
       home: popups,
-      open: (session, home, deadline, ready) => ChromiumPage.openHeld({ ...options, session, restoredOrigins: [], popups: home, popup: true, routes: this.#routes.table }, home.targetId, deadline, ready),
+      open: (session, home, deadline, ready) => ChromiumPage.openHeld({ ...options, session, restoredOrigins: [], popups: home, popup: true, routes: this.#routes.table, answeredDialogs: undefined }, home.targetId, deadline, ready),
       onListenerError: options.onListenerError,
       forward: (dialog) => this.#dialogs.forward(dialog),
+      present: options.presentPopup,
     })
     this.#choosers = new FileChoosers(this.#session, () => this.#mainFrameId)
     this.#routes = new PageRoutes(this.#session, options.routes ?? new RouteTable(), options.onListenerError)
@@ -1128,8 +1171,16 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     this.#mainFrameId = frame.id
     this.#pendingNavigation = undefined
     this.#world.reset()
+    if (this.#heldFirstDocument) this.#rerunScripts()
     this.#changed()
     this.#moveTo(frame.url, frame.loaderId)
+  }
+
+  // Sent as the first document commits, before any later call into it, so a command finds its scripts in place. A
+  // document that goes first takes the reused window with it, and the next one runs Retest's scripts from its start.
+  #rerunScripts(): void {
+    this.#heldFirstDocument = false
+    this.#world.call(rerunScriptsFunction, [], s.boolean(), new Deadline(rerunScriptsMs)).catch(() => undefined)
   }
 
   // The page asked for a navigation of the main frame in its own tab: the request the cause of a navigation rests on.
