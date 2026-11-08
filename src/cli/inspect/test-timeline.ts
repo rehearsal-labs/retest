@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { describeConsole, describeNetwork } from '../../diagnostics/report.ts'
 import { describeEvaluation, evaluationDetails } from '../../evaluation/report.ts'
 import { describeLocator } from '../../protocol/locator.ts'
+import { nativeExecutorWords, nativePlatformWords } from '../../reporters/native-identity.ts'
 import { secretPlaceholder } from '../../protocol/secret.ts'
 import { formatLocation } from '../../protocol/location.ts'
 import { actionNotes, describeWrittenAction, type ActionEvent } from '../../reporters/actions.ts'
@@ -107,7 +108,7 @@ function describe(entry: EventEntry, stepNames: Map<string, string>, options: Ti
   const { event } = entry
   switch (event.type) {
     case 'native.started':
-      return [`${event.product} on ${event.identity.platform === 'macos' ? 'macOS' : `iOS Simulator ${event.identity.os.version}`}`, `session ${event.sessionId}`, `${event.identity.app.bundleId} · build ${event.identity.app.build ?? 'unavailable'} · sha256 ${event.identity.app.sha256}`, `${event.identity.executor.name} ${event.identity.executor.version} · Xcode ${event.identity.xcode.version} (${event.identity.xcode.build})`]
+      return [`${event.product} on ${nativePlatformWords(event.identity)}`, `session ${event.sessionId}`, `${event.identity.app.bundleId} · build ${event.identity.app.build ?? 'unavailable'} · sha256 ${event.identity.app.sha256}`, nativeExecutorWords(event.identity)]
     case 'native.ended':
       return ['native session ended', ...(event.unknownOutcomes.length === 0 ? [] : [`${event.unknownOutcomes.length} unknown outcomes were retained`])]
     case 'test.started':

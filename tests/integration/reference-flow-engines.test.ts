@@ -266,6 +266,7 @@ function assertStartedApps(run: FinishedRun, engine: WebEngine): string {
     assert.match(identity.app.sha256, /^[0-9a-f]{64}$/)
     assert.equal(identity.os.name, started.app === 'phone' ? 'iOS' : 'macOS')
     if (started.app === 'phone') assert.deepEqual([identity.os.version, identity.os.build, identity.device?.type], ['26.5', '23F77', 'iPhone 17'])
+    assert.ok(!('package' in identity.executor), 'the executor is the build Retest made')
     assert.deepEqual([identity.executor.name, identity.executor.version, identity.executor.commit], [executor.name, executor.version, executor.commit])
     assert.deepEqual(identity.xcode, nativePins.toolchain.xcode)
   }

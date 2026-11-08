@@ -5,6 +5,7 @@ import { withoutCredentials } from '../protocol/url.ts'
 import { variantKey, variantPairs, type Variant } from '../protocol/variant.ts'
 import { addToCounts } from '../runner/outcome.ts'
 import { printable } from './format.ts'
+import { nativePlatformWords } from './native-identity.ts'
 
 /**
  * What a report knows about the targets of a run: the browser each app target ran in, by `app=target`, and for
@@ -170,5 +171,5 @@ function noCounts(): Counts {
 
 /** The app and operating system the native executor exercised. */
 export function describeNative(native: Pick<NativeInfo, 'product' | 'identity'>): string {
-  return `${native.product} on ${native.identity.platform === 'macos' ? 'macOS' : `iOS Simulator ${native.identity.os.version}`}`
+  return `${native.product} on ${nativePlatformWords(native.identity)}`
 }

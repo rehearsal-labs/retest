@@ -30,7 +30,9 @@ export type BundleRecord = { sha256: string; modules: ModuleRecord[] }
  */
 export type AppSettings = {
   target: string
-  kind: 'web' | 'ios-simulator' | 'macos'
+  kind: 'web' | 'ios-simulator' | 'macos' | 'android'
+  /** The driver a native target runs through when it is not Retest's own executor: `agent-device`. */
+  driver?: 'agent-device'
   browser?: string
   channel?: string
   headless?: boolean
@@ -38,6 +40,8 @@ export type AppSettings = {
   emulation?: Emulation
   proxy?: { server: string; bypass: string[] }
   simulator?: { device: string; runtime: string }
+  /** An Android target's device, as its config names it: by name or by adb serial. */
+  android?: { device?: string; serial?: string; package: string }
   args?: { count: number; sha256: string }
   environment?: { count: number; sha256: string }
 }
@@ -108,14 +112,19 @@ export type SessionResource = 'browser-context' | 'app-launch' | 'data-folder' |
  * A session of the attempt: its app, its id, the browser it ran in as the browser reported itself, and the resource it
  * took. `resource` is absent in runs recorded before it.
  */
-/** The native executor's identity as a portable JSON record. */
+/**
+ * The native executor's identity as a portable JSON record. `executor` is a build Retest made from a pinned commit, or
+ * the agent-device package the project installed. `android` names an Android app's emulator or device, and `xcode` is
+ * absent for an Android app.
+ */
 export type NativeExecutionRecord = {
-  platform: 'ios-simulator' | 'macos'
+  platform: 'ios-simulator' | 'macos' | 'android'
   app: { bundleId: string; version?: string; build?: string; path: string; sha256: string }
-  os: { name: 'iOS' | 'macOS'; version: string; build: string }
+  os: { name: 'iOS' | 'macOS' | 'Android'; version: string; build: string }
   device?: { name: string; type: string; udid: string }
-  executor: { name: string; version: string; commit: string; commitVerified: boolean; productsSha256: string; codeDirectoryHash?: string; origin: 'built' | 'adopted' }
-  xcode: { version: string; build: string }
+  android?: { name: string; serial: string; kind: 'emulator' | 'device'; model?: string }
+  executor: { name: string; version: string; commit: string; commitVerified: boolean; productsSha256: string; codeDirectoryHash?: string; origin: 'built' | 'adopted' } | { name: 'agent-device'; version: string; package: 'agent-device' }
+  xcode?: { version: string; build: string }
 }
 
 export type SessionRecord = { app: string; sessionId: string; engine: string; product: string; version: string; resource?: SessionResource; native?: NativeExecutionRecord }
@@ -234,7 +243,8 @@ const secretReferenceShape = { name: s.string(), source: s.enum(['env', 'functio
 
 const appSettingsSchema: Schema<AppSettings> = s.object({
   target: s.string(),
-  kind: s.enum(['web', 'ios-simulator', 'macos']),
+  kind: s.enum(['web', 'ios-simulator', 'macos', 'android']),
+  driver: s.optional(s.literal('agent-device')),
   browser: s.optional(s.string()),
   channel: s.optional(s.string()),
   headless: s.optional(s.boolean()),
@@ -242,6 +252,7 @@ const appSettingsSchema: Schema<AppSettings> = s.object({
   emulation: s.optional(emulationSchema),
   proxy: s.optional(s.object({ server: s.string(), bypass: names })),
   simulator: s.optional(s.object({ device: s.string(), runtime: s.string() })),
+  android: s.optional(s.object({ device: s.optional(s.string()), serial: s.optional(s.string()), package: s.string() })),
   args: s.optional(s.object({ count: s.number({ integer: true, min: 1 }), sha256: hex })),
   environment: s.optional(s.object({ count: s.number({ integer: true, min: 1 }), sha256: hex })),
 })
@@ -280,12 +291,16 @@ const backendDataSchema = s.enum(['prepared', 'reused', 'external', 'unavailable
 export const requirementCheckSchema: Schema<RequirementCheck> = s.object({ id: s.string(), kind: s.enum(['page', 'evaluation']), sha256: hex })
 
 export const nativeExecutionIdentitySchema: Schema<NativeExecutionRecord> = s.object({
-  platform: s.enum(['ios-simulator', 'macos']),
+  platform: s.enum(['ios-simulator', 'macos', 'android']),
   app: s.object({ bundleId: s.string(), version: s.optional(s.string()), build: s.optional(s.string()), path: s.string(), sha256: hex }),
-  os: s.object({ name: s.enum(['iOS', 'macOS']), version: s.string(), build: s.string() }),
+  os: s.object({ name: s.enum(['iOS', 'macOS', 'Android']), version: s.string(), build: s.string() }),
   device: s.optional(s.object({ name: s.string(), type: s.string(), udid: s.string() })),
-  executor: s.object({ name: s.string(), version: s.string(), commit: s.string(), commitVerified: s.boolean(), productsSha256: hex, codeDirectoryHash: s.optional(s.string()), origin: s.enum(['built', 'adopted']) }),
-  xcode: s.object({ version: s.string(), build: s.string() }),
+  android: s.optional(s.object({ name: s.string(), serial: s.string(), kind: s.enum(['emulator', 'device']), model: s.optional(s.string()) })),
+  executor: s.union([
+    s.object({ name: s.string(), version: s.string(), commit: s.string(), commitVerified: s.boolean(), productsSha256: hex, codeDirectoryHash: s.optional(s.string()), origin: s.enum(['built', 'adopted']) }),
+    s.object({ name: s.literal('agent-device'), version: s.string(), package: s.literal('agent-device') }),
+  ]),
+  xcode: s.optional(s.object({ version: s.string(), build: s.string() })),
 })
 
 export const nativeStartingStateSchema: Schema<NativeStartingState> = s.object({

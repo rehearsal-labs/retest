@@ -32,6 +32,7 @@ import {
 } from '../format.ts'
 import { describeHostCheck, hostCheckPage } from '../host-checks.ts'
 import { html } from './markup.ts'
+import { nativeExecutorWords, nativePlatformWords } from '../native-identity.ts'
 
 /** How a timeline row ended, when it is a check, an action or a step that can end either way. */
 type Mark = 'passed' | 'failed' | 'warning'
@@ -126,8 +127,8 @@ function describe(entry: EventEntry, stepNames: ReadonlyMap<string, string>): De
     case 'native.started': {
       const { identity } = event
       return {
-        what: `${event.product} on ${identity.platform === 'macos' ? 'macOS' : `iOS Simulator ${identity.os.version}`}`,
-        details: [`session ${event.sessionId}`, `${identity.app.bundleId} · build ${identity.app.build ?? 'unavailable'} · sha256 ${identity.app.sha256}`, `${identity.executor.name} ${identity.executor.version} · Xcode ${identity.xcode.version} (${identity.xcode.build})`],
+        what: `${event.product} on ${nativePlatformWords(identity)}`,
+        details: [`session ${event.sessionId}`, `${identity.app.bundleId} · build ${identity.app.build ?? 'unavailable'} · sha256 ${identity.app.sha256}`, nativeExecutorWords(identity)],
       }
     }
     case 'native.ended':

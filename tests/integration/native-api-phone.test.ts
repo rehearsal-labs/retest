@@ -43,7 +43,7 @@ export default defineConfig({ apps: { phone: { platform: 'ios-simulator', appPat
     assert.equal(started.identity.app.bundleId, 'dev.retest.fixtures.taskphone')
     assert.equal(started.identity.os.version, '26.5')
     assert.match(started.identity.app.sha256, /^[0-9a-f]{64}$/)
-    assert.equal(started.identity.xcode.build, '17F42')
+    assert.equal(started.identity.xcode?.build, '17F42')
   }
   assert.equal(run.events.filter((event) => event.type === 'native.ended').length, 2)
   assert.equal(run.events.filter((event) => event.type === 'lease.expired').length, 0)

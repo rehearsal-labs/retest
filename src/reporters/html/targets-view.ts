@@ -5,6 +5,7 @@ import type { Markup } from './markup.ts'
 import type { ReportContext } from './report-context.ts'
 import { describeBrowser, describeProxy, describeVariant } from '../targets.ts'
 import { html } from './markup.ts'
+import { nativeAppKind, nativeExecutorDetail } from '../native-identity.ts'
 
 type Browser = EventOfType<'browser.started'>
 
@@ -50,17 +51,18 @@ function browserFor(app: string, test: TestResult, context: ReportContext): Brow
 
 function nativeRow(app: string, native: EventOfType<'native.started'>): Markup {
   const { identity } = native
-  return html`<tr><td class="app">${app}</td><td class="muted">${native.sessionId}</td><td>${identity.platform === 'macos' ? 'macOS app' : 'iOS simulator app'}</td><td class="words">${native.product} ${identity.app.version ?? ''}</td><td class="words">${identity.app.build ?? 'not recorded'}</td><td class="words muted small">${describeNative(identity)}</td></tr>`
+  return html`<tr><td class="app">${app}</td><td class="muted">${native.sessionId}</td><td>${nativeAppKind(identity)}</td><td class="words">${native.product} ${identity.app.version ?? ''}</td><td class="words">${identity.app.build ?? 'not recorded'}</td><td class="words muted small">${describeNative(identity)}</td></tr>`
 }
 
 function describeNative(identity: NativeExecutionRecord): string {
   const device = identity.device === undefined ? [] : [`${identity.device.name} (${identity.device.type}) ${identity.device.udid}`]
-  const executor = identity.executor
+  const android = identity.android === undefined ? [] : [`${identity.android.name} (${identity.android.kind}${identity.android.model === undefined ? '' : `, ${identity.android.model}`}) ${identity.android.serial}`]
   return [
     `${identity.app.bundleId} at ${identity.app.path}, sha256 ${identity.app.sha256}`,
     `${identity.os.name} ${identity.os.version} (${identity.os.build})`,
     ...device,
-    `${executor.name} ${executor.version}, commit ${executor.commit}${executor.commitVerified ? ', verified' : ', not verified'}, ${executor.origin}, products sha256 ${executor.productsSha256}`,
-    `Xcode ${identity.xcode.version} (${identity.xcode.build})`,
+    ...android,
+    nativeExecutorDetail(identity),
+    ...(identity.xcode === undefined ? [] : [`Xcode ${identity.xcode.version} (${identity.xcode.build})`]),
   ].join(' · ')
 }

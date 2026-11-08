@@ -41,6 +41,7 @@ import { countHostChecks } from './host-checks.ts'
 import { renderCard } from './human-card.ts'
 import { RunRecord, type EventOfType, type TestRecord } from './run-record.ts'
 import { createStyle, visibleLength, type Marks, type Style, type Writer } from './style.ts'
+import { nativePlatformWords } from './native-identity.ts'
 import {
   acrossTargets,
   describeBrowser,
@@ -99,7 +100,7 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
       record.add(event)
       switch (event.type) {
         case 'native.started':
-          write(`  ${style.dim(`${event.product} on ${event.identity.platform === 'macos' ? 'macOS' : `iOS Simulator ${event.identity.os.version}`}`)}\n`)
+          write(`  ${style.dim(`${event.product} on ${nativePlatformWords(event.identity)}`)}\n`)
           break
         case 'browser.started': {
           // A target's further browsers are in the events; its first line says how many there are.
