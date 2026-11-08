@@ -2,7 +2,8 @@ import type { FrameSource } from '../media/capture.ts'
 import type { RecordIdentity } from '../protocol/identity.ts'
 import type { RequestResult, SessionIdentity } from './contract.ts'
 import type { DialogArming, DialogReply, UnwaitedDialog } from './dialogs.ts'
-import type { PopupArming } from './popups.ts'
+import type { AppWindowWaits } from './electron-window-watch.ts'
+import type { PopupArming, PopupWaitOptions } from './popups.ts'
 import type { CdpSession } from './cdp/session.ts'
 import type { PipeStreams, Transport } from './cdp/transport.ts'
 import type {
@@ -44,6 +45,7 @@ import { readProtocol, request, sendOptions } from './cdp-results.ts'
 import { ChromiumProcess } from './chromium-process.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { worldName } from './isolated-world.ts'
+import { acts, armWindow, ElectronPopupWindow } from './electron-popups.ts'
 import { ElectronWindowWatch } from './electron-window-watch.ts'
 import { describeDiagnostic, handshake, launchOutput, logLength, logWriter } from './launch.ts'
 import { Listeners } from './listeners.ts'
@@ -57,8 +59,9 @@ import { explainStartFailure } from './start-failure.ts'
 
 // An Electron app driven by the Chromium driver over the debugging pipe of the app's own binary. Electron refuses
 // `Target.createBrowserContext` and `Target.createTarget`, so Retest opens no page of its own: each window the app
-// opens is a page target in the app's one browser context, and the first of them is the test's page. The main
-// process, native menus and native dialogs are reached only through what that window shows.
+// opens is a page target in the app's one browser context, and the first of them is the test's page. A later window
+// reaches a test only through `page.popup()`. The main process, native menus and native dialogs are reached only
+// through what the windows show.
 
 /** How to launch an Electron app. Every path is absolute. */
 export type ElectronLaunchOptions = {
@@ -114,12 +117,14 @@ export interface ElectronRuntime extends OwnedBrowser, SessionRuntime {
 
 /**
  * A window the app opened: its number, in the order Retest learned of the windows from 1, whether a test can reach it,
- * and when it opened and closed, in milliseconds after the launch began. Only the first window is the test's page.
+ * and when it opened and closed, in milliseconds after the launch began. The first window is the test's page, and a
+ * later one is reachable once `page.popup()` gave it to a test, which names it in `page`. `opener` is the number of the
+ * window whose document opened it, when the app named one; a window the app's main process opened names none.
  * `existing` marks a window already open when Retest began to watch the app's windows: the browser lists those in an
  * order of its own, and `openedMs` is when Retest learned of it. A window still open when the app quit has no
  * `closedMs`.
  */
-export type WindowRecord = { window: number; reachable: boolean; openedMs: number; existing?: true; closedMs?: number }
+export type WindowRecord = { window: number; reachable: boolean; openedMs: number; existing?: true; opener?: number; page?: string; closedMs?: number }
 
 /**
  * What `windowsFile` holds: the launch, the app's process, every window it opened, and `notes` on anything Retest could
@@ -136,7 +141,7 @@ const loggingVariables = ['ELECTRON_ENABLE_LOGGING', 'ELECTRON_LOG_FILE', 'ELECT
 // Electron's own build names its binary Electron inside Electron.app on macOS, and electron.exe on Windows.
 const giveBinary = process.platform === 'win32' ? "Give the Electron binary: electron.exe in Electron's own build." : 'Give the Electron binary, inside Electron.app on macOS: Electron.app/Contents/MacOS/Electron.'
 
-const targetInfoSchema = s.object({ targetId: s.string(), type: s.string(), browserContextId: s.optional(s.string()) })
+const targetInfoSchema = s.object({ targetId: s.string(), type: s.string(), browserContextId: s.optional(s.string()), openerId: s.optional(s.string()) })
 const targetsSchema = s.object({ targetInfos: s.array(targetInfoSchema) })
 const targetCreatedSchema = s.object({ targetInfo: targetInfoSchema })
 const targetDestroyedSchema = s.object({ targetId: s.string() })
@@ -216,7 +221,11 @@ export async function launchElectron(
     const onListenerError = (error: unknown) => log(`a listener failed: ${errorMessage(error)}`)
     const pageOptions = { connection, session, browserContextId: attached.browserContextId === '' ? first.browserContextId : attached.browserContextId, onListenerError }
     const answeredDialogs = () => watch.handOver()
-    const page = await ChromiumPage.open({ ...pageOptions, baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, answeredDialogs }, deadline)
+    // The windows the app opens later are held by the watch, and handed to the window that waits for one.
+    const popups = { watch, targetId: attached.targetId }
+    const reached = (targetId: string, page: string) => windows.reached(targetId, page)
+    const presentPopup = (window: WebSession, targetId: string) => new ElectronPopupWindow({ window, app: options.app, target: options.target, targetId, waits: watch, reached })
+    const page = await ChromiumPage.open({ ...pageOptions, baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, answeredDialogs, popups, presentPopup }, deadline)
     // Chromium draws no animation frames for a window another window covers, or one left behind others, and every action
     // waits on frames to see its element stand still. A window on a test machine is often not in front, so the page is
     // made to act as focused, as a Chrome page is, which keeps its frames coming.
@@ -228,7 +237,8 @@ export async function launchElectron(
     const versions = { version: electron, chromium: version.version }
     const named = { app: options.app, target: options.target, launch: options.launch, windowsFile: options.windowsFile }
     const showing = (timeoutMs: number) => showsPage(session, timeoutMs)
-    return new ElectronApp({ process: child, connection, page, showsPage: showing, windows, executablePath: executable, userAgent: version.userAgent, versions, named, onListenerError })
+    const opened = { targetId: attached.targetId, waits: watch }
+    return new ElectronApp({ process: child, connection, page, showsPage: showing, windows, first: opened, executablePath: executable, userAgent: version.userAgent, versions, named, onListenerError })
   } catch (error) {
     const ended = error instanceof CdpDisconnectedError || error instanceof CdpClosedError
     // A program that closed its pipe is usually exiting; how it exits is the best explanation there is.
@@ -278,8 +288,9 @@ export async function readElectronVersion(executablePath: string, userAgent: str
 }
 
 /**
- * The windows an app opens, as target discovery tells of them: the first is the test's page, and every later one is
- * recorded and left alone. Notes say what Retest could not set up in the first window.
+ * The windows an app opens, as target discovery tells of them: the first is the test's page, and a later one is
+ * recorded, with the window that opened it when the app names one, and marked reachable once `page.popup()` gave it to
+ * a test. Notes say what Retest could not set up in the first window.
  *
  * @example const windows = new AppWindows(connection, monotonicClock(), log)
  */
@@ -288,6 +299,8 @@ export class AppWindows {
   readonly #log: (line: string) => void
   readonly #windows: (WindowRecord & { targetId: string })[] = []
   readonly #existing = new Set<string>()
+  // The windows a test was given before discovery told of them, by target, with the name the test reaches each by.
+  readonly #reached = new Map<string, string>()
   readonly #notes: string[] = []
   readonly #first = Promise.withResolvers<FirstWindow>()
   readonly #ended = Promise.withResolvers<string>()
@@ -302,11 +315,13 @@ export class AppWindows {
   }
 
   get records(): WindowRecord[] {
-    return this.#windows.map(({ window, reachable, openedMs, existing, closedMs }) => ({
+    return this.#windows.map(({ window, reachable, openedMs, existing, opener, page, closedMs }) => ({
       window,
       reachable,
       openedMs,
       ...(existing === undefined ? {} : { existing }),
+      ...(opener === undefined ? {} : { opener }),
+      ...(page === undefined ? {} : { page }),
       ...(closedMs === undefined ? {} : { closedMs }),
     }))
   }
@@ -322,6 +337,18 @@ export class AppWindows {
 
   note(text: string): void {
     this.#notes.push(text)
+  }
+
+  /** Marks the window `targetId` reachable, as the page `page` of a test, which `page.popup()` gave it. */
+  reached(targetId: string, page: string): void {
+    const window = this.#windows.find((entry) => entry.targetId === targetId)
+    if (window === undefined) {
+      this.#reached.set(targetId, page)
+      return
+    }
+    window.reachable = true
+    window.page = page
+    this.#log(`window ${window.window} is the test's page ${page}`)
   }
 
   /** True once the first window, the test's page, has closed. */
@@ -343,14 +370,25 @@ export class AppWindows {
     }
   }
 
+  // The app names the window that opened a window from its document; a window the main process opened names none.
   #created(params: unknown): void {
     const { targetInfo } = readProtocol(targetCreatedSchema, params, { method: 'Target.targetCreated' })
     if (targetInfo.type !== 'page') return
     const number = this.#windows.length + 1
     const existing = this.#existing.has(targetInfo.targetId) ? { existing: true as const } : {}
-    this.#windows.push({ window: number, reachable: number === 1, openedMs: elapsedMs(this.#startedAt), ...existing, targetId: targetInfo.targetId })
-    if (number === 1) this.#first.resolve({ targetId: targetInfo.targetId, browserContextId: targetInfo.browserContextId ?? '' })
-    else this.#log(`the app opened window ${number}; a test reaches only the app's first window`)
+    const opener = targetInfo.openerId === undefined ? undefined : this.#windows.find((entry) => entry.targetId === targetInfo.openerId)?.window
+    const page = this.#reached.get(targetInfo.targetId)
+    this.#reached.delete(targetInfo.targetId)
+    const reachable = number === 1 || page !== undefined
+    const record = { window: number, reachable, openedMs: elapsedMs(this.#startedAt), ...existing, ...(opener === undefined ? {} : { opener }), ...(page === undefined ? {} : { page }), targetId: targetInfo.targetId }
+    this.#windows.push(record)
+    if (number === 1) {
+      this.#first.resolve({ targetId: targetInfo.targetId, browserContextId: targetInfo.browserContextId ?? '' })
+      return
+    }
+    const from = opener !== undefined ? `, from window ${opener}` : targetInfo.openerId === undefined ? ', from its main process' : ''
+    this.#log(`the app opened window ${number}${from}; a test reaches it only through page.popup()`)
+    if (page !== undefined) this.#log(`window ${number} is the test's page ${page}`)
   }
 
   #destroyed(params: unknown): void {
@@ -368,6 +406,8 @@ type AppOptions = {
   page: ChromiumPage
   showsPage: (timeoutMs: number) => Promise<boolean>
   windows: AppWindows
+  /** The first window's target, and the waits the app's windows share. */
+  first: { targetId: string; waits: AppWindowWaits }
   executablePath: string
   userAgent: string
   versions: ElectronVersions
@@ -413,7 +453,7 @@ class ElectronApp implements ElectronRuntime {
     this.#onListenerError = options.onListenerError
     this.#disconnects = new Listeners(options.onListenerError)
     const { app, target } = this.#named
-    const parts = { window: options.page, app, target, showsPage: options.showsPage, firstClosed: () => this.#firstClosed(), quit: (timeoutMs: number) => this.close(timeoutMs) }
+    const parts = { window: options.page, app, target, ...options.first, showsPage: options.showsPage, firstClosed: () => this.#firstClosed(), quit: (timeoutMs: number) => this.close(timeoutMs) }
     this.#page = new ElectronWindowSession(parts)
     this.#connection.onDisconnect((reason) => this.#disconnected(reason))
     if (this.#connection.closeReason !== undefined) this.#disconnected(this.#connection.closeReason)
@@ -509,13 +549,16 @@ class ElectronApp implements ElectronRuntime {
 
 /**
  * What an Electron app's window session is made of: the window, a Chromium page in the app's own browser context; the
- * app and target the config names; whether the window shows a page of the app's own, read from the window within a
- * budget; whether it has closed while the app runs on; and how to quit the app.
+ * app and target the config names; the window's target, and the waits the app's windows share for the windows the app
+ * opens; whether the window shows a page of the app's own, read from the window within a budget; whether it has
+ * closed while the app runs on; and how to quit the app.
  */
 export type ElectronWindowParts = {
   window: WebSession
   app: string
   target: string
+  targetId: string
+  waits: AppWindowWaits
   showsPage: (timeoutMs: number) => Promise<boolean>
   firstClosed: () => boolean
   quit: (timeoutMs: number) => Promise<void>
@@ -526,12 +569,14 @@ export type ElectronWindowParts = {
  * save, its diagnostics say what came before capture began was missed, and closing it quits the app. Every other
  * command goes to the window as it goes to a browser's page.
  *
- * @example new ElectronWindowSession({ window, app: 'desktop', target: 'electron', firstClosed: () => false, quit: (timeoutMs) => app.close(timeoutMs) })
+ * @example new ElectronWindowSession({ window, app: 'desktop', target: 'electron', targetId, waits, showsPage, firstClosed: () => false, quit: (timeoutMs) => app.close(timeoutMs) })
  */
 export class ElectronWindowSession implements WebSession {
   readonly #window: WebSession
   readonly #app: string
   readonly #target: string
+  readonly #targetId: string
+  readonly #waits: AppWindowWaits
   readonly #showsPage: (timeoutMs: number) => Promise<boolean>
   readonly #firstClosed: () => boolean
   readonly #quit: (timeoutMs: number) => Promise<void>
@@ -540,6 +585,8 @@ export class ElectronWindowSession implements WebSession {
     this.#window = parts.window
     this.#app = parts.app
     this.#target = parts.target
+    this.#targetId = parts.targetId
+    this.#waits = parts.waits
     this.#showsPage = parts.showsPage
     this.#firstClosed = parts.firstClosed
     this.#quit = parts.quit
@@ -572,11 +619,13 @@ export class ElectronWindowSession implements WebSession {
     // No test has looked inside a frame of an Electron window yet, so a frame there is refused by name.
     const unreached = framesUnreached(browserCommandLocators(command), `the window of the Electron app ${this.#app}`)
     if (unreached !== undefined) return { result: { ok: false, failure: unreached }, input: 'not_sent' }
+    if (acts(command)) this.#waits.acted()
     const answer = await this.#window.dispatch(command, timeoutMs, signal, commandToken)
     if (answer.result.ok || !this.#firstClosed()) return answer
     const { failure } = answer.result
     if (failure.class !== 'session_lost' && failure.class !== 'outcome_unknown') return answer
-    return { ...answer, result: { ok: false, failure: { ...failure, message: `${failure.message} The Electron app closed its first window, and a test reaches no other window of it.` } } }
+    const message = `${failure.message} The Electron app closed its first window, which was the test's page; only a window page.popup() gave the test is still within its reach.`
+    return { ...answer, result: { ok: false, failure: { ...failure, message } } }
   }
 
   capture(timeoutMs: number): ReturnType<NonNullable<WebSession['capture']>> {
@@ -600,17 +649,20 @@ export class ElectronWindowSession implements WebSession {
     return this.#window.armDialog?.(timeoutMs, signal) ?? { ok: false, failure: { class: 'unsupported', message: `The window of the Electron app ${this.#app} cannot hand its dialogs to a test.` } }
   }
 
+  // An answer is input to the app, which its main process may answer with a window.
   answerDialog(id: string, reply: DialogReply, timeoutMs: number): Promise<RequestResult> {
-    return this.#window.answerDialog?.(id, reply, timeoutMs) ?? Promise.resolve({ ok: false, failure: { class: 'unsupported', message: `The window of the Electron app ${this.#app} cannot answer a dialog for a test.` } })
+    if (this.#window.answerDialog === undefined) return Promise.resolve({ ok: false, failure: { class: 'unsupported', message: `The window of the Electron app ${this.#app} cannot answer a dialog for a test.` } })
+    this.#waits.acted()
+    return this.#window.answerDialog(id, reply, timeoutMs)
   }
 
   onUnwaitedDialog(listener: (dialog: UnwaitedDialog) => void): () => void {
     return this.#window.onUnwaitedDialog?.(listener) ?? (() => undefined)
   }
 
-  // A test reaches only the app's first window, so a window the app opens is out of its reach.
-  async armPopup(): Promise<PopupArming> {
-    return { ok: false, failure: { class: 'unsupported', message: `A test reaches only the first window of the Electron app ${this.#app}, so page.popup() is for a browser's page.` } }
+  // A window the app opens later reaches the test as a page of its own, as a Chrome popup does.
+  armPopup(options: PopupWaitOptions): Promise<PopupArming> {
+    return armWindow(this.#window, this.#waits, { app: this.#app, target: this.#target, targetId: this.#targetId }, options)
   }
 
   // The app's window holds no route: Retest has not checked how an app's own requests meet the window's Fetch domain.
@@ -669,13 +721,13 @@ export function electronPageRefusal(options: NewPageOptions): string | undefined
 
 /**
  * What a capture on an Electron app's window covers: what a Chromium page covers, and never the app's main process,
- * whose own console and requests run outside every window, nor the app's other windows, which a test does not reach.
+ * whose own console and requests run outside every window, nor the app's other windows, which are not captured.
  */
 export const electronScope: DiagnosticScope = {
   ...chromiumScope,
   console: { covered: [...chromiumScope.console.covered], notCovered: [...chromiumScope.console.notCovered, 'main_process', 'other_windows'] },
   network: { covered: [...chromiumScope.network.covered], notCovered: [...chromiumScope.network.notCovered, 'main_process', 'other_windows'] },
-  reason: "An Electron app's main process runs outside its windows, and Retest reaches only the first window, so neither the main process's own console and requests nor the app's other windows are captured.",
+  reason: "An Electron app's main process runs outside its windows, and Retest captures only the first window, so neither the main process's own console and requests nor the app's other windows are captured.",
 }
 
 /**

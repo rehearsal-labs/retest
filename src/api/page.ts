@@ -311,12 +311,21 @@ export type RouteAbort = {
 export type RouteAnswer = RouteFulfil | RouteAbort
 
 /**
- * An Electron app's page in a test: the first window the app opens. It finds, acts and checks as a web page does, and
- * reloads and moves through its history, but it has no address to go to.
+ * An Electron app's page in a test: the first window the app opens, or a window `popup()` gave the test. It finds, acts
+ * and checks as a web page does, and reloads and moves through its history, but it has no address to go to.
  */
 export type ElectronPage = Omit<Page<false>, 'goto' | 'popup' | 'route' | 'unroute'> & {
   readonly goto: RetestTypeError<'An Electron app has no address. Its page is the first window the app opens.'>
-  readonly popup: RetestTypeError<"A test reaches only an Electron app's first window. popup() is for a browser's page.">
+  /**
+   * Runs `action` and gives the window it makes the app open, as a page of its own: a window this window's document
+   * opens, by `window.open` or a link with a target, or a `BrowserWindow` the app's main process makes once the action's
+   * command reached the app. Its commands, checks and failure screenshot are its own, and it closes when the
+   * test ends, or with `close()`. The wait starts before the action, and lasts the action budget or a shorter
+   * `{ timeout }`. One window of an app waits at a time.
+   *
+   * @example const settings = await page.popup(() => page.getByRole('button', { name: 'Settings' }).click())
+   */
+  popup(action: () => Promise<unknown>, options?: CallOptions): Promise<ElectronPage>
   readonly route: RetestTypeError<"Retest does not answer an Electron app's requests yet. route() is for a browser's page.">
   readonly unroute: RetestTypeError<"Retest does not answer an Electron app's requests yet. unroute() is for a browser's page.">
 }

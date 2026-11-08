@@ -1294,8 +1294,9 @@ export class RunSession {
     const timeouts = { ...this.#options.timeouts, ...(test.registered.timeout === undefined ? {} : { test: test.registered.timeout }) }
     const appOrigins = test.apps.flatMap((app) => originOf(config.apps.get(app)?.baseUrl) ?? [])
     // An Electron app shows whatever origin it serves, so a fill on its window takes only the origins `secretOrigins` lists.
+    // A window the app opened later, which page.popup() gave the test, is the app's as much as its first.
     const electron = new Set(test.apps.filter((app) => isElectronTarget(targetOf(config, app, described.targets[app]))))
-    const fillSecret: RunningTestOptions['fillSecret'] = (command, context) => this.#secrets.resolve(command, { ...context, appOrigins, ...(electron.has(context.app) ? { target: 'electron' as const } : {}) })
+    const fillSecret: RunningTestOptions['fillSecret'] = (command, context) => this.#secrets.resolve(command, { ...context, appOrigins, ...(this.#inElectron(electron, context.app) ? { target: 'electron' as const } : {}) })
     const inbox = this.#inboxAccess(described, appOrigins, electron)
     const popups = new AttemptPopups({ pages, runId: this.#runId, rooted: (popup, app) => this.#popupRoots.set(popup, app) })
     const files = new AttemptFiles({
@@ -1358,9 +1359,14 @@ export class RunSession {
     const attempt = new AttemptInbox({ inboxes, redactor: this.#redactor, startedAt: this.#attemptStarts.get(described.attemptId) ?? Date.now() })
     return {
       read: (request, options) => attempt.read(request, options),
-      fillCode: (command, context) => attempt.resolveCode(command, { ...context, appOrigins, ...(electron.has(context.app) ? { target: 'electron' as const } : {}) }),
+      fillCode: (command, context) => attempt.resolveCode(command, { ...context, appOrigins, ...(this.#inElectron(electron, context.app) ? { target: 'electron' as const } : {}) }),
       openLink: (reference) => attempt.resolveLink(reference, { appOrigins }),
     }
+  }
+
+  // Whether a page of the test is a window of one of its Electron apps: one of the test's own, or a popup one of them opened.
+  #inElectron(electron: ReadonlySet<string>, app: string): boolean {
+    return electron.has(this.#popupRoots.get(app) ?? app)
   }
 
   // A Chromium, Firefox or WebKit page saves its downloads in its session's folder of the run. An Electron app saves

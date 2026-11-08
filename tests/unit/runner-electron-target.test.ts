@@ -332,6 +332,8 @@ function electronPage(options: { firstClosed?: boolean; showing?: Showing } = {}
     window,
     app: 'desktop',
     target: 'electron',
+    targetId: 'T1',
+    waits: { wait: () => () => undefined, acted: () => undefined },
     showsPage: async () => {
       if (showing.shows === 'unreadable') throw new Error('the window did not answer')
       return showing.shows
@@ -393,13 +395,13 @@ describe('the page of an Electron app', () => {
     assert.equal(window.disposed, 0)
   })
 
-  test('a window lost after the app closed it says no other window is reachable; any other failure is left as it is', async () => {
+  test('a window lost after the app closed it says only a popup is still reachable; any other failure is left as it is', async () => {
     const lost = { class: 'session_lost' as const, message: 'Could not click getByTestId(\'add-task\'): the page is gone.' }
     const closed = electronPage({ firstClosed: true })
     closed.window.answer = { result: { ok: false, failure: lost }, input: 'not_sent' }
     assert.deepEqual((await closed.page.dispatch({ kind: 'click', locator: { by: 'testId', value: 'add-task' } }, 1000)).result, {
       ok: false,
-      failure: { ...lost, message: `${lost.message} The Electron app closed its first window, and a test reaches no other window of it.` },
+      failure: { ...lost, message: `${lost.message} The Electron app closed its first window, which was the test's page; only a window page.popup() gave the test is still within its reach.` },
     })
     const open = electronPage()
     open.window.answer = { result: { ok: false, failure: lost }, input: 'not_sent' }
@@ -418,7 +420,7 @@ describe('the page of an Electron app', () => {
     assert.equal(collection.startedLate, reason)
     assert.deepEqual(collection.scope, electronScope)
     for (const kind of [collection.scope.console, collection.scope.network]) assert.deepEqual(kind.notCovered.slice(-2), ['main_process', 'other_windows'])
-    assert.match(collection.scope.reason ?? '', /main process runs outside its windows, and Retest reaches only the first window/)
+    assert.match(collection.scope.reason ?? '', /main process runs outside its windows, and Retest captures only the first window/)
     collection.stop()
     assert.equal(window.stops, 1, 'stopping goes to the window\'s own collector')
     showing.shows = 'unreadable'
