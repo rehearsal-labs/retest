@@ -388,6 +388,7 @@ How a test runs:
 
 - Each test launches the app afresh, in a process group of its own, or a Job Object of its own on Windows, and quits it when the test ends. Retest closes the app's debugging pipe, which Electron quits on, waits up to one second for the app's processes to end, and kills any that are left.
 - The first window the app opens is the test's page. What Retest's own checks ran there: `getByTestId`, `getByRole`, `getByLabel` and `getByText` with `first()` and `nth()`; `fill`, `click`, `press` and `check`; `toHaveText`, `toHaveCount`, `toBeChecked`, `.not.toBeChecked()`, `toBeVisible`, `toHaveTitle` and `toHaveURL`; `page.url()`, `reload()`, `goBack()` and `goForward()`. The rest of the page API goes to the window as it goes to a Chrome page, and was not run on Electron.
+- A window the app opens later is a page of the test only once `page.popup()` gives it, as [Windows the app opens](#windows-the-app-opens) says.
 - Without `userDataDir`, each launch gets a new data folder in the temporary folder, as a browser's profile does. Retest removes it, with whatever the app stored in it, after confirming the app's processes have ended. A folder left by a run that was killed outright is retained: a later run cannot prove it is still disposable.
 - With `userDataDir`, every launch uses that folder, so the app keeps its data from one test to the next. Retest leaves the folder as the app left it, and each attempt's record says the app's storage was reused, not fresh. Launches of the target take turns on the folder, each starting once every process of the one before it has gone.
 - Fresh means a new Chromium data folder and nothing more. What the app keeps elsewhere carries over from one launch to the next. This includes the user defaults of the binary's bundle (`com.github.Electron`, shared by every unpacked app run on Electron's own binary), the binary's cache under the user cache folder, `~/Library/Logs/<app name>` when the app writes logs there, and any file the app writes outside its data folder.
@@ -400,9 +401,9 @@ How a test runs:
 What Retest refuses, by name:
 
 - `page.goto()` on an Electron app is a type error: "An Electron app has no address. Its page is the first window the app opens." If it runs anyway, it fails as `unsupported`.
-- A test cannot reach any window after the first. Each launch writes `electron/<app and target>/<launch>/windows.json` in the run folder. It lists every window in the order Retest learned of it, with when it opened and closed and whether a test could reach it. A window already open when Retest began to watch is marked `existing`, and its opening time is when Retest learned of it. The browser log notes each new window. When the app closes its first window, the next command fails with `session_lost`, and the message says no other window is reachable.
-- The main process, native menus and native dialogs: a test reaches only what the first window shows.
-- A locator inside a frame of the window fails as `unsupported`: no test has looked inside a frame of an Electron window yet.
+- A window after the first that no `page.popup()` gave the test. Each launch writes `electron/<app and target>/<launch>/windows.json` in the run folder. It lists every window in the order Retest learned of it, with when it opened and closed, whether a test could reach it, `opener`, the number of the window whose document opened it, and `page`, the name of the page `page.popup()` made of it. A window the app's main process made names no opener. A window already open when Retest began to watch is marked `existing`, and its opening time is when Retest learned of it. The browser log notes each new window, where it came from, and the page it became. When the app closes its first window, the next command to that page fails with `session_lost`, and the message says only a window `page.popup()` gave the test is still within its reach.
+- The main process, native menus and native dialogs: a test reaches only what the windows it was given show.
+- A locator inside a frame of a window fails as `unsupported`: no test has looked inside a frame of an Electron window yet.
 - Sign-in state: a test cannot restore one into an Electron app, and a `test.setup` on one runs its body, then fails as `unsupported` when Retest cannot save its state. Use `userDataDir` to keep the app's data.
 - In an Electron window a secret is typed only on an http or https origin that `secretOrigins` lists for it. The base URLs of the test's other apps do not count there. A window on a `file://` address has no such origin, so the fill is refused. A window the app serves from `http://127.0.0.1:<port>` takes the secret once `secretOrigins` names that origin.
 
@@ -418,7 +419,48 @@ Console and network diagnostics come from the first window, and they are always 
 
 An Electron app can be one of several apps in a test, as a browser can. Retest's own check names two apps, an Electron target and a Chrome target, in one test. The test creates a task in the Electron window and reads its id from the window's address. It then opens that task by its id on the web, marks it done there, and waits until the Electron window shows it done. When the service never passes changes on to the web, the same test fails at the web's check, which names the task's id, and nothing after that check runs.
 
+Downloads in the first window follow the rules [Files](#files) gives for a Chrome page, with what the app's main process changes:
+
+- From the launch on, Electron refuses every download of the app's default session, so none goes the app's own way into your Downloads folder. Once the window is a test's page, each download is saved in the session's folder of the run, as on Chrome. When the run gives the window no folder, Electron keeps refusing them.
+- A download the window or a frame inside it begins is the window's own, and so is one the main process starts for the window with `webContents.downloadURL()`. One begun in a window the first window opened, as a link with `target="_blank"` opens, is given to `page.download()` and recorded as begun in a `popup`, as on Chrome. One any other window begins is saved and recorded, and never given to `page.download()`. No test has run a download from a second window yet.
+- The app's `will-download` handler still runs, but Retest decides where each download goes. A path the handler gives with `item.setSavePath()`, and a save dialog it asks for with `item.setSaveDialogOptions()`, do not take effect: the run folder keeps the file, no dialog shows, and the app's `DownloadItem` still reports the path the app gave, though no file is there. What the app then does with a file at its own path is not what it does without Retest.
+- A handler that cancels a download, with `item.cancel()` or `event.preventDefault()`, reaches Retest only as a download that stopped with no reason. `path()` and `saveAs()` fail `not_actionable`, and say that the app's main process can cancel a download and that Retest cannot see whether it did.
+- A handler that pauses a download, with `item.pause()`, reaches Retest only as a download that does not finish. `path()` and `saveAs()` fail `timeout`, and say that the app can pause one. The download is recorded as `unfinished`.
+- A download the main process starts with `session.downloadURL()` belongs to no window. Chromium tells Retest nothing of it, and still saves it in the run's folder. `page.download()` waits out its time, and its failure says such a download is told of to nobody. Once the app has quit, Retest removes the file, since no record names it and nothing read it for secrets, and the launch's `windows.json` says so in `notes`.
+- Once the app has quit, Retest also removes anything else Chromium left in the folder under a download's id, such as the part of a download that never finished.
+- A first window in a session of its own, as a `partition` in its `webPreferences` makes, has its downloads refused by name: `page.download()` fails `unsupported`. Electron takes a download behavior for its default session only, so Retest neither saves nor refuses that window's downloads. They go the app's own way, which can be a save dialog that waits for a person, or a file in your Downloads folder. The launch's `windows.json` notes it. An Electron build that does not let Retest set where its downloads go is treated the same way; Electron 44.5.1 lets it.
+- A save dialog the app opens itself, with `dialog.showSaveDialog()`, is a native dialog, which no test reaches.
+
+Downloads were run on Electron 44.5.1 on macOS arm64, and not yet on Windows.
+
 Checked with Electron 44.5.1 from the official release, on macOS arm64 and on Windows x64. Linux and packaged apps were not run.
+
+#### Windows the app opens
+
+```ts
+// A window the first window's document opens, by window.open or a link with a target.
+const notes = await page.popup(() => page.getByRole('button', { name: 'Open notes' }).click())
+await notes.getByLabel('Note').fill('Ship on Friday')
+await notes.close()
+
+// A BrowserWindow the app's main process makes when the window asks it to.
+const settings = await page.popup(() => page.getByRole('button', { name: 'Open settings' }).click())
+await settings.getByLabel('Dark mode').check()
+await expect(page.getByTestId('theme')).toHaveText('Theme: dark')
+```
+
+`page.popup(action, { timeout? })` gives the window the action makes the app open as a page of its own, by the rules [Dialogs and popups](#dialogs-and-popups) gives a Chrome popup: its finders, actions, matchers, failure screenshot and dialogs are its own, it is named after the page that waited for it, as `desktop/popup-1`, `popup.close()` closes it, and Retest closes it when the test ends, before the app quits. It keeps an Electron window's rules: `goto`, `route`, a locator inside a frame and a saved state are refused by name, and a secret is typed only on an origin `secretOrigins` lists for it. A popup window's own popups work the same way.
+
+An app opens a window in one of two ways, and Electron 44.5.1 tells them apart over its debugging pipe:
+
+- A window's document opens it, by `window.open` or a link with a target, `noopener` included. Electron names the window that opened it, so it goes to that window's wait, as a Chrome popup goes to its page. One that a window opens while nothing waits is kept, as on Chrome, and is never given to a later wait.
+- The app's main process makes a `BrowserWindow`, as it does when a window asks for one over IPC. Electron names no window that opened it, and nothing on the pipe ties it to the action, so Retest goes by when it opened. It gives the window to the wait when it opens after the wait began and after an action of the test, or an answer to a dialog, went to one of the app's windows. One that opens before then, or while nothing waits, is let run and let go, and `windows.json` marks it unreachable. So a window the main process makes on a timer, or late for an earlier action, is never given to a wait whose action had not yet gone to the app. Once the action has gone, Retest cannot tell such a window from the action's own, since it cannot see the main process: the first window that opens is the one given. A `WebContentsView` the main process adds to a window looks the same over the pipe as a new window, so Retest cannot tell the two apart either.
+
+One window of an app waits at a time: a second `page.popup()` while another window of the same app waits fails `usage`, since a window the main process makes could answer either wait.
+
+A window `window.open` opens on its opener's origin keeps the window of the empty document it began with. When the app's preload ran in that empty document, Retest's scripts ran there too, and Electron stops their listeners hearing the next document's input until they are woken. Retest wakes them, and starts its change observer, as the window's first document commits.
+
+Popup windows are not recorded, and their console and network are not captured: their diagnostics are `unavailable`, "popups are not captured", as a Chrome popup's are. Popup windows were run with Electron 44.5.1 on macOS arm64 only.
 
 ### Proxy
 
@@ -2355,7 +2397,7 @@ SIGINT and SIGTERM take the same path. The running test stops, and the run recor
 - Retest does not sign in to a proxy. Only an `http` proxy was run.
 - `--headed`, and `headless: false` in a config, were never run.
 - Locators see nothing inside a closed shadow root. Frames work on Chrome and Chromium only: on Firefox, WebKit and in an Electron window a locator inside a frame is refused. In a frame, `setInputFiles` and a screenshot of an element are refused. On Firefox and WebKit, a role or label lookup is refused when an open shadow root in its search could hold a match. No `filter()`, `and()`, `or()`, `getByAltText()` or `getByTitle()`, and no XPath.
-- No uploads, file picker, downloads, dialogs or popups on Firefox and WebKit, where a JavaScript dialog fails the command as unsupported. No popup in an Electron app.
+- No dialogs on Firefox and WebKit, where a JavaScript dialog fails the command as unsupported. Uploads, the file picker, downloads and popups on Firefox and WebKit were run on macOS alone. In an Electron app, a window the main process makes is given to `page.popup()` by when it opened, since nothing ties it to the action; one window of an app waits at a time; and popup windows were run on macOS only.
 - No drag and drop or mocked responses on Firefox and WebKit, and no mocked responses in an Electron app. A route answers no frame of another site and no request a service worker answers, and was not run against a dedicated worker's requests.
 - Layout matchers measure Chrome and Chromium pages only, and were run on macOS, Linux and Windows. They measure the elements a test names, and do not search the page for layout problems.
 - Screenshot comparison takes the viewport or one element inside it: no full-page picture, no masked region, and no animation stopped first. A picture of one element is Chromium's. An Electron window and a native app's screen are not compared, and nothing was compared on Linux. Targets on one engine and platform share a baseline.
