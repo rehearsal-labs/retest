@@ -7,11 +7,16 @@ import { test, type TestContext } from 'node:test'
 import { AgentDeviceRuntime } from '../../src/native/agent-device/runtime.ts'
 import { systemTools } from '../../src/native/processes.ts'
 import { sha256Hex } from '../../src/shared/sha256.ts'
+import { unixOnly } from '../support/platform-skip.ts'
 
 // The Android runtime against a stand-in for agent-device: finding the emulator or device a target names, booting an
 // emulator only when it is not running and shutting down only one it booted, installing the APK afresh and checking
 // the package it installed, and closing everything it started. No Android SDK, emulator or device runs here; these are
 // the only checks of the Android path, which has not run on a real emulator or device.
+
+// agent-device's state folder is a folder Retest owns, which names this process by the start ps reads. Windows has no
+// ps, and a run there refuses every native target before any runtime starts.
+const androidHost = { skip: unixOnly('a Windows run refuses every native target before any runtime starts, and Windows has no ps') }
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
 const apk = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3])
@@ -84,7 +89,7 @@ async function start(t: TestContext, daemon: StandInDaemon, device: { readonly n
   return started
 }
 
-test('an emulator that is not running is booted, named in the identity, and shut down at the end with the daemon and its folder', async (t) => {
+test('an emulator that is not running is booted, named in the identity, and shut down at the end with the daemon and its folder', androidHost, async (t) => {
   process.env['RETEST_SECRET_VARIABLE'] = 'kept-from-agent-device'
   const daemon = new StandInDaemon({ booted: false })
   const started = await start(t, daemon, { name: 'Pixel_9' })
@@ -111,7 +116,7 @@ test('an emulator that is not running is booted, named in the identity, and shut
   delete process.env['RETEST_SECRET_VARIABLE']
 })
 
-test('a running device named by serial is used as it is: nothing is booted, and nothing is shut down', async (t) => {
+test('a running device named by serial is used as it is: nothing is booted, and nothing is shut down', androidHost, async (t) => {
   const daemon = new StandInDaemon({ booted: true })
   const started = await start(t, daemon, { serial: 'emulator-5554' })
   assert.ok(started.ok, started.ok ? '' : started.failure.message)
@@ -120,7 +125,7 @@ test('a running device named by serial is used as it is: nothing is booted, and 
   assert.equal(daemon.sent('sessions.close')[0]?.options['shutdown'], undefined)
 })
 
-test('the APK is installed afresh through agent-device, and an install of another package is refused before any launch', async (t) => {
+test('the APK is installed afresh through agent-device, and an install of another package is refused before any launch', androidHost, async (t) => {
   const daemon = new StandInDaemon({ booted: true })
   const started = await start(t, daemon, { serial: 'emulator-5554' })
   assert.ok(started.ok)
@@ -146,7 +151,7 @@ test('the APK is installed afresh through agent-device, and an install of anothe
   await started.runtime.close(10_000)
 })
 
-test('a device agent-device does not list is refused by name, listing what it does list, and nothing is left', async (t) => {
+test('a device agent-device does not list is refused by name, listing what it does list, and nothing is left', androidHost, async (t) => {
   const daemon = new StandInDaemon({ booted: true })
   const started = await start(t, daemon, { serial: 'emulator-5560' })
   assert.ok(!started.ok)
@@ -156,7 +161,7 @@ test('a device agent-device does not list is refused by name, listing what it do
   assert.equal(existsSync(daemon.started[0]?.stateDir ?? ''), false)
 })
 
-test('a physical device that is not running is refused: Retest boots only an emulator', async (t) => {
+test('a physical device that is not running is refused: Retest boots only an emulator', androidHost, async (t) => {
   const daemon = new StandInDaemon({ booted: false, kind: 'device' })
   const started = await start(t, daemon, { name: 'Pixel_9' })
   assert.ok(!started.ok)

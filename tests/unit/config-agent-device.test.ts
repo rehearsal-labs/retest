@@ -1,5 +1,6 @@
 import type { LoadedConfig, LoadedNativeTarget } from '../../src/config/loaded.ts'
 import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
 import { describe, test } from 'node:test'
 import { agentDeviceTarget, describeAndroidDevice, nativeRuntimeKey } from '../../src/config/native-targets.ts'
 import { validateConfig } from '../../src/config/validate.ts'
@@ -45,7 +46,7 @@ describe('an iOS simulator target through agent-device', () => {
 
   test("driver: 'agent-device' opts in, and keeps the arguments", () => {
     const target = only(loaded({ apps: { phone: { ...phone, driver: 'agent-device', arguments: ['-reset'] } } }), 'phone')
-    assert.deepEqual(target, { name: 'ios-simulator', platform: 'ios-simulator', appPath: '/work/TaskPhone.app', device: 'iPhone 17', runtime: '26.5', driver: 'agent-device', arguments: ['-reset'] })
+    assert.deepEqual(target, { name: 'ios-simulator', platform: 'ios-simulator', appPath: resolve('/work/TaskPhone.app'), device: 'iPhone 17', runtime: '26.5', driver: 'agent-device', arguments: ['-reset'] })
     assert.equal(agentDeviceTarget(target)?.driver, 'agent-device')
     assert.equal(nativeRuntimeKey(target), 'iPhone 17 (26.5)')
     assert.equal(resetPolicyFor('ios-simulator', 'agent-device').contract.appData, 'reset')
@@ -67,7 +68,7 @@ describe('an iOS simulator target through agent-device', () => {
 describe('an Android target', () => {
   test('reads its APK, package and serial, and runs through agent-device', () => {
     const target = only(loaded({ apps: { tasks: android } }), 'tasks')
-    assert.deepEqual(target, { name: 'android', platform: 'android', appPath: '/work/app-debug.apk', package: 'dev.retest.fixtures.tasks', device: { serial: 'emulator-5554' }, driver: 'agent-device' })
+    assert.deepEqual(target, { name: 'android', platform: 'android', appPath: resolve('/work/app-debug.apk'), package: 'dev.retest.fixtures.tasks', device: { serial: 'emulator-5554' }, driver: 'agent-device' })
     assert.equal(nativeRuntimeKey(target), 'android serial emulator-5554')
     assert.equal(resetPolicyFor('android').contract.appData, 'reset')
     const driver = targetDriver('tasks', target, { native: true, platform: 'darwin' })

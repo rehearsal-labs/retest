@@ -4,7 +4,7 @@ Retest publishes releases from `main` through the Promote workflow. Each entry n
 
 ## 0.4.0
 
-Checked on macOS on Apple silicon. None of these entries was run on Windows or Linux yet.
+Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.
 
 ### Added
 
