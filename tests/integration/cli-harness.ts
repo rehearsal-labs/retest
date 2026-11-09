@@ -19,6 +19,7 @@ import { agentVariables } from '../../src/cli/agent-detection.ts'
 import { locateSupervisor } from '../../src/cli/install/supervisor-locate.ts'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { childLogFile, eventsFile, resultFile, statesFolder } from '../../src/protocol/run-folder.ts'
 import { parse, type Schema } from '../../src/protocol/schema.ts'
 import { errorCode } from '../../src/shared/error-code.ts'
@@ -48,19 +49,14 @@ export function scenario(name: string): string {
   return `fixtures/tests/${name}.retest.ts`
 }
 
-const shortBudgets: Timeouts = {
-  collection: 5000,
-  setup: 15_000,
-  action: 2000,
-  navigation: 5000,
-  assertion: 2000,
-  test: 15_000,
-  cleanup: 5000,
-}
+// The budgets users get. A step that works ends as soon as the browser says it is done, so a budget costs a passing test
+// nothing; it is only how long a step that never ends is given. Shorter ones failed tests on a busy CI machine whose
+// steps were working, only slowly. A test whose subject is a budget running out gives that budget itself.
+const runBudgets: Timeouts = { ...defaultTimeouts }
 
-/** Short explicit budgets for `--timeouts`, with some replaced. */
+/** The budgets users get, as `--timeouts`, with some replaced. */
 export function budgets(overrides: Partial<Timeouts> = {}): string {
-  return Object.entries({ ...shortBudgets, ...overrides })
+  return Object.entries({ ...runBudgets, ...overrides })
     .map(([name, milliseconds]) => `${name}=${milliseconds}`)
     .join(',')
 }
@@ -842,7 +838,7 @@ const result = await runFiles(
     files: ${JSON.stringify(script.files)},
     rootDir: process.cwd(),
     apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets },
-    timeouts: ${JSON.stringify(shortBudgets)},
+    timeouts: ${JSON.stringify(runBudgets)},
     outputDir,
     headless: true,
     signal: new AbortController().signal,

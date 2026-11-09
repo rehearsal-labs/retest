@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentHost } from '../../src/agent/host.ts'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { SessionBudget } from '../../src/runner/sessions.ts'
 import { browserPath } from '../support/test-browser.ts'
 import { engineUnderTest, firefoxPath, webKitPath } from './engines.ts'
@@ -57,7 +58,7 @@ export async function agentHost(t: TestContext, options: Partial<AgentHostOption
     budget: new SessionBudget({ perOwner: 4, host: 8 }),
     logFolder: folder,
     launchers,
-    timeouts: { setup: 45_000, action: 5000, navigation: 10_000, assertion: 5000, cleanup: 5000 },
+    timeouts: { setup: defaultTimeouts.setup, action: defaultTimeouts.action, navigation: defaultTimeouts.navigation, assertion: defaultTimeouts.assertion, cleanup: defaultTimeouts.cleanup },
     secrets: { values: { password: { value: TASK_APP_PASSWORD } } },
     ...options,
   })

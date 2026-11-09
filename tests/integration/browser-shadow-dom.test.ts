@@ -4,6 +4,7 @@ import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import type { DeclaredValue } from './engine-expectations.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import {
   assertOk,
   byLabel,
@@ -53,7 +54,7 @@ async function count(page: OwnedPage, locator: LocatorRecipe): Promise<number> {
 
 // A look's matches by their text, or the failure that refused it, as a declared outcome holds it.
 async function lookup(page: OwnedPage, locator: LocatorRecipe): Promise<DeclaredValue> {
-  const result = await page.execute({ kind: 'observe', locator }, 2000)
+  const result = await page.execute({ kind: 'observe', locator }, defaultTimeouts.action)
   if (!result.ok) return { class: result.failure.class, message: result.failure.message }
   assert.equal(result.kind, 'observe')
   return result.observation.items.map((item) => item.text.trim())
@@ -173,7 +174,7 @@ test('fill, click, check, select and press reach elements inside open shadow roo
   assertOk(await check(page, byTestId('gift')))
   await observeUntil(page, status, (seen) => seen.text === 'Gift wrapped')
   assert.equal((await observe(page, byTestId('gift'))).checked, true)
-  assertOk(await select(page, byTestId('speed'), 'Express', 5000))
+  assertOk(await select(page, byTestId('speed'), 'Express', defaultTimeouts.action))
   await observeUntil(page, status, (seen) => seen.text === 'Delivery Express')
   assertOk(await press(page, byTestId('coupon'), 'Enter'))
   await observeUntil(page, status, (seen) => seen.text === 'Coupon applied')
@@ -181,7 +182,7 @@ test('fill, click, check, select and press reach elements inside open shadow roo
 
 test('hover and scroll reach elements inside open shadow roots', async (t) => {
   const page = await shadowPage(t)
-  assertOk(await page.execute({ kind: 'hover', locator: byTestId('tip') }, 2000))
+  assertOk(await page.execute({ kind: 'hover', locator: byTestId('tip') }, defaultTimeouts.action))
   await observeUntil(page, byTestId('tip-status'), (seen) => seen.text === 'Tip shown')
   assertOk(await scroll(page, byTestId('feed'), { y: 100 }))
   await observeUntil(page, byTestId('feed-status'), (seen) => seen.text === 'Scrolled')

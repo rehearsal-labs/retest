@@ -19,6 +19,7 @@ import { NativeInteractionSession } from '../../src/native/interaction-session.t
 import { MacosDesktop, windowsOnScreen } from '../../src/native/macos-app.ts'
 import { decodePng } from '../../src/native/png.ts'
 import { listProcesses, systemTools } from '../../src/native/processes.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { decodeFrames, decodeVideo, imageSize, matchVideo, mediaPrerequisites, pausesMs, shownFrameIds, spread, watched } from './capture-proof.ts'
 import { executorBuild, mainScreen, nativeSkipReason, processesWith, taskDeskApp } from './native-harness.ts'
 
@@ -70,7 +71,7 @@ async function openOverlay(frame: Rect): Promise<{ readonly pid: number; close()
   if (pid === undefined) throw new Error('The overlay process started without a pid.')
   const until = performance.now() + 10_000
   while (performance.now() < until) {
-    const windows = await windowsOnScreen(systemTools, { timeoutMs: 5000 })
+    const windows = await windowsOnScreen(systemTools, { timeoutMs: defaultTimeouts.action })
     if (typeof windows !== 'string' && windows.some((entry) => entry.pid === pid && entry.layer === 1000)) return { pid, close }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
@@ -214,7 +215,7 @@ describe('capture of a real macOS app into the real media process, with TaskDesk
     const measuredSource = interaction.frameSource(identity)
     const looked: CapturedFrame[] = []
     const ended: string[] = []
-    const started = await measuredSource.start({ fps: 30, clock: microsecondsSince(performance.now()), deliver: (frame) => looked.push(frame), ended: (reason) => ended.push(reason), timeoutMs: 20_000 })
+    const started = await measuredSource.start({ fps: 30, clock: microsecondsSince(performance.now()), deliver: (frame) => looked.push(frame), ended: (reason) => ended.push(reason), timeoutMs: defaultTimeouts.setup })
     t.after(() => measuredSource.stop(20_000))
     t.diagnostic(JSON.stringify({ captureStart: started }))
     const keptRefusal = process.env['RETEST_CAPTURE_PROOF_OUT']
@@ -232,12 +233,12 @@ describe('capture of a real macOS app into the real media process, with TaskDesk
 
     const folder = await mkdtemp(join(tmpdir(), 'retest-capture-macos-video-'))
     t.after(() => rm(folder, { recursive: true, force: true }))
-    const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: 10_000 })
+    const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: defaultTimeouts.setup })
     t.after(() => media.close(10_000))
     const { source, frames } = watched(interaction.frameSource(identity))
     const keptFrames = process.env['RETEST_CAPTURE_PROOF_OUT']
     const stop = new AbortController()
-    const options: RecordSourceOptions = { recordingId: 'macos', runId: owner.runId, output: join(folder, 'macos'), width: size.width - (size.width % 2), height: size.height - (size.height % 2), fps: 10, deadlineMs: 30_000, clock: microsecondsSince(performance.now()), startTimeoutMs: 20_000, stopTimeoutMs: 20_000, finishTimeoutMs: 40_000, signal: stop.signal }
+    const options: RecordSourceOptions = { recordingId: 'macos', runId: owner.runId, output: join(folder, 'macos'), width: size.width - (size.width % 2), height: size.height - (size.height % 2), fps: 10, deadlineMs: 30_000, clock: microsecondsSince(performance.now()), startTimeoutMs: defaultTimeouts.setup, stopTimeoutMs: 20_000, finishTimeoutMs: 40_000, signal: stop.signal }
     const recording = recordSource(source, media, options)
     t.after(async () => {
       stop.abort()

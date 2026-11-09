@@ -13,6 +13,7 @@ import { rebuildResult } from '../../src/store/rebuild-result.ts'
 import { buildReport } from '../../src/reporters/html/build-report.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
 import { countParts } from '../../src/reporters/format.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertKilledStdoutIsEventPrefix, assertStdoutIsEvents, killedExit, readFinishedRun, repositoryRoot, waitFor } from './cli-harness.ts'
 import { encoderPid, finishRecordingRun, killOwned, ownershipOf, partialFiles, recordingRun, recordingSkip, saveProof as saveRecordingProof } from './recording-harness.ts'
 import { eventsOfType } from '../support/run-harness.ts'
@@ -77,7 +78,7 @@ test('waits',async({page})=>{await page.goto('/');await new Promise(resolve=>set
 
 for (const ending of ['media','encoder','SIGINT','timeout','browser'] as const) {
   test(`recording shutdown after ${ending} preserves the outcome and confirms owned processes gone`,{timeout:60000,skip:recordingSkip},async t=>{
-    const started = await recordingRun(t,waiting,{timeout:ending==='timeout'?600:10000})
+    const started = await recordingRun(t,waiting,{timeout:ending==='timeout'?600:defaultTimeouts.test})
     const began = await started.retest.waitForEvent('recording.started')
     const media = await started.retest.waitForEvent('media.started')
     await started.retest.waitForEvent('action.completed',event=>event.command==='goto')
@@ -122,7 +123,7 @@ for (const ending of ['media','encoder','SIGINT','timeout','browser'] as const) 
       assert.equal(baseline.events.some(event=>event.type.startsWith('media.') || event.type.startsWith('recording.')),false)
       await saveProof(baseline,'timeout-off',t)
     } else {
-      const withoutMedia=await recordingRun(t,waiting,{record:false,timeout:10000})
+      const withoutMedia=await recordingRun(t,waiting,{record:false,timeout:defaultTimeouts.test})
       await withoutMedia.retest.waitForEvent('action.completed',event=>event.command==='goto')
       const baselineOwner=ownershipOf(withoutMedia)
       if(ending==='SIGINT') withoutMedia.retest.signal('SIGINT')
@@ -216,7 +217,7 @@ test('the next media worker removes leftovers of a killed run and leaves unrelat
   const next = new RunMedia({
     location: { executable: process.env['RETEST_TEST_MEDIA_BINARY'] ?? join(repositoryRoot, 'media/target/release/retest-media'), ffmpeg: process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg' },
     start: async (location, budget) => { const process = await startMediaProcess(location, budget); nextOwner = launchOwnership(process.pid); assert.deepEqual(nextOwner.capture(), []); return process },
-    emit: event => void events.push(event), timeouts: { start: 10000, close: 5000, leftovers: 5000 }, runFolder: join(dirname(started.output), 'current'),
+    emit: event => void events.push(event), timeouts: { start: defaultTimeouts.setup, close: defaultTimeouts.cleanup, leftovers: defaultTimeouts.cleanup }, runFolder: join(dirname(started.output), 'current'),
   })
   t.after(async () => { assert.equal(await next.close(), undefined); assert.equal(nextOwner?.remains(), false) })
   assert.equal((await next.acquire()).ok, true)

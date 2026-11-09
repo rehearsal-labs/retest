@@ -19,6 +19,7 @@ import { CdpClosedError, CdpDisconnectedError } from '../../src/browser/cdp/erro
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { groupsOf, processesUsing as windowsProcessesUsing } from './browser-harness.ts'
 
@@ -82,7 +83,7 @@ async function launch(t: TestContext): Promise<Browser> {
   stderr.on('data', (chunk: Buffer) => (log += String(chunk)))
   const diagnostics: CdpDiagnostic[] = []
   const connection = new CdpConnection(new PipeTransport({ readable: output, writable: input }), {
-    timeoutMs: 10_000,
+    timeoutMs: defaultTimeouts.setup,
     onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
   })
   t.after(() => connection.close())
@@ -92,7 +93,7 @@ async function launch(t: TestContext): Promise<Browser> {
 async function stopGroup(pid: number, exited: Promise<unknown>, ownership: OwnedProcessGroup): Promise<void> {
   assert.deepEqual(ownership.signal('SIGKILL'), [])
   await exited
-  await until(() => !processGroupExists(pid), 5000, `process group ${pid} to end`)
+  await until(() => !processGroupExists(pid), defaultTimeouts.cleanup, `process group ${pid} to end`)
 }
 
 function processGroupExists(pgid: number): boolean {
@@ -188,7 +189,7 @@ test('drives Chrome over the debugging pipe, and a killed browser rejects its pe
   await session.send('Page.setLifecycleEventsEnabled', { enabled: true })
   await session.send('Runtime.enable')
 
-  await navigate(session, `${app.url}/`, 10_000)
+  await navigate(session, `${app.url}/`, defaultTimeouts.navigation)
   const title = await session.send('Runtime.evaluate', { expression: 'document.title', returnByValue: true })
   assert.equal(field(title, 'result', 'value'), 'Tasks')
   const script = await session.send('Runtime.evaluate', { expression: 'typeof save', returnByValue: true })

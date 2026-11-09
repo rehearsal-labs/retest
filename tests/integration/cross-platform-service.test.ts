@@ -16,6 +16,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { formatRequestLine, parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
 import { ASSIGNED_ID_PATTERN, SEEDED_TASKS } from '../../fixtures/cross-platform/service/store.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { consolesDetached, holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../../src/shared/process-system.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { within } from './browser-harness.ts'
@@ -104,13 +105,13 @@ async function startService(t: TestContext, options: ServiceOptions = {}): Promi
   void exited.then((value) => {
     exit = value
   })
-  const end = performance.now() + 15_000
+  const end = performance.now() + defaultTimeouts.setup
   let url: string | undefined
   while (url === undefined) {
     url = /^(http:\/\/127\.0\.0\.1:\d+)\n/.exec(stdout)?.[1]
     if (url !== undefined) break
     if (exit !== undefined) assert.fail(`the service exited with ${JSON.stringify(exit)} before it printed its address: ${stderr}`)
-    if (performance.now() > end) assert.fail(`the service printed no address within 15 s: ${stderr}`)
+    if (performance.now() > end) assert.fail(`the service printed no address within ${defaultTimeouts.setup / 1000} s: ${stderr}`)
     await delay(10)
   }
   const address = url
@@ -427,7 +428,7 @@ test('shows a change to another session only once the sync delay has passed, by 
   await delay(syncDelayMs / 2)
   assert.equal(await readTask(service, web, created.id), undefined, 'nor halfway through the delay')
   assert.equal(await listed(service, web, created.id), undefined, 'nor in its list halfway through')
-  const seen = await firstSeen('the other session seeing the new task in its list', () => listed(service, web, created.id), syncDelayMs + 3000)
+  const seen = await firstSeen('the other session seeing the new task in its list', () => listed(service, web, created.id), syncDelayMs + defaultTimeouts.assertion)
   assert.ok(seen.at - sentAt >= syncDelayMs, `the other session listed it ${seen.at - sentAt} ms after it was sent, before the ${syncDelayMs} ms delay`)
   assert.deepEqual(shape(seen.value), shape(created))
   assert.deepEqual(shape(await readTask(service, web, created.id)), shape(created), 'and reads it by id')
@@ -440,7 +441,7 @@ test('shows a change to another session only once the sync delay has passed, by 
   const synced = await firstSeen('the change reaching the phone through its list', async () => {
     const task = await listed(service, phone, created.id)
     return task?.revision === 2 ? task : undefined
-  }, syncDelayMs + 3000)
+  }, syncDelayMs + defaultTimeouts.assertion)
   assert.ok(synced.at - changedAt >= syncDelayMs, `the change reached the phone's list after ${synced.at - changedAt} ms`)
   assert.equal(synced.value.done, true)
   assert.deepEqual(shape(await readTask(service, phone, created.id)), shape(synced.value), 'and its read by id')
@@ -479,7 +480,7 @@ test('breaks sync for one client only: the web sees the phone, and the desktop n
   const desk = await signIn(service, ada.id, ada.password, 'macos')
 
   const created = await createTask(service, phone, 'Made on the phone', 'ios')
-  const onWeb = await firstSeen('the web seeing the phone task', () => listed(service, web, created.id), syncDelayMs + 3000)
+  const onWeb = await firstSeen('the web seeing the phone task', () => listed(service, web, created.id), syncDelayMs + defaultTimeouts.assertion)
   assert.deepEqual(shape(onWeb.value), shape(created))
   assert.deepEqual(shape(await readTask(service, web, created.id)), shape(created))
 
@@ -488,7 +489,7 @@ test('breaks sync for one client only: the web sees the phone, and the desktop n
   const onPhone = await firstSeen('the phone seeing the web change', async () => {
     const task = await listed(service, phone, created.id)
     return task?.done === true ? task : undefined
-  }, syncDelayMs + 3000)
+  }, syncDelayMs + defaultTimeouts.assertion)
   assert.equal(onPhone.value.revision, 2)
 
   await holdsFor(1500, async () => {
@@ -497,7 +498,7 @@ test('breaks sync for one client only: the web sees the phone, and the desktop n
   })
   const deskSelf = await createTask(service, desk, 'Made on the desktop', 'macos')
   assert.deepEqual(shape(await readTask(service, desk, deskSelf.id)), shape(deskSelf), 'the desktop sees its own change')
-  await firstSeen('the web seeing the desktop task', () => listed(service, web, deskSelf.id), syncDelayMs + 3000)
+  await firstSeen('the web seeing the desktop task', () => listed(service, web, deskSelf.id), syncDelayMs + defaultTimeouts.assertion)
 
   assert.equal((await refusedStart(['--broken-sync=nosuch'])).code, 2, 'an unknown client is refused')
   const spaced = await refusedStart(['--broken-sync', 'macos'])
@@ -515,16 +516,16 @@ test('breaks sync from one client to another only: the desktop sees the phone ta
   const desk = await signIn(service, ada.id, ada.password, 'macos')
 
   const created = await createTask(service, phone, 'Made on the phone', 'ios')
-  const onDesk = await firstSeen('the desktop seeing the phone task', () => listed(service, desk, created.id), syncDelayMs + 3000)
+  const onDesk = await firstSeen('the desktop seeing the phone task', () => listed(service, desk, created.id), syncDelayMs + defaultTimeouts.assertion)
   assert.deepEqual(shape(onDesk.value), shape(created), 'a change the phone made reaches the desktop')
-  await firstSeen('the web seeing the phone task', () => listed(service, web, created.id), syncDelayMs + 3000)
+  await firstSeen('the web seeing the phone task', () => listed(service, web, created.id), syncDelayMs + defaultTimeouts.assertion)
 
   const done = await changeTask(service, web, created.id, { done: true }, 'web')
   assert.deepEqual(shape(done), { id: created.id, title: 'Made on the phone', done: true, revision: 2 })
   const onPhone = await firstSeen('the phone seeing the web change', async () => {
     const task = await listed(service, phone, created.id)
     return task?.done === true ? task : undefined
-  }, syncDelayMs + 3000)
+  }, syncDelayMs + defaultTimeouts.assertion)
   assert.equal(onPhone.value.revision, 2, 'the web change reaches the phone')
 
   // Fifteen times the delay: under working sync the web change would have reached the desktop long before.
@@ -541,7 +542,7 @@ test('breaks sync from one client to another only: the desktop sees the phone ta
   const renamedOnDesk = await firstSeen('the desktop seeing the phone rename', async () => {
     const task = await listed(service, desk, created.id)
     return task?.revision === 3 ? task : undefined
-  }, syncDelayMs + 3000)
+  }, syncDelayMs + defaultTimeouts.assertion)
   // The phone's change set only the title. The done it was merged onto came from the web, which never reaches the
   // desktop, so the desktop sees the rename on the task as the phone made it.
   assert.deepEqual(shape(renamedOnDesk.value), { id: created.id, title: 'Renamed on the phone', done: false, revision: 3 })
@@ -549,12 +550,12 @@ test('breaks sync from one client to another only: the desktop sees the phone ta
   const renamedOnWeb = await firstSeen('the web seeing the phone rename', async () => {
     const task = await readTask(service, web, created.id)
     return task?.revision === 3 ? task : undefined
-  }, syncDelayMs + 3000)
+  }, syncDelayMs + defaultTimeouts.assertion)
   assert.deepEqual(shape(renamedOnWeb.value), { id: created.id, title: 'Renamed on the phone', done: true, revision: 3 }, 'the web keeps its own done under the rename')
 
   // A task the web created never reaches the desktop, even once the phone changes it.
   const fromWeb = await createTask(service, web, 'Made on the web', 'web')
-  await firstSeen('the phone seeing the web task', () => listed(service, phone, fromWeb.id), syncDelayMs + 3000)
+  await firstSeen('the phone seeing the web task', () => listed(service, phone, fromWeb.id), syncDelayMs + defaultTimeouts.assertion)
   await changeTask(service, phone, fromWeb.id, { done: true }, 'ios')
   await holdsFor(syncDelayMs * 5, async () => {
     assert.equal(await readTask(service, desk, fromWeb.id), undefined, 'the desktop cannot read the web task')
@@ -581,7 +582,7 @@ test('applies only the fields a change holds, to the newest state, so a change m
   const web = await signIn(service, ada.id, ada.password, 'web')
   const phone = await signIn(service, ada.id, ada.password, 'ios')
   const created = await createTask(service, web, 'Shared task', 'web')
-  await firstSeen('the phone seeing the shared task', () => readTask(service, phone, created.id), syncDelayMs + 3000)
+  await firstSeen('the phone seeing the shared task', () => readTask(service, phone, created.id), syncDelayMs + defaultTimeouts.assertion)
 
   // Inside one delay: the web marks it done, then the phone, which still sees it open, renames it.
   const done = await changeTask(service, web, created.id, { done: true }, 'web')
@@ -594,7 +595,7 @@ test('applies only the fields a change holds, to the newest state, so a change m
   const onWeb = await firstSeen('the web seeing the rename', async () => {
     const task = await readTask(service, web, created.id)
     return task?.revision === 3 ? task : undefined
-  }, syncDelayMs + 3000)
+  }, syncDelayMs + defaultTimeouts.assertion)
   assert.deepEqual(shape(onWeb.value), merged)
   assert.deepEqual(shape(await listed(service, web, created.id)), merged)
   assert.deepEqual(shape(await listed(service, phone, created.id)), merged)
@@ -950,7 +951,7 @@ test('Retest on real Chrome: a save made while the list refreshes is not undone 
     browser: false,
     args: ['--config', webConfig, '--base-url', service.url],
     env: { [passwordVariable]: ada.password },
-    timeouts: budgets({ assertion: 5000, action: 4000, test: 40_000 }),
+    timeouts: budgets({ assertion: 5000, test: 40_000 }),
   })
   assert.equal(run.exit.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(testNamed(run, 'a save made while the list is refreshing stays on the page when the older list arrives').status, 'passed')

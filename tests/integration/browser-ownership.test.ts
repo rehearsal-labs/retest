@@ -5,6 +5,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { errorMessage } from '../../src/protocol/failures.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { browserPath } from '../support/test-browser.ts'
@@ -14,8 +15,8 @@ import { browserPath } from '../support/test-browser.ts'
 // different process and refused to end. Closing at once after launch, as `retest doctor` does, while Chrome is still
 // starting helpers, was refused in 8 of 10 closes; closing after a page opened, as a run does, more rarely.
 const closes = 10
-const setupMs = 10_000
-const closeMs = 5000
+const setupMs = defaultTimeouts.setup
+const closeMs = defaultTimeouts.cleanup
 
 const chromeForTesting = join(homedir(), 'Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing')
 

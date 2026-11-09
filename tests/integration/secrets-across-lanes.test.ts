@@ -5,7 +5,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { defaultEvaluationTimeoutMs } from '../../src/config/read-evaluation.ts'
 import { appLogFile } from '../../src/protocol/run-folder.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
 import { appServerCommand, childLog, eventsOf, filesHolding, freePort, runCli, runHost, scratchFolder, testNamed, textHolds, writeProject } from './cli-harness.ts'
 
@@ -73,7 +75,7 @@ const loaded = validateConfig(
     },
     defaultApp: 'web',
     secrets: { password: env('RETEST_FABLE_PASSWORD'), token: env('RETEST_FABLE_TOKEN') },
-    evaluation: { judges: { anthropic: judge('RETEST_EVALUATION_ANTHROPIC_KEY'), openai: judge('RETEST_EVALUATION_OPENAI_KEY') }, timeoutMs: 10000 },
+    evaluation: { judges: { anthropic: judge('RETEST_EVALUATION_ANTHROPIC_KEY'), openai: judge('RETEST_EVALUATION_OPENAI_KEY') }, timeoutMs: ${defaultEvaluationTimeoutMs} },
   }),
   \`\${process.cwd()}/host.config.ts\`,
 )
@@ -98,7 +100,7 @@ const result = await runFiles(
     files: [${JSON.stringify(file)}],
     rootDir: process.cwd(),
     apps: { kind: 'config', config, secrets: secrets.secrets },
-    timeouts: { collection: 5000, setup: 15000, action: 5000, navigation: 10000, assertion: 5000, test: 30000, cleanup: 5000 },
+    timeouts: ${JSON.stringify(defaultTimeouts)},
     outputDir,
     headless: true,
     signal: new AbortController().signal,

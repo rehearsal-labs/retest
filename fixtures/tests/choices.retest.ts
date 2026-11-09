@@ -43,7 +43,8 @@ test('ticks and unticks a checkbox, an element whose role is checkbox, and a hid
 
 test('waits for an option that never comes, and fails naming it', async ({ page }) => {
   await page.goto('/actions/choices')
-  await page.getByLabel('Country').select('Atlantis')
+  // The option never comes, so the select runs out of the time it is given here.
+  await page.getByLabel('Country').select('Atlantis', { timeout: 2000 })
 })
 
 test.describe('a failed choice or tick changes nothing', (test) => {
@@ -64,7 +65,8 @@ test.describe('a failed choice or tick changes nothing', (test) => {
 
   test('does not tick a checkbox a cover sits on', async ({ page }) => {
     await page.goto('/actions/choices')
-    await page.getByTestId('covered').check()
+    // The cover never moves, so the check runs out of the time it is given here.
+    await page.getByTestId('covered').check({ timeout: 2000 })
   })
 
   test('stops the click on a checkbox a cover takes as the pointer arrives', async ({ page }) => {

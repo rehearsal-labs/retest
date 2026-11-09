@@ -12,6 +12,7 @@ import { REMEMBER_COOKIE, SESSION_COOKIE, STORED_USER_KEY, TASK_APP_PASSWORD } f
 import { BrowserError } from '../../src/browser/browser-error.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { storageStateSchema } from '../../src/protocol/storage-state.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, click, fill, goto, observe, observeUntil, openApp, openPage, setupMs, sharedBrowser } from './browser-harness.ts'
 
 const browser = sharedBrowser()
@@ -45,6 +46,8 @@ const updateCheck: Purpose = { method: 'GET', path: '/service-worker.js', servic
  * worker answered goes quiet or is left, so a check the capture itself set off would arrive within this.
  */
 const quietMs = 1500
+// How long a capture waits for an update check of a service worker's script, which Chrome may never send.
+const updateCheckMs = 10_000
 
 /**
  * Waits up to `timeoutMs` until a request the app received after the first `since` matches `arrived`, as the page cannot
@@ -145,8 +148,8 @@ test('a service worker of an origin the page left does not answer the document R
   assertOk(await goto(page, `${elsewhere.url}/`))
   // Chrome checks the worker's script for an update on its own after a page the worker answered went quiet or was left.
   // That request is the browser's, for the page this test opened, so the capture waits for it and goes on either way.
-  const checked = await receivedWithin(site, registered, (request) => isDeepStrictEqual(purpose(request), updateCheck), setupMs)
-  t.diagnostic(checked ? 'Chrome checked the worker script for an update before the capture' : `Chrome sent no update check of the worker script within ${setupMs} ms`)
+  const checked = await receivedWithin(site, registered, (request) => isDeepStrictEqual(purpose(request), updateCheck), updateCheckMs)
+  t.diagnostic(checked ? 'Chrome checked the worker script for an update before the capture' : `Chrome sent no update check of the worker script within ${updateCheckMs} ms`)
   const seen = site.received().length
   const requests = site.requests()
   const state = await page.captureState(setupMs)
@@ -209,7 +212,7 @@ test('a state that names an origin other than http or https is refused before an
 test('capture on a closed page fails as a lost session', async (t) => {
   const app = await openApp(t)
   const page = await openPage(t, browser(), app.url)
-  await page.dispose(2000)
+  await page.dispose(defaultTimeouts.cleanup)
   await assert.rejects(page.captureState(setupMs), (error) => {
     assert.ok(error instanceof BrowserError)
     assert.equal(error.failure.class, 'session_lost')

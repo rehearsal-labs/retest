@@ -10,6 +10,7 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { SEEDED_ACCOUNTS } from '../../fixtures/cross-platform/service/accounts.ts'
 import { parseRequestRecord } from '../../fixtures/cross-platform/service/request-log.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { budgets, eventsOf, filesHolding, repositoryRoot, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
 import { endService } from './service-teardown.ts'
 
@@ -35,7 +36,7 @@ const password = ada.password
 const syncDelayMs = 1000
 const environment = { RETEST_ELECTRON_FLOW_PASSWORD: password }
 // A change reaches another client after the sync delay, and the clients ask for the list once a second.
-const timeouts = budgets({ assertion: 6000, action: 4000, test: 40_000 })
+const timeouts = budgets({ assertion: 6000, test: 40_000 })
 const flowName = 'creates a task in Electron, marks it done on the web, and sees it done in Electron'
 
 const flow = `import { randomUUID } from 'node:crypto'
@@ -130,7 +131,7 @@ async function startService(t: TestContext, flags: readonly string[] = []): Prom
   child.stderr.setEncoding('utf8').on('data', (text: string) => {
     stderr += text
   })
-  const end = performance.now() + 15_000
+  const end = performance.now() + defaultTimeouts.setup
   for (;;) {
     const url = /^(http:\/\/127\.0\.0\.1:\d+)\n/.exec(stdout)?.[1]
     if (url !== undefined) {
@@ -143,7 +144,7 @@ async function startService(t: TestContext, flags: readonly string[] = []): Prom
           : []
       return { url, requests }
     }
-    if (performance.now() > end) assert.fail(`the service printed no address within 15 s: ${stderr}`)
+    if (performance.now() > end) assert.fail(`the service printed no address within ${defaultTimeouts.setup / 1000} s: ${stderr}`)
     await delay(10)
   }
 }

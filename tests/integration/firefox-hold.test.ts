@@ -17,7 +17,7 @@ const secretValue = 'correct-horse-battery-staple-held'
 
 async function firefox(t: TestContext, socket?: Parameters<typeof launchFirefox>[2]): Promise<FirefoxBrowser> {
   const folder = await scratchFolder(t)
-  const browser = await launchFirefox({ executablePath: firefoxPath(), logFile: join(folder, 'browser.log'), headless: true, route: testFirefoxRoute() }, setupMs * 3, socket)
+  const browser = await launchFirefox({ executablePath: firefoxPath(), logFile: join(folder, 'browser.log'), headless: true, route: testFirefoxRoute() }, setupMs, socket)
   t.after(() => browser.close(closeMs).catch(() => undefined))
   return browser
 }

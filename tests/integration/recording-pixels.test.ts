@@ -13,6 +13,7 @@ import { ChromiumPage } from '../../src/browser/page.ts'
 import { defaultRecordingSettings } from '../../src/config/read-recording.ts'
 import { microsecondsSince } from '../../src/media/capture.ts'
 import { defaultAppPixelRules, PixelCapturePolicy } from '../../src/media/policy.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { AttemptRecorder, RunMedia, startMediaProcess } from '../../src/runner/run-media.ts'
 import { launchOwnership } from '../../src/shared/process-system.ts'
 import { ArtifactSequences } from '../../src/store/artifacts.ts'
@@ -61,20 +62,20 @@ test('a real secret fill withholds its pixels from video and kept frames until a
       }
       return process
     },
-    emit: event => void events.push(event), timeouts: { start: 10000, close: 5000, leftovers: 1000 }, runFolder,
+    emit: event => void events.push(event), timeouts: { start: defaultTimeouts.setup, close: defaultTimeouts.cleanup, leftovers: defaultTimeouts.cleanup }, runFolder,
   })
   t.after(async () => { await recorder?.finish(); assert.equal(await media.close(), undefined); assert.equal(ownership?.remains(), false) })
-  recorder = new AttemptRecorder({ media, runId: 'pixel-run', runFolder, ...identity, settings: { ...defaultRecordingSettings, record: true, size: { width: 320, height: 240 } }, records: () => true, withheldFrom: () => undefined, judge: policy, clock, sequences: new ArtifactSequences(), timeouts: { start: 10000, stop: 5000, deadline: 5000, finish: 10000, release: 5000 }, keepFrames: true, emit: event => void events.push(event) })
+  recorder = new AttemptRecorder({ media, runId: 'pixel-run', runFolder, ...identity, settings: { ...defaultRecordingSettings, record: true, size: { width: 320, height: 240 } }, records: () => true, withheldFrom: () => undefined, judge: policy, clock, sequences: new ArtifactSequences(), timeouts: { start: defaultTimeouts.setup, stop: defaultTimeouts.cleanup, deadline: defaultTimeouts.cleanup, finish: defaultTimeouts.cleanup + 5000, release: defaultTimeouts.cleanup }, keepFrames: true, emit: event => void events.push(event) })
   await recorder.start([{ app: 'web', page, browser, touch: false, session }])
   assert.deepEqual(ownership?.capture(), [])
-  assert.ok((await page.execute({ kind: 'goto', url: '/' }, 5000)).ok)
+  assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
   await delay(300)
   const fact = { kind: 'unread' as const, reason: 'The runner has no field masking fact.' }
   const entry = policy.beginSecretEntry({ identity, secret: 'synthetic', field: 'entry', fact })
-  assert.ok((await page.execute({ kind: 'fill', locator: { by: 'testId', value: 'entry' }, value: randomUUID() }, 5000)).ok, 'the secret input was confirmed')
+  assert.ok((await page.execute({ kind: 'fill', locator: { by: 'testId', value: 'entry' }, value: randomUUID() }, defaultTimeouts.action)).ok, 'the secret input was confirmed')
   policy.endSecretEntry(entry, { fact, input: 'sent' })
   await delay(400)
-  assert.ok((await page.execute({ kind: 'goto', url: '/safe' }, 5000)).ok)
+  assert.ok((await page.execute({ kind: 'goto', url: '/safe' }, defaultTimeouts.navigation)).ok)
   policy.pageLeft(identity, 'new_document')
   await Promise.all(restarts)
   await delay(300)

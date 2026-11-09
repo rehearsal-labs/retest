@@ -53,7 +53,7 @@ async function locatorsPage(t: TestContext, open: Opener = (each, baseUrl) => op
 // within them.
 async function firstPage(t: TestContext, baseUrl: string): Promise<OwnedPage> {
   const page = await browser().newPage({ baseUrl }, defaultTimeouts.setup)
-  t.after(() => page.dispose(2000))
+  t.after(() => page.dispose(defaultTimeouts.cleanup))
   return page
 }
 
@@ -109,7 +109,7 @@ test('role without a name finds every element with it, and a role Chrome names i
   // Each lookup is a subtest, so one an engine answers differently does not hide the others.
   for (const [role, name] of [['img', 'Logo'], ['img', 'Badge'], ['math', 'Formula'], ['heading', 'Locators']] as const) {
     await t.test(`${role} ${name}`, async (each) => {
-      const looked = await page.execute({ kind: 'observe', locator: byRole(role, name) }, 2000)
+      const looked = await page.execute({ kind: 'observe', locator: byRole(role, name) }, defaultTimeouts.action)
       engineCase.assertOutcome(each, looked.ok && looked.kind === 'observe' ? { count: looked.observation.count } : looked, { count: 1 })
     })
   }
@@ -118,7 +118,7 @@ test('role without a name finds every element with it, and a role Chrome names i
 test('role finds through an open shadow root, in the order the page shows, and stays out of frames, as test id and text do', async (t) => {
   const page = await locatorsPage(t)
   const lookup = async (locator: LocatorRecipe): Promise<DeclaredValue> => {
-    const looked = await page.execute({ kind: 'observe', locator }, 2000)
+    const looked = await page.execute({ kind: 'observe', locator }, defaultTimeouts.action)
     if (!looked.ok) return { class: looked.failure.class, message: looked.failure.message }
     return looked.kind === 'observe' ? looked.observation.items.map((item) => item.text) : looked.kind
   }

@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { DRAG_PAGE } from '../../fixtures/task-app/drag-page.ts'
 import { launchElectron } from '../../src/browser/electron.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, byTestId, byText, click, failureOf, goto, launch, observe, observeUntil, openApp, openPage, scratchFolder, sharedBrowser } from './browser-harness.ts'
 import { engineAbsence } from './engines.ts'
 
@@ -33,7 +34,7 @@ async function dragPage(t: TestContext): Promise<DragPage> {
 
 function drag(page: OwnedPage, source: LocatorRecipe, target: LocatorRecipe, options: { steps?: number; timeoutMs?: number } = {}): Promise<CommandResult> {
   const steps = options.steps === undefined ? {} : { steps: options.steps }
-  return page.execute({ kind: 'dragTo', locator: source, target, ...steps }, options.timeoutMs ?? 5000)
+  return page.execute({ kind: 'dragTo', locator: source, target, ...steps }, options.timeoutMs ?? defaultTimeouts.action)
 }
 
 async function textOf(page: OwnedPage, testId: string): Promise<string | null> {
@@ -206,8 +207,8 @@ test("an Electron window another window covers takes an HTML drag with its data 
   writeFileSync(join(appPath, 'main.mjs'), ELECTRON_DRAG_MAIN)
   writeFileSync(join(appPath, 'index.html'), DRAG_PAGE)
   const electron = await launchElectron({ executablePath: electronBinary, appPath, args: [], windowsFile: join(folder, 'windows.json'), logFile: join(folder, 'electron.log'), app: 'desk', target: 'electron', launch: 1 })
-  t.after(() => electron.close(5000))
-  const page = await electron.newPage({}, 10_000)
+  t.after(() => electron.close(defaultTimeouts.cleanup))
+  const page = await electron.newPage({}, defaultTimeouts.setup)
   await observeUntil(page, { by: 'css', selector: 'body[data-covered="yes"]' }, (observation) => observation.count === 1, 10_000)
   // macOS tells a window it is covered a moment after the cover shows, and only then does Chromium stop its frames.
   await delay(1500)

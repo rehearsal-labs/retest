@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { launchElectron } from '../../src/browser/electron.ts'
 import { slug, targetBrowserLogFile } from '../../src/protocol/run-folder.ts'
 import { parse, s } from '../../src/protocol/schema.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { variantKey } from '../../src/protocol/variant.ts'
 import { budgets, eventsOf, filesHolding, freePort, repositoryRoot, resultOf, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
 
@@ -146,7 +147,7 @@ function binaryVersions(): { electron: string; chrome: string } {
   const printed = execFileSync(electronBinary, ['-p', 'JSON.stringify({ electron: process.versions.electron, chrome: process.versions.chrome })'], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     encoding: 'utf8',
-    timeout: 20_000,
+    timeout: defaultTimeouts.setup,
   })
   const parsed: unknown = JSON.parse(printed)
   assert.ok(typeof parsed === 'object' && parsed !== null && 'electron' in parsed && 'chrome' in parsed)
@@ -208,7 +209,7 @@ test('an Electron app is driven through the same locators, actions and checks as
   const versions = binaryVersions()
   assert.equal(versions.electron, electronVersion)
   const root = await writeProject(t, { 'retest.config.ts': config, 'tests/desktop.retest.ts': tests })
-  const run = await runProject(t, root, { env: environment, timeouts: budgets({ assertion: 3000, test: 20_000 }) })
+  const run = await runProject(t, root, { env: environment, timeouts: budgets({ assertion: 3000 }) })
 
   const outcomes = Object.fromEntries(Object.values(names).map((name) => [name, [testNamed(run, name).status, testNamed(run, name).failure?.class ?? null]]))
   assert.deepEqual(outcomes, {
@@ -478,23 +479,23 @@ test("what the app prints of a typed secret reaches its log as the placeholder, 
       launch: 1,
       redact: (text) => text.replaceAll(typed, '{{password}}'),
     },
-    15_000,
+    defaultTimeouts.setup,
   )
   try {
-    const page = await app.newPage({}, 5000)
-    const filled = await page.execute({ kind: 'fill', locator: { by: 'testId', value: 'task-title' }, value: typed }, 5000)
+    const page = await app.newPage({}, defaultTimeouts.setup)
+    const filled = await page.execute({ kind: 'fill', locator: { by: 'testId', value: 'task-title' }, value: typed }, defaultTimeouts.action)
     assert.equal(filled.ok, true, JSON.stringify(filled))
-    const clicked = await page.execute({ kind: 'click', locator: { by: 'testId', value: 'add-task' } }, 5000)
+    const clicked = await page.execute({ kind: 'click', locator: { by: 'testId', value: 'add-task' } }, defaultTimeouts.action)
     assert.equal(clicked.ok, true, JSON.stringify(clicked))
     let total: string | null = null
     for (let look = 0; look < 30 && total !== '1 task'; look += 1) {
-      const shown = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'task-total' } }, 5000)
+      const shown = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'task-total' } }, defaultTimeouts.action)
       total = shown.ok && shown.kind === 'observe' ? shown.observation.text : null
       if (total !== '1 task') await delay(100)
     }
     assert.equal(total, '1 task', 'the app added the task')
   } finally {
-    await app.close(5000)
+    await app.close(defaultTimeouts.cleanup)
   }
   const log = readFileSync(logFile, 'utf8')
   assert.match(log, /^typed: \{\{password\}\}$/m, 'the app printed what it was given, and the log holds the placeholder')

@@ -8,6 +8,7 @@ import { retestEventSchema } from '../../src/protocol/events.ts'
 import { lastRunFile } from '../../src/protocol/last-run.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
 import { eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
 import {
   assertJudged,
@@ -64,7 +65,7 @@ async function run(name: 'alpha' | 'bravo', baseUrl: string, outputDir: string) 
       files: ['tasks.retest.ts'],
       rootDir: root,
       apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets },
-      timeouts: { collection: 5000, setup: 15000, action: 5000, navigation: 5000, assertion: 5000, test: 20000, cleanup: 5000 },
+      timeouts: ${JSON.stringify(defaultTimeouts)},
       outputDir,
       headless: true,
       signal: new AbortController().signal,

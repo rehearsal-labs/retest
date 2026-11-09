@@ -15,6 +15,7 @@ import { launchBrowser } from '../../src/browser/launch.ts'
 import { launchWebKit } from '../../src/browser/webkit/browser.ts'
 import { ariaRoles } from '../../src/protocol/aria-role.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { browserPath, closeMs, servePages, setupMs } from './browser-harness.ts'
 import { webKitPath } from './engines.ts'
 
@@ -296,7 +297,7 @@ async function serveCases(t: TestContext): Promise<string> {
 async function answersOn(page: OwnedPage, url: string): Promise<Answer[][]> {
   const table: Answer[][] = []
   for (const [index, entry] of allCases.entries()) {
-    const opened = await page.execute({ kind: 'goto', url: `${url}?case=${index}` }, 5000)
+    const opened = await page.execute({ kind: 'goto', url: `${url}?case=${index}` }, defaultTimeouts.navigation)
     assert.ok(opened.ok, `case ${index}: ${JSON.stringify(opened)}`)
     table.push(await Promise.all(lookupsOf(entry).map(async (locator) => answerOf(await page.execute({ kind: 'observe', locator }, 10_000)))))
   }
@@ -319,7 +320,7 @@ async function chromeAndWebKit(t: TestContext, logPrefix = ''): Promise<{ chrome
   const folder = await mkdtemp(join(tmpdir(), 'retest-browser-test-'))
   try {
     const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, `${logPrefix}chrome.log`), headless: true }))
-    const webkit = await opened(t, await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, `${logPrefix}webkit.log`), headless: true }, setupMs * 3))
+    const webkit = await opened(t, await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, `${logPrefix}webkit.log`), headless: true }, setupMs))
     return { chrome, webkit }
   } finally {
     t.after(() => rm(folder, { recursive: true, force: true }))
@@ -380,13 +381,13 @@ if (process.platform !== 'darwin') {
     for (const [index, locator] of exactLookups) {
       const answers: Answer[] = []
       for (const page of [chrome, webkit]) {
-        assert.ok((await page.execute({ kind: 'goto', url: `${url}?case=${index}` }, 5000)).ok)
+        assert.ok((await page.execute({ kind: 'goto', url: `${url}?case=${index}` }, defaultTimeouts.navigation)).ok)
         answers.push(answerOf(await page.execute({ kind: 'observe', locator }, 10_000)))
       }
       assert.deepEqual(answers, [{ count: 1 }, { count: 1 }], describeLocator(locator))
     }
     // Where Chrome counts what WebKit cannot, the refusal stays.
-    assert.ok((await webkit.execute({ kind: 'goto', url: `${url}?case=${options}` }, 5000)).ok)
+    assert.ok((await webkit.execute({ kind: 'goto', url: `${url}?case=${options}` }, defaultTimeouts.navigation)).ok)
     const all = answerOf(await webkit.execute({ kind: 'observe', locator: { by: 'role', role: 'option' } }, 10_000))
     assert.deepEqual('failure' in all ? [all.failure, all.role] : all, ['unsupported', 'option'])
     const named = answerOf(await webkit.execute({ kind: 'observe', locator: { by: 'role', role: 'option', name: 'Lab' } }, 10_000))
@@ -414,7 +415,7 @@ if (process.platform !== 'darwin') {
       { locator: { by: 'role', role: 'cell', name: 'Chosen cell' }, text: 'chosen cell' },
     ]
     for (const page of [chrome, other]) {
-      assert.ok((await page.execute({ kind: 'goto', url: site.url }, 5000)).ok)
+      assert.ok((await page.execute({ kind: 'goto', url: site.url }, defaultTimeouts.navigation)).ok)
       for (const row of supported) {
         const result = await page.execute({ kind: 'observe', locator: row.locator }, 10_000)
         assert.ok(result.ok && result.kind === 'observe', `${page === chrome ? 'Chrome' : 'WebKit'} ${describeLocator(row.locator)}: ${JSON.stringify(result)}`)
@@ -426,7 +427,7 @@ if (process.platform !== 'darwin') {
       assert.ok(missing.ok && missing.kind === 'observe')
       assert.equal(missing.observation.count, 0, 'a supported missing lookup is answered, not refused')
     }
-    assert.ok((await other.execute({ kind: 'goto', url: `${site.url}/native` }, 5000)).ok)
+    assert.ok((await other.execute({ kind: 'goto', url: `${site.url}/native` }, defaultTimeouts.navigation)).ok)
     const refused: readonly LocatorRecipe[] = [
       { by: 'role', role: 'generic' },
       { by: 'role', role: 'option' },

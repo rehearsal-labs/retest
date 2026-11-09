@@ -17,6 +17,7 @@ import { nativePins } from '../../src/native/executors.ts'
 import { listSimulators } from '../../src/native/ios-simulator.ts'
 import { systemTools } from '../../src/native/processes.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { rebuildRecordedResult } from '../../src/store/rebuild-result.ts'
 import { budgets, eventsOf, filesHolding, repositoryRoot, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
@@ -206,11 +207,11 @@ function field(value: unknown, name: string): unknown {
 
 /** The service's own reading of one task for a fresh session of `client`. */
 async function readAs(service: Service, client: string, id: string): Promise<{ done: unknown; revision: unknown }> {
-  const signedIn = await fetch(`${service.url}/api/sign-in`, { method: 'POST', headers: { [CLIENT_HEADER]: client, 'content-type': 'application/json' }, body: JSON.stringify({ account: 'ada', password }), signal: AbortSignal.timeout(5000) })
+  const signedIn = await fetch(`${service.url}/api/sign-in`, { method: 'POST', headers: { [CLIENT_HEADER]: client, 'content-type': 'application/json' }, body: JSON.stringify({ account: 'ada', password }), signal: AbortSignal.timeout(defaultTimeouts.action) })
   assert.equal(signedIn.status, 200)
   const token = field(await signedIn.json(), 'token')
   assert.equal(typeof token, 'string')
-  const read = await fetch(`${service.url}/api/tasks/${id}`, { headers: { authorization: `Bearer ${String(token)}` }, signal: AbortSignal.timeout(5000) })
+  const read = await fetch(`${service.url}/api/tasks/${id}`, { headers: { authorization: `Bearer ${String(token)}` }, signal: AbortSignal.timeout(defaultTimeouts.action) })
   assert.equal(read.status, 200)
   const task = field(await read.json(), 'task')
   return { done: field(task, 'done'), revision: field(task, 'revision') }
@@ -251,7 +252,7 @@ test('the reference flow creates a task on iOS, changes it on the web and verifi
 
 test('with sync from the web to the desk broken, the reference flow fails at the desk state check, naming the task, and goes no further', flowTest, async (t) => {
   const { run, service } = await runFlow(t, ['--broken-sync=web:macos'], 'reference-flow-broken-sync')
-  const health: unknown = await (await fetch(`${service.url}/api/health`, { signal: AbortSignal.timeout(5000) })).json()
+  const health: unknown = await (await fetch(`${service.url}/api/health`, { signal: AbortSignal.timeout(defaultTimeouts.action) })).json()
   assert.deepEqual(field(health, 'brokenSync'), { kind: 'links', links: [{ from: 'web', to: 'macos' }] })
   assert.equal(run.exit.code, 1)
   const result = testNamed(run, flowName)

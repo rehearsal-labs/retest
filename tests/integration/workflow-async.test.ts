@@ -12,6 +12,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 
 const file = 'tests/async.retest.ts'
 const assertFailedAt = failedAtIn(file)
+// The budget of the two checks meant to fail, given on each; every check meant to pass has the budget users get.
 const assertionMs = 1500
 
 const tests = `import { expect, test } from '@rehearsal-labs/retest'
@@ -47,14 +48,14 @@ test('a loading line that never goes away fails at the hidden check', async ({ p
   await page.goto('/workflow/reports?defect=spinner-stays')
   await expect(page.getByTestId('report-row')).toHaveCount(${REPORTS.length})
   await test.step('the loading line goes once the reports are in', async () => {
-    await expect(page.getByTestId('loading')).toBeHidden()
+    await expect(page.getByTestId('loading')).toBeHidden({ timeout: ${assertionMs} })
   })
 })
 
 test('reports that never arrive fail at the list check', async ({ page }) => {
   await page.goto('/workflow/reports?defect=never-answers')
   await test.step('the reports arrive', async () => {
-    await expect(page.getByTestId('report-row')).toHaveCount(${REPORTS.length})
+    await expect(page.getByTestId('report-row')).toHaveCount(${REPORTS.length}, { timeout: ${assertionMs} })
   })
 })
 `
@@ -89,7 +90,7 @@ test('workflow family 10: checks wait for late data, a click waits for its butto
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: assertionMs }), env: { WORKFLOW_APP_URL: app.url } })
+  const run = await runProject(t, root, { timeouts: budgets(), env: { WORKFLOW_APP_URL: app.url } })
   assert.equal(run.exit.code, 1, whyExit(run))
 
   // F10.1: the list check passed only after looking again while the reports were on their way.
@@ -112,7 +113,7 @@ test('workflow family 10: checks wait for late data, a click waits for its butto
   assertFailedAt(run, spinnerStays, {
     step: 'the loading line goes once the reports are in',
     failureClass: 'check_failed',
-    line: lineOf(tests, "toBeHidden()", 'the loading line goes once the reports are in'),
+    line: lineOf(tests, 'toBeHidden({ timeout', 'the loading line goes once the reports are in'),
     message: /^getByTestId\('loading'\) is visible\. Looked \d+ times in 1500 ms\.$/,
   })
   assertLookedForItsBudget(run, spinnerStays)

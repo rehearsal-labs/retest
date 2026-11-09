@@ -19,6 +19,7 @@ import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { sweepOrphanedFirefoxes } from '../../src/browser/firefox/orphans.ts'
 import { firefoxConsoleUnavailable, firefoxScope } from '../../src/diagnostics/firefox-collector.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { awaitPosts, byLabel, byRole, byTestId, closeMs, openApp, scratchFolder, servePages, setupMs } from './browser-harness.ts'
 import { freePort, repositoryRoot } from './cli-harness.ts'
 import { firefoxPath, testFirefoxRoute } from './engines.ts'
@@ -66,7 +67,7 @@ const interrupted: Failure = { class: 'interrupted', message: 'The run was inter
 /** A Firefox launched for one test, closed after it. */
 async function firefox(t: TestContext): Promise<FirefoxBrowser> {
   const folder = await scratchFolder(t)
-  const browser = await launchFirefox({ executablePath: firefoxPath(), logFile: join(folder, 'browser.log'), headless: true, route: testFirefoxRoute() }, setupMs * 3)
+  const browser = await launchFirefox({ executablePath: firefoxPath(), logFile: join(folder, 'browser.log'), headless: true, route: testFirefoxRoute() }, setupMs)
   t.after(() => browser.close(closeMs).catch(() => undefined))
   return browser
 }
@@ -143,7 +144,7 @@ test('a Firefox allows one WebDriver BiDi session, which every page of the brows
   const field = (name: string): unknown => (typeof server === 'object' && server !== null ? Reflect.get(server, name) : undefined)
   const [host, port] = [field('ws_host'), field('ws_port')]
   assert.ok(typeof host === 'string' && typeof port === 'number', 'Firefox wrote the address it listens on')
-  const second = await BidiClient.connect(`ws://${host}:${port}/session`, { timeoutMs: 5000, onDiagnostic: () => {} })
+  const second = await BidiClient.connect(`ws://${host}:${port}/session`, { timeoutMs: defaultTimeouts.setup, onDiagnostic: () => {} })
   t.after(() => second.close())
   const refused = await second.send('session.new', { capabilities: {} }).catch((error: unknown) => error)
   assert.ok(refused instanceof BidiProtocolError, String(refused))
@@ -152,8 +153,8 @@ test('a Firefox allows one WebDriver BiDi session, which every page of the brows
   const first = await browser.newPage({ baseUrl: site.url }, setupMs)
   const other = await browser.newPage({ baseUrl: site.url }, setupMs)
   t.after(() => Promise.all([first.dispose(closeMs), other.dispose(closeMs)]).catch(() => undefined))
-  for (const page of [first, other]) assert.equal((await page.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
-  const cookies = await Promise.all([first.captureState(5000), other.captureState(5000)])
+  for (const page of [first, other]) assert.equal((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
+  const cookies = await Promise.all([first.captureState(defaultTimeouts.setup), other.captureState(defaultTimeouts.setup)])
   assert.deepEqual(cookies.map((state) => state.cookies.map((cookie) => `${cookie.name}=${cookie.value}`)), [['visit=first'], ['visit=first']])
 })
 
@@ -163,10 +164,10 @@ test('several pages of one Firefox each take the text filled into them, and each
   const pages = await Promise.all([1, 2, 3, 4].map(() => browser.newPage({ baseUrl: app.url }, setupMs)))
   t.after(() => Promise.all(pages.map((page) => page.dispose(closeMs))).catch(() => undefined))
   for (let round = 0; round < 3; round += 1) {
-    await Promise.all(pages.map((page) => page.execute({ kind: 'goto', url: '/login' }, 10_000)))
-    const filled = await Promise.all(pages.map((page, index) => page.execute({ kind: 'fill', locator: byTestId('user'), value: `Account ${round}-${index}` }, 5000)))
+    await Promise.all(pages.map((page) => page.execute({ kind: 'goto', url: '/login' }, defaultTimeouts.navigation)))
+    const filled = await Promise.all(pages.map((page, index) => page.execute({ kind: 'fill', locator: byTestId('user'), value: `Account ${round}-${index}` }, defaultTimeouts.action)))
     assert.deepEqual(filled.map((result) => result.ok), [true, true, true, true], JSON.stringify(filled))
-    const values = await Promise.all(pages.map((page) => page.execute({ kind: 'observe', locator: byTestId('user') }, 5000)))
+    const values = await Promise.all(pages.map((page) => page.execute({ kind: 'observe', locator: byTestId('user') }, defaultTimeouts.action)))
     assert.deepEqual(
       values.map((result) => (result.ok && result.kind === 'observe' ? result.observation.value : JSON.stringify(result))),
       pages.map((_, index) => `Account ${round}-${index}`),
@@ -179,15 +180,15 @@ test("a password field is found by its label, and every textbox by its role, tho
   const browser = await firefox(t)
   const page = await browser.newPage({ baseUrl: app.url }, setupMs)
   t.after(() => page.dispose(closeMs).catch(() => undefined))
-  assert.equal((await page.execute({ kind: 'goto', url: '/login' }, 5000)).ok, true)
-  const password = await page.execute({ kind: 'observe', locator: byLabel('Password') }, 5000)
+  assert.equal((await page.execute({ kind: 'goto', url: '/login' }, defaultTimeouts.navigation)).ok, true)
+  const password = await page.execute({ kind: 'observe', locator: byLabel('Password') }, defaultTimeouts.action)
   assert.ok(password.ok && password.kind === 'observe', JSON.stringify(password))
   assert.equal(password.observation.count, 1)
-  const textboxes = await page.execute({ kind: 'observe', locator: byRole('textbox') }, 5000)
+  const textboxes = await page.execute({ kind: 'observe', locator: byRole('textbox') }, defaultTimeouts.action)
   assert.ok(textboxes.ok && textboxes.kind === 'observe', JSON.stringify(textboxes))
   assert.equal(textboxes.observation.count, 2, 'the user name and the password')
-  assert.equal((await page.execute({ kind: 'fill', locator: byLabel('Password'), value: 'typed' }, 5000)).ok, true)
-  const typed = await page.execute({ kind: 'observe', locator: byTestId('password') }, 5000)
+  assert.equal((await page.execute({ kind: 'fill', locator: byLabel('Password'), value: 'typed' }, defaultTimeouts.action)).ok, true)
+  const typed = await page.execute({ kind: 'observe', locator: byTestId('password') }, defaultTimeouts.action)
   assert.ok(typed.ok && typed.kind === 'observe')
   assert.equal(typed.observation.value, 'typed')
 })
@@ -196,7 +197,7 @@ test('a Firefox killed while an action waits for its element fails as a lost ses
   const waiting = await servePages(t, { '/': '<!doctype html><button data-testid="far" disabled>Far</button>' })
   const first = await firefox(t)
   const page = await first.newPage({ baseUrl: waiting.url }, setupMs)
-  assert.equal((await page.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  assert.equal((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
   const waitingForElement = Promise.withResolvers<void>()
   const enter = IsolatedWorld.prototype.enter
   const looked = t.mock.method(IsolatedWorld.prototype, 'enter', async function (this: IsolatedWorld, ...args: Parameters<IsolatedWorld['enter']>) {
@@ -216,7 +217,7 @@ test('a Firefox killed while an action waits for its element fails as a lost ses
   const site = await servePages(t, { '/': FREEZE_ON_PRESS })
   const browser = await firefox(t)
   const frozen = await browser.newPage({ baseUrl: site.url }, setupMs)
-  assert.equal((await frozen.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  assert.equal((await frozen.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
   const pressing = frozen.dispatch({ kind: 'click', locator: byTestId('freeze') }, 10_000)
   await awaitPosts(site, '/pressed', 1)
   await browser.crash(closeMs)
@@ -237,7 +238,7 @@ test('a Firefox click stopped while its press is busy keeps the stop and lets th
   const browser = await firefox(t)
   const page = await browser.newPage({ baseUrl: site.url }, setupMs)
   t.after(() => page.dispose(closeMs).catch(() => undefined))
-  assert.equal((await page.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  assert.equal((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
   const stop = new AbortController()
   const clicking = page.dispatch({ kind: 'click', locator: byTestId('hold') }, 10_000, stop.signal)
   await awaitPosts(site, '/pressed', 1)
@@ -250,7 +251,7 @@ test('a Firefox click stopped while its press is busy keeps the stop and lets th
   assert.equal(result.failure.details?.['inputSent'], true)
   assert.match(result.failure.message, /Input it sent is not taken back, so it may have taken effect\.$/)
   await delay(2000)
-  const settled = await page.dispatch({ kind: 'observe', locator: byTestId('status') }, 5000)
+  const settled = await page.dispatch({ kind: 'observe', locator: byTestId('status') }, defaultTimeouts.action)
   assert.ok(settled.result.ok && settled.result.kind === 'observe')
   assert.equal(settled.input, 'not_sent')
   t.diagnostic(`the button heard: ${settled.result.observation.text ?? ''}`)
@@ -270,10 +271,10 @@ test("the collector hears the page's requests and a failed one, hears no console
   const page = await browser.newPage({ baseUrl: site.url }, setupMs)
   assert.ok(page instanceof FirefoxPage)
   const sink = recordingSink()
-  const collection = await page.collectDiagnostics(sink, 5000)
+  const collection = await page.collectDiagnostics(sink, defaultTimeouts.setup)
   assert.deepEqual(collection.scope, firefoxScope)
   assert.deepEqual(collection.unavailable, { console: firefoxConsoleUnavailable })
-  assert.equal((await page.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  assert.equal((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
   const has = (predicate: (observation: Observation) => boolean): boolean => sink.observations.some(predicate)
   await until(() => has((o) => o.kind === 'failed') && has((o) => o.kind === 'response' && o.status === 404), 5000, 'the page was heard')
   await delay(200)

@@ -2,6 +2,7 @@ import type { CapturedFrame, StartCapture } from '../../src/media/capture.ts'
 import assert from 'node:assert/strict'
 import { CaptureSuspension } from '../../src/media/capture.ts'
 import { defaultAppPixelRules, PixelCapturePolicy } from '../../src/media/policy.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { PolicedSource } from '../../src/runner/policed-source.ts'
 
 /** A completed foreign privacy stretch must not suppress a fresh screenshot indefinitely. */
@@ -20,9 +21,9 @@ export async function assertFreshNativeScreenshotPolicy(): Promise<void> {
       start: async (capture) => { captured = capture; return { ok: true, mode: 'screenshot-loop' } },
       stop: async () => ({ mode: 'screenshot-loop', requestedFps: 10, delivered: 0, superseded: 0, dropped: 0, problems: [] }),
     }),
-    judge: policy, suspension: new CaptureSuspension(), clock: () => now, stopTimeoutMs: 1000,
+    judge: policy, suspension: new CaptureSuspension(), clock: () => now, stopTimeoutMs: defaultTimeouts.cleanup,
   })
-  assert.deepEqual(await source.start({ fps: 10, clock: () => now, deliver: frame => delivered.push(frame), gap: gap => gaps.push(gap), ended: reason => assert.fail(reason), timeoutMs: 1000 }), { ok: true, mode: 'screenshot-loop' })
+  assert.deepEqual(await source.start({ fps: 10, clock: () => now, deliver: frame => delivered.push(frame), gap: gap => gaps.push(gap), ended: reason => assert.fail(reason), timeoutMs: defaultTimeouts.setup }), { ok: true, mode: 'screenshot-loop' })
   assert.ok(captured)
   const frame = (earliestUs?: number): CapturedFrame => ({ identity, timestampUs: now, ...(earliestUs === undefined ? {} : { earliestUs }), format: 'png', bytes: new Uint8Array([1]) })
   try {
@@ -47,6 +48,6 @@ export async function assertFreshNativeScreenshotPolicy(): Promise<void> {
     assert.equal(gaps.length, 3)
     assert.ok(gaps.every(gap => gap.reason === 'pixels_withheld'))
   } finally {
-    assert.deepEqual((await source.stop(1000)).problems, [])
+    assert.deepEqual((await source.stop(defaultTimeouts.cleanup)).problems, [])
   }
 }

@@ -271,7 +271,7 @@ test('an element that appears while the action waits is used', async (t) => {
       }, 300)
     </script>`,
   )
-  assertOk(await click(page, 'late', 3000))
+  assertOk(await click(page, 'late', defaultTimeouts.action))
   await observeUntil(page, 'status', (seen) => seen.text === 'clicked')
 })
 
@@ -762,7 +762,7 @@ test('a browser lost between the key down and the key up leaves the outcome unkn
   if (browser === undefined) return
   const page = await openPage(t, browser, app.url)
   assertOk(await goto(page, '/actions'))
-  const pressing = press(page, 'query', 'Enter', 5000)
+  const pressing = press(page, 'query', 'Enter', defaultTimeouts.action)
   await releaseHeld.promise
   await crashBrowser(browser)
   const failure = failureOf(await pressing)
@@ -837,7 +837,7 @@ test('a list chooses exactly those options of a select multiple and clears the o
 test('an option that arrives late is waited for, and one that never does fails as not found, naming it', async (t) => {
   const { page } = await choicesPage(t)
   assertOk(await click(page, 'add-peru'))
-  const { value: late, ms } = await timed(select(page, 'country', 'Peru', 3000))
+  const { value: late, ms } = await timed(select(page, 'country', 'Peru', defaultTimeouts.action))
   assertOk(late)
   assert.ok(ms >= 150, `the option arrived about 300 ms after the click, and the select waited ${ms} ms`)
   assert.equal((await observe(page, 'country-shown')).text, 'pe')
@@ -937,7 +937,7 @@ test('a control that takes its click and stays as it was fails after one click, 
   })
   assert.ok(ms >= 450, `the state was read until the time ran out, ${ms} ms`)
   await observeUntil(page, 'clicks-heard', (seen) => seen.text === 'locked=1')
-  const end = performance.now() + 2000
+  const end = performance.now() + defaultTimeouts.assertion
   while (app.toggles() < 1 && performance.now() < end) await delay(10)
   assert.equal(app.toggles(), 1, 'the server heard one click')
 })
@@ -997,7 +997,7 @@ test('the wheel turned on the terms scrolls them to their end, which enables Acc
   const accept = (await lastLook(page, 'accept-state', (seen) => seen.text === 'enabled')).text
   // Read once Accept has settled, so an engine that scrolls the terms less is held to their having moved at all.
   const moved = Number((await observe(page, 'terms-scrolled')).text) > 0
-  const clicked = await click(page, 'accept', 2000)
+  const clicked = await click(page, 'accept', defaultTimeouts.action)
   engineCase.assertOutcome(
     t,
     { scrolled, moved, accept, clicked },
@@ -1060,7 +1060,7 @@ test('a scroll with no distance is usage, and sends nothing', async (t) => {
 // comes, not on a timer, and a look at a page that does not change answers when its wait runs out.
 test('an observe with after answers on the next change, or after waitMs when nothing changes', async (t) => {
   const { page } = await taskPage(t, { mode: 'delayed', delayMs: 600 })
-  const first = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' } }, 2000)
+  const first = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' } }, defaultTimeouts.action)
   assert.ok(first.ok && first.kind === 'observe' && first.changes !== undefined, JSON.stringify(first))
   const quiet = await timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' }, after: { changes: first.changes, waitMs: 300 } }, 2000))
   assert.ok(quiet.value.ok && quiet.value.kind === 'observe', JSON.stringify(quiet.value))
@@ -1071,7 +1071,7 @@ test('an observe with after answers on the next change, or after waitMs when not
   assertOk(await fill(page, 'task-title', 'Release checklist'))
   assertOk(await click(page, 'save-task'))
   // The click showed "Saving…" at once; the server's answer, 600 ms later, is the change the next look waits for.
-  const saving = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' } }, 2000)
+  const saving = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' } }, defaultTimeouts.action)
   assert.ok(saving.ok && saving.kind === 'observe' && saving.changes !== undefined, JSON.stringify(saving))
   assert.ok(saving.changes > first.changes, 'the click changed the document')
   const saved = await timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'saved-task' }, after: { changes: saving.changes, waitMs: 3000 } }, 5000))

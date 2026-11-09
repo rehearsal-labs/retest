@@ -54,14 +54,14 @@ function filesOf(page: OwnedPage): FilesCapability {
   return files
 }
 
-function give(page: OwnedPage, locator: LocatorRecipe, paths: readonly string[], timeoutMs = 2000): Promise<CommandResult> {
+function give(page: OwnedPage, locator: LocatorRecipe, paths: readonly string[], timeoutMs: number = defaultTimeouts.action): Promise<CommandResult> {
   const files: InputFileRecord[] = paths.map((path) => ({ path, folder: '/' }))
   return page.execute({ kind: 'setInputFiles', locator, files, paths, mimeTypes: paths.map(() => null) }, timeoutMs)
 }
 
 function giveChooser(page: OwnedPage, chooser: string, paths: readonly string[]): Promise<CommandResult> {
   const files: InputFileRecord[] = paths.map((path) => ({ path, folder: '/' }))
-  return page.execute({ kind: 'setChooserFiles', chooser, files, paths, mimeTypes: paths.map(() => null) }, 2000)
+  return page.execute({ kind: 'setChooserFiles', chooser, files, paths, mimeTypes: paths.map(() => null) }, defaultTimeouts.action)
 }
 
 async function writeReport(t: TestContext, name = 'report.pdf', bytes: Buffer = report): Promise<string> {
@@ -137,7 +137,7 @@ test('a file given by content is written for the input, typed by its name, sent,
   const staged = files.stage([{ name: 'notes.txt', mimeType: 'text/plain', base64: Buffer.from('hello').toString('base64') }], 'setInputFiles')
   assert.ok(staged.ok, JSON.stringify(staged))
   const command: ResolvedInputFiles = { kind: 'setInputFiles', locator: byLabel('Notes'), files: [{ name: 'notes.txt', mimeType: 'text/plain', base64: '' }], paths: staged.paths, mimeTypes: staged.mimeTypes }
-  const result = await page.execute(command, 2000)
+  const result = await page.execute(command, defaultTimeouts.action)
   assert.ok(result.ok && result.kind === 'setInputFiles', JSON.stringify(result))
   assert.deepEqual(result.files, [{ name: 'notes.txt', size: 5, type: 'text/plain' }])
   await send(page, 1)
@@ -201,7 +201,7 @@ test('an element that is not a file input fails at once by name, and a label sta
   const button = failureOf(await give(page, byRole('button', 'Send'), [path]))
   assert.equal(button.class, 'not_actionable')
   assert.equal(button.message, `Could not set the files of getByRole('button', { name: 'Send' }): it is <button data-testid="send">, and setInputFiles() gives files to an <input type="file">. For a button that opens a file picker, use page.fileChooser().`)
-  assertOk(await page.execute({ kind: 'setInputFiles', locator: { by: 'text', text: 'Attachment' }, files: [], paths: [path], mimeTypes: [null] }, 2000))
+  assertOk(await page.execute({ kind: 'setInputFiles', locator: { by: 'text', text: 'Attachment' }, files: [], paths: [path], mimeTypes: [null] }, defaultTimeouts.action))
   assert.match(await heard(page), /attachment change: report\.pdf 24/)
 })
 
@@ -209,7 +209,7 @@ test('an armed picker is caught, never shown, and its input gets the files, whic
   const { page, received } = await filesPage(t)
   const arm = filesOf(page).armFileChooser()
   assertOk(await click(page, 'upload-button'))
-  const caught = await within(arm.opened, 2000, 'the page opened no file picker')
+  const caught = await within(arm.opened, defaultTimeouts.action, 'the page opened no file picker')
   assert.equal(caught.multiple, false)
   const given = await giveChooser(page, caught.id, [await writeReport(t)])
   assert.ok(given.ok && given.kind === 'setChooserFiles', JSON.stringify(given))
@@ -223,14 +223,14 @@ test('a picker for several files says so, and takes several', { skip }, async (t
   const { page } = await filesPage(t)
   const arm = filesOf(page).armFileChooser()
   assertOk(await click(page, 'add-photos'))
-  const caught = await within(arm.opened, 2000, 'the page opened no file picker')
+  const caught = await within(arm.opened, defaultTimeouts.action, 'the page opened no file picker')
   assert.equal(caught.multiple, true)
   const given = await giveChooser(page, caught.id, [await writeReport(t, 'a.png', Buffer.from('a')), await writeReport(t, 'b.png', Buffer.from('bb'))])
   assert.ok(given.ok && given.kind === 'setChooserFiles')
   assert.deepEqual(given.files?.map((file) => file.name), ['a.png', 'b.png'])
   const one = filesOf(page).armFileChooser()
   assertOk(await click(page, 'upload-button'))
-  const single = await within(one.opened, 2000, 'the page opened no second file picker')
+  const single = await within(one.opened, defaultTimeouts.action, 'the page opened no second file picker')
   assert.equal(failureOf(await giveChooser(page, single.id, [await writeReport(t, 'c.png'), await writeReport(t, 'd.png')])).message, "Could not give the file picker files: it takes one file, and it was given 2. Pass one file, or add the multiple attribute to the input.")
 })
 
@@ -245,7 +245,7 @@ test('a picker nobody waited for fails the click that opened it, is never shown,
   assert.equal(await heard(page), '', 'the page heard no cancel')
   const arm = filesOf(page).armFileChooser()
   assertOk(await click(page, 'upload-button'))
-  const caught = await within(arm.opened, 2000, 'the page opened no second file picker')
+  const caught = await within(arm.opened, defaultTimeouts.action, 'the page opened no second file picker')
   assertOk(await giveChooser(page, caught.id, [await writeReport(t)]))
   assert.match(await heard(page), /^hidden-upload input: report\.pdf 24\nhidden-upload change: report\.pdf 24\n$/)
 })
@@ -281,7 +281,7 @@ test('an input whose page clears it once it heard the change still took the file
   assert.deepEqual([given.files, given.kept], [[{ name: 'report.pdf', size: report.length, type: 'application/pdf' }], []])
   const arm = filesOf(page).armFileChooser()
   assertOk(await click(page, 'clears-button'))
-  const caught = await within(arm.opened, 2000, 'the page opened no file picker')
+  const caught = await within(arm.opened, defaultTimeouts.action, 'the page opened no file picker')
   const chosen = await giveChooser(page, caught.id, [path])
   assert.ok(chosen.ok && chosen.kind === 'setChooserFiles', JSON.stringify(chosen))
   assert.deepEqual([chosen.files, chosen.kept], [[{ name: 'report.pdf', size: report.length, type: 'application/pdf' }], []])
@@ -292,7 +292,7 @@ test("a caught picker of a frame inside the page is read in Retest's world of th
   assertOk(await goto(page, '/files/framed'))
   const arm = filesOf(page).armFileChooser()
   assertOk(await click(page, 'framed-upload'))
-  const caught = await within(arm.opened, 2000, 'the frame opened no file picker')
+  const caught = await within(arm.opened, defaultTimeouts.action, 'the frame opened no file picker')
   const given = await giveChooser(page, caught.id, [await writeReport(t)])
   assert.ok(given.ok && given.kind === 'setChooserFiles', JSON.stringify(given))
   assert.deepEqual(given.files, [{ name: 'report.pdf', size: report.length, type: 'application/pdf' }])
@@ -303,7 +303,7 @@ test('a picker caught before its page moved on gives no files to the document th
   const { page } = await filesPage(t)
   const arm = filesOf(page).armFileChooser()
   assertOk(await click(page, 'upload-button'))
-  const caught = await within(arm.opened, 2000, 'the page opened no file picker')
+  const caught = await within(arm.opened, defaultTimeouts.action, 'the page opened no file picker')
   assertOk(await goto(page, '/files'))
   assert.deepEqual(failureOf(await giveChooser(page, caught.id, [await writeReport(t)])), { class: 'not_actionable', message: 'Could not give the file picker files: the input it opened for is gone from the page, so Retest gave it nothing.', details: { inputSent: false } })
   assert.equal(await heard(page), '')
@@ -323,10 +323,10 @@ test('a link download is saved under its suggested name with the bytes the serve
   const events: EventBody[] = []
   const files = attemptFiles(page, folder, events, folder)
   const signal = new AbortController().signal
-  const waiting = files.download('web', { timeoutMs: 2000, signal })
+  const waiting = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
   assertOk(await click(page, 'export'))
   assert.deepEqual(await waiting, { ok: true, kind: 'download', download: 'download-1', suggestedFilename: 'tasks.csv' })
-  assert.deepEqual(await files.saved('download-1', { timeoutMs: 5000, signal }), { ok: true, kind: 'saved', path: join(folder, 'tasks.csv'), size: Buffer.byteLength(TASKS_CSV) })
+  assert.deepEqual(await files.saved('download-1', { timeoutMs: defaultTimeouts.action, signal }), { ok: true, kind: 'saved', path: join(folder, 'tasks.csv'), size: Buffer.byteLength(TASKS_CSV) })
   assert.equal(readFileSync(join(folder, 'tasks.csv'), 'utf8'), TASKS_CSV)
   assert.deepEqual(readdirSync(folder), ['tasks.csv'])
   const [event] = events
@@ -352,12 +352,12 @@ test('a download a script starts from a blob is saved too, under a name a file c
   const files = attemptFiles(page, folder, events, folder)
   const signal = new AbortController().signal
   for (const expected of ['tasks-report.csv', 'tasks-report-2.csv']) {
-    const waiting = files.download('web', { timeoutMs: 2000, signal })
+    const waiting = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
     assertOk(await click(page, 'export-script'))
     const began = await waiting
     assert.ok(began.ok && began.kind === 'download')
     assert.equal(began.suggestedFilename, 'tasks report.csv')
-    const saved = await files.saved(began.download, { timeoutMs: 5000, signal })
+    const saved = await files.saved(began.download, { timeoutMs: defaultTimeouts.action, signal })
     assert.ok(saved.ok && saved.kind === 'saved', JSON.stringify(saved))
     assert.equal(saved.path, join(folder, expected))
     assert.equal(readFileSync(saved.path, 'utf8'), TASKS_CSV)
@@ -372,7 +372,7 @@ test("a download the server breaks off fails in WebKit's words, saying how much 
   const events: EventBody[] = []
   const files = attemptFiles(page, folder, events, folder)
   const signal = new AbortController().signal
-  const waiting = files.download('web', { timeoutMs: 2000, signal })
+  const waiting = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
   assertOk(await click(page, 'export-broken'))
   const began = await waiting
   assert.ok(began.ok && began.kind === 'download')
@@ -402,7 +402,7 @@ test('a download still on its way says how much arrived when its wait runs out, 
   const events: EventBody[] = []
   const files = attemptFiles(page, folder, events, folder)
   const signal = new AbortController().signal
-  const waiting = files.download('web', { timeoutMs: 2000, signal })
+  const waiting = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
   assertOk(await click(page, 'slow'))
   const began = await waiting
   assert.ok(began.ok && began.kind === 'download', JSON.stringify(began))
@@ -415,7 +415,7 @@ test('a download still on its way says how much arrived when its wait runs out, 
   const [unfinished] = await downloadEvents(events, 1)
   assert.deepEqual([unfinished?.state, unfinished?.suggestedFilename, unfinished?.state === 'unfinished' ? [unfinished.receivedBytes, unfinished.totalBytes] : []], ['unfinished', 'slow.csv', [bytes, 0]])
   // The page's end stops the download, and what had arrived of it goes with it.
-  await page.dispose(2000)
+  await page.dispose(defaultTimeouts.cleanup)
   assert.deepEqual(existsSync(folder) ? readdirSync(folder) : [], [])
 })
 
@@ -433,10 +433,10 @@ test("a download a target=_blank link starts in a new tab is the page's, saved, 
   const events: EventBody[] = []
   const files = attemptFiles(page, folder, events, folder)
   const signal = new AbortController().signal
-  const waiting = files.download('web', { timeoutMs: 3000, signal })
+  const waiting = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
   assertOk(await click(page, 'export-new-tab'))
   assert.deepEqual(await waiting, { ok: true, kind: 'download', download: 'download-1', suggestedFilename: 'tasks.csv' })
-  assert.deepEqual(await files.saved('download-1', { timeoutMs: 5000, signal }), { ok: true, kind: 'saved', path: join(folder, 'tasks.csv'), size: Buffer.byteLength(TASKS_CSV) })
+  assert.deepEqual(await files.saved('download-1', { timeoutMs: defaultTimeouts.action, signal }), { ok: true, kind: 'saved', path: join(folder, 'tasks.csv'), size: Buffer.byteLength(TASKS_CSV) })
   const [event] = await downloadEvents(events, 1)
   assert.deepEqual([event?.state, event?.startedIn, event?.awaited], ['completed', undefined, true])
 })
@@ -447,18 +447,18 @@ test("a download a frame of another site starts is the page's own, and one from 
   const events: EventBody[] = []
   const files = attemptFiles(page, folder, events, folder)
   const signal = new AbortController().signal
-  const framed = files.download('web', { timeoutMs: 3000, signal })
+  const framed = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
   assertOk(await click(page, 'export-frame'))
   const fromFrame = await framed
   assert.ok(fromFrame.ok && fromFrame.kind === 'download', JSON.stringify(fromFrame))
-  assert.ok((await files.saved(fromFrame.download, { timeoutMs: 5000, signal })).ok)
+  assert.ok((await files.saved(fromFrame.download, { timeoutMs: defaultTimeouts.action, signal })).ok)
   const [frameEvent] = await downloadEvents(events, 1)
   assert.deepEqual([frameEvent?.state, frameEvent?.startedIn, frameEvent?.awaited, frameEvent?.url], ['completed', undefined, true, `${new URL(page.url ?? '').origin.replace('127.0.0.1', 'localhost')}/files/tasks.csv`])
-  const opened = files.download('web', { timeoutMs: 3000, signal })
+  const opened = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
   assertOk(await click(page, 'export-opened'))
   const fromOpened = await opened
   assert.ok(fromOpened.ok && fromOpened.kind === 'download', JSON.stringify(fromOpened))
-  assert.ok((await files.saved(fromOpened.download, { timeoutMs: 5000, signal })).ok)
+  assert.ok((await files.saved(fromOpened.download, { timeoutMs: defaultTimeouts.action, signal })).ok)
   const [, openedEvent] = await downloadEvents(events, 2)
   assert.deepEqual([openedEvent?.state, openedEvent?.startedIn, openedEvent?.awaited, openedEvent?.path], ['completed', 'popup', true, 'artifacts/attempt1/web/downloads/tasks-2.csv'])
   assert.deepEqual(readdirSync(folder).sort(), ['tasks-2.csv', 'tasks.csv'])
@@ -472,8 +472,8 @@ test('a download that holds the value of a secret is removed, recorded as withhe
   const events: EventBody[] = []
   const files = attemptFiles(page, folder, events, folder, redactor)
   const signal = new AbortController().signal
-  assertOk(await page.execute({ kind: 'fill', locator: byTestId('key-value'), value: 'key=tok-5f8a2c91e4' }, 2000))
-  const waiting = files.download('web', { timeoutMs: 3000, signal })
+  assertOk(await page.execute({ kind: 'fill', locator: byTestId('key-value'), value: 'key=tok-5f8a2c91e4' }, defaultTimeouts.action))
+  const waiting = files.download('web', { timeoutMs: defaultTimeouts.action, signal })
   assertOk(await click(page, 'download-key'))
   const began = await waiting
   assert.ok(began.ok && began.kind === 'download', JSON.stringify(began))
@@ -548,7 +548,7 @@ test('a run on WebKit uploads, catches a picker and keeps downloads, and its eve
     'fixtures/a.png': 'first picture',
     'fixtures/b.png': 'second',
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 2000, action: defaultTimeouts.action }) })
+  const run = await runProject(t, root, { timeouts: budgets({ action: defaultTimeouts.action }) })
   assert.equal(run.exit.code, 1, run.stderr)
 
   const flow = testNamed(run, 'uploads by path, by content and through a picker, then downloads a CSV')

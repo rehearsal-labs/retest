@@ -18,6 +18,7 @@ import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { buildReport } from '../../src/reporters/html/build-report.ts'
 import { parse, s } from '../../src/protocol/schema.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { parseArtifact } from '../../src/diagnostics/artifact.ts'
 import { AttemptDiagnostics } from '../../src/diagnostics/attempt.ts'
 import { defaultDiagnosticsPolicy } from '../../src/diagnostics/policy.ts'
@@ -169,7 +170,7 @@ test('a real run writes a report that Chrome shows from its folder: the failing 
   })
   const folder = await scratchFolder(t)
   const output = join(folder, 'run')
-  const retest = await RetestProcess.start(t, { args: ['run', '--reporter', 'html', '--output', output, '--timeouts', budgets({ test: 30_000 })], cwd: root, tmp: join(folder, 'tmp'), env: { RETEST_REPORT_NOTE: note } })
+  const retest = await RetestProcess.start(t, { args: ['run', '--reporter', 'html', '--output', output, '--timeouts', budgets()], cwd: root, tmp: join(folder, 'tmp'), env: { RETEST_REPORT_NOTE: note } })
   const run = await finishRun({ retest, output })
   assert.equal(run.exit.code, 1, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stdout, /Report {2}\S+report\.html\n\n$/)
@@ -209,7 +210,7 @@ test('a real run writes a report that Chrome shows from its folder: the failing 
   const page = await openPage(t, browser)
   const watched = collector('report')
   await watched.diagnostics.start([{ app: 'page', page, session: session('report', browser) }], setupMs)
-  assertOk(await goto(page, `${served.url}/report.html`, 10_000))
+  assertOk(await goto(page, `${served.url}/report.html`, defaultTimeouts.navigation))
   await visibleOnce(page, byRole('heading', 'Failures'), 'the failures heading')
   await visibleOnce(page, byText('Check failed toHaveText'), 'the failing check')
   await visibleOnce(page, byText('"Another task"'), 'the expected value')
@@ -244,7 +245,7 @@ test('a real run writes a report that Chrome shows from its folder: the failing 
 
   // At a phone's width the failing check and its values are still there to read.
   const narrow = await openPage(t, browser, undefined, { emulation: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, touch: false, isMobile: false } })
-  assertOk(await goto(narrow, `${served.url}/report.html`, 10_000))
+  assertOk(await goto(narrow, `${served.url}/report.html`, defaultTimeouts.navigation))
   await visibleOnce(narrow, byText('Check failed toHaveText'), 'the failing check at a narrow width')
   await visibleOnce(narrow, byText('"Another task"'), 'the expected value at a narrow width')
   await visibleOnce(narrow, byText('"Release checklist"'), 'the received value at a narrow width')
@@ -305,7 +306,7 @@ async function reportBrowser(t: TestContext) {
   t.diagnostic(`report file browser ${browser.product} ${browser.version}, pid and process group ${browser.pid}`)
   let opened: OwnedPage | undefined
   t.after(async () => {
-    try { await opened?.dispose(2000) } finally { await browser.close(5000) }
+    try { await opened?.dispose(defaultTimeouts.cleanup) } finally { await browser.close(defaultTimeouts.cleanup) }
     assert.equal(groupExists(browser.pid), false)
   })
   const page = await browser.newPage({}, setupMs)
@@ -372,7 +373,7 @@ test('recorded task', async ({ page }) => {
   })
   const scratch = await scratchFolder(t)
   const output = join(scratch, 'run')
-  const retest = await RetestProcess.start(t, { args: ['run', '--reporter', 'html', '--output', output, '--timeouts', budgets({ test: 30_000, cleanup: 15_000 })], cwd: root, tmp: join(scratch, 'tmp'), env: { RETEST_MEDIA_BINARY: process.env['RETEST_TEST_MEDIA_BINARY'] ?? join(repositoryRoot, 'media/target/release/retest-media'), RETEST_FFMPEG: process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg' } })
+  const retest = await RetestProcess.start(t, { args: ['run', '--reporter', 'html', '--output', output, '--timeouts', budgets({ cleanup: 15_000 })], cwd: root, tmp: join(scratch, 'tmp'), env: { RETEST_MEDIA_BINARY: process.env['RETEST_TEST_MEDIA_BINARY'] ?? join(repositoryRoot, 'media/target/release/retest-media'), RETEST_FFMPEG: process.env['RETEST_TEST_FFMPEG'] ?? '/opt/homebrew/bin/ffmpeg' } })
   const run = await finishRun({ retest, output })
   assert.equal(run.exit.code, 1, `${run.stdout}\n${run.stderr}`)
   const result = run.result

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { PROXY_HEADER, startProxy } from '../../fixtures/proxy/server.ts'
 import { MOCKED_IMAGE } from '../../fixtures/task-app/routes-page.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, byTestId, click, goto, launch, observe, observeUntil, openApp, openPage, sharedBrowser } from './browser-harness.ts'
 import { engineAbsence } from './engines.ts'
 
@@ -30,12 +31,12 @@ async function routesPage(t: TestContext, options: { proxy?: string } = {}): Pro
 
 async function addRoute(page: OwnedPage, pattern: RoutePattern, answer: RouteAnswerRecord): Promise<void> {
   assert.ok(page.addRoute !== undefined, 'a Chrome page answers requests with routes')
-  assert.deepEqual(await page.addRoute(pattern, answer, 2000), { ok: true })
+  assert.deepEqual(await page.addRoute(pattern, answer, defaultTimeouts.action), { ok: true })
 }
 
 async function removeRoute(page: OwnedPage, pattern: RoutePattern): Promise<number> {
   assert.ok(page.removeRoute !== undefined)
-  const removed = await page.removeRoute(pattern, 2000)
+  const removed = await page.removeRoute(pattern, defaultTimeouts.action)
   assert.ok(removed.ok, JSON.stringify(removed))
   return removed.removed
 }
@@ -147,7 +148,7 @@ test("the page's diagnostics name the route that answered or refused a request, 
   const observations: Observation[] = []
   const sink: DiagnosticSink = { observe: (observation) => observations.push(observation), unreadable: () => undefined, lost: () => undefined }
   assert.ok(page.collectDiagnostics !== undefined)
-  const collection = await page.collectDiagnostics(sink, 2000)
+  const collection = await page.collectDiagnostics(sink, defaultTimeouts.setup)
   t.after(() => collection.stop())
   await addRoute(page, '**/api/tasks', stubbed)
   await addRoute(page, '**/api/slow', { abort: 'connectionrefused' })
@@ -218,7 +219,7 @@ test('a redirect a route answers is marked on its own hop, and the page that fol
   const observations: Observation[] = []
   const sink: DiagnosticSink = { observe: (observation) => observations.push(observation), unreadable: () => undefined, lost: () => undefined }
   assert.ok(page.collectDiagnostics !== undefined)
-  const collection = await page.collectDiagnostics(sink, 2000)
+  const collection = await page.collectDiagnostics(sink, defaultTimeouts.setup)
   t.after(() => collection.stop())
   await addRoute(page, '**/api/jump', { status: 302, headers: { location: '/routes/api/tasks' } })
   assertOk(await goto(page, '/routes'))

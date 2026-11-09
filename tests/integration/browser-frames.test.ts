@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import {
   assertOk,
   byLabel,
@@ -93,7 +94,7 @@ test('the payment frame runs in a process of its own, as a target of its own, an
 test('a look by role and label finds inside a frame of another site that is out of view, without scrolling to it', async (t) => {
   const { page } = await checkoutPage(t)
   const frameTop = async (): Promise<{ top: number | undefined; height: number }> => {
-    const look = await page.execute({ kind: 'observeLayout', locator: byTestId('payment-frame') }, 2000)
+    const look = await page.execute({ kind: 'observeLayout', locator: byTestId('payment-frame') }, defaultTimeouts.action)
     assert.ok(look.ok && look.kind === 'observeLayout', JSON.stringify(look))
     return { top: look.observation.targets[0]?.element?.box.top, height: look.observation.viewport.height }
   }
@@ -108,10 +109,10 @@ test('fill, check, select, click, hover, scroll and press reach a frame of the s
   const { page } = await checkoutPage(t)
   assertOk(await fill(page, inFrame(order, byLabel('Name')), 'Ada'))
   assertOk(await check(page, inFrame(order, byLabel('Express'))))
-  assertOk(await select(page, inFrame(order, byLabel('Size')), 'Large', 5000))
+  assertOk(await select(page, inFrame(order, byLabel('Size')), 'Large', defaultTimeouts.action))
   assertOk(await click(page, inFrame(order, byRole('button', 'Save order'))))
   await observeUntil(page, inFrame(order, byTestId('order-status')), (seen) => seen.text === 'Saved Large order for Ada, express true')
-  assertOk(await page.execute({ kind: 'hover', locator: inFrame(order, byTestId('hover')) }, 2000))
+  assertOk(await page.execute({ kind: 'hover', locator: inFrame(order, byTestId('hover')) }, defaultTimeouts.action))
   await observeUntil(page, inFrame(order, byTestId('hover-status')), (seen) => seen.text === 'Hovered')
   assertOk(await scroll(page, inFrame(order, byTestId('list')), { y: 100 }))
   await observeUntil(page, inFrame(order, byTestId('scroll-status')), (seen) => seen.text === 'Scrolled')
@@ -125,7 +126,7 @@ test('on a touch screen, a tap and a check reach a frame of the same origin and 
   const touch = { emulation: { viewport: { width: 800, height: 600 }, deviceScaleFactor: 1, touch: true, isMobile: false } }
   const page = await openPage(t, browser(), app.url, touch)
   assertOk(await goto(page, `/frames?payment=${encodeURIComponent(other.url.replace('127.0.0.1', 'localhost'))}`))
-  assertOk(await page.execute({ kind: 'tap', locator: inFrame(order, byRole('button', 'Save order')) }, 2000))
+  assertOk(await page.execute({ kind: 'tap', locator: inFrame(order, byRole('button', 'Save order')) }, defaultTimeouts.action))
   await observeUntil(page, inFrame(order, byTestId('order-status')), (seen) => seen.text === 'Saved Small order for , express false')
   const checked = await check(page, inFrame(payment, byLabel('I agree to the terms')))
   assert.ok(checked.ok && checked.kind === 'check', JSON.stringify(checked))
@@ -145,9 +146,9 @@ test('a frame of another site takes fill, select, check, hover, scroll and press
   const stop = page.onNavigation((navigation) => navigations.push(navigation))
   t.after(stop)
   assertOk(await fill(page, inFrame(payment, byLabel('Card number')), '4242 4242 4242 4242'))
-  assertOk(await select(page, inFrame(payment, byLabel('Plan')), 'Yearly', 5000))
+  assertOk(await select(page, inFrame(payment, byLabel('Plan')), 'Yearly', defaultTimeouts.action))
   assertOk(await check(page, inFrame(payment, byLabel('I agree to the terms'))))
-  assertOk(await page.execute({ kind: 'hover', locator: inFrame(payment, byTestId('hint')) }, 2000))
+  assertOk(await page.execute({ kind: 'hover', locator: inFrame(payment, byTestId('hint')) }, defaultTimeouts.action))
   await observeUntil(page, inFrame(payment, byTestId('hint-status')), (seen) => seen.text === 'Hint shown')
   assertOk(await scroll(page, inFrame(payment, byTestId('terms-text')), { y: 100 }))
   await observeUntil(page, inFrame(payment, byTestId('terms-status')), (seen) => seen.text === 'Terms read')
@@ -161,22 +162,22 @@ test('a frame of another site takes fill, select, check, hover, scroll and press
 test('a secret is typed into a frame only when its origin is one the secret may reach', async (t) => {
   const { page, app, paymentOrigin } = await checkoutPage(t)
   const card = inFrame(payment, byLabel('Card number'))
-  const refused = failureOf(await page.execute({ kind: 'fill', locator: card, value: '4242', secret: 'card', allowedOrigins: [app.url] }, 2000))
+  const refused = failureOf(await page.execute({ kind: 'fill', locator: card, value: '4242', secret: 'card', allowedOrigins: [app.url] }, defaultTimeouts.action))
   assert.equal(refused.class, 'not_actionable')
   assert.match(refused.message, new RegExp(paymentOrigin.replace(/[.:/]/g, '\\$&')))
   assert.equal((await observe(page, card)).value, '', 'nothing was typed')
-  assertOk(await page.execute({ kind: 'fill', locator: card, value: '4242', secret: 'card', allowedOrigins: [app.url, paymentOrigin] }, 2000))
+  assertOk(await page.execute({ kind: 'fill', locator: card, value: '4242', secret: 'card', allowedOrigins: [app.url, paymentOrigin] }, defaultTimeouts.action))
   assert.equal((await observe(page, card)).value, '4242')
 })
 
 test('a layout look measures an element inside a frame, in the frame’s own document', async (t) => {
   const { page } = await checkoutPage(t)
-  const look = await page.execute({ kind: 'observeLayout', locator: inFrame(order, byTestId('clipped')), words: true }, 2000)
+  const look = await page.execute({ kind: 'observeLayout', locator: inFrame(order, byTestId('clipped')), words: true }, defaultTimeouts.action)
   assert.ok(look.ok && look.kind === 'observeLayout', JSON.stringify(look))
   const element = look.observation.targets[0]?.element
   assert.equal(element?.shown, true)
   assert.ok((element?.cut ?? 0) > 0, `the label's words are cut off, by ${element?.cut ?? 'no'} pixels`)
-  const apart = failureOf(await page.execute({ kind: 'observeLayout', locator: inFrame(order, byTestId('clipped')), other: byTestId('top-status') }, 2000))
+  const apart = failureOf(await page.execute({ kind: 'observeLayout', locator: inFrame(order, byTestId('clipped')), other: byTestId('top-status') }, defaultTimeouts.action))
   assert.equal(apart.class, 'usage')
 })
 
@@ -235,7 +236,7 @@ test('an element inside a frame the page hides is hidden to a look, a layout and
   const seen = await observe(page, hidden)
   assert.deepEqual([seen.count, seen.text, seen.visible], [1, 'Receipt 1001', false], 'the frame is inside an element whose visibility is hidden')
   assert.equal((await observe(page, inFrame(receipt, byTestId('receipt')))).visible, true, 'the same document in a frame the page shows is visible')
-  const layout = await page.execute({ kind: 'observeLayout', locator: hidden }, 2000)
+  const layout = await page.execute({ kind: 'observeLayout', locator: hidden }, defaultTimeouts.action)
   assert.ok(layout.ok && layout.kind === 'observeLayout', JSON.stringify(layout))
   assert.equal(layout.observation.targets[0]?.element?.shown, false)
   const failure = failureOf(await click(page, hidden, 600))
@@ -263,7 +264,7 @@ test('a frame the page draws at half its size takes each click where its button 
 test('an action waits while a frame on its path opens another document, then acts in that document', async (t) => {
   const { page } = await checkoutPage(t)
   assertOk(await click(page, inFrame(steps, byTestId('next'))))
-  assertOk(await click(page, inFrame(steps, byTestId('done')), 5000))
+  assertOk(await click(page, inFrame(steps, byTestId('done')), defaultTimeouts.action))
   await observeUntil(page, inFrame(steps, byTestId('step-status')), (seen) => seen.text === 'Done on step 2')
 })
 
@@ -277,10 +278,10 @@ async function pickInFrame(t: TestContext, page: OwnedPage, button: LocatorRecip
   await observeUntil(page, status, (seen) => seen.text === 'Picker closed')
   const arm = files.armFileChooser()
   assertOk(await click(page, button))
-  const caught = await within(arm.opened, 2000, 'the frame opened no file picker')
+  const caught = await within(arm.opened, defaultTimeouts.action, 'the frame opened no file picker')
   const path = join(await scratchFolder(t), 'receipt.txt')
   writeFileSync(path, 'Receipt 1001')
-  const given = await page.execute({ kind: 'setChooserFiles', chooser: caught.id, files: [{ path, folder: '/' }], paths: [path], mimeTypes: [null] }, 2000)
+  const given = await page.execute({ kind: 'setChooserFiles', chooser: caught.id, files: [{ path, folder: '/' }], paths: [path], mimeTypes: [null] }, defaultTimeouts.action)
   assert.ok(given.ok && given.kind === 'setChooserFiles', JSON.stringify(given))
   assert.deepEqual(given.files, [{ name: 'receipt.txt', size: 12, type: 'text/plain' }])
   await observeUntil(page, status, (seen) => seen.text === 'Attached receipt.txt')

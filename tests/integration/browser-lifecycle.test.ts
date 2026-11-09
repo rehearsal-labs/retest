@@ -283,7 +283,7 @@ test('once the browser is gone, commands fail at once, new pages are refused and
   )
   assert.ok(refused instanceof BrowserError, String(refused))
   assert.equal(refused.failure.class, 'session_lost')
-  await page.dispose(1000)
+  await page.dispose(closeMs)
   await browser.close(closeMs)
   assert.equal(existsSync(profile), false)
 })
@@ -329,7 +329,7 @@ test('a page busy in a loop times out without input and can still be closed', as
   const press = failureOf(await click(page, 'text', 500))
   assert.deepEqual([press.class, press.details], ['timeout', { inputSent: false }])
   await assert.rejects(page.screenshot(300), (error) => error instanceof BrowserError && error.failure.class === 'timeout')
-  await page.dispose(3000)
+  await page.dispose(closeMs)
 })
 
 test('a page whose renderer crashes fails the command waiting on it at once, and later ones too', async (t) => {
@@ -370,8 +370,8 @@ test('disposing a page ends only that page, and is safe to repeat', async (t) =>
   const second = await openPage(t, browser, site.url)
   assertOk(await goto(first, '/'))
   assertOk(await goto(second, '/'))
-  const disposing = first.dispose(2000)
-  assert.equal(first.dispose(2000), disposing)
+  const disposing = first.dispose(closeMs)
+  assert.equal(first.dispose(closeMs), disposing)
   await disposing
   const failure = failureOf(await first.execute({ kind: 'observe', locator: { by: 'testId', value: 'text' } }, 1000))
   assert.equal(failure.class, 'session_lost')

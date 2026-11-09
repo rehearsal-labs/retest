@@ -8,6 +8,7 @@ import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { startTaskApp } from '../../fixtures/task-app/server.ts'
 import { titleReadLimit } from '../../src/protocol/page-facts.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import {
   assertOk,
   click,
@@ -103,7 +104,7 @@ test('a page that sends the browser elsewhere before it loads counts as loaded o
     '/final': '<!doctype html><p data-testid="here">Final</p>',
   })
   const page = await openPage(t, browser(), site.url)
-  const { value, ms } = await timed(goto(page, '/start', 5000))
+  const { value, ms } = await timed(goto(page, '/start', defaultTimeouts.navigation))
   assert.deepEqual(value, { ok: true, kind: 'goto', url: `${site.url}/final`, page: { url: `${site.url}/final` } })
   assert.ok(ms < 2000, `took ${ms} ms`)
   assert.equal((await observe(page, 'here')).text, 'Final')
@@ -153,7 +154,7 @@ test('the error page of a failed navigation can be captured at once', async (t) 
   await closed.close()
   const page = await openPage(t, browser())
   failureOf(await goto(page, `${closed.url}/`))
-  const png = await page.screenshot(2000)
+  const png = await page.screenshot(defaultTimeouts.action)
   assert.deepEqual([...png.subarray(0, 8)], PNG_SIGNATURE)
 })
 
@@ -200,7 +201,7 @@ test('a screenshot is a PNG of the page', async (t) => {
   const app = await openApp(t)
   const page = await openPage(t, browser(), app.url)
   assertOk(await goto(page, '/'))
-  const png = await page.screenshot(2000)
+  const png = await page.screenshot(defaultTimeouts.action)
   assert.deepEqual([...png.subarray(0, 8)], PNG_SIGNATURE)
   assert.ok(png.length > 1000, `${png.length} bytes`)
 })
@@ -266,9 +267,9 @@ test('a title the page writes after it loads is no navigation, and the next look
   const { app, page, count } = await titlesPage(t)
   assertOk(await goto(page, '/titles'))
   assertOk(await click(page, 'retitle'))
-  const end = performance.now() + 3000
+  const end = performance.now() + defaultTimeouts.assertion
   for (;;) {
-    const result = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'next' } }, 1000)
+    const result = await page.execute({ kind: 'observe', locator: { by: 'testId', value: 'next' } }, defaultTimeouts.action)
     assert.ok(result.ok && result.kind === 'observe')
     if (result.page?.title === 'Retitled') {
       assert.deepEqual(result.page, { url: `${app.url}/titles`, title: 'Retitled' })
@@ -309,7 +310,7 @@ test('a long title, a surrogate pair at the cut among them, reaches the parent a
   const longest = `${'b'.repeat(4095)}😀tail`
   assertOk(await goto(page, echo(longest)))
   assert.deepEqual((await told()).map(({ title }) => title), [longer, longest])
-  const reading = await page.readPage([{ text: 'Titled', ignoreCase: false }], 1000)
+  const reading = await page.readPage([{ text: 'Titled', ignoreCase: false }], defaultTimeouts.action)
   assert.deepEqual(reading, { url: `${app.url}/titles/echo`, title: longest, navigating: false, found: [true] })
 })
 
@@ -319,7 +320,7 @@ test(`a title a script makes longer than ${titleReadLimit} code units reaches th
   const opened = await goto(page, '/')
   assert.ok(opened.ok && opened.kind === 'goto')
   assert.equal(opened.page?.title, 'x'.repeat(titleReadLimit))
-  assert.equal((await page.readPage([], 1000)).title, 'x'.repeat(titleReadLimit))
+  assert.equal((await page.readPage([], defaultTimeouts.action)).title, 'x'.repeat(titleReadLimit))
 })
 
 // The runner gives each command a token; the navigation the command's input or goto started carries it back, so
@@ -329,11 +330,11 @@ test('a navigation names the token of the command that started it, and says whet
   const page = await openPage(t, browser(), app.url)
   const seen: PageNavigation[] = []
   page.onNavigation((navigation) => void seen.push(navigation))
-  assertOk(await page.execute({ kind: 'goto', url: '/titles' }, 5000, undefined, 1))
-  assertOk(await page.execute({ kind: 'click', locator: { by: 'testId', value: 'next' } }, 2000, undefined, 2))
+  assertOk(await page.execute({ kind: 'goto', url: '/titles' }, defaultTimeouts.navigation, undefined, 1))
+  assertOk(await page.execute({ kind: 'click', locator: { by: 'testId', value: 'next' } }, defaultTimeouts.action, undefined, 2))
   await observeUntil(page, 'arrived', (look) => look.count === 1)
-  assertOk(await page.execute({ kind: 'goto', url: '/titles' }, 5000, undefined, 3))
-  assertOk(await page.execute({ kind: 'click', locator: { by: 'testId', value: 'push' } }, 2000, undefined, 4))
+  assertOk(await page.execute({ kind: 'goto', url: '/titles' }, defaultTimeouts.navigation, undefined, 3))
+  assertOk(await page.execute({ kind: 'click', locator: { by: 'testId', value: 'push' } }, defaultTimeouts.action, undefined, 4))
   await observeUntil(page, 'push', () => page.url?.endsWith('/titles/pushed') === true)
   assert.deepEqual(
     seen.map(({ url, cause, document, commandToken }) => [new URL(url).pathname, cause, document, commandToken]),
@@ -485,7 +486,7 @@ test('goBack onto a response with no content fails at once, naming the navigatio
   assert.ok(back.ms < 2500, `failed after ${back.ms} ms`)
   // Where the history stands: the next document, a move back, and the page that move leaves showing, read together.
   const next = await goto(page, '/flip?for=forward')
-  const backAgain = await page.execute({ kind: 'goBack' }, 5000)
+  const backAgain = await page.execute({ kind: 'goBack' }, defaultTimeouts.navigation)
   const shown = (await lastLook(page, 'here', (seen) => seen.text === '/other')).text
   engineCase.assertOutcome(
     t,
@@ -504,7 +505,7 @@ test('goForward onto a response with no content fails at once, naming the naviga
   const page = await openPage(t, browser(), url)
   assertOk(await goto(page, '/other'))
   assertOk(await goto(page, '/flip?for=forward'))
-  assertOk(await page.execute({ kind: 'goBack' }, 5000))
+  assertOk(await page.execute({ kind: 'goBack' }, defaultTimeouts.navigation))
   await observeUntil(page, 'here', (seen) => seen.text === '/other')
   const forward = await timed(page.execute({ kind: 'goForward' }, 5000))
   assert.deepEqual(failureOf(forward.value), gaveUp(url, 'go forward to', '/other'))
@@ -551,7 +552,7 @@ test('a page whose load handler opens a download or an answer with no content st
     const asking = performance.now() + 5000
     while (site.asked(target) === 0 && performance.now() < asking) await delay(25)
     assert.equal(site.asked(target), 1, `the page asked for ${target} once`)
-    assertOk(await click(page, 'press', 2000))
+    assertOk(await click(page, 'press', defaultTimeouts.action))
     assert.equal((await observeUntil(page, 'press', (seen) => seen.text === 'pressed')).text, 'pressed', `${path}: the page took the click`)
     assert.equal(page.url, `${site.url}${path}`, `${path}: the page stayed`)
   }

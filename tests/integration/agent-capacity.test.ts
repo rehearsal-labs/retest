@@ -11,6 +11,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { lostBrowserGraceMs } from '../../src/agent/host.ts'
 import { signalGroup } from '../../src/browser/chromium-process.ts'
 import { eventsFile, resultFile, testId } from '../../src/protocol/run-folder.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { SessionBudget } from '../../src/runner/sessions.ts'
 import { openApp } from './browser-harness.ts'
 import { assertJudged, assertReleased, readEvents, readResult, RetestProcess, retestEntriesIn, scratchFolder, writeProject } from './cli-harness.ts'
@@ -92,14 +93,14 @@ test('a session that held its browser for its whole hold is ended: its context c
   assert.ok(!after.result.ok)
   assert.equal(after.result.failure.class, 'timeout')
   assert.equal(after.input, 'not_sent')
-  const next = await host.open({ owner: 'agent-1', app: 'two', purpose: 'discovery', target: 'browser', engine: engineName(), baseUrl: app.url, waitMs: 1000 })
+  const next = await host.open({ owner: 'agent-1', app: 'two', purpose: 'discovery', target: 'browser', engine: engineName(), baseUrl: app.url, waitMs: defaultTimeouts.setup })
   assert.ok(next.ok, 'the session came back to the budget')
 })
 
 test('a session whose caller goes silent for its whole lease is ended: its context closes and its session comes back', async (t) => {
   const app = await openApp(t)
   const budget = new SessionBudget({ perOwner: 1, host: 1 })
-  const { host } = await agentHost(t, { budget, timeouts: { setup: 45_000, action: 5000, navigation: 10_000, assertion: 5000, cleanup: 5000, lease: 2000 } })
+  const { host } = await agentHost(t, { budget, timeouts: { setup: defaultTimeouts.setup, action: defaultTimeouts.action, navigation: defaultTimeouts.navigation, assertion: defaultTimeouts.assertion, cleanup: defaultTimeouts.cleanup, lease: 2000 } })
   const session = await openOn(host, { app: 'one', purpose: 'discovery', baseUrl: app.url })
   await hold(session, 'caller-silent')
   await holdersReach(app.url, 'caller-silent', 1)
@@ -111,7 +112,7 @@ test('a session whose caller goes silent for its whole lease is ended: its conte
   assert.equal(ended.ending.sessions, 'returned')
   await holdersReach(app.url, 'caller-silent', 0)
   assert.equal(budget.snapshot().host, 0)
-  const next = await host.open({ owner: 'agent-1', app: 'two', purpose: 'discovery', target: 'browser', engine: engineName(), baseUrl: app.url, waitMs: 1000 })
+  const next = await host.open({ owner: 'agent-1', app: 'two', purpose: 'discovery', target: 'browser', engine: engineName(), baseUrl: app.url, waitMs: defaultTimeouts.setup })
   assert.ok(next.ok, 'the session came back to the budget')
 })
 
@@ -231,7 +232,7 @@ const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
 const budget = new SessionBudget({ perOwner: 1, host: 1 })
 const check = { kind: 'text', id: 'sign-in-shown', text: 'User name' }
-const timeouts = { collection: 10000, setup: 45000, action: 5000, navigation: 10000, assertion: 5000, test: 30000, cleanup: 5000 }
+const timeouts = ${JSON.stringify(defaultTimeouts)}
 const run = (output, waitMs) => runFiles({
   files: [${JSON.stringify(input.file)}], rootDir: process.cwd(), apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets }, timeouts,
   outputDir: join(folder, output), headless: true, signal: new AbortController().signal, lastRunFile: false,

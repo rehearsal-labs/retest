@@ -10,6 +10,7 @@ import { test } from 'node:test'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, browserPath, check, click, closeMs, failureOf, fill, goto, groupExists, observe, observeUntil, openApp, openPage, scratchFolder, setupMs, sharedBrowser, timed, within } from './browser-harness.ts'
 
 // The pages a page opens, on Chrome, against the driver: a page armed for a popup hands over the next page it opens,
@@ -27,7 +28,7 @@ async function popupsPage(t: TestContext, on: OwnedBrowser = browser(), partner?
 
 // Arms the page for a popup, then clicks what opens it, as page.popup() does. The click is awaited only once the popup
 // is set up: a popup window.open made shares its opener's renderer, which is held with it until it runs.
-async function popupFrom(page: OwnedPage, target: string, timeoutMs = 5000): Promise<{ popup: OpenedPopup; first: PageNavigation | undefined }> {
+async function popupFrom(page: OwnedPage, target: string, timeoutMs: number = defaultTimeouts.action): Promise<{ popup: OpenedPopup; first: PageNavigation | undefined }> {
   assert.ok(page.armPopup !== undefined, 'a Chromium page hands over the pages it opens')
   const arming = await page.armPopup({ timeoutMs, setupMs })
   assert.ok(arming.ok, JSON.stringify(arming))
@@ -67,7 +68,7 @@ test('a link with a target opens a page that is handed over before its first doc
   // The opener keeps its own page and focus: a command to it still acts on it.
   assert.equal((await observe(page, 'status')).text, 'Ready')
   assertOk(await click(page, 'help'))
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('a page window.open opens on the same origin is handed over with its first address and title', async (t) => {
@@ -76,7 +77,7 @@ test('a page window.open opens on the same origin is handed over with its first 
   assert.equal(pathOf(first?.url), '/popups/help')
   assert.equal(await first?.title, 'Help')
   assert.equal((await observe(popup.page, 'help-text')).text, 'Ask us anything.')
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test("a sign-in popup on another origin redirects at once, answers its opener and closes itself", async (t) => {
@@ -91,7 +92,7 @@ test("a sign-in popup on another origin redirects at once, answers its opener an
   assertOk(await fill(popup.page, 'partner-password', 'correct horse'))
   assertOk(await click(popup.page, 'sign-in'))
   await observeUntil(page, 'status', (seen) => seen.text === 'Signed in as alice@example.com')
-  assert.deepEqual(await within(popup.gone, 3000, 'the popup did not close itself'), { kind: 'closed' })
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.assertion, 'the popup did not close itself'), { kind: 'closed' })
   // The page is gone with its target, so a look at it fails as a lost page, at once.
   assert.equal(failureOf(await popup.page.execute({ kind: 'observe', locator: { by: 'testId', value: 'sign-in' } }, 1000)).class, 'session_lost')
 })
@@ -100,10 +101,10 @@ test('a popup that closes itself is told gone, and its opener sees it closed', a
   const { page } = await popupsPage(t)
   const { popup, first } = await popupFrom(page, 'flash')
   assert.equal(pathOf(first?.url), '/popups/closing')
-  await within(popup.gone, 3000, 'the popup did not close itself')
+  await within(popup.gone, defaultTimeouts.assertion, 'the popup did not close itself')
   await observeUntil(page, 'status', (seen) => seen.text === 'Popup closed')
   // A popup that went is disposed with nothing left to do.
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test("close runs the popup's beforeunload: dismissed, the popup stays open; accepted, it closes and its target goes", async (t) => {
@@ -112,24 +113,24 @@ test("close runs the popup's beforeunload: dismissed, the popup stays open; acce
   assertOk(await check(popup.page, 'guard'))
   const dialogs = popup.page
   assert.ok(dialogs.armDialog !== undefined && dialogs.answerDialog !== undefined)
-  const staying = dialogs.armDialog(3000)
+  const staying = dialogs.armDialog(defaultTimeouts.action)
   assert.ok(staying.ok)
-  const closing = dialogs.execute({ kind: 'close' }, 3000)
+  const closing = dialogs.execute({ kind: 'close' }, defaultTimeouts.cleanup)
   const kept = await staying.opened
   assert.ok(kept.ok)
   assert.equal(kept.dialog.type, 'beforeunload')
-  assert.deepEqual(await dialogs.answerDialog(kept.dialog.id, { accept: false }, 2000), { ok: true })
+  assert.deepEqual(await dialogs.answerDialog(kept.dialog.id, { accept: false }, defaultTimeouts.action), { ok: true })
   assert.deepEqual(failureOf(await closing), { class: 'not_actionable', message: 'Retest could not close the page: its beforeunload dialog was dismissed, so the page stayed where it was.', details: { dialog: 'beforeunload', inputSent: true } })
   assert.equal((await observe(dialogs, 'status')).text, 'Ready')
 
-  const leaving = dialogs.armDialog(3000)
+  const leaving = dialogs.armDialog(defaultTimeouts.action)
   assert.ok(leaving.ok)
-  const closed = dialogs.execute({ kind: 'close' }, 3000)
+  const closed = dialogs.execute({ kind: 'close' }, defaultTimeouts.cleanup)
   const asked = await leaving.opened
   assert.ok(asked.ok)
-  assert.deepEqual(await dialogs.answerDialog(asked.dialog.id, { accept: true }, 2000), { ok: true })
+  assert.deepEqual(await dialogs.answerDialog(asked.dialog.id, { accept: true }, defaultTimeouts.action), { ok: true })
   assert.deepEqual(await closed, { ok: true, kind: 'close' })
-  assert.deepEqual(await within(popup.gone, 2000, 'the closed popup is not gone'), { kind: 'closed' })
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.cleanup, 'the closed popup is not gone'), { kind: 'closed' })
   assert.equal((await observe(page, 'status')).text, 'Ready')
 })
 
@@ -147,7 +148,7 @@ test('a page opened while nothing waited runs on, and a later wait is given only
   const { popup, first } = await popupFrom(page, 'terms')
   assert.equal(pathOf(first?.url), '/popups/terms')
   assert.equal((await observe(popup.page, 'email')).count, 1)
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test("a page opened while nothing waited is kept: its dialog is answered and told as its opener's, and it closes with its opener", async (t) => {
@@ -163,7 +164,7 @@ test("a page opened while nothing waited is kept: its dialog is answered and tol
   assert.equal(status.text, 'Ready')
   assert.ok(ms < 1000, `the opener answered in ${ms} ms`)
   assert.deepEqual((await popupTargets(targets)).map(pathOf), ['/popups/alerting'])
-  await page.dispose(2000)
+  await page.dispose(defaultTimeouts.cleanup)
   await waitFor(async () => (await popupTargets(targets)).length === 0, 'the page it opened to close with it')
 })
 
@@ -175,10 +176,10 @@ test('disposing pages leaves no popup target behind: a popup closes its own targ
   // document commits.
   assertOk(await click(page, 'terms'))
   await waitFor(async () => (await popupTargets(targets)).map(pathOf).sort().join(' ') === '/popups/help /popups/terms', 'the two popups to open their first documents')
-  await handed.popup.page.dispose(2000)
-  await within(handed.popup.gone, 2000, 'the disposed popup is not gone')
+  await handed.popup.page.dispose(defaultTimeouts.cleanup)
+  await within(handed.popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone')
   assert.deepEqual((await popupTargets(targets)).map(pathOf), ['/popups/terms'])
-  await page.dispose(2000)
+  await page.dispose(defaultTimeouts.cleanup)
   await waitFor(async () => (await popupTargets(targets)).length === 0, 'the popups of a disposed page to go')
 })
 
@@ -186,10 +187,10 @@ test('a popup is a web session of its own: it can be named and pictured, apart f
   const { page } = await popupsPage(t)
   const { popup } = await popupFrom(page, 'help')
   const session: WebSession = popup.page
-  const png = await session.screenshot(2000)
+  const png = await session.screenshot(defaultTimeouts.action)
   assert.ok(png.byteLength > 0)
-  await popup.page.dispose(2000)
-  await within(popup.gone, 2000, 'the disposed popup is not gone')
+  await popup.page.dispose(defaultTimeouts.cleanup)
+  await within(popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone')
   // The opener's context stays: the opener still answers.
   assert.equal((await observe(page, 'status')).text, 'Ready')
 })
@@ -201,7 +202,7 @@ async function popupTargets(targets: () => Promise<TargetInfo[]>): Promise<strin
 
 type TargetInfo = { type: string; url: string; openerId?: string }
 
-async function waitFor(condition: () => Promise<boolean>, what: string, timeoutMs = 3000): Promise<void> {
+async function waitFor(condition: () => Promise<boolean>, what: string, timeoutMs: number = defaultTimeouts.assertion): Promise<void> {
   const end = performance.now() + timeoutMs
   while (!(await condition())) {
     if (performance.now() > end) assert.fail(`timed out waiting for ${what}`)
@@ -246,7 +247,7 @@ async function launchWithTargets(t: TestContext): Promise<{ browser: OwnedBrowse
     const { promise, resolve } = Promise.withResolvers<unknown>()
     waiting.set(id, resolve)
     pipe?.send(JSON.stringify({ id, method: 'Target.getTargets' }))
-    const result = await within(promise, 2000, 'Target.getTargets did not answer')
+    const result = await within(promise, defaultTimeouts.action, 'Target.getTargets did not answer')
     const infos = isRecord(result) && Array.isArray(result['targetInfos']) ? result['targetInfos'] : []
     return infos.flatMap((info: unknown) => (isRecord(info) && typeof info['type'] === 'string' && typeof info['url'] === 'string' ? [{ type: info['type'], url: info['url'], ...(typeof info['openerId'] === 'string' ? { openerId: info['openerId'] } : {}) }] : []))
   }

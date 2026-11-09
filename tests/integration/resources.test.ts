@@ -4,6 +4,7 @@ import type { TestResult } from '../../src/protocol/result.ts'
 import type { HostedRun } from './participants-harness.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
 import { eventsOf, runCli, writeProject } from './cli-harness.ts'
 import { holders, resultNamed, runHostProgram } from './participants-harness.ts'
@@ -25,7 +26,7 @@ const loaded = validateConfig(defineConfig({ apps: { web: chrome({ baseUrl: ${JS
 if (!loaded.ok) throw new Error(loaded.failure.message)
 const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
-const timeouts = { collection: 5000, setup: 15000, action: 2000, navigation: 10000, assertion: 2000, test: 20000, cleanup: 5000 }
+const timeouts = ${JSON.stringify(defaultTimeouts)}
 const run = (output, files, extra) => runFiles({
   files, rootDir: process.cwd(), apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets }, timeouts,
   outputDir: join(folder, output), headless: true, signal: new AbortController().signal, workers: 2, lastRunFile: false, ...extra,

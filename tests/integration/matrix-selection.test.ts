@@ -18,7 +18,8 @@ import {
   scenario,
 } from './cli-harness.ts'
 
-// Collection is bounded by its budget, then the child has a second to go before it is killed.
+// A failed import ends collection at once, and a hang ends at the 1000 ms budget its test gives; then the child has a
+// second to go before it is killed. Both stay well under the collection budget users get.
 const collectionBoundMs = 8000
 
 test('empty selection: a missing file stops before any run starts, exits 2 and names the file', async (t) => {

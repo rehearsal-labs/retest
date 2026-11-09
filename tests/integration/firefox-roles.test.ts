@@ -14,6 +14,7 @@ import { launchFirefox } from '../../src/browser/firefox/launch.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { ariaRoles } from '../../src/protocol/aria-role.ts'
 import { describeLocator } from '../../src/protocol/locator.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { browserPath, closeMs, scratchFolder, servePages, setupMs } from './browser-harness.ts'
 import { firefoxPath, testFirefoxRoute } from './engines.ts'
 
@@ -474,7 +475,7 @@ async function answersOn(page: OwnedPage, url: string, cases: readonly number[])
   for (const index of cases) {
     const entry = allCases[index]
     assert.ok(entry !== undefined)
-    const opened = await page.execute({ kind: 'goto', url: `${url}?case=${index}` }, 5000)
+    const opened = await page.execute({ kind: 'goto', url: `${url}?case=${index}` }, defaultTimeouts.navigation)
     assert.ok(opened.ok, `case ${index}: ${JSON.stringify(opened)}`)
     table.set(index, await Promise.all(lookupsOf(entry).map(async (locator) => answerOf(await page.execute({ kind: 'observe', locator }, 10_000)))))
   }
@@ -492,7 +493,7 @@ async function openBoth(t: TestContext): Promise<{ chrome: OwnedPage; firefox: O
   const folder = await scratchFolder(t)
   const url = await serveCases(t)
   const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'chrome.log'), headless: true }))
-  const firefox = await opened(t, await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), logFile: join(folder, 'firefox.log'), headless: true }, setupMs * 3))
+  const firefox = await opened(t, await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), logFile: join(folder, 'firefox.log'), headless: true }, setupMs))
   return { chrome, firefox, url }
 }
 
@@ -554,7 +555,7 @@ if (unsupported !== undefined) {
     const site = await servePages(t, { '/': html, '/native': html + '<select aria-label="Native choice"><option>Native one</option><option>Native two</option></select>' })
     const folder = await scratchFolder(t)
     const chrome = await opened(t, await launchBrowser({ executablePath: browserPath(), logFile: join(folder, 'fixed-chrome.log'), headless: true }))
-    const other = await opened(t, await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), logFile: join(folder, 'fixed-firefox.log'), headless: true }, setupMs * 3))
+    const other = await opened(t, await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), logFile: join(folder, 'fixed-firefox.log'), headless: true }, setupMs))
     const supported: readonly { locator: LocatorRecipe; text?: string; value?: string }[] = [
       { locator: { by: 'role', role: 'button', name: 'Save task' }, text: 'chosen save' },
       { locator: { by: 'role', role: 'link', name: 'Open task' }, text: 'chosen link' },
@@ -564,7 +565,7 @@ if (unsupported !== undefined) {
       { locator: { by: 'role', role: 'option', name: 'Custom choice' }, text: 'chosen option' },
     ]
     for (const page of [chrome, other]) {
-      assert.ok((await page.execute({ kind: 'goto', url: site.url }, 5000)).ok)
+      assert.ok((await page.execute({ kind: 'goto', url: site.url }, defaultTimeouts.navigation)).ok)
       for (const row of supported) {
         const result = await page.execute({ kind: 'observe', locator: row.locator }, 10_000)
         assert.ok(result.ok && result.kind === 'observe', `${page === chrome ? 'Chrome' : 'Firefox'} ${describeLocator(row.locator)}: ${JSON.stringify(result)}`)
@@ -576,7 +577,7 @@ if (unsupported !== undefined) {
       assert.ok(missing.ok && missing.kind === 'observe')
       assert.equal(missing.observation.count, 0, 'a supported missing lookup is answered, not refused')
     }
-    assert.ok((await other.execute({ kind: 'goto', url: `${site.url}/native` }, 5000)).ok)
+    assert.ok((await other.execute({ kind: 'goto', url: `${site.url}/native` }, defaultTimeouts.navigation)).ok)
     const refused: readonly LocatorRecipe[] = [
       { by: 'role', role: 'generic' },
       { by: 'role', role: 'cell', name: 'Chosen cell' },

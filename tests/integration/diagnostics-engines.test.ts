@@ -928,7 +928,7 @@ function writtenRecords(written: readonly Written[]): DiagnosticRecord[] {
 /** A browser of the engine, launched by its own driver, closed after the test unless the test closed it first. */
 async function launched(t: TestContext, engine: TestEngine): Promise<OwnedBrowser> {
   const folder = await mkdtemp(join(tmpdir(), 'retest-engines-diagnostics-'))
-  const browser = await engine.launch({ logFile: join(folder, 'browser.log'), headless: true }, setupMs * 3)
+  const browser = await engine.launch({ logFile: join(folder, 'browser.log'), headless: true }, setupMs)
   t.after(async () => {
     await browser.close(closeMs)
     await rm(folder, { recursive: true, force: true })

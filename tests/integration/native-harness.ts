@@ -10,6 +10,7 @@ import { automationModeProblem } from '../../src/native/macos-app.ts'
 import { checkXcode, ensureExecutorBuild, nativePins } from '../../src/native/executors.ts'
 import { listSimulatorRuntimes } from '../../src/native/ios-simulator.ts'
 import { listProcesses, runCommand, systemTools } from '../../src/native/processes.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { prepareAttempt } from '../../src/runner/preparation.ts'
 
 // What the native integration tests share: where the executor clones and the fixture apps' builds live on this Mac,
@@ -130,7 +131,7 @@ export async function within<T>(promise: Promise<T>, timeoutMs: number, message:
 export async function prepareFixtureService(serviceUrl: string, app: string): Promise<{ readonly prepared: PreparedAttempt; readonly events: EventBody[] }> {
   const events: EventBody[] = []
   const reset = async (): Promise<void> => {
-    const response = await fetch(new URL('/admin/reset', serviceUrl), { method: 'POST', headers: { [CLIENT_HEADER]: 'test' }, signal: AbortSignal.timeout(5000) })
+    const response = await fetch(new URL('/admin/reset', serviceUrl), { method: 'POST', headers: { [CLIENT_HEADER]: 'test' }, signal: AbortSignal.timeout(defaultTimeouts.action) })
     if (!response.ok) throw new Error(`the reset route answered ${response.status}`)
   }
   const prepared = await prepareAttempt({
@@ -142,7 +143,7 @@ export async function prepareFixtureService(serviceUrl: string, app: string): Pr
       cleanup: reset,
     } }],
     scope: { testId: 'native-lifecycle', attemptId: 'native-attempt', file: 'tests/integration/native-lifecycle.retest.ts' },
-    timeouts: { setup: 10_000, cleanup: 10_000 },
+    timeouts: { setup: defaultTimeouts.setup, cleanup: defaultTimeouts.cleanup },
     stopped: new Promise(() => undefined),
     interruption: () => undefined,
     emit: (body) => events.push(body),

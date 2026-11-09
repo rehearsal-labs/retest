@@ -1,6 +1,7 @@
 import type { RetestEvent } from '../../src/protocol/events.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
 import { budgets, configSource, eventsOf, hostScript, runHost, runProject, writeProject } from './cli-harness.ts'
 import { holders, runHostProgram } from './participants-harness.ts'
@@ -50,7 +51,7 @@ test('under workers, concurrent attempts never hold more sessions than the confi
     'retest.config.ts': configSource(appsConfig(app.url)),
     ...holdingFiles('unlimited', '/holders/hold?name=unlimited&barrier=3&ms=10000'),
   })
-  const free = await runProject(t, control, { args: ['--workers', '4'], timeouts: budgets({ navigation: 10_000 }) })
+  const free = await runProject(t, control, { args: ['--workers', '4'], timeouts: budgets() })
   assert.equal(free.exit.code, 0, free.stderr)
   assert.ok((await holders(app.url, 'unlimited')).most >= 3, 'without limits, three or more pages held at once')
 
@@ -86,7 +87,7 @@ if (!loaded.ok) throw new Error(loaded.failure.message)
 const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
 const budget = new SessionBudget({ perOwner: 2, host: 3 })
-const timeouts = { collection: 5000, setup: 15000, action: 2000, navigation: 10000, assertion: 2000, test: 20000, cleanup: 5000 }
+const timeouts = ${JSON.stringify(defaultTimeouts)}
 const run = (owner, files) => runFiles({
   files, rootDir: process.cwd(), apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets }, timeouts,
   outputDir: join(folder, owner), headless: true, signal: new AbortController().signal, workers: 3, lastRunFile: false,
@@ -154,7 +155,7 @@ if (!loaded.ok) throw new Error(loaded.failure.message)
 const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
 const budget = new SessionBudget({ perOwner: 1, host: 1 })
-const timeouts = { collection: 5000, setup: 15000, action: 2000, navigation: 10000, assertion: 2000, test: 20000, cleanup: 5000 }
+const timeouts = ${JSON.stringify(defaultTimeouts)}
 const stop = new AbortController()
 let waitingWhenStopped = -1
 let hostWhenStopped = -1
@@ -163,7 +164,7 @@ let watching = false
 // A fixed time after the reservation is not that: under load its browser can still be launching then, and a test whose
 // body never started is not run.
 async function stopInsideTheHold() {
-  const endsAt = performance.now() + 15000
+  const endsAt = performance.now() + timeouts.setup
   while (performance.now() < endsAt) {
     const response = await fetch(new URL('/holders?name=cancelled', ${JSON.stringify(url)}))
     const { current } = await response.json()
@@ -246,7 +247,7 @@ if (!loaded.ok) throw new Error(loaded.failure.message)
 const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
 const budget = new SessionBudget({ perOwner: 1, host: 1 })
-const timeouts = { collection: 5000, setup: 15000, action: 2000, navigation: 10000, assertion: 2000, test: 20000, cleanup: 5000 }
+const timeouts = ${JSON.stringify(defaultTimeouts)}
 const stop = new AbortController()
 const reservedA = Promise.withResolvers()
 const times = {}

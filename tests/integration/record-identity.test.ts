@@ -7,6 +7,7 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { defaultEvaluationTimeoutMs } from '../../src/config/read-evaluation.ts'
 import { parseArtifact } from '../../src/diagnostics/artifact.ts'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { openApp } from './browser-harness.ts'
@@ -51,7 +52,7 @@ test('a run’s screenshots, diagnostics, AI check evidence and events join on o
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{
   apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) },
-  evaluation: { judges: { fake: { adapter: ${JSON.stringify(fakeJudge)}, accepts: ['text', 'images'] } }, timeoutMs: 10000 },
+  evaluation: { judges: { fake: { adapter: ${JSON.stringify(fakeJudge)}, accepts: ['text', 'images'] } }, timeoutMs: ${defaultEvaluationTimeoutMs} },
 }`),
     'tests/identity.retest.ts': tests,
   })

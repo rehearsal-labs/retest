@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { launchElectron } from '../../src/browser/electron.ts'
 import { slug, targetBrowserLogFile } from '../../src/protocol/run-folder.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { variantKey } from '../../src/protocol/variant.ts'
 import { assertOk, click, observeUntil } from './browser-harness.ts'
 import { budgets, eventsOf, filesHolding, repositoryRoot, runProject, scratchFolder, testNamed, waitFor, writeProject } from './cli-harness.ts'
@@ -175,7 +176,7 @@ test("an Electron window's downloads are kept in the run folder, and what the ap
   const saveDir = join(await scratchFolder(t, 'retest-electron-saves-'), 'saves')
   mkdirSync(saveDir)
   const root = await writeProject(t, { 'retest.config.ts': config(files, saveDir), 'tests/downloads.retest.ts': tests })
-  const run = await runProject(t, root, { env: { RETEST_ELECTRON_DOWNLOAD_TOKEN: token }, timeouts: budgets({ action: 4000, assertion: 4000, test: 20_000 }) })
+  const run = await runProject(t, root, { env: { RETEST_ELECTRON_DOWNLOAD_TOKEN: token }, timeouts: budgets() })
 
   const outcome = (name: string) => {
     const result = testNamed(run, name)
@@ -271,9 +272,9 @@ test("a window given no downloads folder refuses every download, whatever the ap
   mkdirSync(saveDir)
   const logFile = join(folder, 'electron.log')
   const options = { executablePath: electronBinary, appPath: fixtureApp, args: [`--files=${files}`, `--save-dir=${saveDir}`], windowsFile: join(folder, 'windows.json'), logFile, app: 'desk', target: 'electron', launch: 1 }
-  const app = await launchElectron(options, 15_000)
-  t.after(() => app.close(5000))
-  const page = await app.newPage({}, 5000)
+  const app = await launchElectron(options, defaultTimeouts.setup)
+  t.after(() => app.close(defaultTimeouts.cleanup))
+  const page = await app.newPage({}, defaultTimeouts.setup)
   assert.equal(page.files?.onDownload, undefined, 'no test can wait for a download there')
   assert.equal(page.files?.downloadsRefused, undefined, 'and none is refused by name: the window is in the default session')
   assertOk(await click(page, 'handle-save-path'))

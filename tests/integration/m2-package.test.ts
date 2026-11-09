@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { relativePosixPath } from '../../src/shared/posix-path.ts'
 import { openApp } from './browser-harness.ts'
 import {
@@ -124,7 +125,7 @@ const options: RunOptions = {
   files: ['tests/sign-in.retest.ts'],
   rootDir: process.cwd(),
   apps: { kind: 'config', config: loaded.config, secrets: new Map([['password', { read: password }]]) },
-  timeouts: { collection: 5000, setup: 15_000, action: 2000, navigation: 5000, assertion: 2000, test: 15_000, cleanup: 5000 },
+  timeouts: ${JSON.stringify(defaultTimeouts)},
   outputDir,
   headless: true,
   signal: new AbortController().signal,

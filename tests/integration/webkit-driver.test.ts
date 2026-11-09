@@ -20,6 +20,7 @@ import { listPlanFunction, listPlanSchema } from '../../src/browser/webkit/selec
 import { webKitScope } from '../../src/diagnostics/webkit-collector.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { awaitPosts, byTestId, closeMs, openApp, scratchFolder, servePages, setupMs } from './browser-harness.ts'
 import { repositoryRoot } from './cli-harness.ts'
 import { webKitPath } from './engines.ts'
@@ -76,7 +77,7 @@ async function processTable(): Promise<ProcessRow[]> {
 /** A WebKit build launched for one test, closed after it. */
 async function webkit(t: TestContext): Promise<WebKitBrowser> {
   const folder = await scratchFolder(t)
-  const browser = await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'browser.log'), headless: true }, setupMs * 3)
+  const browser = await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'browser.log'), headless: true }, setupMs)
   t.after(() => browser.close(closeMs).catch(() => undefined))
   return browser
 }
@@ -99,7 +100,7 @@ test("WebKit's helpers run outside the browser's process group, are recorded by 
   const app = await openApp(t)
   const browser = await webkit(t)
   const opened = await page(t, browser, app.url)
-  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
   const recorded = browser.process.helpers
   assert.ok(recorded.length >= 2, `recorded ${recorded.length} helpers`)
   const table = await processTable()
@@ -127,7 +128,7 @@ test('a WebKit browser killed after the press was sent answers outcome unknown, 
   const site = await servePages(t, { '/': FREEZE_ON_PRESS })
   const browser = await webkit(t)
   const opened = await page(t, browser, site.url)
-  assert.equal((await opened.dispatch({ kind: 'goto', url: '/' }, 5000)).result.ok, true)
+  assert.equal((await opened.dispatch({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).result.ok, true)
   const helpers = browser.process.helpers
   const clicking = opened.dispatch({ kind: 'click', locator: byTestId('freeze') }, 10_000)
   await awaitPosts(site, '/pressed', 1)
@@ -157,7 +158,7 @@ test('a WebKit click stopped while its press is busy keeps the class of the stop
   const site = await servePages(t, { '/': BUSY_ON_PRESS })
   const browser = await webkit(t)
   const opened = await page(t, browser, site.url)
-  assert.equal((await opened.dispatch({ kind: 'goto', url: '/' }, 5000)).result.ok, true)
+  assert.equal((await opened.dispatch({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).result.ok, true)
   const stop = new AbortController()
   const clicking = opened.dispatch({ kind: 'click', locator: byTestId('hold') }, 10_000, stop.signal)
   await awaitPosts(site, '/pressed', 1)
@@ -172,7 +173,7 @@ test('a WebKit click stopped while its press is busy keeps the class of the stop
   const end = performance.now() + 5000
   let text = ''
   while (performance.now() < end) {
-    const status = await opened.dispatch({ kind: 'observe', locator: byTestId('status') }, 5000)
+    const status = await opened.dispatch({ kind: 'observe', locator: byTestId('status') }, defaultTimeouts.action)
     assert.ok(status.result.ok && status.result.kind === 'observe')
     assert.equal(status.input, 'not_sent')
     text = status.result.observation.text ?? ''
@@ -180,7 +181,7 @@ test('a WebKit click stopped while its press is busy keeps the class of the stop
     await delay(50)
   }
   await delay(2000)
-  const settled = await opened.dispatch({ kind: 'observe', locator: byTestId('status') }, 5000)
+  const settled = await opened.dispatch({ kind: 'observe', locator: byTestId('status') }, defaultTimeouts.action)
   assert.ok(settled.result.ok && settled.result.kind === 'observe')
   t.diagnostic(`the button heard: ${settled.result.observation.text ?? ''}`)
   assert.equal(settled.result.observation.text, 'pressed', 'stopping never releases or clicks the pressed button')
@@ -195,12 +196,12 @@ test("the collector hears the page's console, its uncaught error and its request
   const browser = await webkit(t)
   const opened = await page(t, browser, site.url)
   const sink = recordingSink()
-  const collection = await opened.collectDiagnostics(sink, 5000)
+  const collection = await opened.collectDiagnostics(sink, defaultTimeouts.setup)
   assert.deepEqual(collection.scope, webKitScope)
-  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
   // A host the page has not seen opens in a new web process, and the collector follows the target it swaps into.
   const second = other.url.replace('127.0.0.1', 'localhost')
-  assert.equal((await opened.execute({ kind: 'goto', url: `${second}/` }, 5000)).ok, true)
+  assert.equal((await opened.execute({ kind: 'goto', url: `${second}/` }, defaultTimeouts.navigation)).ok, true)
   const end = performance.now() + 5000
   const has = (predicate: (observation: Observation) => boolean) => sink.observations.some(predicate)
   while (performance.now() < end && !(has((o) => o.kind === 'console' && o.text === 'second page') && has((o) => o.kind === 'runtime_error'))) await delay(50)
@@ -239,12 +240,12 @@ test("WebKit's own snapshots are a frame source of PNG frames carrying the page'
   const frames: CapturedFrame[] = []
   const started = performance.now()
   const clock = () => Math.round((performance.now() - started) * 1000)
-  const start = await source.start({ fps: 10, clock, deliver: (frame) => frames.push(frame), ended: () => {}, timeoutMs: 5000 })
+  const start = await source.start({ fps: 10, clock, deliver: (frame) => frames.push(frame), ended: () => {}, timeoutMs: defaultTimeouts.setup })
   assert.deepEqual(start, { ok: true, mode: 'screenshot-loop' })
-  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
-  assert.equal((await opened.execute({ kind: 'fill', locator: byTestId('task-title'), value: 'Release checklist' }, 5000)).ok, true)
+  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
+  assert.equal((await opened.execute({ kind: 'fill', locator: byTestId('task-title'), value: 'Release checklist' }, defaultTimeouts.action)).ok, true)
   await delay(500)
-  const stats = await source.stop(5000)
+  const stats = await source.stop(defaultTimeouts.cleanup)
   t.diagnostic(JSON.stringify({ ...stats, problems: stats.problems.length }))
   assert.ok(stats.delivered >= 1 && frames.length === stats.delivered, `delivered ${stats.delivered}`)
   for (const frame of frames) {
@@ -252,7 +253,7 @@ test("WebKit's own snapshots are a frame source of PNG frames carrying the page'
     assert.equal(frame.format, 'png')
     assert.deepEqual([...frame.bytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'a PNG')
   }
-  const capture = await opened.webKitCapture(2000)
+  const capture = await opened.webKitCapture(defaultTimeouts.action)
   assert.ok(capture.ok)
   assert.deepEqual([capture.capture.source, capture.capture.reference], ['webkit', { sessionId: identity.sessionId }])
   assert.deepEqual([...capture.capture.png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47])
@@ -263,7 +264,7 @@ test('a WebKit home a killed Retest process left is swept by the next launch, by
   const script = join(folder, 'launch.ts')
   await writeFile(script, `import { launchWebKit } from ${JSON.stringify(join(repositoryRoot, 'src/browser/webkit/browser.ts'))}
 const browser = await launchWebKit({ buildPath: ${JSON.stringify(webKitPath())}, buildSource: 'test', logFile: ${JSON.stringify(join(folder, 'child.log'))}, headless: true })
-await browser.newPage({}, 10000)
+await browser.newPage({}, ${defaultTimeouts.setup})
 process.stdout.write('ready ' + browser.process.home + '\\n')
 setInterval(() => {}, 1000)
 `)
@@ -304,7 +305,7 @@ test("a lookup WebKit's tree cannot answer as Chrome's does is refused by name a
     '/select': '<!doctype html><select aria-label="Country"><option>Canada</option></select><div role="listbox" aria-label="Cities"><div role="option">Paris</div></div>',
   })
   const opened = await page(t, browser, site.url)
-  assert.equal((await opened.execute({ kind: 'goto', url: '/table' }, 5000)).ok, true)
+  assert.equal((await opened.execute({ kind: 'goto', url: '/table' }, defaultTimeouts.navigation)).ok, true)
   const cell = { by: 'role', role: 'cell', name: 'Grace Hopper' } as const
   const started = performance.now()
   const refused = await opened.execute({ kind: 'observe', locator: cell }, 3000)
@@ -319,15 +320,15 @@ test("a lookup WebKit's tree cannot answer as Chrome's does is refused by name a
   })
   const header = await opened.execute({ kind: 'click', locator: { by: 'role', role: 'columnheader', name: 'Name' } }, 3000)
   assert.equal(header.ok ? undefined : header.failure.class, 'unsupported')
-  const cells = await opened.execute({ kind: 'observe', locator: { by: 'role', role: 'cell' } }, 3000)
+  const cells = await opened.execute({ kind: 'observe', locator: { by: 'role', role: 'cell' } }, defaultTimeouts.action)
   assert.ok(cells.ok && cells.kind === 'observe' && cells.observation.count === 1, 'cells by role alone are counted')
-  const option = await opened.execute({ kind: 'observe', locator: { by: 'role', role: 'option', name: 'Paris' } }, 3000)
+  const option = await opened.execute({ kind: 'observe', locator: { by: 'role', role: 'option', name: 'Paris' } }, defaultTimeouts.action)
   assert.ok(option.ok && option.kind === 'observe' && option.observation.count === 1, "an option WebKit names is found: no select's options are on the page")
 
-  assert.equal((await opened.execute({ kind: 'goto', url: '/select' }, 5000)).ok, true)
+  assert.equal((await opened.execute({ kind: 'goto', url: '/select' }, defaultTimeouts.navigation)).ok, true)
   // A custom option no option of the select could be named is answered exactly; options counted by role are refused,
   // since Chrome counts the select's option and WebKit's tree leaves it out.
-  const options = await opened.execute({ kind: 'observe', locator: { by: 'role', role: 'option', name: 'Paris' } }, 3000)
+  const options = await opened.execute({ kind: 'observe', locator: { by: 'role', role: 'option', name: 'Paris' } }, defaultTimeouts.action)
   assert.ok(options.ok && options.kind === 'observe' && options.observation.count === 1, `the custom option is found beside a select's options: ${JSON.stringify(options)}`)
   const counted = await opened.execute({ kind: 'observe', locator: { by: 'role', role: 'option' } }, 3000)
   assert.equal(counted.ok ? undefined : counted.failure.class, 'unsupported', "with a select's options on the page, options counted by role are refused")
@@ -356,9 +357,9 @@ test('choosing several options in a WebKit list never selects an option nobody a
   const browser = await webkit(t)
   const opened = await page(t, browser, site.url)
   const choose = async (holds: string, wanted: readonly string[]) => {
-    assert.equal((await opened.execute({ kind: 'goto', url: `/holds-${holds.replace(',', '-')}` }, 5000)).ok, true)
-    const result = await opened.execute({ kind: 'select', locator: byTestId('list'), choices: wanted.map((label) => ({ label })), multiple: true }, 5000)
-    const log = await opened.execute({ kind: 'observe', locator: byTestId('log') }, 2000)
+    assert.equal((await opened.execute({ kind: 'goto', url: `/holds-${holds.replace(',', '-')}` }, defaultTimeouts.navigation)).ok, true)
+    const result = await opened.execute({ kind: 'select', locator: byTestId('list'), choices: wanted.map((label) => ({ label })), multiple: true }, defaultTimeouts.action)
+    const log = await opened.execute({ kind: 'observe', locator: byTestId('log') }, defaultTimeouts.action)
     assert.ok(log.ok && log.kind === 'observe')
     const heard = (log.observation.text ?? '').trim().split(' ').filter((entry) => entry !== '')
     for (const entry of heard) {
@@ -413,12 +414,12 @@ test("a WebKit list's keys are planned only from the element an action is pinned
   const site = await servePages(t, { '/': `<!doctype html><title></title>${list('first')}${list('second')}` })
   const browser = await webkit(t)
   const opened = await page(t, browser, site.url)
-  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
-  const read = await opened.readElements([byTestId('first'), byTestId('second')], 5000)
+  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
+  const read = await opened.readElements([byTestId('first'), byTestId('second')], defaultTimeouts.action)
   assert.ok(read.ok, JSON.stringify(read))
   const [first, second] = read.reads.map((each) => each.keys)
   assert.ok(first?.length === 1 && second?.length === 1 && first[0] !== second[0], JSON.stringify(read.reads))
-  const plan = (testId: string, element: string | null) => opened.world.call(listPlanFunction, locatorArguments(byTestId(testId), [{ choices: [{ label: 'A' }, { label: 'B' }], element }]), listPlanSchema, new Deadline(5000))
+  const plan = (testId: string, element: string | null) => opened.world.call(listPlanFunction, locatorArguments(byTestId(testId), [{ choices: [{ label: 'A' }, { label: 'B' }], element }]), listPlanSchema, new Deadline(defaultTimeouts.action))
   const planned = { status: 'planned', keys: [{ key: 'Home', shift: false }, { key: 'ArrowDown', shift: true }] }
   assert.deepEqual(await plan('first', first[0] ?? null), planned)
   assert.deepEqual(await plan('second', first[0] ?? null), { status: 'moved' }, 'the second list is not the element pinned')
@@ -426,9 +427,9 @@ test("a WebKit list's keys are planned only from the element an action is pinned
   const choose: Extract<BrowserCommand, { kind: 'select' }> = { kind: 'select', locator: byTestId('second'), choices: [{ label: 'A' }, { label: 'B' }], multiple: true }
   const refused = await opened.dispatchTo(choose, first[0] ?? '', 2000)
   assert.deepEqual([refused.input, refused.result.ok ? 'chosen' : refused.result.failure.details?.['refused']], ['not_sent', 'moved'], JSON.stringify(refused))
-  const chosen = await opened.dispatchTo(choose, second[0] ?? '', 5000)
+  const chosen = await opened.dispatchTo(choose, second[0] ?? '', defaultTimeouts.action)
   assert.ok(chosen.result.ok, JSON.stringify(chosen))
-  const heard = await opened.readPage([], 2000)
+  const heard = await opened.readPage([], defaultTimeouts.action)
   assert.equal(heard.title, 'second:A|second:AB|', 'only the pinned list heard a change, and only of options asked for')
 })
 
@@ -441,7 +442,7 @@ test('a click on an element that stays hidden, and a check of a checkbox that st
   const site = await servePages(t, { '/': `<!doctype html><button data-testid="hidden" style="display: none">Hidden</button>${covered}` })
   const browser = await webkit(t)
   const opened = await page(t, browser, site.url)
-  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, 5000)).ok, true)
+  assert.equal((await opened.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok, true)
   const budgetMs = 60
   const early: string[] = []
   const tries = [

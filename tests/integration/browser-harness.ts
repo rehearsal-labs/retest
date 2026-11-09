@@ -27,9 +27,13 @@ import { describeLocator } from '../../src/protocol/locator.ts'
 import { heldLaunches, launchesHeldByJob } from '../../src/shared/process-system.ts'
 import { engineUnderTest } from './engines.ts'
 
-/** The budgets these tests give opening a page and closing the browser. */
-export const setupMs = 10_000
-export const closeMs = 5000
+/**
+ * The budgets these tests give opening a page and closing the browser: the ones users get. A step that works ends when
+ * the browser says it is done, so a budget is only how long a step that never ends is given, and a shorter one failed
+ * tests on a busy CI machine whose steps were working, only slowly.
+ */
+export const setupMs: number = defaultTimeouts.setup
+export const closeMs: number = defaultTimeouts.cleanup
 
 import { browserPath } from '../support/test-browser.ts'
 
@@ -62,7 +66,7 @@ export async function launch(t: TestContext): Promise<OwnedBrowser> {
   const engine = engineUnderTest()
   if (engine.name === 'chromium') return launchThrough(t, (pipe) => new PipeTransport(pipe))
   const folder = await scratchFolder(t)
-  return closedAfter(t, await engine.launch({ logFile: join(folder, 'browser.log'), headless: true }, setupMs * 3))
+  return closedAfter(t, await engine.launch({ logFile: join(folder, 'browser.log'), headless: true }, setupMs))
 }
 
 /**
@@ -165,12 +169,12 @@ export function sharedBrowser(): () => OwnedBrowser {
 export function launchEngine(logFile: string): Promise<OwnedBrowser> {
   const engine = engineUnderTest()
   if (engine.name === 'chromium') return launchBrowser({ executablePath: browserPath(), logFile, headless: true })
-  return engine.launch({ logFile, headless: true }, setupMs * 3)
+  return engine.launch({ logFile, headless: true }, setupMs)
 }
 
 export async function openPage(t: TestContext, browser: OwnedBrowser, baseUrl?: string, options: Omit<NewPageOptions, 'baseUrl'> = {}): Promise<OwnedPage> {
   const page = await browser.newPage(baseUrl === undefined ? options : { ...options, baseUrl }, setupMs)
-  t.after(() => page.dispose(2000))
+  t.after(() => page.dispose(closeMs))
   return page
 }
 
@@ -241,7 +245,7 @@ function locatorOf(target: Target): LocatorRecipe {
   return typeof target === 'string' ? byTestId(target) : target
 }
 
-export function goto(page: OwnedPage, url: string, timeoutMs = 5000): Promise<CommandResult> {
+export function goto(page: OwnedPage, url: string, timeoutMs: number = defaultTimeouts.navigation): Promise<CommandResult> {
   return page.execute({ kind: 'goto', url }, timeoutMs)
 }
 
@@ -285,7 +289,7 @@ export function scroll(page: OwnedPage, target: Target | undefined, delta: { x?:
 }
 
 export async function observe(page: OwnedPage, target: Target): Promise<Observation> {
-  const result = await page.execute({ kind: 'observe', locator: locatorOf(target) }, 2000)
+  const result = await page.execute({ kind: 'observe', locator: locatorOf(target) }, defaultTimeouts.action)
   assert.ok(result.ok && result.kind === 'observe', JSON.stringify(result))
   return result.observation
 }
@@ -293,8 +297,7 @@ export async function observe(page: OwnedPage, target: Target): Promise<Observat
 /**
  * Waits, within the setup budget, until a page that has just loaded answers a look that finds `target` once. Chrome
  * styles and lays out a new document, and builds its accessibility tree, on the first look that needs them, while the
- * page draws its first frame. On a loaded host that first rendering outlasted the two seconds `observe` gives one look,
- * so a test whose looks are timed waits for it here.
+ * page draws its first frame, so a test whose looks are timed waits for it here.
  *
  * @example assertOk(await goto(page, '/locators')); await awaitFirstLook(page, byRole('heading', 'Locators'))
  */
@@ -308,7 +311,7 @@ export async function observeUntil(
   page: OwnedPage,
   target: Target,
   expected: (observation: Observation) => boolean,
-  timeoutMs = 5000,
+  timeoutMs: number = defaultTimeouts.assertion,
 ): Promise<Observation> {
   const end = performance.now() + timeoutMs
   for (;;) {

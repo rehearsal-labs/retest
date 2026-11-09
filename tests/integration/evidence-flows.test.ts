@@ -21,6 +21,7 @@ import { selectedXcodebuild } from '../../src/native/executor-process.ts'
 import { processesRunningExecutable } from './reference-flow-processes.ts'
 import { systemTools } from '../../src/native/processes.ts'
 import { isPlainObject } from '../../src/protocol/schema.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { rebuildRecordedResult } from '../../src/store/rebuild-result.ts'
 import { budgets, eventsOf, filesHolding, repositoryRoot, runProject, scratchFolder, testNamed, writeProject } from './cli-harness.ts'
@@ -129,7 +130,7 @@ async function startService(t: TestContext, flags: readonly string[]): Promise<S
     if (stopped) return
     record()
     const problems = ownership?.remains() === true ? ownership.signalReport('SIGKILL').problems : []
-    const ended = await within(exited, 5000, 'the service was still there 5 s after SIGKILL').then(() => true, () => false)
+    const ended = await within(exited, defaultTimeouts.cleanup, `the service was still there ${defaultTimeouts.cleanup / 1000} s after SIGKILL`).then(() => true, () => false)
     if (!ended) assert.fail(['The fixture service did not stop, and the test ends only what it recorded.', ...problems].join('\n'))
   })
   let stdout = ''
@@ -140,7 +141,7 @@ async function startService(t: TestContext, flags: readonly string[]): Promise<S
   child.stderr.setEncoding('utf8').on('data', (text: string) => {
     stderr += text
   })
-  const end = performance.now() + 15_000
+  const end = performance.now() + defaultTimeouts.setup
   for (;;) {
     const url = /^(http:\/\/127\.0\.0\.1:\d+)\n/.exec(stdout)?.[1]
     if (url !== undefined) {
@@ -155,7 +156,7 @@ async function startService(t: TestContext, flags: readonly string[]): Promise<S
       }
       return { url, networkLog, requests }
     }
-    if (performance.now() > end) assert.fail(`the service printed no address within 15 s: ${stderr}`)
+    if (performance.now() > end) assert.fail(`the service printed no address within ${defaultTimeouts.setup / 1000} s: ${stderr}`)
     await delay(10)
   }
 }
@@ -396,11 +397,11 @@ function field(value: unknown, name: string): unknown {
 
 /** The service's own reading of one task for a fresh session of `client`. */
 async function readAs(service: Service, client: string, id: string): Promise<{ done: unknown; revision: unknown }> {
-  const signedIn = await fetch(`${service.url}/api/sign-in`, { method: 'POST', headers: { [CLIENT_HEADER]: client, 'content-type': 'application/json' }, body: JSON.stringify({ account: 'ada', password }), signal: AbortSignal.timeout(5000) })
+  const signedIn = await fetch(`${service.url}/api/sign-in`, { method: 'POST', headers: { [CLIENT_HEADER]: client, 'content-type': 'application/json' }, body: JSON.stringify({ account: 'ada', password }), signal: AbortSignal.timeout(defaultTimeouts.action) })
   assert.equal(signedIn.status, 200)
   const token = field(await signedIn.json(), 'token')
   assert.equal(typeof token, 'string')
-  const read = await fetch(`${service.url}/api/tasks/${id}`, { headers: { authorization: `Bearer ${String(token)}` }, signal: AbortSignal.timeout(5000) })
+  const read = await fetch(`${service.url}/api/tasks/${id}`, { headers: { authorization: `Bearer ${String(token)}` }, signal: AbortSignal.timeout(defaultTimeouts.action) })
   assert.equal(read.status, 200)
   const task = field(await read.json(), 'task')
   return { done: field(task, 'done'), revision: field(task, 'revision') }
@@ -442,7 +443,7 @@ for (const engine of webEngines.filter(engine => engine.name === (process.env['R
 
   test(`with the web on ${engine.label} and sync from the web to the desk broken, the reference flow fails at the desk state check, naming the task, and goes no further`, flowTest, async (t) => {
     const { run, service } = await runFlow(t, engine, ['--broken-sync=web:macos'], `${engine.name}-broken-sync`)
-    const health: unknown = await (await fetch(`${service.url}/api/health`, { signal: AbortSignal.timeout(5000) })).json()
+    const health: unknown = await (await fetch(`${service.url}/api/health`, { signal: AbortSignal.timeout(defaultTimeouts.action) })).json()
     assert.deepEqual(field(health, 'brokenSync'), { kind: 'links', links: [{ from: 'web', to: 'macos' }] })
     assert.equal(run.exit.code, 1)
     const result = testNamed(run, flowName)

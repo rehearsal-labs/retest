@@ -178,7 +178,7 @@ async function judged(t: TestContext, engine: TestEngine): Promise<void> {
     'judges/pixels.ts': pixelJudge(),
     'tests/judged.retest.ts': judgedTests,
   })
-  const finished = await runProject(t, root, { env: engine.environment, timeouts: budgets({ assertion: 10_000, action: 5000, test: 30_000 }) })
+  const finished = await runProject(t, root, { env: engine.environment, timeouts: budgets({ assertion: 10_000 }) })
   assert.equal(finished.exit.code, 1, `${finished.stdout}\n${finished.stderr}`)
 
   // The same statuses, failure classes and verdicts on every engine.

@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { launchFirefox } from '../../src/browser/firefox/launch.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, check, click, closeMs, failureOf, fill, goto, observe, observeUntil, openApp, openPage, scratchFolder, servePages, setupMs, sharedBrowser, within } from './browser-harness.ts'
 import { firefoxHostSkip, firefoxPath, testFirefoxRoute } from './engines.ts'
 
@@ -30,7 +31,7 @@ async function popupsPage(t: TestContext, on: OwnedBrowser = browser(), partner?
 }
 
 // Arms the page for a popup, then clicks what opens it, as page.popup() does.
-async function popupFrom(page: OwnedPage, target: string, timeoutMs = 5000): Promise<{ popup: OpenedPopup; first: PageNavigation | undefined }> {
+async function popupFrom(page: OwnedPage, target: string, timeoutMs: number = defaultTimeouts.action): Promise<{ popup: OpenedPopup; first: PageNavigation | undefined }> {
   assert.ok(page.armPopup !== undefined, 'a Firefox page hands over the pages it opens')
   const arming = await page.armPopup({ timeoutMs, setupMs })
   assert.ok(arming.ok, JSON.stringify(arming))
@@ -58,7 +59,7 @@ test('a link with a target opens a page that is handed over with its first docum
   // The opener keeps its own page: a command to it still acts on it.
   assert.equal((await observe(page, 'status')).text, 'Ready')
   assertOk(await click(page, 'help'))
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('a page window.open opens on the same origin is handed over with its first address and title', { skip }, async (t) => {
@@ -67,7 +68,7 @@ test('a page window.open opens on the same origin is handed over with its first 
   assert.equal(pathOf(first?.url), '/popups/help')
   assert.equal(await first?.title, 'Help')
   assert.equal((await observe(popup.page, 'help-text')).text, 'Ask us anything.')
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 // Firefox keeps the window of a popup's first, empty document for the first document of its opener's origin, and runs no
@@ -85,11 +86,11 @@ test("a popup window.open sends to its opener's origin takes typing, keys and cl
   assert.equal(pathOf(first?.url), '/form')
   assert.equal(await first?.title, 'Form')
   assertOk(await fill(popup.page, 'name', 'Ada Lovelace'))
-  assertOk(await popup.page.execute({ kind: 'press', locator: { by: 'testId', value: 'name' }, key: 'Backspace' }, 5000))
+  assertOk(await popup.page.execute({ kind: 'press', locator: { by: 'testId', value: 'name' }, key: 'Backspace' }, defaultTimeouts.action))
   assertOk(await click(popup.page, 'show'))
   assert.equal((await observe(popup.page, 'shown')).text, 'Ada Lovelac')
   assert.equal(popup.page.url, `${site.url}/form`)
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('a sign-in popup on another origin sends itself on at once, answers its opener and closes itself', { skip }, async (t) => {
@@ -104,7 +105,7 @@ test('a sign-in popup on another origin sends itself on at once, answers its ope
   assertOk(await fill(popup.page, 'partner-password', 'correct horse'))
   assertOk(await click(popup.page, 'sign-in'))
   await observeUntil(page, 'status', (seen) => seen.text === 'Signed in as alice@example.com')
-  assert.deepEqual(await within(popup.gone, 3000, 'the popup did not close itself'), { kind: 'closed' })
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.assertion, 'the popup did not close itself'), { kind: 'closed' })
   assert.equal(popup.closed(), true)
   // The page is gone with its browsing context, so a look at it fails as a lost page, at once.
   assert.equal(failureOf(await popup.page.execute({ kind: 'observe', locator: { by: 'testId', value: 'sign-in' } }, 1000)).class, 'session_lost')
@@ -114,27 +115,27 @@ test('a popup that closes itself is told gone, and its opener sees it closed', {
   const { page } = await popupsPage(t)
   const { popup, first } = await popupFrom(page, 'flash')
   assert.equal(pathOf(first?.url), '/popups/closing')
-  await within(popup.gone, 3000, 'the popup did not close itself')
+  await within(popup.gone, defaultTimeouts.assertion, 'the popup did not close itself')
   await observeUntil(page, 'status', (seen) => seen.text === 'Popup closed')
   // A popup that went is disposed with nothing left to do.
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('close closes a popup and its browsing context goes; one whose beforeunload handler asks is held by the dialog, refused by name, and closed at disposal', { skip }, async (t) => {
   const { page } = await popupsPage(t)
   const help = await popupFrom(page, 'help')
-  assert.deepEqual(await help.popup.page.execute({ kind: 'close' }, 3000), { ok: true, kind: 'close' })
-  assert.deepEqual(await within(help.popup.gone, 2000, 'the closed popup is not gone'), { kind: 'closed' })
+  assert.deepEqual(await help.popup.page.execute({ kind: 'close' }, defaultTimeouts.cleanup), { ok: true, kind: 'close' })
+  assert.deepEqual(await within(help.popup.gone, defaultTimeouts.cleanup, 'the closed popup is not gone'), { kind: 'closed' })
   assert.equal((await observe(page, 'status')).text, 'Ready')
 
   const { popup } = await popupFrom(page, 'dialogs')
   assertOk(await check(popup.page, 'guard'))
-  const asked = await popup.page.dispatch({ kind: 'close' }, 3000)
+  const asked = await popup.page.dispatch({ kind: 'close' }, defaultTimeouts.cleanup)
   assert.deepEqual(asked.result, { ok: false, failure: { class: 'unsupported', message: 'The page opened a beforeunload dialog while Retest tried to close the page. Retest does not answer dialogs yet, and the dialog blocks the page.', details: { dialog: 'beforeunload', inputSent: true } } })
   assert.notEqual(asked.input, 'not_sent')
   assert.equal(popup.closed(), false, 'the dialog keeps the popup open')
-  await popup.page.dispose(3000)
-  assert.deepEqual(await within(popup.gone, 3000, 'the disposed popup is not gone'), { kind: 'closed' })
+  await popup.page.dispose(defaultTimeouts.cleanup)
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone'), { kind: 'closed' })
   assert.equal((await observe(page, 'status')).text, 'Ready')
 })
 
@@ -161,7 +162,7 @@ test('a page opened while nothing waited runs on, and a later wait is given only
   const { popup, first } = await popupFrom(page, 'terms')
   assert.equal(pathOf(first?.url), '/popups/terms')
   assert.equal((await observe(popup.page, 'email')).count, 1)
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('a popup has the viewport of the page that opened it from its first document, and its opener stays shown', { skip }, async (t) => {
@@ -177,21 +178,21 @@ test('a popup has the viewport of the page that opened it from its first documen
   const other = await popupFrom(opener, 'open')
   assertOk(await click(other.popup.page, { by: 'text', text: 'Other' }))
   assert.equal((await observe(opener, 'seen')).text, 'visible', 'the opener was never hidden by the window its popup opened in')
-  await other.popup.page.dispose(2000)
-  await popup.page.dispose(2000)
+  await other.popup.page.dispose(defaultTimeouts.cleanup)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test("a popup's own popup is handed over by the popup, and each is a web session apart from its opener", { skip }, async (t) => {
   const { page } = await popupsPage(t)
   const { popup } = await popupFrom(page, 'again')
   const session: WebSession = popup.page
-  assert.ok((await session.screenshot(2000)).byteLength > 0)
+  assert.ok((await session.screenshot(defaultTimeouts.action)).byteLength > 0)
   const nested = await popupFrom(popup.page, 'help')
   assert.equal(pathOf(nested.first?.url), '/popups/help')
   assert.equal((await observe(nested.popup.page, 'help-text')).text, 'Ask us anything.')
-  await nested.popup.page.dispose(2000)
-  await popup.page.dispose(2000)
-  await within(popup.gone, 2000, 'the disposed popup is not gone')
+  await nested.popup.page.dispose(defaultTimeouts.cleanup)
+  await popup.page.dispose(defaultTimeouts.cleanup)
+  await within(popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone')
   // The opener's user context stays: the opener still answers.
   assert.equal((await observe(page, 'status')).text, 'Ready')
 })
@@ -202,10 +203,10 @@ test('disposing pages leaves no popup behind: a popup closes its own browsing co
   const handed = await popupFrom(page, 'help')
   assertOk(await click(page, 'terms'))
   await waitFor(() => contexts().map(pathOf).sort().join(' ') === '/popups/help /popups/terms', 'the two popups to open their first documents')
-  await handed.popup.page.dispose(2000)
-  await within(handed.popup.gone, 2000, 'the disposed popup is not gone')
+  await handed.popup.page.dispose(defaultTimeouts.cleanup)
+  await within(handed.popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone')
   assert.deepEqual(contexts().map(pathOf), ['/popups/terms'])
-  await page.dispose(2000)
+  await page.dispose(defaultTimeouts.cleanup)
   await waitFor(() => contexts().length === 0, 'the popups of a disposed page to go')
 })
 
@@ -227,12 +228,12 @@ async function launchWatched(t: TestContext): Promise<{ browser: OwnedBrowser; c
       })
     }
   }
-  const owned = await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), headless: true, logFile: join(folder, 'browser.log') }, setupMs * 3, (url) => new WatchedSocket(url))
+  const owned = await launchFirefox({ executablePath: firefoxPath(), route: testFirefoxRoute(), headless: true, logFile: join(folder, 'browser.log') }, setupMs, (url) => new WatchedSocket(url))
   t.after(() => owned.close(closeMs))
   return { browser: owned, contexts: () => [...open.values()] }
 }
 
-async function waitFor(condition: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
+async function waitFor(condition: () => boolean, what: string, timeoutMs: number = defaultTimeouts.assertion): Promise<void> {
   const end = performance.now() + timeoutMs
   while (!condition()) {
     if (performance.now() > end) assert.fail(`timed out waiting for ${what}`)

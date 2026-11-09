@@ -25,6 +25,7 @@ import { mediaArguments, MediaProcess } from '../../src/media/client.ts'
 import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { evaluationRecordSchema } from '../../src/protocol/evaluation.ts'
 import { parse } from '../../src/protocol/schema.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { Redactor } from '../../src/runner/redactor.ts'
 import { RunStore } from '../../src/store/run-store.ts'
 import { newRunFolder, quickTimeouts } from '../support/run-harness.ts'
@@ -64,7 +65,7 @@ function harness(t: TestContext, page: AppPage, recordings: AttemptRecordings, c
   const evaluation: LoadedEvaluation = { judges: new Map([['visual', { name: 'visual', adapter: { kind: 'factory', factory }, credentials: new Map(), options: {}, accepts: ['text', 'images', 'frames'] }]]), defaultJudge: 'visual', timeoutMs: 10_000, limits: defaultEvaluationLimits }
   const redactor = new Redactor()
   const judges = new Judges({ evaluation, redactor, env: {} })
-  t.after(() => judges.close(1000))
+  t.after(() => judges.close(defaultTimeouts.cleanup))
   const context: PagesContext = {
     store,
     timeouts: quickTimeouts,
@@ -91,7 +92,7 @@ async function check(evaluations: AttemptEvaluations, evidence: EvidenceSelector
 }
 
 async function act(page: ChromiumPage, kind: 'fill' | 'click', value?: string): Promise<void> {
-  const result = kind === 'fill' ? await page.execute({ kind: 'fill', locator: titleField, value: value ?? '' }, 5000) : await page.execute({ kind: 'click', locator: saveButton }, 5000)
+  const result = kind === 'fill' ? await page.execute({ kind: 'fill', locator: titleField, value: value ?? '' }, defaultTimeouts.action) : await page.execute({ kind: 'click', locator: saveButton }, defaultTimeouts.action)
   assert.ok(result.ok, JSON.stringify(result))
 }
 
@@ -122,25 +123,25 @@ test('checks over frames of a real Chrome recording', async (t) => {
       await recording
     } finally {
       try {
-        await held.recording?.release(5000)
+        await held.recording?.release(defaultTimeouts.cleanup)
       } finally {
         await held.media?.close(10_000)
       }
     }
   })
   const folder = await scratchFolder(t)
-  const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: 10_000 })
+  const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: defaultTimeouts.setup })
   held.media = media
   const scene = await serveScene('toast')
   t.after(() => scene.close())
   const browser: OwnedBrowser = await launch(t)
   const opened = await browser.newPage({ baseUrl: scene.url, emulation: { viewport: { width: 640, height: 400 }, deviceScaleFactor: 1, touch: false, isMobile: false } }, setupMs)
-  t.after(() => opened.dispose(2000))
+  t.after(() => opened.dispose(defaultTimeouts.cleanup))
   assert.ok(opened instanceof ChromiumPage, 'a Chromium page')
   const page = opened
   const session = { sessionId: identity.sessionId, owner: { runId: 'run-frames', testId: identity.testId, attemptId: identity.attemptId, app: 'web' }, runtime: webRuntimeIdentity(browser, 'chromium') }
   page.identify(session)
-  assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+  assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
 
   // The run's clock: the store's milliseconds and the capture's microseconds count from the same moment.
   const zero = performance.now()
@@ -178,13 +179,13 @@ test('checks over frames of a real Chrome recording', async (t) => {
     deadlineMs: 20_000,
     limits: { keepFrames: true },
     clock: clockUs,
-    startTimeoutMs: 10_000,
-    stopTimeoutMs: 5000,
+    startTimeoutMs: defaultTimeouts.setup,
+    stopTimeoutMs: defaultTimeouts.cleanup,
     finishTimeoutMs: 30_000,
     signal: stop.signal,
     suspension,
   })
-  for (let waited = 0; held.recording === undefined && waited < 100; waited++) await delay(100)
+  for (let waited = 0; held.recording === undefined && waited < defaultTimeouts.setup / 100; waited++) await delay(100)
   const recorded = held.recording
   assert.ok(recorded !== undefined, 'the recording started')
 
@@ -198,7 +199,7 @@ test('checks over frames of a real Chrome recording', async (t) => {
   spans['save'] = { fromUs: saveFrom, toUs: clockUs() }
   await act(page, 'fill', 'Typed after save, so its frames are placed')
   // Stop the caret's future paints so the pending-frame interval includes the actual newest frame throughout its query.
-  assert.ok((await page.execute({ kind: 'press', locator: titleField, key: 'Tab' }, 2000)).ok, 'focus leaves the blinking title field')
+  assert.ok((await page.execute({ kind: 'press', locator: titleField, key: 'Tab' }, defaultTimeouts.action)).ok, 'focus leaves the blinking title field')
   await delay(600)
 
   const recordings: AttemptRecordings = {

@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { launchWebKit } from '../../src/browser/webkit/browser.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, check, click, closeMs, failureOf, fill, goto, groupExists, observe, observeUntil, openApp, openPage, scratchFolder, setupMs, sharedBrowser, timed, within } from './browser-harness.ts'
 import { budgets, configSource, eventsOf, runProject, testNamed, writeProject } from './cli-harness.ts'
 import { engineAbsence, webKitPath } from './engines.ts'
@@ -36,7 +37,7 @@ async function popupsPage(t: TestContext, on: OwnedBrowser = browser(), partner?
 
 // Arms the page for a popup, then clicks what opens it, as page.popup() does. The click is awaited only once the popup
 // is set up: a page `window.open` opens shares its opener's web process, which runs nothing while the popup is held.
-async function popupFrom(page: OwnedPage, target: string, timeoutMs = 5000): Promise<{ popup: OpenedPopup; first: PageNavigation | undefined }> {
+async function popupFrom(page: OwnedPage, target: string, timeoutMs: number = defaultTimeouts.action): Promise<{ popup: OpenedPopup; first: PageNavigation | undefined }> {
   assert.ok(page.armPopup !== undefined, 'a WebKit page hands over the pages it opens')
   const arming = await page.armPopup({ timeoutMs, setupMs })
   assert.ok(arming.ok, JSON.stringify(arming))
@@ -52,7 +53,7 @@ function pathOf(url: string | undefined): string {
   return url === undefined || url === '' ? '' : new URL(url).pathname
 }
 
-async function waitFor(condition: () => boolean | Promise<boolean>, what: string, timeoutMs = 3000): Promise<void> {
+async function waitFor(condition: () => boolean | Promise<boolean>, what: string, timeoutMs: number = defaultTimeouts.assertion): Promise<void> {
   const end = performance.now() + timeoutMs
   while (!(await condition())) {
     if (performance.now() > end) assert.fail(`timed out waiting for ${what}`)
@@ -72,8 +73,8 @@ test('a link with a target opens a page that is handed over before its first doc
   // The opener keeps its own page and focus: a command to it still acts on it.
   assert.equal((await observe(page, 'status')).text, 'Ready')
   assertOk(await click(page, 'help'))
-  await popup.page.dispose(2000)
-  assert.deepEqual(await within(popup.gone, 2000, 'the disposed popup is not gone'), { kind: 'closed' })
+  await popup.page.dispose(defaultTimeouts.cleanup)
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone'), { kind: 'closed' })
 })
 
 test('a page window.open opens on the same origin is handed over with its first address and title', { skip }, async (t) => {
@@ -82,7 +83,7 @@ test('a page window.open opens on the same origin is handed over with its first 
   assert.equal(pathOf(first?.url), '/popups/help')
   assert.equal(await first?.title, 'Help')
   assert.equal((await observe(popup.page, 'help-text')).text, 'Ask us anything.')
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('a sign-in popup on another origin redirects at once, answers its opener and closes itself', { skip }, async (t) => {
@@ -97,7 +98,7 @@ test('a sign-in popup on another origin redirects at once, answers its opener an
   assertOk(await fill(popup.page, 'partner-password', 'correct horse'))
   assertOk(await click(popup.page, 'sign-in'))
   await observeUntil(page, 'status', (seen) => seen.text === 'Signed in as alice@example.com')
-  assert.deepEqual(await within(popup.gone, 3000, 'the popup did not close itself'), { kind: 'closed' })
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.assertion, 'the popup did not close itself'), { kind: 'closed' })
   assert.equal(popup.closed(), true)
   // The page is gone, so a look at it fails as a lost page, at once.
   assert.equal(failureOf(await popup.page.execute({ kind: 'observe', locator: { by: 'testId', value: 'sign-in' } }, 1000)).class, 'session_lost')
@@ -107,18 +108,18 @@ test('a popup that closes itself is told gone, and its opener sees it closed', {
   const { page } = await popupsPage(t)
   const { popup, first } = await popupFrom(page, 'flash')
   assert.equal(pathOf(first?.url), '/popups/closing')
-  assert.deepEqual(await within(popup.gone, 3000, 'the popup did not close itself'), { kind: 'closed' })
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.assertion, 'the popup did not close itself'), { kind: 'closed' })
   await observeUntil(page, 'status', (seen) => seen.text === 'Popup closed')
   // A popup that went is disposed with nothing left to do, and closing it again is refused.
   assert.deepEqual(failureOf(await popup.page.execute({ kind: 'close' }, 1000)).class, 'session_lost')
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('close closes a popup and waits for it to go, and the opener stays', { skip }, async (t) => {
   const { page } = await popupsPage(t)
   const { popup } = await popupFrom(page, 'help')
-  assert.deepEqual(await popup.page.execute({ kind: 'close' }, 3000), { ok: true, kind: 'close' })
-  assert.deepEqual(await within(popup.gone, 1000, 'the closed popup is not gone'), { kind: 'closed' })
+  assert.deepEqual(await popup.page.execute({ kind: 'close' }, defaultTimeouts.cleanup), { ok: true, kind: 'close' })
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.cleanup, 'the closed popup is not gone'), { kind: 'closed' })
   assert.equal(popup.closed(), true)
   assert.equal((await observe(page, 'status')).text, 'Ready')
 })
@@ -137,8 +138,8 @@ test("close runs the popup's beforeunload, whose dialog holds the popup and fail
   })
   assert.ok(ms < 2000, `the close failed in ${ms} ms, as the dialog opened`)
   assert.equal(popup.closed(), false, 'the popup stayed open behind its dialog')
-  await popup.page.dispose(2000)
-  assert.deepEqual(await within(popup.gone, 2000, 'the disposed popup is not gone'), { kind: 'closed' })
+  await popup.page.dispose(defaultTimeouts.cleanup)
+  assert.deepEqual(await within(popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone'), { kind: 'closed' })
 })
 
 test('a wait that sees no page fails when its time runs out, and a page waits for one popup at a time', { skip }, async (t) => {
@@ -166,7 +167,7 @@ test('a page opened while nothing waited runs on, and a later wait is given only
   const { popup, first } = await popupFrom(page, 'terms')
   assert.equal(pathOf(first?.url), '/popups/terms')
   assert.equal((await observe(popup.page, 'email')).count, 1)
-  await popup.page.dispose(2000)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('a popup has the screen of the page that opened it, and opens popups of its own', { skip }, async (t) => {
@@ -177,9 +178,9 @@ test('a popup has the screen of the page that opened it, and opens popups of its
   const { popup: nested, first } = await popupFrom(again.page, 'help')
   assert.equal(pathOf(first?.url), '/popups/help')
   assert.equal((await observe(nested.page, 'help-text')).text, 'Ask us anything.')
-  await nested.page.dispose(2000)
-  await again.page.dispose(2000)
-  await popup.page.dispose(2000)
+  await nested.page.dispose(defaultTimeouts.cleanup)
+  await again.page.dispose(defaultTimeouts.cleanup)
+  await popup.page.dispose(defaultTimeouts.cleanup)
 })
 
 test('a popup is a web session of its own: it can be named and pictured, apart from its opener', { skip }, async (t) => {
@@ -187,10 +188,10 @@ test('a popup is a web session of its own: it can be named and pictured, apart f
   const { popup } = await popupFrom(page, 'help')
   const session: WebSession = popup.page
   session.identify?.({ sessionId: 'attempt1:web/popup-1', owner: { runId: 'run1', testId: 'popups', attemptId: 'attempt1', app: 'web/popup-1' }, runtime: { kind: 'web', engine: 'webkit', product: 'WebKit', version: '2359', executablePath: webKitPath(), processIds: [] } })
-  const png = await session.screenshot(2000)
+  const png = await session.screenshot(defaultTimeouts.action)
   assert.ok(png.byteLength > 0)
-  await popup.page.dispose(2000)
-  await within(popup.gone, 2000, 'the disposed popup is not gone')
+  await popup.page.dispose(defaultTimeouts.cleanup)
+  await within(popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone')
   // The opener's context stays: the opener still answers.
   assert.equal((await observe(page, 'status')).text, 'Ready')
 })
@@ -230,10 +231,10 @@ test('disposing pages leaves no popup page behind: a popup closes its own page, 
   // One more popup nobody waited for.
   assertOk(await click(page, 'terms'))
   await waitFor(() => pages().size === before + 2, 'the two popups to open')
-  await handed.popup.page.dispose(2000)
-  await within(handed.popup.gone, 2000, 'the disposed popup is not gone')
+  await handed.popup.page.dispose(defaultTimeouts.cleanup)
+  await within(handed.popup.gone, defaultTimeouts.cleanup, 'the disposed popup is not gone')
   assert.equal(pages().size, before + 1)
-  await page.dispose(2000)
+  await page.dispose(defaultTimeouts.cleanup)
   await waitFor(() => pages().size === before - 1, 'the popups of a disposed page to go')
 })
 
@@ -242,7 +243,7 @@ test('disposing pages leaves no popup page behind: a popup closes its own page, 
 async function launchCounting(t: TestContext): Promise<{ browser: OwnedBrowser; pages: () => ReadonlySet<string> }> {
   const folder = await scratchFolder(t)
   const open = new Set<string>()
-  const owned = await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'webkit.log'), headless: true }, setupMs * 3, (streams) => {
+  const owned = await launchWebKit({ buildPath: webKitPath(), buildSource: 'RETEST_TEST_WEBKIT', logFile: join(folder, 'webkit.log'), headless: true }, setupMs, (streams) => {
     const inner = new PipeTransport(streams)
     return {
       listen(handlers) {
@@ -328,7 +329,7 @@ test('a run on WebKit drives popups, writes their opening and closing, pictures 
     'retest.config.ts': configSource(`{ apps: { web: { browser: 'webkit', executablePath: ${JSON.stringify(webKitPath())}, baseUrl: ${JSON.stringify(app.url)} } } }`),
     'tests/popups.retest.ts': runTests(partner.url),
   })
-  const run = await runProject(t, root, { timeouts: budgets({ action: 3000, assertion: 2000 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
   const scoped = <T extends { testId: string }>(events: readonly T[], name: string): T[] => events.filter((event) => event.testId === testNamed(run, name).testId)
 

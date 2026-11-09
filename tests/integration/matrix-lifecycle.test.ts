@@ -22,7 +22,9 @@ import {
 } from './cli-harness.ts'
 import { killBrowserFromOutside } from './outside-kill.ts'
 
-// The test budget, the second a stopped test's process has to answer, then closing the browser.
+// From the timed-out test's start to the run's end: its budget, the second its stopped process has to answer, then
+// closing the browser. Starting the browser comes before the test starts and is not counted: on a busy machine that
+// alone can take seconds.
 const timeoutBoundMs = 10_000
 
 async function runTimeout(t: TestContext, name: string): Promise<FinishedRun> {
@@ -32,7 +34,11 @@ async function runTimeout(t: TestContext, name: string): Promise<FinishedRun> {
   const [pid] = printedPids(childLog(run, file))
   assert.ok(pid !== undefined, 'the test file printed its process id')
   assert.equal(isRunning(pid), false, 'the process of the timed out file was ended')
-  assert.ok(run.durationMs < timeoutBoundMs, `took ${run.durationMs} ms`)
+  const started = run.events.find((event) => event.type === 'test.started')
+  const finished = run.events.find((event) => event.type === 'run.finished')
+  assert.ok(started !== undefined && finished !== undefined, 'the run told of its test starting and of its end')
+  const tookMs = finished.elapsedMs - started.elapsedMs
+  assert.ok(tookMs < timeoutBoundMs, `took ${tookMs} ms from the test's start to the run's end`)
   return run
 }
 

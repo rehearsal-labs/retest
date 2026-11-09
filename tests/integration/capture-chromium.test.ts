@@ -27,7 +27,7 @@ const title = { by: 'testId', value: 'task-title' } as const
 const identity: RecordIdentity = { testId: 'tests/integration/capture-chromium.test.ts > records', attemptId: 'capture1', app: 'web', sessionId: formatSessionId('capture1', 'web') }
 
 async function startMedia(t: TestContext, needs: MediaPrerequisites): Promise<MediaProcess> {
-  const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: 10_000 })
+  const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: defaultTimeouts.setup })
   t.after(() => media.close(10_000))
   return media
 }
@@ -66,12 +66,12 @@ async function chromePage(t: TestContext, watch: (message: Record<string, unknow
   const opened = await browser.newPage({ baseUrl: app.url }, setupMs)
   assert.ok(opened instanceof ChromiumPage, 'a Chromium page')
   const page = opened
-  t.after(() => page.dispose(2000))
+  t.after(() => page.dispose(defaultTimeouts.cleanup))
   if (named !== 'unnamed') {
     const owner = { runId: 'run-1', testId: named.testId, attemptId: named.attemptId, app: named.app }
     page.identify({ sessionId: named.sessionId, owner, runtime: webRuntimeIdentity(browser, 'chromium') })
   }
-  const went = await page.execute({ kind: 'goto', url: '/' }, 10_000)
+  const went = await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)
   assert.ok(went.ok, JSON.stringify(went))
   return { page, pid: browser.pid }
 }
@@ -86,8 +86,8 @@ function recordOptions(folder: string, name: string, signal: AbortSignal): Recor
     fps: 10,
     deadlineMs: 20_000,
     clock: microsecondsSince(performance.now()),
-    startTimeoutMs: 10_000,
-    stopTimeoutMs: 5000,
+    startTimeoutMs: defaultTimeouts.setup,
+    stopTimeoutMs: defaultTimeouts.cleanup,
     finishTimeoutMs: 30_000,
     signal,
   }
@@ -183,7 +183,7 @@ test('a few seconds of a Chrome page reach the media process through the frame s
   const closed = await media.close(10_000)
   assert.deepEqual([closed.forced, closed.bye?.stopped], [false, 0])
   assert.equal(groupExists(report.started?.encoderPid ?? 0), false, 'the encoder is gone')
-  assert.ok(await goneWithin(media.pid, 2000), 'the media process is gone')
+  assert.ok(await goneWithin(media.pid, defaultTimeouts.assertion), 'the media process is gone')
   await typeFor(page, 500)
   assert.equal(counter.count(), sentBeforeClose, 'Chrome sends no more frames once capture stopped, though the page paints again')
   assert.deepEqual(readdirSync(folder).filter((name) => name.endsWith('.partial')), [])
@@ -209,7 +209,7 @@ test('a media process closed mid-capture stops the capture and leaves no process
   assert.ok(report.frames.delivered > 0)
   assertCountsAddUp(report)
   assert.equal(groupExists(report.started?.encoderPid ?? 0), false, 'the encoder is gone')
-  assert.ok(await goneWithin(media.pid, 2000), 'the media process is gone')
+  assert.ok(await goneWithin(media.pid, defaultTimeouts.assertion), 'the media process is gone')
   const sent = counter.count()
   await typeFor(page, 500)
   assert.equal(counter.count(), sent, 'Chrome sends no frames once capture stopped, though the page still paints')
@@ -225,7 +225,7 @@ test('a page closed mid-capture ends the capture, and the frames that came are r
   const media = await startMedia(t, needs)
   const recording = recordSource(page.frameSource(identity), media, recordOptions(folder, 'page-closed', new AbortController().signal))
   await typeFor(page, 1000)
-  await page.dispose(5000)
+  await page.dispose(defaultTimeouts.cleanup)
   const report = await recording
   t.diagnostic(JSON.stringify({ status: report.status, stoppedBy: report.stoppedBy, capture: report.capture, frames: report.frames, ended: report.ended?.status }))
   assert.equal(report.stoppedBy, 'source')
@@ -235,7 +235,7 @@ test('a page closed mid-capture ends the capture, and the frames that came are r
   const closed = await media.close(10_000)
   assert.equal(closed.forced, false)
   assert.equal(groupExists(report.started?.encoderPid ?? 0), false)
-  assert.ok(await goneWithin(media.pid, 2000))
+  assert.ok(await goneWithin(media.pid, defaultTimeouts.assertion))
   assert.deepEqual(readdirSync(folder).filter((name) => name.endsWith('.partial')), [])
 })
 
@@ -262,9 +262,9 @@ test('a page records only as the session it was named, and a page not yet named 
 async function tickerPage(t: TestContext, needs: MediaPrerequisites, watch: (message: Record<string, unknown>) => void = () => undefined): Promise<{ page: ChromiumPage; size: { width: number; height: number } }> {
   const ticker = await tickerServer(t)
   const { page } = await chromePage(t, watch)
-  const went = await page.execute({ kind: 'goto', url: ticker }, 10_000)
+  const went = await page.execute({ kind: 'goto', url: ticker }, defaultTimeouts.navigation)
   assert.ok(went.ok, JSON.stringify(went))
-  const size = await imageSize(needs.ffprobe, await page.screenshot(5000), 'png')
+  const size = await imageSize(needs.ffprobe, await page.screenshot(defaultTimeouts.action), 'png')
   return { page, size }
 }
 
@@ -334,10 +334,10 @@ test('measured beside it: a Page.captureScreenshot loop on the same page is slow
     grabTimeoutMs: 5000,
   })
   const frames: CapturedFrame[] = []
-  const started = await loop.start({ fps: 30, clock, deliver: (frame) => frames.push(frame), ended: () => undefined, timeoutMs: 5000 })
+  const started = await loop.start({ fps: 30, clock, deliver: (frame) => frames.push(frame), ended: () => undefined, timeoutMs: defaultTimeouts.setup })
   assert.deepEqual(started, { ok: true, mode: 'screenshot-loop' })
   await delay(3000)
-  const stats: CaptureStats = await loop.stop(5000)
+  const stats: CaptureStats = await loop.stop(defaultTimeouts.cleanup)
   const ticker = tickerFrames(frames, await decodeFrames(needs, frames), clockZeroEpochMs)
   t.diagnostic(JSON.stringify({ stats, distinctTicks: ticker.distinct, lagMs: spread(ticker.lagsMs), pausesMs: spread(pausesMs(frames)) }))
   assert.deepEqual([ticker.unreadable, ticker.future, ticker.backwards], [[], [], []])
@@ -359,9 +359,9 @@ test('Chrome stops its real screencast during withholding and resumes with a new
   const gaps: { reason: string }[] = []
   const clock = microsecondsSince(performance.now())
   const ended: string[] = []
-  assert.equal((await source.start({ fps: 30, clock, timeoutMs: 5000, deliver: frame => frames.push(frame), ended: reason => ended.push(reason),
+  assert.equal((await source.start({ fps: 30, clock, timeoutMs: defaultTimeouts.setup, deliver: frame => frames.push(frame), ended: reason => ended.push(reason),
     gap: gap => gaps.push(gap), withheld: () => suspension.suspended, onWithholdingChange: listener => suspension.listen(listener) })).ok, true)
-  t.after(() => source.stop(5000))
+  t.after(() => source.stop(defaultTimeouts.cleanup))
   await typeFor(page, 300)
   suspension.suspend()
   await delay(100) // Reconcile a frame already dispatched when the stream was stopped.
@@ -377,6 +377,6 @@ test('Chrome stops its real screencast during withholding and resumes with a new
   assert.ok(frames.slice(heldDelivery).every(frame => (frame.earliestUs ?? 0) >= resumedUs))
   assert.ok(gaps.some(gap => gap.reason === 'pixels_withheld'))
   assert.deepEqual(ended, [])
-  const stats = await source.stop(5000)
+  const stats = await source.stop(defaultTimeouts.cleanup)
   assert.deepEqual(stats.problems, [])
 })

@@ -19,6 +19,7 @@ import { grabSimulatorDisplay } from '../../src/native/capture/simulator-display
 import { NativeInteractionSession } from '../../src/native/interaction-session.ts'
 import { IosSimulatorRuntime, simulatorAppProcesses } from '../../src/native/ios-simulator.ts'
 import { commandOf, OwnedProcess, systemTools } from '../../src/native/processes.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
 import { decodeFrames, decodeVideo, differingPixels, imageSize, matchVideo, mediaPrerequisites, pausesMs, shownFrameIds, spread, watched } from './capture-proof.ts'
 import { executorBuild, nativeSkipReason, taskPhoneApp } from './native-harness.ts'
@@ -138,7 +139,7 @@ describe('capture of the real iOS simulator into the real media process, with Ta
         const startedAt = performance.now()
         const frames: CapturedFrame[] = []
         const ended: string[] = []
-        const started = await source.start({ fps: 30, clock: microsecondsSince(startedAt), deliver: (frame) => frames.push(frame), ended: (reason) => ended.push(reason), timeoutMs: 10_000 })
+        const started = await source.start({ fps: 30, clock: microsecondsSince(startedAt), deliver: (frame) => frames.push(frame), ended: (reason) => ended.push(reason), timeoutMs: defaultTimeouts.setup })
         routeTest.after(() => source.stop(10_000))
         assert.deepEqual(started, { ok: true, mode: 'screenshot-loop' }, route)
         const typing = await typeFor(interaction, 4000)
@@ -168,11 +169,11 @@ describe('capture of the real iOS simulator into the real media process, with Ta
     const probe = await grabSimulatorDisplay({ tools: systemTools, udid: runtime.udid, format: 'png', timeoutMs: 10_000, signal: new AbortController().signal })
     assert.ok(probe.ok, probe.ok ? '' : probe.problem)
     const size = await imageSize(needs.ffprobe, probe.bytes, 'png')
-    const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: 10_000 })
+    const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: defaultTimeouts.setup })
     t.after(() => media.close(10_000))
     const { source, frames } = watched(route === 'session-hook' ? interaction.frameSource(identity) : simulatorDisplayFrameSource({ session: interaction.session, udid: runtime.udid, tools: systemTools, format: 'png' }, identity))
     const stop = new AbortController()
-    const options: RecordSourceOptions = { recordingId: 'ios', runId: owner.runId, output: join(folder, 'ios'), width: size.width, height: size.height, fps: 10, deadlineMs: 30_000, clock: microsecondsSince(performance.now()), startTimeoutMs: 10_000, stopTimeoutMs: 10_000, finishTimeoutMs: 40_000, signal: stop.signal }
+    const options: RecordSourceOptions = { recordingId: 'ios', runId: owner.runId, output: join(folder, 'ios'), width: size.width, height: size.height, fps: 10, deadlineMs: 30_000, clock: microsecondsSince(performance.now()), startTimeoutMs: defaultTimeouts.setup, stopTimeoutMs: 10_000, finishTimeoutMs: 40_000, signal: stop.signal }
     const recording = recordSource(source, media, options)
     t.after(async () => { stop.abort(); await recording })
     const typing = await typeFor(interaction, 5000)
@@ -285,10 +286,10 @@ describe('capture of the real iOS simulator into the real media process, with Ta
     const frames: CapturedFrame[] = []
     const reasons: string[] = []
     t.after(async () => {
-      await source.stop(5000)
+      await source.stop(defaultTimeouts.cleanup)
       if (!interaction.session.ended && !interaction.session.appStatus.expectedRunning) assert.equal((await interaction.launch(120_000)).result.ok, true, 'relaunch for the following close proof')
     })
-    assert.deepEqual(await source.start({ fps: 30, timeoutMs: 10_000, clock: microsecondsSince(performance.now()), deliver: (frame) => frames.push(frame), ended: (reason) => reasons.push(reason) }), { ok: true, mode: 'screenshot-loop' })
+    assert.deepEqual(await source.start({ fps: 30, timeoutMs: defaultTimeouts.setup, clock: microsecondsSince(performance.now()), deliver: (frame) => frames.push(frame), ended: (reason) => reasons.push(reason) }), { ok: true, mode: 'screenshot-loop' })
     assert.equal((await interaction.terminate(30_000)).result.ok, true)
     assert.equal(interaction.session.ended, false, 'termination does not close the session')
     const endedBy = performance.now() + 5000
@@ -310,8 +311,8 @@ describe('capture of the real iOS simulator into the real media process, with Ta
     const source = interaction.frameSource(identity)
     const frames: CapturedFrame[] = []
     const reasons: string[] = []
-    assert.deepEqual(await source.start({ fps: 30, timeoutMs: 10_000, clock: microsecondsSince(performance.now()), deliver: (frame) => frames.push(frame), ended: (reason) => reasons.push(reason) }), { ok: true, mode: 'screenshot-loop' })
-    t.after(() => source.stop(5000))
+    assert.deepEqual(await source.start({ fps: 30, timeoutMs: defaultTimeouts.setup, clock: microsecondsSince(performance.now()), deliver: (frame) => frames.push(frame), ended: (reason) => reasons.push(reason) }), { ok: true, mode: 'screenshot-loop' })
+    t.after(() => source.stop(defaultTimeouts.cleanup))
     await interaction.dispose(60_000)
     const endedBy = performance.now() + 5000
     while (reasons.length === 0 && performance.now() < endedBy) await sleep(20)

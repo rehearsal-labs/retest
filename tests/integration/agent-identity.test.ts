@@ -9,6 +9,7 @@ import { hasElementIdentity } from '../../src/agent/identity.ts'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { prepareFunction } from '../../src/browser/page-scripts.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { launch, observe, openPage, servePages } from './browser-harness.ts'
 import { engineName, pinningEngines } from './agent-harness.ts'
 
@@ -51,7 +52,7 @@ async function identityPage(t: TestContext, browser: OwnedBrowser, baseUrl: stri
 }
 
 async function keysOf(page: ElementIdentity, locators: readonly LocatorRecipe[]): Promise<{ observation: Observation; keys: readonly string[] }[]> {
-  const reading = await page.readElements(locators, 5000)
+  const reading = await page.readElements(locators, defaultTimeouts.action)
   assert.ok(reading.ok, reading.ok ? '' : reading.failure.message)
   return [...reading.reads]
 }
@@ -70,7 +71,7 @@ test('element identity on a real page of the engine under test', async (outer) =
     const site = await servePages(t, { '/': rows })
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
-    assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
     const locators: LocatorRecipe[] = [{ by: 'role', role: 'button', within: [{ by: 'testId', value: 'toolbar' }] }, deletes, { ...deletes, within: [{ by: 'testId', value: 'row-2' }] }]
     const [toolbar, both, second] = await keysOf(page, locators)
     assert.ok(toolbar !== undefined && both !== undefined && second !== undefined)
@@ -85,11 +86,11 @@ test('element identity on a real page of the engine under test', async (outer) =
     const site = await servePages(t, { '/': rows })
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
-    assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
     const [both] = await keysOf(page, [deletes])
     const [firstKey, secondKey] = both?.keys ?? []
     assert.ok(firstKey !== undefined && secondKey !== undefined)
-    const clicked = await page.dispatchTo({ kind: 'click', locator: { ...deletes, pick: 1 } }, secondKey, 5000)
+    const clicked = await page.dispatchTo({ kind: 'click', locator: { ...deletes, pick: 1 } }, secondKey, defaultTimeouts.action)
     assert.ok(clicked.result.ok, clicked.result.ok ? '' : clicked.result.failure.message)
     assert.equal(clicked.input, 'sent')
     await posted(site, '/clicked/delete-2', 1)
@@ -106,16 +107,16 @@ test('element identity on a real page of the engine under test', async (outer) =
     const site = await servePages(t, { '/': rows })
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
-    assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
     const boxes: LocatorRecipe = { by: 'css', selector: 'input[type=checkbox]' }
     const owners: LocatorRecipe = { by: 'css', selector: 'select' }
     const [checkKeys, selectKeys] = await keysOf(page, [boxes, owners])
     const checkKey = checkKeys?.keys[1]
     const selectKey = selectKeys?.keys[1]
     assert.ok(checkKey !== undefined && selectKey !== undefined)
-    const checked = await page.dispatchTo({ kind: 'check', locator: { ...boxes, pick: 1 } }, checkKey, 5000)
+    const checked = await page.dispatchTo({ kind: 'check', locator: { ...boxes, pick: 1 } }, checkKey, defaultTimeouts.action)
     assert.ok(checked.result.ok, checked.result.ok ? '' : checked.result.failure.message)
-    const selected = await page.dispatchTo({ kind: 'select', locator: { ...owners, pick: 1 }, choices: [{ label: 'Bob' }] }, selectKey, 5000)
+    const selected = await page.dispatchTo({ kind: 'select', locator: { ...owners, pick: 1 }, choices: [{ label: 'Bob' }] }, selectKey, defaultTimeouts.action)
     assert.ok(selected.result.ok, selected.result.ok ? '' : selected.result.failure.message)
     for (const [row, done, owner] of [['row-1', false, 'Ann'], ['row-2', true, 'Bob']] as const) {
       assert.equal((await observe(page, { by: 'css', selector: `[data-testid=${row}] input[type=checkbox]` })).checked, done, `${row} checked`)
@@ -129,7 +130,7 @@ test('element identity on a real page of the engine under test', async (outer) =
     const site = await servePages(t, { '/': swapping })
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
-    assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
     const boxes: LocatorRecipe = { by: 'css', selector: '[data-testid=boxes] input' }
     const [read] = await keysOf(page, [boxes])
     const secondKey = read?.keys[1]
@@ -149,8 +150,8 @@ test('element identity on a real page of the engine under test', async (outer) =
     const site = await servePages(t, pages)
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
-    assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
-    assert.ok((await page.execute({ kind: 'click', locator: { by: 'testId', value: 'sort-later' } }, 5000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
+    assert.ok((await page.execute({ kind: 'click', locator: { by: 'testId', value: 'sort-later' } }, defaultTimeouts.action)).ok)
     const [before] = await keysOf(page, [textboxes])
     const secondKey = before?.keys[1]
     assert.ok(before !== undefined && secondKey !== undefined)
@@ -189,11 +190,11 @@ test('element identity on a real page of the engine under test', async (outer) =
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
     const save: LocatorRecipe = { by: 'testId', value: 'save' }
-    assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
     const [earlier] = await keysOf(page, [save])
     const earlierKey = earlier?.keys[0]
     assert.ok(earlierKey !== undefined)
-    assert.ok((await page.execute({ kind: 'reload' }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'reload' }, defaultTimeouts.navigation)).ok)
     // The new document keys the same button first, so the earlier key could only match it by naming another document's.
     const [now] = await keysOf(page, [save])
     const refused = await page.dispatchTo({ kind: 'click', locator: save }, earlierKey, 5000)
@@ -208,7 +209,7 @@ test('element identity on a real page of the engine under test', async (outer) =
     const site = await servePages(t, { '/': rows })
     const page = await identityPage(t, browser, site.url)
     if (page === undefined) return
-    assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
     const unpinnable = await page.dispatchTo({ kind: 'press', key: 'Enter' }, 'any-key', 5000)
     assert.deepEqual([unpinnable.input, unpinnable.result.ok ? undefined : unpinnable.result.failure.class], ['not_sent', 'usage'])
     const unreadable = await page.readElements([{ by: 'testId', value: 'save' }, { by: 'css', selector: '::nope' }], 5000)

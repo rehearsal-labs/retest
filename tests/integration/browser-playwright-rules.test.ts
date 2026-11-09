@@ -2,6 +2,7 @@ import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { LONG_TITLE, PLAYWRIGHT_PAGE, SHADOW_PAGE } from '../../fixtures/task-app/lookup-routes.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, click, goto, observe, openPage, servePages, sharedBrowser } from './browser-harness.ts'
 
 const browser = sharedBrowser()
@@ -37,7 +38,7 @@ test('a look at the page reads the whole address, query and fragment included, a
   const site = await servePages(t, { '/tasks?tab=open': `<!doctype html><title>${LONG_TITLE}</title><p>Tasks</p>` })
   const page = await openPage(t, browser(), site.url)
   assertOk(await goto(page, '/tasks?tab=open#top'))
-  const look = await page.execute({ kind: 'observePage' }, 2000)
+  const look = await page.execute({ kind: 'observePage' }, defaultTimeouts.action)
   assert.ok(look.ok && look.kind === 'observePage', JSON.stringify(look))
   assert.deepEqual(look.observation, { url: `${site.url}/tasks?tab=open#top`, title: LONG_TITLE })
   assert.equal(look.page?.url, `${site.url}/tasks`, 'the page facts keep origin and path')

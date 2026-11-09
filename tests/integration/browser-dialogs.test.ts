@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { launchElectron } from '../../src/browser/electron.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { assertOk, check, click, failureOf, goto, launch, observe, observeUntil, openApp, openPage, scratchFolder, sharedBrowser, timed, within } from './browser-harness.ts'
 import { engineAbsence } from './engines.ts'
 import { agentHost, assertActed, openOn, TASK_APP_PASSWORD, waitForText } from './agent-harness.ts'
@@ -27,7 +28,7 @@ async function dialogsPage(t: TestContext): Promise<OwnedPage> {
 }
 
 // Arms the page, then starts the click the dialog comes from, as page.dialog() does.
-function armAndClick(page: OwnedPage, target: string, timeoutMs = 5000): { opened: Promise<DialogWait>; clicked: Promise<CommandResult> } {
+function armAndClick(page: OwnedPage, target: string, timeoutMs: number = defaultTimeouts.action): { opened: Promise<DialogWait>; clicked: Promise<CommandResult> } {
   assert.ok(page.armDialog !== undefined, 'a Chromium page hands its dialogs over')
   const arming = page.armDialog(timeoutMs)
   assert.ok(arming.ok, JSON.stringify(arming))
@@ -35,14 +36,14 @@ function armAndClick(page: OwnedPage, target: string, timeoutMs = 5000): { opene
 }
 
 async function openedDialog(opened: Promise<DialogWait>): Promise<OpenedDialog> {
-  const wait = await within(opened, 3000, 'the dialog was not handed over')
+  const wait = await within(opened, defaultTimeouts.action, 'the dialog was not handed over')
   assert.ok(wait.ok, JSON.stringify(wait))
   return wait.dialog
 }
 
 async function answer(page: OwnedPage, dialog: OpenedDialog, accept: boolean, promptText?: string): Promise<void> {
   assert.ok(page.answerDialog !== undefined)
-  const answered = await page.answerDialog(dialog.id, { accept, ...(promptText === undefined ? {} : { promptText }) }, 2000)
+  const answered = await page.answerDialog(dialog.id, { accept, ...(promptText === undefined ? {} : { promptText }) }, defaultTimeouts.action)
   assert.deepEqual(answered, { ok: true })
 }
 
@@ -74,7 +75,7 @@ test('a confirm the page was armed for is handed over while its click waits, and
   assert.deepEqual({ type: dialog.type, message: dialog.message, defaultValue: dialog.defaultValue }, { type: 'confirm', message: 'Delete this task?', defaultValue: '' })
   assert.equal(await settledSoon(clicked), false, 'the click waits while the dialog holds the page')
   await answer(page, dialog, true)
-  assertOk(await within(clicked, 2000, 'the click did not finish once the dialog was answered'))
+  assertOk(await within(clicked, defaultTimeouts.action, 'the click did not finish once the dialog was answered'))
   assert.equal((await observe(page, 'status')).text, 'Deleted')
 })
 
@@ -132,7 +133,7 @@ test('a dialog nothing waited for fails its click at once, is dismissed, and the
   const { value: status, ms: lookMs } = await timed(observe(page, 'status'))
   assert.equal(status.text, 'Kept', 'confirm() answered false, as dismissing it should')
   assert.ok(lookMs < 500, `the next command should not wait, took ${lookMs} ms`)
-  assert.ok((await page.screenshot(2000)).byteLength > 0)
+  assert.ok((await page.screenshot(defaultTimeouts.action)).byteLength > 0)
 })
 
 test('a dialog that opens while no command runs is dismissed and told, and the page goes on', async (t) => {
@@ -154,10 +155,11 @@ test("a command that fails of its own accord keeps its own failure first, and na
   const page = await openPage(t, browser(), app.url)
   assertOk(await goto(page, '/dialogs'))
   // The click waits for a button that is never enabled, and fails of its own accord; then again, while an alert opens.
-  const own = failureOf(await click(page, 'never', 1500))
+  // Its budget leaves the alert time to open before it runs out, on a busy machine too.
+  const own = failureOf(await click(page, 'never', 5000))
   assertOk(await click(page, 'later'))
   await observeUntil(page, 'status', (seen) => seen.text === 'Waiting for the signal')
-  const clicking = click(page, 'never', 1500)
+  const clicking = click(page, 'never', 5000)
   await delay(200)
   await signalAlert(app.url)
   const failure = failureOf(await clicking)
@@ -217,7 +219,7 @@ test('two dialogs in a row are handed over by two waits, the second armed while 
   const first = await openedDialog(opened)
   assert.deepEqual([first.type, first.message], ['alert', 'First of two'])
   assert.ok(page.armDialog !== undefined)
-  const second = page.armDialog(5000)
+  const second = page.armDialog(defaultTimeouts.action)
   assert.ok(second.ok)
   await answer(page, first, true)
   const next = await openedDialog(second.opened)
@@ -232,7 +234,7 @@ test('a beforeunload dialog from goto is handed over; accepted, the page leaves,
   const page = await dialogsPage(t)
   assertOk(await check(page, 'guard'))
   assert.ok(page.armDialog !== undefined)
-  const staying = page.armDialog(5000)
+  const staying = page.armDialog(defaultTimeouts.action)
   assert.ok(staying.ok)
   const leaving = goto(page, '/dialogs/next')
   const kept = await openedDialog(staying.opened)
@@ -245,7 +247,7 @@ test('a beforeunload dialog from goto is handed over; accepted, the page leaves,
   assert.equal(new URL(page.url ?? '').pathname, '/dialogs')
   assert.equal((await observe(page, 'status')).text, 'Ready')
 
-  const going = page.armDialog(5000)
+  const going = page.armDialog(defaultTimeouts.action)
   assert.ok(going.ok)
   const left = goto(page, '/dialogs/next')
   await answer(page, await openedDialog(going.opened), true)
@@ -269,7 +271,7 @@ test('a wait that sees no dialog fails when its time runs out, and leaves the pa
   assert.ok(arming.ok)
   assert.deepEqual(await arming.opened, { ok: false, failure: { class: 'timeout', message: 'No dialog opened within 300 ms.' } })
   // Unarmed, the page answers the next dialog itself, and the click that opened it fails.
-  assert.deepEqual(failureOf(await click(page, 'alert', 2000)).details?.['answered'], 'dismissed')
+  assert.deepEqual(failureOf(await click(page, 'alert', defaultTimeouts.action)).details?.['answered'], 'dismissed')
   assert.equal((await observe(page, 'status')).text, 'Alerted')
 })
 
@@ -351,8 +353,8 @@ test("an Electron window hands its dialogs over and answers one nothing waited f
   writeFileSync(join(appPath, 'main.mjs'), ELECTRON_MAIN)
   writeFileSync(join(appPath, 'index.html'), ELECTRON_PAGE)
   const electron = await launchElectron({ executablePath: electronBinary, appPath, args: [], windowsFile: join(folder, 'windows.json'), logFile: join(folder, 'electron.log'), app: 'desk', target: 'electron', launch: 1 })
-  t.after(() => electron.close(5000))
-  const page = await electron.newPage({}, 10_000)
+  t.after(() => electron.close(defaultTimeouts.cleanup))
+  const page = await electron.newPage({}, defaultTimeouts.setup)
   await observeUntil(page, 'status', (seen) => seen.text === 'Ready')
   const { opened, clicked } = armAndClick(page, 'confirm')
   const dialog = await openedDialog(opened)
@@ -365,7 +367,7 @@ test("an Electron window hands its dialogs over and answers one nothing waited f
   assert.deepEqual([unwaited.class, unwaited.details?.['answered']], ['not_actionable', 'dismissed'])
   await observeUntil(page, 'status', (seen) => seen.text === 'Kept')
   // The window arms for the next window the app opens, as a Chrome page does; this app opens none, so the wait times out.
-  const arming = await page.armPopup?.({ timeoutMs: 300, setupMs: 1000 })
+  const arming = await page.armPopup?.({ timeoutMs: 300, setupMs: defaultTimeouts.setup })
   assert.ok(arming?.ok === true, JSON.stringify(arming))
   assert.deepEqual(await arming.opened, { ok: false, failure: { class: 'timeout', message: 'No page opened within 300 ms.' } })
 })

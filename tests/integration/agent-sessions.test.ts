@@ -9,6 +9,7 @@ import { isRecord } from '../../src/browser/cdp/message.ts'
 import { IsolatedWorld } from '../../src/browser/isolated-world.ts'
 import { prepareFunction } from '../../src/browser/page-scripts.ts'
 import { keptLooks } from '../../src/agent/looks.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp, servePages } from './browser-harness.ts'
 import { filesHolding } from './cli-harness.ts'
 import { agentHost, assertActed, engineName, onlyElement, openOn, pinsOn, signIn, TASK_APP_PASSWORD, waitForText } from './agent-harness.ts'
@@ -241,7 +242,7 @@ test('on a driver that pins, fields put in another order while an action waits f
     return reading
   })
   let typed: Awaited<ReturnType<AgentSession['act']>>
-  const typing = session.act({ kind: 'fill', ref: second.ref, value: 'meant for f-2' }, { timeoutMs: 5000 })
+  const typing = session.act({ kind: 'fill', ref: second.ref, value: 'meant for f-2' }, { timeoutMs: defaultTimeouts.action })
   try {
     await Promise.race([waited.promise, typing.then((result) => {
       assert.ok(observedWaiting, `the fill ended before it waited for its read-only field: ${JSON.stringify(result)}`)
@@ -388,12 +389,12 @@ test("the browser frame source carries the session's identity and keeps its fram
   const granted = session.frameSource()
   assert.ok(granted.ok, granted.ok ? '' : granted.failure.message)
   const frames: CapturedFrame[] = []
-  const started = await granted.source.start({ fps: 5, clock: () => Math.round(performance.now() * 1000), deliver: (frame) => frames.push(frame), ended: () => undefined, timeoutMs: 5000 })
+  const started = await granted.source.start({ fps: 5, clock: () => Math.round(performance.now() * 1000), deliver: (frame) => frames.push(frame), ended: () => undefined, timeoutMs: defaultTimeouts.setup })
   assert.deepEqual(started, { ok: true, mode: engineName() === 'chromium' ? 'screencast' : 'screenshot-loop' })
   assertActed(await session.act({ kind: 'click', locator: { by: 'testId', value: 'grow' } }), 'changed the page')
   const deadline = performance.now() + 5000
   while (frames.length === 0 && performance.now() < deadline) await sleep(50)
-  await granted.source.stop(2000)
+  await granted.source.stop(defaultTimeouts.cleanup)
   const [frame] = frames
   assert.ok(frame !== undefined, 'the source handed over a frame')
   assert.deepEqual(frame.identity, { testId: 'discovery', attemptId: session.identity.owner.attemptId, app: 'web', sessionId: session.sessionId })
@@ -414,7 +415,7 @@ test('ending a session stops its granted frame source and refuses another source
   const granted = session.frameSource()
   assert.ok(granted.ok, granted.ok ? '' : granted.failure.message)
   let delivered = 0
-  assert.deepEqual(await granted.source.start({ fps: 5, clock: () => Math.round(performance.now() * 1000), deliver: () => { delivered += 1 }, ended: () => undefined, timeoutMs: 5000 }),
+  assert.deepEqual(await granted.source.start({ fps: 5, clock: () => Math.round(performance.now() * 1000), deliver: () => { delivered += 1 }, ended: () => undefined, timeoutMs: defaultTimeouts.setup }),
     { ok: true, mode: engineName() === 'chromium' ? 'screencast' : 'screenshot-loop' })
   const deadline = performance.now() + 5000
   while (delivered === 0 && performance.now() < deadline) await sleep(20)
@@ -423,7 +424,7 @@ test('ending a session stops its granted frame source and refuses another source
   const final = delivered
   await sleep(250)
   assert.equal(delivered, final, 'ending the session leaves no subsequent delivery')
-  assert.equal((await granted.source.stop(2000)).delivered, final)
+  assert.equal((await granted.source.stop(defaultTimeouts.cleanup)).delivered, final)
   const refused = session.frameSource()
   assert.ok(!refused.ok)
   assert.equal(refused.failure.class, 'usage')

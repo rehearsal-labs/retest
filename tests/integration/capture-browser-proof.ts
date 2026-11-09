@@ -50,16 +50,16 @@ function cleanupHook(hook: TestContextHookFn, context: TestContext): Promise<voi
 async function namedPage(t: TestContext, engine: 'firefox' | 'webkit'): Promise<{ page: WebSession; identity: { testId: string; attemptId: string; app: string; sessionId: string } }> {
   const browser = await launch(t)
   const page = await browser.newPage({ baseUrl: await tickerServer(t) }, 30_000)
-  t.after(() => page.dispose(5000))
+  t.after(() => page.dispose(defaultTimeouts.cleanup))
   assert.ok(page instanceof FirefoxPage || page instanceof WebKitPage)
   const identity = { testId: `capture-${engine}`, attemptId: `capture-${engine}`, app: 'web', sessionId: `capture-${engine}:web` }
   assert.ok(page.identify !== undefined)
   page.identify({ sessionId: identity.sessionId, owner: { runId: 'capture-sources', ...identity }, runtime: webRuntimeIdentity(browser, engine) })
-  assert.ok((await page.execute({ kind: 'goto', url: '/' }, 10_000)).ok)
+  assert.ok((await page.execute({ kind: 'goto', url: '/' }, defaultTimeouts.navigation)).ok)
   const readyBy = performance.now() + 5000
   let ready = false
   while (!ready && performance.now() < readyBy) {
-    const observed = await page.execute({ kind: 'observePage' }, 1000)
+    const observed = await page.execute({ kind: 'observePage' }, defaultTimeouts.action)
     ready = observed.ok && observed.kind === 'observePage' && observed.observation.title === 'ticker-ready'
     if (!ready) await sleep(20)
   }
@@ -82,15 +82,15 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
     const { page, identity } = await namedPage(t, engine)
     assert.ok(page.frameSource !== undefined)
     const folder = await scratchFolder(t)
-    const size = await imageSize(needs.ffprobe, await page.screenshot(5000), 'png')
-    const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: 10_000 })
+    const size = await imageSize(needs.ffprobe, await page.screenshot(defaultTimeouts.action), 'png')
+    const media = await MediaProcess.start({ executable: needs.binary, args: mediaArguments({ ffmpeg: needs.ffmpeg }), startTimeoutMs: defaultTimeouts.setup })
     t.after(() => media.close(10_000))
     const { source, frames } = watched(page.frameSource(identity))
     assert.deepEqual(source.availability(), { available: true, mode })
     const startedAt = performance.now()
     const epochMs = performance.timeOrigin + startedAt
     const stop = new AbortController()
-    const options: RecordSourceOptions = { recordingId: engine, runId: 'capture-sources', output: join(folder, engine), width: even(size.width), height: even(size.height), fps: 30, deadlineMs: 20_000, clock: microsecondsSince(startedAt), startTimeoutMs: 10_000, stopTimeoutMs: 5000, finishTimeoutMs: 30_000, signal: stop.signal }
+    const options: RecordSourceOptions = { recordingId: engine, runId: 'capture-sources', output: join(folder, engine), width: even(size.width), height: even(size.height), fps: 30, deadlineMs: 20_000, clock: microsecondsSince(startedAt), startTimeoutMs: defaultTimeouts.setup, stopTimeoutMs: defaultTimeouts.cleanup, finishTimeoutMs: 30_000, signal: stop.signal }
     const recording = recordSource(source, media, options)
     t.after(async () => { stop.abort(); await recording })
     await sleep(3000)
@@ -142,12 +142,12 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
   captureTest(`${engine}: real input stays within its budget while capture runs, and stop leaves no new capture`, skip, async (t) => {
     const { page, identity } = await namedPage(t, engine)
     const app = await openApp(t)
-    assert.ok((await page.execute({ kind: 'goto', url: app.url }, 10_000)).ok)
+    assert.ok((await page.execute({ kind: 'goto', url: app.url }, defaultTimeouts.navigation)).ok)
     assert.ok(page.frameSource !== undefined)
     const source = page.frameSource(identity)
     let frames = 0
-    assert.equal((await source.start({ fps: 30, clock: microsecondsSince(performance.now()), deliver: () => { frames += 1 }, ended: () => assert.fail('capture must run'), timeoutMs: 5000 })).ok, true)
-    t.after(() => source.stop(1000))
+    assert.equal((await source.start({ fps: 30, clock: microsecondsSince(performance.now()), deliver: () => { frames += 1 }, ended: () => assert.fail('capture must run'), timeoutMs: defaultTimeouts.setup })).ok, true)
+    t.after(() => source.stop(defaultTimeouts.cleanup))
     const durationsMs: number[] = []
     for (let turn = 1; turn <= 5; turn++) {
       const started = performance.now()
@@ -189,7 +189,7 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
     const resumed = Promise.withResolvers<void>()
     const ended = Promise.withResolvers<void>()
     let held: { requests: number; delivered: number } | undefined
-    assert.equal((await source.start({ fps: 30, clock: microsecondsSince(performance.now()), timeoutMs: 5000,
+    assert.equal((await source.start({ fps: 30, clock: microsecondsSince(performance.now()), timeoutMs: defaultTimeouts.setup,
       deliver: () => { delivered += 1; if (held !== undefined && !suspension.suspended) resumed.resolve() },
       ended: reason => { reasons.push(reason); ended.resolve() }, gap: gap => gaps.push(gap),
       withheld: () => {
@@ -199,7 +199,7 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
         }
         return suspension.suspended
       }, onWithholdingChange: listener => suspension.listen(listener) })).ok, true)
-    t.after(() => source.stop(5000))
+    t.after(() => source.stop(defaultTimeouts.cleanup))
     assert.ok(delivered > 0, 'start answered after the first delivered frame')
     suspension.suspend()
     assert.equal((await bounded(heldTicks.promise, defaultTimeouts.assertion, ended.promise)).status, 'done', 'capture reached two withheld ticks with no screenshot in flight')
@@ -211,7 +211,7 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
     assert.ok(requests > held.requests)
     assert.ok(gaps.some(gap => gap.reason === 'pixels_withheld'))
     assert.deepEqual(reasons, [])
-    assert.deepEqual((await source.stop(5000)).problems, [])
+    assert.deepEqual((await source.stop(defaultTimeouts.cleanup)).problems, [])
   })
 
   captureTest(`${engine}: a foreign session identity is refused before capture`, skip, async (t) => {
@@ -221,7 +221,7 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
     assert.equal(source.availability().available, false)
     const start = await source.start({ fps: 10, clock: () => 0, timeoutMs: 1000, deliver: () => assert.fail('no foreign frame'), ended: () => assert.fail('nothing started') })
     assert.equal(start.ok, false)
-    assert.equal((await source.stop(1000)).delivered, 0)
+    assert.equal((await source.stop(defaultTimeouts.cleanup)).delivered, 0)
   })
 
   captureTest(`${engine}: a source left running ends when its session closes, and delivers no later frame`, skip, async (t) => {
@@ -230,12 +230,12 @@ export function browserCaptureProof(engine: 'firefox' | 'webkit', mode: CaptureM
     const source = page.frameSource(identity)
     let frames = 0
     const reasons: string[] = []
-    assert.equal((await source.start({ fps: 30, clock: microsecondsSince(performance.now()), timeoutMs: 5000, deliver: () => { frames += 1 }, ended: (reason) => reasons.push(reason) })).ok, true)
-    t.after(() => source.stop(1000))
+    assert.equal((await source.start({ fps: 30, clock: microsecondsSince(performance.now()), timeoutMs: defaultTimeouts.setup, deliver: () => { frames += 1 }, ended: (reason) => reasons.push(reason) })).ok, true)
+    t.after(() => source.stop(defaultTimeouts.cleanup))
     await sleep(200)
-    await page.dispose(5000)
+    await page.dispose(defaultTimeouts.cleanup)
     await sleep(100)
-    const stats = await source.stop(1000)
+    const stats = await source.stop(defaultTimeouts.cleanup)
     assert.equal(reasons.length, 1)
     assert.ok(stats.endedEarly !== undefined)
     const before = frames

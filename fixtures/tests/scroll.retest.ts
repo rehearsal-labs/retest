@@ -23,6 +23,7 @@ test.describe('a list a cover sits on', (test) => {
 
   test('is not scrolled, and the page hears no wheel', async ({ page }) => {
     await page.goto('/actions/scroll')
-    await page.getByTestId('covered-list').scroll({ y: 100 })
+    // The cover never moves, so the scroll runs out of the time it is given here.
+    await page.getByTestId('covered-list').scroll({ y: 100 }, { timeout: 2000 })
   })
 })
