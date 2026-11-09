@@ -200,7 +200,7 @@ The `declare module` block registers the config's type once, for every file in t
 - `inbox()` takes only the config's inboxes. A config that declares no `inboxes` accepts none.
 - `locks` in a test takes only the config's locks. A config that lists no `locks` accepts none.
 - `tap()` exists only on an app whose every target emulates a touch screen.
-- An iOS simulator or macOS app's page has no `goto`, `select`, `check` or `uncheck`. Its elements take `tap()` on iOS and `click()` on macOS. A wrong method is a type error that says what to use.
+- An iOS simulator, macOS or Android app's page has no `goto`, `select`, `check` or `uncheck`. Its elements take `tap()` on iOS and Android and `click()` on macOS. A wrong method is a type error that says what to use.
 
 Without a registered config, a test may not declare `apps` or `state`: the type error says how to register. `page` still works, and so do any tag, secret name and test id.
 
@@ -364,6 +364,69 @@ Retest finds Chrome and Edge where they install: on macOS in `/Applications` and
 `headless` defaults to true. `--headed` shows every browser. Nobody has run a browser with a window yet.
 
 Targets on the same executable, with the same headless setting and emulation, share one browser process. Each distinct target launches once, the first time a test needs it, and closes when the run ends. Every test gets a new browser context and page for each of its apps.
+
+### Phones through agent-device
+
+Retest can drive an iOS simulator app, and an Android app, through [agent-device](https://github.com/callstack/agent-device), Callstack's device layer under the MIT licence. Retest keeps its own locators, matchers, rules, events and reports. agent-device performs one action at a time and reads the screen; nothing else.
+
+agent-device is an optional peer of Retest, as the AI SDK packages are. A project that tests only websites installs nothing new. A project that drives a phone through it installs the one release Retest was checked with:
+
+```sh
+npm install --save-dev agent-device@0.21.36
+```
+
+Another version fails the target's setup by name, before anything starts. `doctor` says whether it is installed, and starts nothing.
+
+```ts
+const config = defineConfig({
+  apps: {
+    phone: { platform: 'ios-simulator', driver: 'agent-device', appPath: './TaskPhone.app', device: 'iPhone 17', runtime: '26.5', arguments: ['-reset'] },
+    tasks: { platform: 'android', appPath: './app-debug.apk', package: 'com.example.tasks', serial: 'emulator-5554' },
+  },
+  secrets: { password: env('TASKS_PASSWORD') },
+  secretOrigins: { password: ['dev.retest.fixtures.taskphone'] },
+})
+```
+
+- `driver: 'agent-device'` opts an iOS simulator target in. Without it, or with `driver: 'webdriveragent'`, the target runs on Retest's WebDriverAgent driver as before.
+- An Android target always runs through agent-device. `appPath` is the APK. `package` is the application id it installs, which Retest launches and checks against what agent-device installed. `device`, the name agent-device lists, or `serial`, the adb serial, names the emulator or device: one of the two.
+- An iOS target through agent-device takes `arguments`, and no `environment` or `diagnostics`. An Android target takes none of the three yet. Each is refused by name.
+- A test's handle is the iOS one, or for Android `NativePage<'android'>`, with `tap()` and no `click()`.
+
+| | iOS simulator through agent-device | Android through agent-device |
+| --- | --- | --- |
+| Checked | On the iOS 26.5 simulator with Xcode 27.0, against TaskPhone | Not run on an emulator or a device. Unit tests against a stand-in only |
+| Finders | `getByTestId` reads the accessibility identifier; `getByRole`, `getByLabel`, `getByText`; chains; `first`, `last`, `nth` | `getByTestId` reads the resource id, whole or after `:id/`, or a content description agent-device reports beside the text; the same others |
+| Actions | `tap`, `fill` with secrets, `press` of Enter or one character, `scroll` of the screen along one axis | The same, without secrets |
+| Checks | `toBeVisible`, `toBeHidden`, `toBeEnabled`, `toHaveText`, `toHaveValue`, `toHaveCount`, with `.not` | The same |
+| Failure screenshot | The simulator's display, through simctl | agent-device's screenshot |
+
+On the simulator, the check pressed Enter. A single character, `getByLabel` and the refusals ran only against a stand-in: TaskPhone's fields carry no accessibility label in agent-device's tree, only a placeholder. An Android label agent-device took from a content description cannot be told from text, so it never counts as a test id, and a lookup that finds only such a label says so.
+
+#### Lifecycle
+
+- iOS: as with Retest's own driver, each runtime creates a simulator of its own from the device type and runtime, boots it and installs the app with simctl, so the app's data and keychain start empty. At the end Retest closes agent-device's session, shuts the simulator down and deletes it, and checks that no process naming it is left.
+- agent-device builds its XCTest runner with the installed Xcode the first time it drives a simulator, into `~/.agent-device/apple-runner`, and reuses it afterwards. Retest builds nothing for it. XCTest writes its result bundles into the same folder, and agent-device keeps them.
+- Android: the emulator or device is not Retest's. Retest boots an emulator that is not running and shuts down only one it booted. It removes the app and installs the APK afresh when the runtime starts.
+- agent-device's daemon runs inside Retest's process, in a state folder of the runtime's own, with the environment Retest's tools get, so it never sees a secret's variable. The folder is deleted at the end, and a later run deletes one that a killed run left.
+
+#### How an action goes
+
+- Retest reads agent-device's snapshot and finds exactly one element by its own rules. It waits until the element is visible, enabled, not covered, not under the software keyboard, and holds still across two looks at least 100 ms apart. Then it sends one action to that element by the ref agent-device gave it, pinned to that snapshot. If the screen moved on in between, agent-device refuses the ref and sends nothing, and Retest looks again within the action's time.
+- An action agent-device did not prove unsent is never sent again. A timeout, a failure without that proof, or agent-device's runtime going away while an action was out is an unknown outcome, and `native.ended` keeps it.
+- A scroll that agent-device saw move nothing, its `scroll_no_progress`, counts as sent: the gesture went and the content was at its end.
+- A `fill` is one fill, then a read-back: a plain field must hold the text, and a secure field one masking character for each character typed.
+
+#### Secrets
+
+- A secret is typed only into the app whose bundle id, or Android package, `secretOrigins` names, and only when agent-device's snapshot says the screen belongs to that app.
+- The value goes from Retest to agent-device's daemon inside the same process, and on to its runner on the simulator over a local connection. It is never in a process argument. Retest marks the fill so agent-device keeps the text out of its own answers, logs and recordings.
+- On Android agent-device types text through adb, where the text is an argument of a process on the machine that runs Retest and on the device. So Retest refuses a secret on Android and types nothing.
+- XCTest can write typed text into its own logs and result bundles. Use test-only credentials. In the check that ran, the password was in no file of the run, and in no file agent-device's runner wrote while it ran.
+
+`native.started` names agent-device as `executor: { name: 'agent-device', version: '0.21.36', package: 'agent-device' }`, with the Xcode on iOS. For Android it names `android: { name, serial, kind, model }` and no Xcode. These are additive version 1 fields.
+
+Not built yet through agent-device: `swipe`, the keyboard helpers, alerts, scrolling one element, recording, the app's output and network diagnostics, a launch environment, Android launch arguments, real iPhones, device clouds, and Windows.
 
 ### Electron apps
 
@@ -2389,7 +2452,7 @@ SIGINT and SIGTERM take the same path. The running test stops, and the run recor
 
 ## What Retest does not do yet
 
-- Browsers: Chromium, Chrome and Edge; Firefox 158.0.1 on macOS and on Windows x64; and WebKit build 2359 on macOS. Firefox has no phone or touch emulation and no proxy, and no AI check has judged a Firefox screenshot yet. WebKit has no phone or touch emulation and no proxy, its recorded frames cannot be AI evidence yet, and no AI check has judged a WebKit screenshot yet. iOS simulator and macOS apps run through the runner, one macOS app and one app per simulator in a test, with their swipe, keyboard and alert helpers run only against a stand-in executor. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
+- Browsers: Chromium, Chrome and Edge; Firefox 158.0.1 on macOS and on Windows x64; and WebKit build 2359 on macOS. Firefox has no phone or touch emulation and no proxy, and no AI check has judged a Firefox screenshot yet. WebKit has no phone or touch emulation and no proxy, its recorded frames cannot be AI evidence yet, and no AI check has judged a WebKit screenshot yet. iOS simulator and macOS apps run through the runner, one macOS app and one app per simulator in a test, with their swipe, keyboard and alert helpers run only against a stand-in executor. An iOS simulator app through agent-device ran on the iOS 26.5 simulator; Android through agent-device is built and has run only against a stand-in, never on an emulator or a device. No Safari, real phones or tablets are claimed. Browser emulation is a desktop browser pretending.
 - Exercised on macOS arm64, in hosted Docker gates on Linux x64 and arm64, and on Windows Server 2025 x64 on GitHub's runner. Linux outside a container, Windows 10 and 11, Edge, and Chrome beta, dev and canary remain unverified. Unpacking Firefox with the `tar.exe` of Windows 10, or of Windows 11 before 24H2, is unverified.
 - The keyboard presses one key or one shortcut at a time: no key held down across actions, and no text typed key by key. `fill` types text. On macOS, only the shortcuts in Retest's table edit a field, and no shortcut was run on Linux.
 - `select` chooses with the keyboard, and was run on macOS, Linux and Windows. `scroll` is one wheel event, also on a touch screen: no swipe.

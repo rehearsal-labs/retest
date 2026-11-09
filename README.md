@@ -79,22 +79,22 @@ On macOS on Apple silicon, Retest pins Chrome for Testing, Firefox 158.0.1, WebK
 | | |
 | --- | --- |
 | Browsers | Chrome and Chromium. Firefox 158.0.1 on macOS on Apple silicon and on Windows x64. WebKit build 2359 on macOS on Apple silicon |
-| iOS simulator apps | Find, tap, fill and check elements through WebDriverAgent, built on your Mac from a pinned commit |
+| iOS simulator apps | Find, tap, fill and check elements through WebDriverAgent, built on your Mac from a pinned commit, or through agent-device 0.21.36, an optional peer, with `driver: 'agent-device'`. agent-device was checked on the iOS 26.5 simulator |
 | macOS apps | Find, click, fill and check elements through the macOS runner of appium-mac2-driver |
-| Electron apps | The app's first window, driven like a Chrome page. Checked with Electron 44.5.1 on macOS and Windows |
+| Electron apps | The app's first window, driven like a Chrome page, its downloads, and the windows it opens through `page.popup()`. Checked with Electron 44.5.1 on macOS and Windows; downloads and second windows on macOS only |
 | One test across platforms | An iOS simulator app, a macOS app and web apps in the same test |
 | AI checks | `test.evaluate` asks a judge you choose whether a screenshot, text or recorded frames meet a requirement |
 | Layout checks | Overlapping elements, cut-off text, an element past the viewport's right edge and sideways scroll, each measured in pixels. Checked on Chrome on macOS |
 | Screenshot baselines | A page or an element compared to a saved image, pixel by pixel, with the difference in the report. Checked on Chrome on macOS |
 | Test inboxes | A test reads a one-time code and a sign-in link from a mailbox your config reads, types and opens them, and never holds either. Checked on Chrome. [The guide](docs/guide.md#inboxes) says how |
-| Files | Upload by path or content, intercept the file picker, save downloads as artifacts. Checked on Chrome on macOS |
-| Dialogs and popups | Accept or dismiss alert, confirm, prompt and beforeunload; drive a page the app opens. Checked on Chrome on macOS |
+| Files | Upload by path or content, intercept the file picker, save downloads as artifacts. Checked on Chrome, Firefox 158.0.1, WebKit build 2359 and Electron 44.5.1 on macOS |
+| Dialogs and popups | Accept or dismiss alert, confirm, prompt and beforeunload; drive a page the app opens. Dialogs checked on Chrome and Electron on macOS; popups on Chrome, Firefox 158.0.1, WebKit build 2359 and Electron 44.5.1 on macOS |
 | Mocked responses and drag | Answer a request with your own response or refuse it; drag an element onto another. Checked on Chrome on macOS |
 | Playwright test files | `retest run --playwright` runs `.spec.ts` files unchanged, for the methods [the guide](docs/guide.md#run-playwright-test-files) lists |
 | Linux | Chrome and Chromium only, checked inside Docker |
 | Windows x64 | Chrome, Chromium, Firefox and Electron, with recordings on Chrome. Nothing a run starts outlives Retest. Checked on Windows Server 2025 on GitHub's runner |
 
-Not yet: Android apps, Safari, and real phones or tablets. [The guide](docs/guide.md#windows) says what Windows does not run yet.
+Not yet: Android apps (built through agent-device, never run on an emulator or a device), Safari, and real phones or tablets. [The guide](docs/guide.md#windows) says what Windows does not run yet.
 
 ## One test across platforms
 
@@ -222,7 +222,7 @@ Every run also writes versioned events, one JSON object per line, with a publish
 - **Checks look again. Actions never repeat.** An assertion keeps reading the page until its deadline. A click is sent once.
 - **Made for agents from the start.** Finite commands, stable test ids, exit codes that mean something (`0`, `1`, `2`, `130`, `143`), and output an agent can act on.
 - **Nothing hidden.** No account and no telemetry. Nothing downloads unless you run `retest install`. Screenshots stay on your machine unless an AI check sends one to the judge you chose.
-- **Zero runtime dependencies.** The AI SDK packages are optional peers, loaded only by a judge that uses them.
+- **Zero runtime dependencies.** The AI SDK packages and agent-device are optional peers, loaded only by a judge or a phone target that uses them.
 
 ## Documentation
 

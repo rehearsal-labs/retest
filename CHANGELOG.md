@@ -2,6 +2,38 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## 0.4.0
+
+Checked on macOS on Apple silicon. None of these entries was run on Windows or Linux yet.
+
+### Added
+
+- **Files and popups on Firefox.** `setInputFiles()`, `page.fileChooser()`, `page.download()`, `page.popup()` and a popup's `close()` work on Firefox 158.0.1. Firefox closes every file picker as it opens, so the page hears `cancel` before the files arrive. It says nothing of the bytes of a download it stopped. Each popup opens in a window of its own, and a popup whose `beforeunload` handler asks cannot be closed by `close()`. Items 12 to 16 of [docs/compatibility/firefox.md](docs/compatibility/firefox.md) list the differences.
+- **Files and popups on WebKit.** The same five run on WebKit build 2359. A dialog still holds a WebKit page, so a popup's `beforeunload` dialog fails its `close()` by name. Items 11 and 13 to 15 of [docs/compatibility/webkit.md](docs/compatibility/webkit.md) list the differences.
+- **Downloads in an Electron window.** `page.download()` works in an Electron app's first window as on a Chrome page. The app's `will-download` handler still runs, but Retest decides where each download goes, so `setSavePath()` and a save dialog have no effect. A download the handler cancels or pauses fails, saying the app can do that. A first window in a partition is refused by name. Checked with Electron 44.5.1.
+- **Second windows in an Electron app.** `page.popup(action)` gives a test the window the action makes the app open, named like `desk/popup-1`: one the window's document opens, by `window.open` or a link with a target, and a `BrowserWindow` the app's main process makes. Nothing ties a main-process window to the action, so it is given by when it opened: after the wait began, and after the test's action reached the app. One window of an app waits at a time. `windows.json` names the window that opened each window and the page a test reached it as. Checked with Electron 44.5.1.
+- **Phones through agent-device.** An iOS simulator target with `driver: 'agent-device'` runs through agent-device 0.21.36, an optional peer you install with `npm install --save-dev agent-device@0.21.36`. Finders, chains and picks, `tap`, `fill` with secrets, `press`, `scroll`, six matchers and a failure screenshot were checked on the iOS 26.5 simulator with Xcode 27.0. WebDriverAgent stays the default.
+- **Android targets, not yet run.** `{ platform: 'android', appPath, package, device | serial }` runs through agent-device. It has run only against a stand-in, never on an emulator or a device. It refuses secrets, since agent-device types Android text through adb's arguments.
+
+### Changed
+
+- A download a browser stopped without saying how much had arrived is recorded without `receivedBytes` and `totalBytes`, and the report says it stopped, with no count. When the browser gives its own reason, as WebKit does, the failure quotes it.
+- `native.started` can name `executor: { name: 'agent-device', … }` and the `android` platform, and has no `xcode` for Android. These are additive fields of schema version 1.
+
+### Fixed
+
+- During a run, an Electron app's downloads no longer go the app's own way: Electron refuses them from the launch until a test's page gives them a folder. Before, a download with no handler opened Electron's save dialog, which waits for a person, and could save a file into your Downloads folder.
+- A download a test waited for is recorded as `awaited` even when it ends at once.
+- WebKit: a popup opened in its opener's web process no longer stays paused and freezes its opener.
+- Typing, clicks and keys in a popup that `window.open` opened on its opener's origin no longer fail `outcome_unknown` when a script ran in its empty first document, as an Electron preload does.
+
+### Not in this release
+
+- Android on an emulator or a device, real iPhones, and Safari.
+- Dialogs on Firefox and WebKit.
+- Popups are not recorded, and their console and network are not captured, on any engine.
+- Retest's WebDriverAgent and macOS executors are pinned to Xcode 26.5, and were not run with Xcode 27.0.
+
 ## 0.3.0
 
 Retest runs on Windows x64. The Windows entries were checked on Windows Server 2025, on GitHub's `windows-2025` runner. Firefox 158.0.1 was checked on macOS and on Windows.
