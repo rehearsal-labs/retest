@@ -140,12 +140,12 @@ describe('package smoke test', () => {
     for (const key of ['dependencies', 'optionalDependencies']) {
       assert.equal(Object.hasOwn(manifest, key), false, `the package declares no ${key}`)
     }
-    // The AI SDK adapter's packages are peers a project installs only to use that adapter: each is optional, so
-    // installing Retest installs none of them, as the listing above shows.
+    // The AI SDK adapter's packages, and agent-device for phones driven through it, are peers a project installs only to
+    // use them: each is optional, so installing Retest installs none of them, as the listing above shows.
     const peers: unknown = Reflect.get(manifest, 'peerDependencies')
     const meta: unknown = Reflect.get(manifest, 'peerDependenciesMeta')
     assert.ok(typeof peers === 'object' && peers !== null && typeof meta === 'object' && meta !== null)
-    assert.deepEqual(Object.keys(peers).sort(), ['@ai-sdk/anthropic', '@ai-sdk/azure', '@ai-sdk/openai', 'ai'])
+    assert.deepEqual(Object.keys(peers).sort(), ['@ai-sdk/anthropic', '@ai-sdk/azure', '@ai-sdk/openai', 'agent-device', 'ai'])
     for (const name of Object.keys(peers)) assert.deepEqual(Reflect.get(meta, name), { optional: true }, `${name} is an optional peer`)
   })
 

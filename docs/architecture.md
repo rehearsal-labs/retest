@@ -110,6 +110,8 @@ WebDriver is a protocol family; implementing a protocol does not require the Sel
 
 Android/iOS architecture remains research work. Do not implement both bridges before a browser test is useful. Existing native frameworks are valuable comparison implementations even if they are not dependencies.
 
+Updated 9 November 2026: the user decided that Retest drives phones through agent-device (Callstack, MIT licence), an optional peer loaded only by a target that uses it. Retest keeps its locators, actionability, checks, events and reports; agent-device performs actions and reads the screen. Android targets run through it, and an iOS simulator target opts in with `driver: 'agent-device'`, so WebDriverAgent stays the iOS default. The [guide](guide.md#phones-through-agent-device) says what has run.
+
 ## 8. Agent-first behavior
 
 An agent should be able to discover the installed API, observe a session, issue an action, run a file and inspect one failure. Versioned schemas and compact observations matter more than adding a natural-language method around every API.
