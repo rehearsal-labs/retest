@@ -111,7 +111,7 @@ async function checkTarget(app: LoadedApp, loaded: LoadedTarget, context: Target
   const subject = targetCall(loaded)
   const native = targetDriver(app.name, loaded, { native: true })
   if (!native.ok && 'platform' in loaded) return { group: app.name, subject, ok: false, text: native.failure.message }
-  if (native.ok && (native.driver === 'ios-simulator' || native.driver === 'macos')) return checkNativeTarget({ app: app.name, subject, target: native.target, env: context.dependencies.env })
+  if (native.ok && (native.driver === 'ios-simulator' || native.driver === 'macos' || native.driver === 'android')) return checkNativeTarget({ app: app.name, subject, target: native.target, env: context.dependencies.env })
   const driver = targetDriver(app.name, loaded)
   if (!driver.ok) return { group: app.name, subject, ok: false, text: driver.failure.message }
   if (driver.driver === 'electron') return checkElectron(app, driver.target, subject)
@@ -284,8 +284,9 @@ function checkSecrets(secrets: readonly EnvironmentSecret[]): Check[] {
  */
 function targetCall(target: LoadedTarget): string {
   if ('platform' in target) {
-    const device = target.platform === 'ios-simulator' ? `, device: '${target.device}', runtime: '${target.runtime}'` : ''
-    const shape = `{ platform: '${target.platform}'${device} }`
+    const device = target.platform === 'ios-simulator' ? `, device: '${target.device}', runtime: '${target.runtime}'` : target.platform === 'android' ? `, ${'serial' in target.device ? `serial: '${target.device.serial}'` : `device: '${target.device.name}'`}` : ''
+    const driver = target.platform === 'ios-simulator' && target.driver === 'agent-device' ? ", driver: 'agent-device'" : ''
+    const shape = `{ platform: '${target.platform}'${device}${driver} }`
     return target.name === target.platform ? shape : `${target.name}: ${shape}`
   }
   if (target.browser === 'firefox' || target.browser === 'webkit') {

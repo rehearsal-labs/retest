@@ -1,5 +1,6 @@
 import type { ArchiveEngine, ArchivePin, BuildInspection, BuildPin, BuildPlatform } from '../../browser/builds.ts'
-import type { LoadedConfig, LoadedNativeTarget, LoadedTarget } from '../../config/loaded.ts'
+import type { LoadedAgentDeviceTarget, LoadedConfig, LoadedNativeTarget, LoadedTarget } from '../../config/loaded.ts'
+import type { AgentDeviceLoader } from '../../native/agent-device/package.ts'
 import type { ExecutorName } from '../../native/executors.ts'
 import type { NativeTools } from '../../native/processes.ts'
 import type { Check } from '../doctor/checks.ts'
@@ -7,6 +8,8 @@ import type { Environment } from '../terminal.ts'
 import { existsSync } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
 import { isAbsolute, normalize, relative, sep } from 'node:path'
+import { agentDeviceTarget } from '../../config/native-targets.ts'
+import { agentDeviceVersion, loadAgentDevice } from '../../native/agent-device/package.ts'
 import { buildPlatform, cacheFolders, cacheVariable, describePin, describePlatform, findPin, inspectBuild, pinnedBuilds, pinRefusal, readBundledLicence } from '../../browser/builds.ts'
 import { screenRecordingAllowed, screenRecordingGrant, screenRecordingHolder } from '../../native/macos-app.ts'
 import { systemTools } from '../../native/processes.ts'
@@ -108,8 +111,11 @@ function hasDriver(app: string, target: LoadedTarget): boolean {
   return targetDriver(app, target).ok
 }
 
-/** What `checkNativeTarget` reads beyond the target: the pins and the platform, this machine's unless a test passes others. */
-export type NativeRowOptions = { readonly pins?: readonly BuildPin[]; readonly platform?: BuildPlatform | undefined }
+/**
+ * What `checkNativeTarget` reads beyond the target: the pins and the platform, this machine's unless a test passes
+ * others, and how agent-device is loaded for a target that runs through it.
+ */
+export type NativeRowOptions = { readonly pins?: readonly BuildPin[]; readonly platform?: BuildPlatform | undefined; readonly loadAgentDevice?: AgentDeviceLoader }
 
 /**
  * The row `doctor` gives a native target, read from the cache alone: the executor its runtime drives, WebDriverAgent
@@ -120,8 +126,12 @@ export type NativeRowOptions = { readonly pins?: readonly BuildPin[]; readonly p
  * @example await checkNativeTarget({ app: 'phone', subject: "{ platform: 'ios-simulator', … }", target, env: process.env })
  */
 export async function checkNativeTarget(request: { readonly app: string; readonly subject: string; readonly target: LoadedNativeTarget; readonly env: Environment }, options: NativeRowOptions = {}): Promise<Check> {
-  const { app, subject, target } = request
+  const { app, subject } = request
   const check = { group: app, subject }
+  const throughAgent = agentDeviceTarget(request.target)
+  if (throughAgent !== undefined) return checkAgentDeviceTarget(check, throughAgent, options.loadAgentDevice)
+  const target = request.target
+  if (target.platform === 'android') return { ...check, ok: false, text: 'An Android target runs through agent-device alone.' }
   const engine: ExecutorName = target.platform === 'macos' ? 'mac2' : 'webdriveragent'
   const pins = options.pins ?? pinnedBuilds
   const folders = cacheFolders(request.env)
@@ -143,6 +153,22 @@ export async function checkNativeTarget(request: { readonly app: string; readonl
   const bundled = await lstat(target.appPath).then((stats) => stats.isDirectory(), () => false)
   if (!bundled) return { ...check, ok: false, text: `No app at ${target.appPath}, the path appPath gives.`, fix: 'Build the app there, or change the path.' }
   return { ...check, ok: true, text: `${describePin(pin)} built in Retest's cache${inspection.sha256 === undefined ? '' : ` · products sha256 ${inspection.sha256.slice(0, 12)}`}, and the app is there; doctor starts neither`, detail: inspection.folder }
+}
+
+/**
+ * The row `doctor` gives a target that runs through agent-device: whether the release Retest was checked with is
+ * installed beside Retest, and whether the app is where `appPath` says. agent-device is loaded and nothing of it is
+ * started: no daemon, no device and no runner. An Android target's row says it has not run on a real emulator or device.
+ *
+ * @example await checkAgentDeviceTarget({ group: 'phone', subject }, target) // { ok: true, text: 'agent-device 0.21.36 is installed, and the app is there; doctor starts neither' }
+ */
+export async function checkAgentDeviceTarget(check: { readonly group: string; readonly subject: string }, target: LoadedAgentDeviceTarget, load?: AgentDeviceLoader): Promise<Check> {
+  const loaded = await loadAgentDevice(load)
+  if (!loaded.ok) return { ...check, ok: false, text: loaded.failure.message }
+  const present = await lstat(target.appPath).then((stats) => (target.platform === 'android' ? stats.isFile() : stats.isDirectory()), () => false)
+  if (!present) return { ...check, ok: false, text: `No ${target.platform === 'android' ? 'APK' : 'app'} at ${target.appPath}, the path appPath gives.`, fix: 'Build the app there, or change the path.' }
+  const unverified = target.platform === 'android' ? '; Android through agent-device has not run on a real emulator or device yet' : ''
+  return { ...check, ok: true, text: `agent-device ${agentDeviceVersion} is installed, and the ${target.platform === 'android' ? 'APK' : 'app'} is there; doctor starts neither${unverified}` }
 }
 
 /** What `checkScreenRecording` reads with: the tools, the system's unless a test passes fakes, and a stop. */
