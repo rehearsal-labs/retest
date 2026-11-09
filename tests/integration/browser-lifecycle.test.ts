@@ -338,14 +338,15 @@ test('a page whose renderer crashes fails the command waiting on it at once, and
   const page = await openPage(t, browser, site.url)
   assertOk(await goto(page, '/'))
   await awaitPosts(site, '/busy', 1)
-  // Record the fixture's live process tree after its renderer reports readiness, before injecting the crash.
-  const crashOwnership = launchOwnership(browser.pid)
-  assert.deepEqual(crashOwnership.capture(), [], 'the fixture browser and its descendants are owned by this test')
   const reading = timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'text' } }, 10_000))
   const renderers = (await processesUsing(await profileOf(browser.pid)))
     .filter((line) => line.includes('--type=renderer'))
     .map((line) => Number(line.trim().split(/\s+/)[0]))
   assert.ok(renderers.length > 0, 'the page has a renderer process')
+  // Record the fixture's live process tree after its renderers are listed and before the crash is injected, so a
+  // renderer Chrome starts while they are listed is in the record too.
+  const crashOwnership = launchOwnership(browser.pid)
+  assert.deepEqual(crashOwnership.capture(), [], 'the fixture browser and its descendants are owned by this test')
   for (const pid of renderers) {
     const renderer = crashOwnership.groupFor(pid)
     assert.ok(renderer !== undefined, `renderer ${pid} still has verified ancestry beneath the fixture browser`)

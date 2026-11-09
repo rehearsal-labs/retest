@@ -100,7 +100,7 @@ test('a file that failed earlier, or passed for another list of files, runs agai
   const earlier = await earlierAttempt(folder, 1, ['tests/unit/pass.test.ts'], ['tests/unit/pass.test.ts'], [])
   await earlierAttempt(folder, 2, files, [], ['tests/integration/later.test.ts'])
   const result = await execute(process.execPath, [runner, JSON.stringify(files), join(folder, 'results')], { cwd: folder, timeout: 10000, env: { ...process.env, RETEST_CI_EARLIER_RESULTS: earlier, GITHUB_RUN_ATTEMPT: '3' } })
-  assert.match(result.stdout, /unit-linux-x64-1-1\/results\.json was planned for other files, so none of its results is carried\./)
+  assert.match(result.stdout, /unit-linux-x64-1-1[\\/]results\.json was planned for other files, so none of its results is carried\./)
   assert.doesNotMatch(result.stdout, /::notice file=/)
   const receipt: unknown = JSON.parse(await readFile(join(folder, 'results/results.json'), 'utf8'))
   assert.ok(typeof receipt === 'object' && receipt !== null && 'carried' in receipt && 'files' in receipt && Array.isArray(receipt.files))

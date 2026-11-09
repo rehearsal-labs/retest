@@ -155,7 +155,8 @@ if (!loaded.ok) throw new Error(loaded.failure.message)
 const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
 const budget = new SessionBudget({ perOwner: 1, host: 1 })
-const timeouts = ${JSON.stringify(defaultTimeouts)}
+// A stopped run ends within its cleanup budget, given here as 5 s, so it ends before the 8 s hold could.
+const timeouts = ${JSON.stringify({ ...defaultTimeouts, cleanup: 5000 })}
 const stop = new AbortController()
 let waitingWhenStopped = -1
 let hostWhenStopped = -1

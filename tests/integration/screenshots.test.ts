@@ -17,7 +17,7 @@ import { engineUnderTest, protocolOnly } from './engines.ts'
 
 const engine = engineUnderTest()
 const platform = `${process.platform}-${process.arch}`
-const timeouts = budgets({ assertion: 3000 })
+const timeouts = budgets()
 const matching = ['--grep', '/matches its baseline/']
 const update = [...matching, '--update-screenshots']
 const swatchColour = [217, 79, 48]

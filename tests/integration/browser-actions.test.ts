@@ -552,7 +552,7 @@ test('a click that opens an alert nothing waited for fails at once, and the next
   const clicked = failureOf(result)
   const { value, ms } = await timed(page.execute({ kind: 'observe', locator: { by: 'testId', value: 'warn' } }, 1000))
   assert.ok(ms < 500, `the next command should not wait on the dialog, took ${ms} ms`)
-  const screenshot = await page.screenshot(1000).then(
+  const screenshot = await page.screenshot(defaultTimeouts.action).then(
     () => 'taken',
     (error: unknown) => (error instanceof BrowserError ? error.failure.class : 'thrown'),
   )

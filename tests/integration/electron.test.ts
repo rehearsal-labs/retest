@@ -209,7 +209,7 @@ test('an Electron app is driven through the same locators, actions and checks as
   const versions = binaryVersions()
   assert.equal(versions.electron, electronVersion)
   const root = await writeProject(t, { 'retest.config.ts': config, 'tests/desktop.retest.ts': tests })
-  const run = await runProject(t, root, { env: environment, timeouts: budgets({ assertion: 3000 }) })
+  const run = await runProject(t, root, { env: environment, timeouts: budgets() })
 
   const outcomes = Object.fromEntries(Object.values(names).map((name) => [name, [testNamed(run, name).status, testNamed(run, name).failure?.class ?? null]]))
   assert.deepEqual(outcomes, {
@@ -337,7 +337,7 @@ test('an Electron app is driven through the same locators, actions and checks as
   }
 
   // A person reading the run sees the Electron target named on its line and in the failure's card.
-  const human = await runProject(t, root, { env: environment, reporter: 'human', args: ['--grep', names.wrong], timeouts: budgets({ assertion: 3000 }) })
+  const human = await runProject(t, root, { env: environment, reporter: 'human', args: ['--grep', names.wrong], timeouts: budgets() })
   assert.equal(human.exit.code, 1, human.stderr)
   assert.match(human.stdout, new RegExp(`started desktop=electron  Electron ${electronVersion.replaceAll('.', '\\.')} · Chromium ${versions.chrome.replaceAll('.', '\\.')}`))
   assert.match(human.stdout, /desktop=electron \(Electron\)/)
