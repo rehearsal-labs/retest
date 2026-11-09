@@ -130,9 +130,17 @@ jobs:
           set -euo pipefail
           cargo fetch --locked --manifest-path supervisor/Cargo.toml
           CARGO_NET_OFFLINE=true node dist/cli/main.js install supervisor
+      # A re-run of this job runs only the files none of its earlier attempts passed; their kept results say which did.
+      - name: Read which files earlier attempts of this job passed
+        if: ${{ github.run_attempt != '1' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: unit-${{ matrix.platform }}-${{ matrix.shard }}-*
+          path: ${{ runner.temp }}/retest-ci-earlier
       - name: Run assigned unit files one at a time
         env:
           RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
+          RETEST_CI_EARLIER_RESULTS: ${{ github.run_attempt != '1' && format('{0}/retest-ci-earlier', runner.temp) || '' }}
         shell: bash
         run: node scripts/ci/run-tests.ts "$RETEST_CI_FILES" "$RUNNER_TEMP/retest-ci-results"
       - name: Keep file results and timings
@@ -160,10 +168,18 @@ jobs:
         with:
           ref: ${{ needs.commit.outputs.commit }}
           persist-credentials: false
+      # A re-run of this job runs only the files none of its earlier attempts passed; their kept results say which did.
+      - name: Read which files earlier attempts of this job passed
+        if: ${{ github.run_attempt != '1' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: integration-${{ matrix.platform }}-${{ matrix.shard }}-*
+          path: ${{ runner.temp }}/retest-ci-earlier
       - name: Run assigned integration files in the Linux harness
         env:
           RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
           RETEST_LINUX_RESULTS: ${{ runner.temp }}/retest-ci-results
+          RETEST_LINUX_EARLIER: ${{ github.run_attempt != '1' && format('{0}/retest-ci-earlier', runner.temp) || '' }}
         run: sh docker/linux/run.sh sh -c 'npm run build && exec node scripts/ci/run-tests.ts "$1" /home/node/ci-results' retest-ci "$RETEST_CI_FILES"
       - name: Keep file results and timings
         if: ${{ always() }}
@@ -192,10 +208,18 @@ jobs:
           ref: ${{ needs.commit.outputs.commit }}
           persist-credentials: false
       - uses: ./.github/actions/setup-macos-integration
+      # A re-run of this job runs only the files none of its earlier attempts passed; their kept results say which did.
+      - name: Read which files earlier attempts of this job passed
+        if: ${{ github.run_attempt != '1' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: integration-macos-${{ matrix.lane }}-${{ matrix.shard }}-*
+          path: ${{ runner.temp }}/retest-ci-earlier
       - name: Run assigned integration files one at a time
         id: integration
         env:
           RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
+          RETEST_CI_EARLIER_RESULTS: ${{ github.run_attempt != '1' && format('{0}/retest-ci-earlier', runner.temp) || '' }}
           RETEST_CHROMIUM_TICKER_PROOF_OUT: ${{ runner.temp }}/retest-chromium-ticker-proof
         shell: bash
         run: |
@@ -249,9 +273,17 @@ jobs:
           ref: ${{ needs.commit.outputs.commit }}
           persist-credentials: false
       - uses: ./.github/actions/setup-windows-integration
+      # A re-run of this job runs only the files none of its earlier attempts passed; their kept results say which did.
+      - name: Read which files earlier attempts of this job passed
+        if: ${{ github.run_attempt != '1' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: integration-windows-x64-${{ matrix.shard }}-*
+          path: ${{ runner.temp }}/retest-ci-earlier
       - name: Run assigned integration files one at a time
         env:
           RETEST_CI_FILES: ${{ toJSON(matrix.files) }}
+          RETEST_CI_EARLIER_RESULTS: ${{ github.run_attempt != '1' && format('{0}/retest-ci-earlier', runner.temp) || '' }}
         shell: bash
         run: node scripts/ci/run-tests.ts "$RETEST_CI_FILES" "$RUNNER_TEMP/retest-ci-results"
       - name: Keep file results and timings

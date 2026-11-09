@@ -31,7 +31,7 @@ The version exists only in the published package. `package.json` on `main` stays
 
 ## When a promotion fails
 
-Open the run and choose "Re-run failed jobs". GitHub keeps the jobs that passed, with their results.
+Open the run and choose "Re-run failed jobs". GitHub keeps the jobs that passed, with their results. A re-run test job runs only the files none of its earlier attempts passed: it reads which ones did from the results each attempt kept, names each file it carries and the attempt that passed it, and runs the rest. Every file still has to pass on the commit in that run.
 
 - If npm already has the version, the publish job publishes nothing and the run goes on to the tag.
 - The tag job accepts a tag that already names the commit, and a release that already exists.

@@ -21,7 +21,17 @@ if [ -n "${RETEST_LINUX_RESULTS:-}" ]; then
   # no repository, cache or pre-existing directory receives different permissions.
   mkdir "$RETEST_LINUX_RESULTS"
   chmod 0777 "$RETEST_LINUX_RESULTS"
+  # A re-run of a CI job reads, read-only, which files its earlier attempts passed, and runs only the others. With
+  # RETEST_LINUX_EARLIER set and no folder there, no earlier attempt kept its results, and every file runs.
+  earlier_results=
+  earlier_mount=
+  if [ -n "${RETEST_LINUX_EARLIER:-}" ]; then
+    earlier_results=/home/node/ci-earlier
+    if [ -d "$RETEST_LINUX_EARLIER" ]; then earlier_mount="type=bind,source=$RETEST_LINUX_EARLIER,target=/home/node/ci-earlier,readonly"; fi
+  fi
   exec docker run --rm --init --cap-drop ALL --security-opt "seccomp=$root/docker/linux/chromium-seccomp.json" \
+    --env "RETEST_CI_EARLIER_RESULTS=$earlier_results" --env "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-1}" \
+    ${earlier_mount:+--mount "$earlier_mount"} \
     --mount "type=bind,source=$RETEST_LINUX_RESULTS,target=/home/node/ci-results" "$image" "$@"
 fi
 exec docker run --rm --init --cap-drop ALL --security-opt "seccomp=$root/docker/linux/chromium-seccomp.json" "$image" "$@"
