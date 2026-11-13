@@ -13,6 +13,7 @@ import { filesRoutes } from './files-page.ts'
 import { framesRoutes } from './frames-page.ts'
 import { holderRoutes } from './holders.ts'
 import { KEY_DOWN_PATH, KEYS_PAGE } from './keys-page.ts'
+import { leavingRoutes } from './leaving-page.ts'
 import { LOCATORS_PAGE } from './locators-page.ts'
 import { lookupRoutes } from './lookup-routes.ts'
 import { MODES, type Mode, type TaskAppMode } from './modes.ts'
@@ -285,6 +286,7 @@ export async function startTaskApp(options: TaskAppOptions = {}): Promise<TaskAp
     ...routesRoutes(),
     ...framesRoutes(),
     ...shadowRoutes(),
+    ...leavingRoutes(),
   ])
 
   const server = createServer((request, response) => {

@@ -98,6 +98,7 @@ const bindingCalledSchema = s.object({ name: s.string() })
 const contextDestroyedSchema = s.object({ executionContextId: s.optional(s.number({ integer: true })) })
 const frameIdSchema = s.object({ frameId: s.string() })
 const navigatingSchema = s.object({ frameId: s.string(), url: s.string(), navigationType: s.string() })
+const requestedSchema = s.object({ frameId: s.string(), url: s.string(), disposition: s.string() })
 const navigatedSchema = s.object({ frame: s.object({ id: s.string() }) })
 
 // Navigations that keep the document. Any other replaces it when it commits.
@@ -220,6 +221,9 @@ export class PageFrames {
   readonly #unready = new Map<string, { session: CdpSession; reason: string }>()
   // Frames whose browser has begun a navigation to another document, by frame id, with the address it is opening.
   readonly #navigating = new Map<string, string>()
+  // Frames whose document asked for a navigation the browser has not begun yet, as a form's is until the task that
+  // sends it runs, by frame id, with the address asked for.
+  readonly #requested = new Map<string, string>()
   #watching: Promise<void> | undefined
   #calls = 0
   #lastNumber = 0
@@ -272,9 +276,12 @@ export class PageFrames {
     return this.#lastNumber
   }
 
-  /** The navigation the browser has begun in a frame, by the frame's id, or undefined while none is under way. */
+  /**
+   * The navigation a frame is on its way to, by the frame's id, from the moment its page asks for it until it commits or
+   * the browser gives it up, or undefined while none is under way.
+   */
   navigation(frameId: string): PendingNavigation | undefined {
-    const url = this.#navigating.get(frameId)
+    const url = this.#navigating.get(frameId) ?? this.#requested.get(frameId)
     return url === undefined ? undefined : { url }
   }
 
@@ -415,7 +422,7 @@ export class PageFrames {
   async #setUp(session: CdpSession, frameId: string, held: boolean): Promise<void> {
     this.#unready.delete(frameId)
     // The frame's navigation committed in this process.
-    this.#navigating.delete(frameId)
+    this.#settled(frameId)
     session.on('Runtime.bindingCalled', (params) => {
       if (readProtocol(bindingCalledSchema, params, { method: 'Runtime.bindingCalled', sessionId: session.id }).name === changeBinding) this.#options.onChange()
     })
@@ -424,7 +431,7 @@ export class PageFrames {
     session.onDetach(() => {
       if (this.#targets.get(frameId) === session) this.#targets.delete(frameId)
       if (this.#unready.get(frameId)?.session === session) this.#unready.delete(frameId)
-      this.#navigating.delete(frameId)
+      this.#settled(frameId)
       this.#forgetSession(session)
     })
     const sent = { timeoutMs: setupMs }
@@ -448,7 +455,9 @@ export class PageFrames {
   }
 
   // Follows a session's documents and frames: what Retest keeps of each goes with it, and a frame's navigation to
-  // another document is noted until it commits, stops or the frame goes. The page's own main frame is the page's.
+  // another document is noted from the moment its page asks for it until it commits, stops or the frame goes. A request
+  // the browser drops ends with the frame's scheduling of it, and one the page's Navigation API keeps within the
+  // document with that move. The page's own main frame is the page's.
   #track(session: CdpSession): void {
     const source = (method: string) => ({ method, sessionId: session.id })
     session.on('Runtime.executionContextDestroyed', (params) => {
@@ -459,14 +468,28 @@ export class PageFrames {
     session.on('Page.frameDetached', (params) => {
       const { frameId } = readProtocol(frameIdSchema, params, source('Page.frameDetached'))
       this.#worlds.delete(worldKey(session, frameId))
-      this.#navigating.delete(frameId)
+      this.#settled(frameId)
+    })
+    session.on('Page.frameRequestedNavigation', (params) => {
+      const { frameId, url, disposition } = readProtocol(requestedSchema, params, source('Page.frameRequestedNavigation'))
+      if (frameId !== this.#options.mainFrameId() && disposition === 'currentTab') this.#requested.set(frameId, url)
     })
     session.on('Page.frameStartedNavigating', (params) => {
       const { frameId, url, navigationType } = readProtocol(navigatingSchema, params, source('Page.frameStartedNavigating'))
-      if (frameId !== this.#options.mainFrameId() && !withinDocument.has(navigationType)) this.#navigating.set(frameId, url)
+      if (frameId === this.#options.mainFrameId() || withinDocument.has(navigationType)) return
+      this.#navigating.set(frameId, url)
+      if (this.#requested.get(frameId) === url) this.#requested.delete(frameId)
     })
-    session.on('Page.frameNavigated', (params) => this.#navigating.delete(readProtocol(navigatedSchema, params, source('Page.frameNavigated')).frame.id))
-    session.on('Page.frameStoppedLoading', (params) => this.#navigating.delete(readProtocol(frameIdSchema, params, source('Page.frameStoppedLoading')).frameId))
+    session.on('Page.frameNavigated', (params) => this.#settled(readProtocol(navigatedSchema, params, source('Page.frameNavigated')).frame.id))
+    session.on('Page.frameStoppedLoading', (params) => this.#settled(readProtocol(frameIdSchema, params, source('Page.frameStoppedLoading')).frameId))
+    session.on('Page.frameClearedScheduledNavigation', (params) => this.#requested.delete(readProtocol(frameIdSchema, params, source('Page.frameClearedScheduledNavigation')).frameId))
+    session.on('Page.navigatedWithinDocument', (params) => this.#requested.delete(readProtocol(frameIdSchema, params, source('Page.navigatedWithinDocument')).frameId))
+  }
+
+  // A frame's navigation committed, stopped or went with the frame, and so did any it had asked for.
+  #settled(frameId: string): void {
+    this.#navigating.delete(frameId)
+    this.#requested.delete(frameId)
   }
 
   #forgetDocument(key: string): void {

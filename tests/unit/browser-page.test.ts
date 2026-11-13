@@ -2,6 +2,7 @@ import type { SessionIdentity, SessionOwner } from '../../src/browser/contract.t
 import type { RecordIdentity } from '../../src/protocol/identity.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { BrowserError } from '../../src/browser/browser-error.ts'
 import { CdpTimeoutError } from '../../src/browser/cdp/errors.ts'
 import { disarmFunction, pageLookFunction, prepareFunction, readPageFunction, registrationFunction, verdictFunction } from '../../src/browser/page-scripts.ts'
@@ -59,7 +60,7 @@ test('a hover readies its element, then moves the mouse to its centre while the 
   assert.deepEqual(prepared.params['arguments'][0], { value: { action: 'hover' } })
 })
 
-test('a look at the page answers its whole address and title as the page has them, the base URL, and a title unknown while another document is on its way', async () => {
+test('a look at the page answers its whole address and title as the page has them, the base URL, and nothing while another document is on its way', async () => {
   const looks = [
     value({ url: 'http://app.test/start?tab=2#top', title: ' Tasks ', cut: [] }),
     value({ url: 'http://app.test/start', title: 'Report', cut: ['title'] }),
@@ -73,9 +74,72 @@ test('a look at the page answers its whole address and title as the page has the
   const cut = await page.execute({ kind: 'observePage' }, 1000)
   assert.deepEqual(cut.ok && cut.kind === 'observePage' ? cut.observation : undefined, { url: 'http://app.test/start', title: 'Report', cut: ['title'] })
   startNavigating()
-  const opening = await page.execute({ kind: 'observePage' }, 1000)
-  assert.ok(opening.ok && opening.kind === 'observePage')
-  assert.deepEqual(opening.observation, { url: 'http://app.test/start?token=1#top', title: null }, 'the address the frame holds, whole')
+  const opening = await page.execute({ kind: 'observePage' }, 300)
+  assert.deepEqual(opening, {
+    ok: false,
+    failure: {
+      class: 'timeout',
+      message: 'Could not read the page within 300 ms: the page was still opening http://app.test/next, so Retest read nothing.',
+      details: { check: 'navigation', url: 'http://app.test/next', waitedMs: 300 },
+    },
+  })
+  assert.equal(looked, 2, 'the document being left is not read')
+})
+
+// The page asks for a navigation before the browser begins it, as a form's button does: from that moment a look waits,
+// and it reads once the document commits, or once the browser drops what was asked for.
+function pageLooking() {
+  let looked = 0
+  const scripted = pageAnswering((functionDeclaration) => {
+    if (functionDeclaration !== pageLookFunction) return Promise.reject(new Error('unexpected'))
+    looked += 1
+    return value({ url: 'http://app.test/start', title: 'Start', cut: [] })
+  })
+  const request = () => scripted.emit('Page.frameRequestedNavigation', { frameId: mainFrame, reason: 'formSubmissionPost', url: 'http://app.test/next?code=1', disposition: 'currentTab' })
+  return { ...scripted, request, looked: () => looked }
+}
+
+test('a look waits from the moment the page asks for another document, and reads the one that commits', async () => {
+  const { page, emit, request, startNavigating, looked } = pageLooking()
+  request()
+  const look = page.execute({ kind: 'observePage' }, 5000)
+  await delay(50)
+  assert.equal(looked(), 0, 'nothing is read while the page is on its way to another document')
+  startNavigating('differentDocument', 'L2')
+  await delay(20)
+  assert.equal(looked(), 0, 'nor once the browser has begun it')
+  emit('Page.frameNavigated', { frame: { id: mainFrame, url: 'http://app.test/next?code=1', loaderId: 'L2' } })
+  const answer = await look
+  assert.ok(answer.ok && answer.kind === 'observePage', JSON.stringify(answer))
+  assert.equal(looked(), 1)
+})
+
+test('a look waits no more once the browser drops the navigation the page asked for, whichever way it says so', async () => {
+  const ends: Record<string, (emit: (method: string, params: unknown) => void) => void> = {
+    'the scheduling cleared': (emit) => emit('Page.frameClearedScheduledNavigation', { frameId: mainFrame }),
+    'a move within the document': (emit) => emit('Page.navigatedWithinDocument', { frameId: mainFrame, url: 'http://app.test/start#part', navigationType: 'fragment' }),
+    'the frame stopped loading': (emit) => emit('Page.frameStoppedLoading', { frameId: mainFrame }),
+  }
+  for (const [how, end] of Object.entries(ends)) {
+    const { page, emit, request, looked } = pageLooking()
+    request()
+    const look = page.execute({ kind: 'observePage' }, 5000)
+    await delay(50)
+    assert.equal(looked(), 0, `${how}: nothing is read while the page is on its way`)
+    const ended = performance.now()
+    end(emit)
+    const answer = await look
+    assert.ok(answer.ok && answer.kind === 'observePage', `${how}: ${JSON.stringify(answer)}`)
+    assert.ok(performance.now() - ended < 1000, `${how}: the look read at once`)
+  }
+})
+
+test('a look while nothing is on its way sends one call and waits for nothing', async () => {
+  const { page, sent, looked } = pageLooking()
+  const answer = await page.execute({ kind: 'observePage' }, 1000)
+  assert.ok(answer.ok)
+  assert.equal(looked(), 1)
+  assert.deepEqual(sent.filter(({ method }) => method !== 'Page.createIsolatedWorld').map(({ method }) => method), ['Runtime.callFunctionOn'])
 })
 
 test('the page refuses a key it cannot send before it sends anything, as usage', async () => {
