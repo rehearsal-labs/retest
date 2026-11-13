@@ -11,11 +11,11 @@ import { pollDelay } from '../assertions/look-until.ts'
 import { observedItemLimit } from '../protocol/commands.ts'
 import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
 import { truncateText } from '../protocol/failures.ts'
-import { locatorCheck } from '../protocol/locator-checks.ts'
+import { locatorCheck, oneLabelNote } from '../protocol/locator-checks.ts'
 import { describeEmptyStep, describeLocator } from '../protocol/locator.ts'
 import { quoteText } from '../protocol/text.ts'
 import { unverifiedSentence } from './actionability.ts'
-import { checkedReading, describeElement, enabledReading, fieldTypes, locate, platformName, readValue, selectedReading, textReading, valueReading, visibilityReading } from './locators.ts'
+import { checkedReading, describeElement, enabledReading, fieldTypes, labelAsText, locate, platformName, readValue, selectedReading, textReading, valueReading, visibilityReading } from './locators.ts'
 
 // Native checks, judged from the session's own scoped tree, as the parent judges the web's: each look reads the tree,
 // finds the locator's elements and builds an observation of the same shape the web's checks read, with a selected
@@ -90,6 +90,22 @@ export function nativeCheck(record: NativeCheckRecord): LocatorCheck {
 // The selected state rides on the observation the native looks build; a web observation has none.
 function observedSelected(observation: Observation): boolean | undefined {
   return observation.selected ?? undefined
+}
+
+/**
+ * The sentence a failed text check adds when the text it compared is an Android label that may be the view's content
+ * description: on the one element that matched, or, for a list of texts, on any match. Undefined otherwise.
+ *
+ * @example textCheckNote({ matcher: 'toHaveText', text: 'Release checklist 1' }, [savedTask], 'android')
+ */
+export function textCheckNote(record: NativeCheckRecord, matches: readonly NativeElement[], platform: NativeKind): string | undefined {
+  if (record.matcher !== 'toHaveText' && record.matcher !== 'toContainText') return undefined
+  const compared = 'texts' in record ? matches.slice(0, observedItemLimit) : matches.length === 1 ? matches : []
+  for (const element of compared) {
+    const label = labelAsText(element, platform)
+    if (label !== undefined) return oneLabelNote(label)
+  }
+  return undefined
 }
 
 /**

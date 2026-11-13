@@ -368,10 +368,15 @@ export function visibleOf(element: NativeElement, tree: NativeTree): boolean {
  * The element's own text as `textOf` reads it, `none` for a field, and `unreported` when the tree carries none of the
  * attributes it is read from: a static text with neither `value` nor `label`, or another element with no `label` (and on
  * macOS no `title`), which WebDriverAgent leaves out when they are empty and an executor leaves out when it cannot read
- * them alike.
+ * them alike. An Android view's text is its `text` where agent-device lets it be told from a content description, and
+ * its label where it does not, as `labelAsText` says.
  */
 export function textReading(element: NativeElement, platform: NativeKind): StateReading<string> {
   if (fieldTypes.has(element.type)) return { kind: 'none' }
+  if (platform === 'android') {
+    const shown = element.attributes['text'] ?? element.attributes['label']
+    return shown === undefined ? { kind: 'unreported', attribute: 'text' } : { kind: 'read', value: shown }
+  }
   const value = element.attributes['value']
   const label = element.attributes['label']
   const title = element.attributes['title']
@@ -413,6 +418,18 @@ export function checkedReading(element: NativeElement): StateReading<boolean> {
   if (value === '1' || value === 'true') return { kind: 'read', value: true }
   if (value === '0' || value === 'false') return { kind: 'read', value: false }
   return { kind: 'none' }
+}
+
+/**
+ * The label an Android view's text was read from when agent-device gives no content description beside it: its text,
+ * or, on a view with no text, its content description, which agent-device writes alike. Undefined for any other
+ * element, a field, or a view whose text is known apart.
+ *
+ * @example labelAsText(savedTask, 'android') // 'saved_task'
+ */
+export function labelAsText(element: NativeElement, platform: NativeKind): string | undefined {
+  if (platform !== 'android' || fieldTypes.has(element.type) || element.attributes['text'] !== undefined) return undefined
+  return element.attributes['label']
 }
 
 /** The state a reading holds, or null when it holds none: the type has no such state, or the tree did not report it. */

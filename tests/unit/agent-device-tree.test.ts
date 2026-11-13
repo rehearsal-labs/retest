@@ -1,13 +1,24 @@
+import type { AgentDevicePort } from '../../src/native/agent-device/package.ts'
 import type { SnapshotNode } from '../../src/native/agent-device/tree.ts'
+import type { NativeTree } from '../../src/native/locators.ts'
+import type { EventBody } from '../../src/protocol/events.ts'
+import type { Failure } from '../../src/protocol/failures.ts'
+import type { LocatorCheckRecord } from '../../src/protocol/locator-checks.ts'
+import type { LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { AgentDeviceInteraction } from '../../src/native/agent-device/interaction.ts'
 import { androidElementTypes, buildTree, readSnapshot } from '../../src/native/agent-device/tree.ts'
 import { observeTree, unsupportedCheck } from '../../src/native/assertions.ts'
 import { describeElement, identifierOf, locate, textReading, valueReading, visibilityReading } from '../../src/native/locators.ts'
+import { holdsOneLabelNote, locatorCheck, oneLabelNote } from '../../src/protocol/locator-checks.ts'
+import { NativePageAdapter } from '../../src/runner/native-pool.ts'
+import { RunningTest } from '../../src/runner/running-test.ts'
+import { ScriptedProcess } from '../support/scripted-process.ts'
 
 // Snapshots agent-device gives, read into the trees Retest's locators and checks read. The iOS nodes are TaskPhone's
-// sign-in screen as agent-device 0.21.36 snapshotted it on the iOS 26.5 simulator; the Android nodes are written from
-// agent-device's documented node fields and have not come from a real emulator or device.
+// sign-in screen as agent-device 0.21.36 snapshotted it on the iOS 26.5 simulator. The first Android nodes are written
+// from agent-device's documented node fields; the benchmark task app's nodes came from the Android 15 emulator.
 
 const iosNodes: readonly SnapshotNode[] = [
   { index: 0, type: 'Other', label: 'TaskPhone', rect: { x: 0, y: 0, width: 402, height: 874 }, enabled: true, ref: 'e1' },
@@ -89,6 +100,10 @@ test("an iOS tree keeps the snapshot's types, its identifiers as verified test i
   const hidden = locate(tree, { by: 'text', text: 'Hidden' })
   assert.ok(hidden.ok && hidden.matches[0] !== undefined)
   assert.deepEqual(visibilityReading(hidden.matches[0], 'ios-simulator'), { kind: 'read', value: false })
+  // A cell carries no label, so Retest read no text of it, and a failed text check does not say it has empty text.
+  const cell = observeTree(tree, { by: 'role', role: 'cell', pick: 'first' })
+  assert.ok(cell.ok && cell.observation.text === null)
+  assert.match(locatorCheck({ matcher: 'toHaveText', text: 'Sign in' }).mismatch(cell.observation, "getByRole('cell').first()"), /^getByRole\('cell'\)\.first\(\) has no text Retest could read, expected "Sign in"\./)
 })
 
 test('an Android tree maps widget classes to element types, reads resource ids and content descriptions, and refuses to take a label for a test id', () => {
@@ -128,6 +143,138 @@ test('an Android tree maps widget classes to element types, reads resource ids a
   assert.equal(describeElement(custom.matches[0], 'android'), 'a Other named "Custom"')
   // A text check on a field is refused, as on iOS: a field's text is what was typed.
   assert.equal(unsupportedCheck({ matcher: 'toHaveText', text: 'x' }, title.matches, { by: 'testId', value: 'title' }, 'android')?.class, 'unsupported')
+})
+
+// The benchmark task app's own nodes on the Android 15 emulator, as agent-device 0.21.36 snapshotted them on 13 November
+// 2026, before Save and after it. Android's own dump of the first screen gives the saved task `text=""` and
+// `content-desc="saved_task"`, and the title `text="Bench Tasks"` and `content-desc=""`; agent-device gives both a label
+// and neither a content description.
+function benchmarkScreen(saved: string | undefined): unknown {
+  const app = { enabled: true, selected: false, editable: false, password: false, hintShowing: false, bundleId: 'dev.retest.bench.tasks', visibleToUser: true }
+  return {
+    appBundleId: 'dev.retest.bench.tasks',
+    refsGeneration: 856597,
+    truncated: false,
+    nodes: [
+      { ...app, index: 7, type: 'android.widget.FrameLayout', rect: { x: 0, y: 136, width: 1080, height: 2264 }, depth: 0, ref: 'e8', kind: 'group' },
+      { ...app, index: 8, type: 'android.view.ViewGroup', identifier: 'android:id/decor_content_parent', rect: { x: 0, y: 136, width: 1080, height: 2201 }, depth: 1, parentIndex: 7, ref: 'e9', kind: 'group' },
+      { ...app, index: 9, type: 'android.widget.TextView', label: 'Bench Tasks', rect: { x: 42, y: 174, width: 301, height: 71 }, depth: 2, parentIndex: 8, ref: 'e10', kind: 'text' },
+      { ...app, index: 10, type: 'android.widget.FrameLayout', identifier: 'android:id/content', rect: { x: 0, y: 283, width: 1080, height: 2054 }, depth: 2, parentIndex: 8, ref: 'e11', kind: 'group' },
+      { ...app, index: 11, type: 'android.widget.LinearLayout', rect: { x: 0, y: 283, width: 1080, height: 2054 }, depth: 3, parentIndex: 10, ref: 'e12', kind: 'group' },
+      saved === undefined
+        ? { ...app, index: 12, type: 'android.widget.EditText', label: 'Task title', value: '', contentDescription: 'task_title', editable: true, hintShowing: true, placeholder: 'Task title', identifier: 'dev.retest.bench.tasks:id/task_title', rect: { x: 48, y: 379, width: 984, height: 118 }, hittable: true, depth: 4, parentIndex: 11, ref: 'e13', kind: 'text-field' }
+        : { ...app, index: 12, type: 'android.widget.EditText', label: saved, value: saved, contentDescription: 'task_title', editable: true, placeholder: 'Task title', selectionStart: 19, selectionEnd: 19, identifier: 'dev.retest.bench.tasks:id/task_title', rect: { x: 48, y: 379, width: 984, height: 118 }, focused: true, hittable: true, depth: 4, parentIndex: 11, ref: 'e13', kind: 'text-field' },
+      { ...app, index: 13, type: 'android.widget.Button', label: 'Save', contentDescription: 'save_task', identifier: 'dev.retest.bench.tasks:id/save_task', rect: { x: 48, y: 497, width: 984, height: 126 }, hittable: true, depth: 4, parentIndex: 11, ref: 'e14', kind: 'button' },
+      { ...app, index: 14, type: 'android.widget.TextView', label: saved ?? 'saved_task', ...(saved === undefined ? {} : { contentDescription: 'saved_task' }), identifier: 'dev.retest.bench.tasks:id/saved_task', rect: { x: 48, y: 623, width: 984, height: 71 }, depth: 4, parentIndex: 11, ref: 'e15', kind: 'text' },
+    ],
+  }
+}
+
+test('an Android view reads as its text, or as the label agent-device gives a view with no text, and a layout as empty text', () => {
+  const treeOf = (saved: string | undefined): NativeTree => {
+    const read = readSnapshot(benchmarkScreen(saved))
+    assert.ok(read.ok)
+    return buildTree(read.snapshot, 'android', keep).tree
+  }
+  const judged = (tree: NativeTree, recipe: LocatorRecipe, record: LocatorCheckRecord): { readonly text: string | null; readonly passes: boolean } => {
+    const observed = observeTree(tree, recipe)
+    assert.ok(observed.ok && observed.matches.length === 1)
+    assert.equal(unsupportedCheck(record, observed.matches, recipe, 'android'), undefined, 'the check is judged on the text it read')
+    return { text: observed.observation.text, passes: locatorCheck(record).passes(observed.observation) }
+  }
+  const empty = treeOf(undefined)
+  // The title has text and no content description: it reads as its text, and a check of it passes.
+  assert.deepEqual(judged(empty, { by: 'text', text: 'Bench Tasks' }, { matcher: 'toHaveText', text: 'Bench Tasks' }), { text: 'Bench Tasks', passes: true })
+  // The saved task shows nothing, and agent-device gives it its content description as its label, which is read.
+  const savedTask = { by: 'testId', value: 'saved_task' } as const
+  assert.deepEqual(judged(empty, savedTask, { matcher: 'toHaveText', text: 'Release checklist 1' }), { text: 'saved_task', passes: false })
+  assert.deepEqual(judged(empty, savedTask, { matcher: 'toHaveText', text: '' }), { text: 'saved_task', passes: false })
+  // A button with text and a content description beside it reads as its text; a layout with neither as empty text.
+  assert.deepEqual(judged(empty, { by: 'testId', value: 'save_task' }, { matcher: 'toHaveText', text: 'Save' }), { text: 'Save', passes: true })
+  const layout = empty.elements.find((element) => element.attributes['class'] === 'android.widget.LinearLayout')
+  assert.ok(layout !== undefined)
+  assert.deepEqual(textReading(layout, 'android'), { kind: 'read', value: '' })
+  // After Save agent-device reports the content description apart, beside the label that is the view's text.
+  const filled = treeOf('Release checklist 1')
+  assert.deepEqual(judged(filled, savedTask, { matcher: 'toHaveText', text: 'Release checklist 1' }), { text: 'Release checklist 1', passes: true })
+  const found = locate(filled, savedTask)
+  assert.ok(found.ok)
+  const [saved] = found.matches
+  assert.ok(saved !== undefined)
+  assert.deepEqual(saved.testIds?.verified, ['dev.retest.bench.tasks:id/saved_task', 'saved_task'])
+  assert.equal(saved.attributes['text'], 'Release checklist 1', 'the text is known apart from the description')
+  // getByText finds a view by its label, getByLabel the field by its label, which is its hint while it is empty.
+  const byText = locate(empty, { by: 'text', text: 'saved_task' })
+  assert.ok(byText.ok && byText.matches.length === 1)
+  const field = locate(empty, { by: 'label', text: 'Task title' })
+  assert.ok(field.ok && field.matches.length === 1 && field.matches[0]?.type === 'TextField')
+})
+
+// The parent's own verdict on a look at the benchmark app through agent-device: the failure of a text check read from a
+// label with no content description beside it says the label may be the view's content description; nothing else does.
+test('a text check that fails on an Android label agent-device gave a view with no text says it may be its content description', async (t) => {
+  let saved: string | undefined
+  let generation = 0
+  const port: AgentDevicePort = {
+    call: (method) => {
+      if (method === 'capture.snapshot') {
+        generation += 1
+        const screen = benchmarkScreen(saved)
+        return Promise.resolve({ status: 'answered', value: typeof screen === 'object' && screen !== null ? { ...screen, refsGeneration: generation } : screen, durationMs: 1 })
+      }
+      return Promise.resolve({ status: 'answered', value: method === 'apps.open' ? { appBundleId: 'dev.retest.bench.tasks' } : {}, durationMs: 1 })
+    },
+  }
+  const interaction = new AgentDeviceInteraction({
+    port,
+    session: 'retest-1-session',
+    sessionId: 'attempt:tasks',
+    platform: 'android',
+    device: { platform: 'android', serial: 'emulator-5554' },
+    bundleId: 'dev.retest.bench.tasks',
+    launch: { arguments: [], environment: {} },
+    redact: keep,
+    install: () => Promise.resolve({ result: { ok: true }, input: 'sent' }),
+    processes: () => Promise.resolve({ ok: false, problem: 'not read' }),
+    screen: () => Promise.resolve({ ok: false, failure: { class: 'not_actionable', message: 'no screen' } }),
+  })
+  t.after(() => interaction.dispose(5000))
+  const launched = await interaction.launch(5000)
+  assert.ok(launched.result.ok)
+  const process = new ScriptedProcess()
+  const events: EventBody[] = []
+  const budgets = { collection: 2000, setup: 2000, action: 2000, assertion: 2000, navigation: 2000, cleanup: 2000, test: 5000 }
+  const running = new RunningTest({ process, pages: new Map([['tasks', new NativePageAdapter(interaction)]]), testId: 'test', attemptId: 'attempt', timeouts: budgets, emit: (body) => events.push(body) })
+  const report = running.run()
+  let id = 0
+  const check = async (locator: LocatorRecipe, record: LocatorCheckRecord, claimed: 'passed' | 'failed'): Promise<Failure | undefined> => {
+    id += 1
+    process.deliver({ type: 'command', ...process.scope, id, app: 'tasks', command: { kind: 'observe', locator }, timeoutMs: 2000 })
+    const look = await process.answer(id)
+    if (!look.ok || look.kind !== 'observe') throw new Error('no native look')
+    const base = { testId: 'test', attemptId: 'attempt', session: 'tasks', observationId: look.observationId, sessionId: look.sessionId, locator, matcher: record.matcher, check: record, attempts: 1, expected: null, actual: null, durationMs: 1 }
+    const before = events.length
+    process.deliver({ type: 'event', event: claimed === 'passed' ? { type: 'assertion.passed', ...base } : { type: 'assertion.failed', ...base, failure: { class: 'check_failed', message: 'The process says it failed.' } } })
+    const written = events.slice(before).find((body) => body.type === 'assertion.passed' || body.type === 'assertion.failed')
+    return written?.type === 'assertion.failed' ? written.failure : undefined
+  }
+  const savedTask = { by: 'testId', value: 'saved_task' } as const
+  const empty = await check(savedTask, { matcher: 'toHaveText', text: 'Release checklist 1' }, 'failed')
+  assert.equal(empty?.class, 'check_failed')
+  assert.match(empty?.message ?? '', /^a look at getByTestId\('saved_task'\) has text "saved_task", expected "Release checklist 1"\./)
+  assert.ok(empty?.message.endsWith(` ${oneLabelNote('saved_task')}`), empty?.message)
+  assert.equal(oneLabelNote('saved_task'), 'agent-device gives an Android view one label for its text and its content description, so if the view has no text, "saved_task" is its content description.')
+  assert.ok(holdsOneLabelNote(empty?.message ?? ''), 'a reporter shows the message, which says more than the values')
+  // The title's check passes on its text, and a failing check of a text known apart carries no note.
+  assert.equal(await check({ by: 'text', text: 'Bench Tasks' }, { matcher: 'toHaveText', text: 'Bench Tasks' }, 'passed'), undefined)
+  saved = 'Release checklist 1'
+  const known = await check(savedTask, { matcher: 'toHaveText', text: 'saved_task' }, 'failed')
+  assert.equal(known?.class, 'check_failed')
+  assert.equal(holdsOneLabelNote(known?.message ?? ''), false, known?.message)
+  assert.equal(await check(savedTask, { matcher: 'toHaveText', text: 'Release checklist 1' }, 'passed'), undefined)
+  process.deliver({ type: 'test-finished', testId: 'test', attemptId: 'attempt', status: 'failed', failure: { class: 'check_failed', message: 'The process says it failed.' }, assertionCount: 4, durationMs: 0 })
+  await report
+  running.close()
 })
 
 test('several top nodes get a root of their own, and every text the app wrote is redacted before it is kept', () => {

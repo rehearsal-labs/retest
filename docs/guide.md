@@ -403,6 +403,8 @@ const config = defineConfig({
 
 On the simulator, the check pressed Enter. A single character, `getByLabel` and the refusals ran only against a stand-in: TaskPhone's fields carry no accessibility label in agent-device's tree, only a placeholder. An Android label agent-device took from a content description cannot be told from text, so it never counts as a test id, and a lookup that finds only such a label says so.
 
+On Android, a view's text is the text it shows, or its content description when it shows no text. agent-device reports the two as one label. It reports the content description apart only when it differs from the text. A view with neither reads as empty text. So `toHaveText('')` cannot pass on an empty view that has a content description. And `toHaveText(X)` passes on a view with no text whose content description is X. When a text check fails on a label with no content description beside it, its message says the label may be the view's content description. `getByText` finds a view by the same label. On the Android 15 emulator, the benchmark's task app showed this. Its title passed `toHaveText` with its text. Its empty saved task, whose content description is `saved_task`, passed `toHaveText('saved_task')`, and failed `toHaveText('')` with that message. After Save it passed `toHaveText` with the title.
+
 #### Lifecycle
 
 - iOS: as with Retest's own driver, each runtime creates a simulator of its own from the device type and runtime, boots it and installs the app with simctl, so the app's data and keychain start empty. At the end Retest closes agent-device's session, shuts the simulator down and deletes it, and checks that no process naming it is left.

@@ -2,6 +2,14 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## Unreleased
+
+### Fixed
+
+- **Android: a failed text check says when the text may be a content description.** agent-device reports a view's text and its content description as one label, so a view with no text reads as its content description. `toHaveText('')` cannot pass on such a view, and `toHaveText('saved_task')` passes on an empty view whose content description is `saved_task`. A text check that fails on such a label now says the label may be the view's content description. Checked on the Android 15 emulator.
+- **Android: a view with neither text nor a content description reads as empty text.** Its text checks failed before, saying the text was not reported. Unit-tested on nodes the Android 15 emulator gave, not run as a check there.
+- A text check on an element whose text the tree did not report no longer says the element has the text `""`. It says Retest could read no text.
+
 ## 0.4.0
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.

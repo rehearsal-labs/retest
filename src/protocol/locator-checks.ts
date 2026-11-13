@@ -317,6 +317,29 @@ function enabledActual(observation: Observation): string | null {
   return observation.enabled === null ? null : observation.enabled ? 'enabled' : 'disabled'
 }
 
+// A text the tree did not report, as WebDriverAgent leaves out an empty label, is never written as a text.
+function hasText(observation: Observation): string {
+  return observation.text === null ? 'has no text Retest could read' : `has text ${quoteText(observation.text)}`
+}
+
+// The note's fixed words, by which a reporter tells a message that holds it.
+const oneLabel = 'agent-device gives an Android view one label for its text and its content description'
+
+/**
+ * The sentence a failed text check adds on Android when the text it compared is a label agent-device gave with no
+ * content description beside it, which on a view with no text is that description.
+ *
+ * @example oneLabelNote('saved_task') // 'agent-device gives an Android view one label … "saved_task" is its content description.'
+ */
+export function oneLabelNote(label: string): string {
+  return `${oneLabel}, so if the view has no text, ${quoteText(label)} is its content description.`
+}
+
+/** Whether a failure's message holds `oneLabelNote`, which says more than the values a check compared. */
+export function holdsOneLabelNote(message: string): boolean {
+  return message.includes(oneLabel)
+}
+
 /** Passes when exactly one element matches and its whole text equals `expected` under `textComparison`. */
 function textRule(expected: string): SingleRule {
   const wanted = normalizeText(expected)
@@ -326,8 +349,8 @@ function textRule(expected: string): SingleRule {
     comparison: textComparison,
     holds: (observation) => (observation.text === null ? undefined : normalizeText(observation.text) === wanted),
     actual: (observation) => observation.text,
-    unmet: (observation, locator) => `${locator} has text ${quoteText(observation.text ?? '')}, expected ${quoteText(expected)}. Compared ${textComparison}.`,
-    met: (observation, locator) => `${locator} has text ${quoteText(observation.text ?? '')}, expected any other text. Compared ${textComparison}.`,
+    unmet: (observation, locator) => `${locator} ${hasText(observation)}, expected ${quoteText(expected)}. Compared ${textComparison}.`,
+    met: (observation, locator) => `${locator} ${hasText(observation)}, expected any other text. Compared ${textComparison}.`,
   }
 }
 
@@ -340,8 +363,8 @@ function containRule(expected: string): SingleRule {
     comparison: containComparison,
     holds: (observation) => (observation.text === null ? undefined : normalizeText(observation.text).includes(wanted)),
     actual: (observation) => observation.text,
-    unmet: (observation, locator) => `${locator} has text ${quoteText(observation.text ?? '')}, expected it to contain ${quoteText(expected)}. Compared ${containComparison}.`,
-    met: (observation, locator) => `${locator} has text ${quoteText(observation.text ?? '')}, which contains ${quoteText(expected)}, expected it not to.`,
+    unmet: (observation, locator) => `${locator} ${hasText(observation)}, expected it to contain ${quoteText(expected)}. Compared ${containComparison}.`,
+    met: (observation, locator) => `${locator} ${hasText(observation)}, which contains ${quoteText(expected)}, expected it not to.`,
   }
 }
 
@@ -354,8 +377,8 @@ function patternRule(matcher: 'toHaveText' | 'toContainText', pattern: TextPatte
     comparison: patternComparison,
     holds: (observation) => (observation.text === null ? undefined : patternMatches(normalizeText(observation.text), pattern)),
     actual: (observation) => observation.text,
-    unmet: (observation, locator) => `${locator} has text ${quoteText(observation.text ?? '')}, expected it to match ${shown}. Compared ${patternComparison}.`,
-    met: (observation, locator) => `${locator} has text ${quoteText(observation.text ?? '')}, which matches ${shown}, expected it not to.`,
+    unmet: (observation, locator) => `${locator} ${hasText(observation)}, expected it to match ${shown}. Compared ${patternComparison}.`,
+    met: (observation, locator) => `${locator} ${hasText(observation)}, which matches ${shown}, expected it not to.`,
   }
 }
 
