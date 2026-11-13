@@ -2,6 +2,12 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## Unreleased
+
+### Fixed
+
+- On Ubuntu 23.10 and later, outside a container, a browser whose sandbox AppArmor refuses now stops with two commands to paste. They write and load a profile that lets the browser's own file create user namespaces, with its real path filled in. The sandbox stays on. The commands follow the profile Chromium documents, and they have not been run on Ubuntu yet: [`.github/workflows/ubuntu-sandbox.yml`](.github/workflows/ubuntu-sandbox.yml) runs them on GitHub's `ubuntu-24.04` runner when started by hand. [Run on Ubuntu](docs/guide.md#run-on-ubuntu) has the steps.
+
 ## 0.4.0
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.

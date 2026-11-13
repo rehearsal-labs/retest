@@ -3,6 +3,7 @@ import type { CdpDiagnostic } from './cdp/connection.ts'
 import type { PipeStreams, Transport } from './cdp/transport.ts'
 import type { LaunchOptions, WebRuntime } from './contract.ts'
 import type { BrowserVersion } from './browser.ts'
+import type { StartFailureExplanation } from './start-failure.ts'
 import { appendFileSync } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -19,7 +20,8 @@ import { ChromiumProcess, ProcessLaunchError } from './chromium-process.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { checkExecutable } from './executable.ts'
 import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
-import { explainStartFailure } from './start-failure.ts'
+import { readStartAttempt } from './sandbox-system.ts'
+import { commandLines, explainStartFailure } from './start-failure.ts'
 
 const launchTimeoutMs = 30_000
 // Chrome states why it stopped in its last lines; more than this is never needed to find them.
@@ -72,10 +74,11 @@ export async function launchBrowser(
     const problems: string[] = []
     try { connection?.close() } catch (closeError) { problems.push(`Could not close the browser's debugging pipe: ${errorMessage(closeError)}`) }
     problems.push(...await chromium.stop(0))
-    const output = await launchOutput(options.logFile, outputStart)
-    const message = handshakeFailure(error, { executable, exit, logFile: options.logFile, timeoutMs, output })
+    const explained = explainStartFailure(await launchOutput(options.logFile, outputStart), await readStartAttempt(executable))
+    const message = handshakeFailure(error, { executable, exit, logFile: options.logFile, timeoutMs, explained })
     const cleanup = problems.length === 0 ? '' : ` Cleaning up also failed: ${problems.join(' ')}`
-    throw new ProcessLaunchError(`${message}${cleanup}`, chromium.gone(), { cause: error, failureClass: problems.length > 0 ? 'cleanup_failed' : 'setup_failed' }, chromium.outputSettled)
+    // The commands go last, each on a line of its own, so nothing after them breaks one when it is copied.
+    throw new ProcessLaunchError(`${message}${cleanup}${commandLines(explained)}`, chromium.gone(), { cause: error, failureClass: problems.length > 0 ? 'cleanup_failed' : 'setup_failed' }, chromium.outputSettled)
   }
 }
 
@@ -120,10 +123,10 @@ export async function handshake(connection: CdpConnection, deadline: Deadline): 
   return { product: product.slice(0, slash), version: product.slice(slash + 1), userAgent, ...built }
 }
 
-type HandshakeContext = { executable: string; exit: ProcessExit | undefined; logFile: string; timeoutMs: number; output: string }
+type HandshakeContext = { executable: string; exit: ProcessExit | undefined; logFile: string; timeoutMs: number; explained: StartFailureExplanation | undefined }
 
-function handshakeFailure(error: unknown, { executable, exit, logFile, timeoutMs, output }: HandshakeContext): string {
-  const advice = `${explainStartFailure(output) ?? 'Pass the path to a Chromium or Chrome executable.'} Its output is in ${logFile}.`
+function handshakeFailure(error: unknown, { executable, exit, logFile, timeoutMs, explained }: HandshakeContext): string {
+  const advice = `${explained?.text ?? 'Pass the path to a Chromium or Chrome executable.'} Its output is in ${logFile}.`
   if (error instanceof CdpTimeoutError) return `${executable} did not answer as a browser within ${timeoutMs} ms. ${advice}`
   if (exit !== undefined) return `${executable} exited with ${describeExit(exit)} before it answered as a browser. ${advice}`
   if (error instanceof CdpDisconnectedError || error instanceof CdpClosedError) {

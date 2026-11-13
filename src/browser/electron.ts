@@ -26,6 +26,7 @@ import type { CommandResult } from '../protocol/commands.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
 import type { ProcessExit } from '../shared/process-exit.ts'
+import type { StartFailureExplanation } from './start-failure.ts'
 import { constants } from 'node:fs'
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -56,7 +57,8 @@ import { keepFocus } from './popups.ts'
 import { routesRefused, type RouteRemoval } from './routes.ts'
 import { changeScript } from './page-scripts.ts'
 import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
-import { explainStartFailure } from './start-failure.ts'
+import { readStartAttempt } from './sandbox-system.ts'
+import { commandLines, explainStartFailure } from './start-failure.ts'
 
 // An Electron app driven by the Chromium driver over the debugging pipe of the app's own binary. Electron refuses
 // `Target.createBrowserContext` and `Target.createTarget`, so Retest opens no page of its own: each window the app
@@ -256,10 +258,12 @@ export async function launchElectron(
     const problems: string[] = []
     try { connection?.close() } catch (closeError) { problems.push(`Could not close the Electron app's debugging pipe: ${errorMessage(closeError)}`) }
     problems.push(...await child.stop(0))
-    const output = await launchOutput(options.logFile, outputStart)
-    const message = launchFailure(error, { executable, appPath: options.appPath, exit, logFile: options.logFile, timeoutMs, output })
+    // A binary that is not Electron is told so and given no advice, so no commands follow its message either.
+    const explained = error instanceof NotElectronError ? undefined : explainStartFailure(await launchOutput(options.logFile, outputStart), await readStartAttempt(executable))
+    const message = launchFailure(error, { executable, appPath: options.appPath, exit, logFile: options.logFile, timeoutMs, explained })
     const cleanup = problems.length === 0 ? '' : ` Cleaning up also failed: ${problems.join(' ')}`
-    throw new ElectronLaunchError(`${message}${cleanup}`, child.gone(), problems, { cause: error }, child.outputSettled)
+    // The commands go last, each on a line of its own, so nothing after them breaks one when it is copied.
+    throw new ElectronLaunchError(`${message}${cleanup}${commandLines(explained)}`, child.gone(), problems, { cause: error }, child.outputSettled)
   }
 }
 
@@ -848,11 +852,10 @@ class NotElectronError extends Error {
   }
 }
 
-type FailureContext = { executable: string; appPath: string; exit: ProcessExit | undefined; logFile: string; timeoutMs: number; output: string }
+type FailureContext = { executable: string; appPath: string; exit: ProcessExit | undefined; logFile: string; timeoutMs: number; explained: StartFailureExplanation | undefined }
 
-function launchFailure(error: unknown, { executable, appPath, exit, logFile, timeoutMs, output }: FailureContext): string {
-  const explained = explainStartFailure(output)
-  const advice = `${explained === undefined ? '' : `${explained} `}Its output is in ${logFile}.`
+function launchFailure(error: unknown, { executable, appPath, exit, logFile, timeoutMs, explained }: FailureContext): string {
+  const advice = `${explained === undefined ? '' : `${explained.text} `}Its output is in ${logFile}.`
   if (error instanceof NotElectronError) return `${error.message} ${giveBinary}`
   if (error instanceof NoWindowError) return `The Electron app ${appPath} opened no window within ${timeoutMs} ms. ${advice}`
   if (error instanceof CdpTimeoutError) return `${executable} did not answer over its debugging pipe within ${timeoutMs} ms. ${advice}`
