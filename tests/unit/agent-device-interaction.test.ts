@@ -179,6 +179,34 @@ test('several matches fail at once and nothing is pressed; a disabled element is
   assert.equal(device.sent('interactions.press').length, 0)
 })
 
+// agent-device's mark is the only reading of what lies over an element: Retest's tree says where each element is, but
+// not which of two overlapping elements is drawn on top.
+test('an element agent-device marks covered is never pressed: Retest looks again within the action time, names the check, and taps once the mark is gone', async () => {
+  const device = new StandIn(signInScreen())
+  let covered = true
+  device.handlers.set('capture.snapshot', (_options, standIn) => answered({ nodes: standIn.screen.map((node) => (covered && node.identifier === 'sign-in-button' ? { ...node, interactionBlocked: 'covered' } : node)), appBundleId: bundleId, refsGeneration: ++standIn.generation, truncated: false }))
+  const { session } = await opened(device)
+  const blocked = await session.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 400)
+  assert.ok(!blocked.result.ok)
+  assert.equal(blocked.input, 'not_sent')
+  assert.equal(blocked.result.failure.class, 'not_actionable')
+  assert.equal(blocked.result.failure.details?.['check'], 'covered')
+  assert.match(blocked.result.failure.message, /within 400 ms: something lies over it: agent-device reads something else drawn over/)
+  assert.ok(device.sent('capture.snapshot').length >= 3, 'it kept looking until its time ran out')
+  assert.equal(device.sent('interactions.press').length, 0)
+  covered = false
+  const tapped = await session.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 5000)
+  assert.ok(tapped.result.ok, tapped.result.ok ? '' : tapped.result.failure.message)
+  assert.equal(device.sent('interactions.press').length, 1)
+  // agent-device refuses a press it finds covered as it acts, sending nothing; Retest looks again and sends it once more.
+  let refusals = 1
+  device.handlers.set('interactions.press', () => (refusals-- > 0 ? refused('target_covered') : answered()))
+  const again = await session.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 5000)
+  assert.ok(again.result.ok, again.result.ok ? '' : again.result.failure.message)
+  assert.equal(device.sent('interactions.press').length, 3)
+  assert.deepEqual(session.inputs.map((record) => record.input), ['sent', 'sent'], 'the refused press never reached the device and is not kept')
+})
+
 test('a secret goes to the secure field once, kept out of agent-device diagnostics, and its masked read-back is checked', async () => {
   const device = new StandIn(signInScreen())
   device.handlers.set('interactions.fill', (options, standIn) => {

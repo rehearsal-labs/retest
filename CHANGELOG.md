@@ -2,6 +2,12 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## Unreleased
+
+### Fixed
+
+- The README and the guide said Retest refuses a covered element on every target. On a phone driven through agent-device, Retest checks only for the software keyboard itself. Any other cover is agent-device's reading, which can miss a bar an app draws over its own button, and the tap then counts as sent. The docs now say so.
+
 ## 0.4.0
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.
