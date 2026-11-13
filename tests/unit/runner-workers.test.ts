@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { availableParallelism } from 'node:os'
 import { describe, test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
-import { defaultWorkers, runInWorkers } from '../../src/runner/workers.ts'
+import { collectionWorkers, defaultWorkers, mapInWorkers, runInWorkers } from '../../src/runner/workers.ts'
 
 describe('runInWorkers', () => {
   test('runs every item in order of start, at most the given number at a time', async () => {
@@ -47,6 +48,45 @@ describe('runInWorkers', () => {
   test('refuses a worker count that is not a whole number from 1', async () => {
     await assert.rejects(runInWorkers([1], 0, () => Promise.resolve()), /workers must be a whole number from 1, received 0/)
     await assert.rejects(runInWorkers([1], 1.5, () => Promise.resolve()), /received 1\.5/)
+  })
+})
+
+describe('mapInWorkers', () => {
+  test('gives the results in the order of the items when later items end first, at most the given number at a time', async () => {
+    let running = 0
+    let most = 0
+    const results = await mapInWorkers([30, 5, 20, 1], 3, async (waitMs) => {
+      running += 1
+      most = Math.max(most, running)
+      await delay(waitMs)
+      running -= 1
+      return `waited ${waitMs}`
+    })
+    assert.deepEqual(results, ['waited 30', 'waited 5', 'waited 20', 'waited 1'])
+    assert.equal(most, 3)
+  })
+
+  test('waits for every item even after one fails, then throws the first failure', async () => {
+    const done: number[] = []
+    await assert.rejects(
+      mapInWorkers([1, 2, 3], 2, async (item) => {
+        await delay(item * 5)
+        if (item === 1) throw new Error('first')
+        done.push(item)
+        return item
+      }),
+      /first/,
+    )
+    assert.deepEqual(done, [2, 3])
+  })
+})
+
+describe('collectionWorkers', () => {
+  test('is the workers a run names, and one for each core when it names none', () => {
+    assert.equal(collectionWorkers(1), 1)
+    assert.equal(collectionWorkers(3), 3)
+    assert.equal(collectionWorkers(undefined), availableParallelism())
+    assert.ok(collectionWorkers(undefined) >= defaultWorkers())
   })
 })
 
