@@ -294,10 +294,13 @@ type StepEvent =
 
 /**
  * An assertion as the parent writes it. On a pass, the parent says who judged it: `parent` when it judged the
- * observation the assertion names, `child` for a value only the test process holds.
+ * observation the assertion names, `child` for a value only the test process holds. `neverMatched` marks a locator
+ * assertion that passed on a look that found no element, such as `toBeHidden()` or `toHaveCount(0)`, when no look this
+ * attempt had served by then found an element for that locator on that app: a locator that matches nothing anywhere,
+ * as a misspelt one does, passes such a check as well.
  */
 type AssertionEvent =
-  | (AssertionFields & { type: 'assertion.passed'; judgedBy: EventOrigin })
+  | (AssertionFields & { type: 'assertion.passed'; judgedBy: EventOrigin; neverMatched?: true })
   | (AssertionFields & { type: 'assertion.failed'; failure: Failure })
 
 /**
@@ -1100,7 +1103,7 @@ export const retestEventSchema: Schema<RetestEvent> = s.discriminatedUnion('type
   }),
   s.object({ ...envelope, type: s.literal('host_check.passed'), ...hostCheckFields }),
   s.object({ ...envelope, type: s.literal('host_check.failed'), ...hostCheckFields, failure: failureSchema }),
-  s.object({ ...envelope, ...variantScope, type: s.literal('assertion.passed'), ...assertionFields, judgedBy: origin }),
+  s.object({ ...envelope, ...variantScope, type: s.literal('assertion.passed'), ...assertionFields, judgedBy: origin, neverMatched: s.optional(s.literal(true)) }),
   s.object({ ...envelope, ...variantScope, type: s.literal('assertion.failed'), ...assertionFields, failure: failureSchema }),
   s.object({
     ...envelope,

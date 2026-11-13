@@ -114,6 +114,16 @@ export function describeBaselinesWritten(count: number): string {
   return `${count} written by --update-screenshots`
 }
 
+/**
+ * How many checks passed on a locator that matched no element in their test, as reports say it: such a pass cannot tell
+ * an element the page never showed from a locator that finds nothing, as a misspelt one does.
+ *
+ * @example describeNeverMatched(1) // '1 check passed with a locator that matched nothing in its test'
+ */
+export function describeNeverMatched(count: number): string {
+  return count === 1 ? '1 check passed with a locator that matched nothing in its test' : `${count} checks passed with a locator that matched nothing in their test`
+}
+
 export function totalTests(counts: Counts): number {
   return counts.passed + counts.failed + counts.error + counts.notRun + counts.inconclusive + (counts.skipped ?? 0)
 }
