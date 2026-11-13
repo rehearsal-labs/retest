@@ -128,3 +128,53 @@ check('a non-time failure after an earlier look returns at once, including in th
   assert.equal(verdict.failure?.message, refusal.message)
   assert.equal(time.now(), 119.5)
 })
+
+// While the page is opening another document, a Chromium page takes no look: it waits for that document, and once the
+// look's time is up it says what it was opening instead of answering. What an earlier look read is of the document the
+// page was leaving, so the check ends as having read nothing, not as that look.
+describe('a check whose time runs out while the page is opening another document', () => {
+  const leaving = (budgetMs: number): CommandResult => ({
+    ok: false,
+    failure: {
+      class: 'timeout',
+      message: `Could not read getByTestId('task-heading') within ${budgetMs} ms: the page was still opening http://127.0.0.1:4173/leaving/save, so Retest read nothing.`,
+      details: { check: 'navigation', url: 'http://127.0.0.1:4173/leaving/save', waitedMs: budgetMs },
+    },
+  })
+
+  // Each look of the page that is leaving waits out the check's time, which starts at 0 on the manual clock, as the
+  // browser's look waits out the time it is given.
+  function leavingPage(clock: ReturnType<typeof manualTime>, firstLook: CommandResult | undefined, budgetMs: number) {
+    let spent = 0
+    let looks = 0
+    const time = { now: () => clock.now() + spent, sleep: clock.sleep }
+    const respond = (): CommandResult => {
+      looks++
+      if (looks === 1 && firstLook !== undefined) return firstLook
+      const left = Math.max(0, budgetMs - time.now())
+      spent += left
+      return leaving(left)
+    }
+    return { time, respond }
+  }
+
+  check('fails as having read nothing, naming the address, even after a look of the page it was leaving', async () => {
+    const clock = manualTime()
+    const form = { ok: true, kind: 'observe', observation: observationOf([{ text: 'Editing: Release checklist', visible: true }]) } as const
+    const page = leavingPage(clock, form, 120)
+    const { runPage } = inProcessRun(file, page.respond, { time: page.time, timeouts: { assertion: 120 } })
+    const verdict = await clock.runUntil(runPage(({ page: app }) => expect(app.getByTestId('task-heading')).toHaveText('Saved')))
+    assert.equal(verdict.failure?.class, 'timeout')
+    assert.equal(verdict.failure?.message, "The page was still opening http://127.0.0.1:4173/leaving/save when the check's 120 ms ran out, so the check read nothing.")
+    assert.equal(verdict.failure?.details?.['url'], 'http://127.0.0.1:4173/leaving/save')
+  })
+
+  check('fails the same way when the first look already found the page leaving, and a negated check does not pass on it', async () => {
+    const clock = manualTime()
+    const page = leavingPage(clock, undefined, 120)
+    const { runPage } = inProcessRun(file, page.respond, { time: page.time, timeouts: { assertion: 120 } })
+    const verdict = await clock.runUntil(runPage(({ page: app }) => expect(app.getByTestId('error-banner')).not.toBeVisible()))
+    assert.equal(verdict.failure?.class, 'timeout')
+    assert.match(verdict.failure?.message ?? '', /^The page was still opening http:\/\/127\.0\.0\.1:4173\/leaving\/save when the check's 120 ms ran out/)
+  })
+})

@@ -193,6 +193,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // The frames the page's locators look inside, each found again from the page for every call.
   readonly #frames: PageFrames
   readonly #navigations: Listeners<PageNavigation>
+  // Told each time the main frame sets off for another document: when the page asks for it, and when the browser begins it.
   readonly #navigationStarts: Listeners<string>
   readonly #touch: boolean
   readonly #proxyServer: string | undefined
@@ -202,6 +203,9 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   readonly #routes: PageRoutes
   // Every look waiting for the document to change, each woken by the next change, its own timer or the page's end.
   readonly #changeWaiters = new Set<() => void>()
+  // Every look waiting for the document the main frame is opening, each woken as that navigation ends, by its own timer
+  // or the page's end.
+  readonly #documentWaiters = new Set<() => void>()
   // How many times the document changed, as its observer told, counting each new document.
   #changes = 0
   readonly #titles: NavigationTitles
@@ -212,6 +216,9 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // How many commits of the main frame the page has been told, so a read of the frame that was overtaken is not kept.
   #commits = 0
   #pendingNavigation: PendingNavigation | undefined
+  // A navigation of the main frame the page asked for and the browser has not begun yet, as a form's is from the click
+  // that submits it until the task that sends it runs.
+  #requestedNavigation: PendingNavigation | undefined
   #lostReason: string | undefined
   readonly #dialogs: PageDialogs
   readonly #popups: PagePopups | undefined
@@ -330,7 +337,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     // A title is read from the document the page holds, which answers only while no other document is on its way,
     // and while the page is neither lost nor held by a dialog.
     this.#titles = new NavigationTitles({
-      readable: () => this.#pendingNavigation === undefined && this.#lostReason === undefined && this.#dialogs.open === undefined,
+      readable: () => this.#opening() === undefined && this.#lostReason === undefined && this.#dialogs.open === undefined,
       read: async (deadline) => pageTitleOf((await this.#world.call(pageFactsFunction, [], documentFactsSchema, deadline)).title),
     })
     this.#session.on('Page.frameNavigated', (params) => this.#frameNavigated(params))
@@ -338,6 +345,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     this.#session.on('Page.frameRequestedNavigation', (params) => this.#navigationRequested(params))
     this.#session.on('Page.frameStartedNavigating', (params) => this.#navigationStarted(params))
     this.#session.on('Page.frameStoppedLoading', (params) => this.#loadingStopped(params))
+    this.#session.on('Page.frameClearedScheduledNavigation', (params) => this.#scheduleCleared(params))
     this.#session.on('Page.lifecycleEvent', (params) => this.#lifecycle(params))
     this.#session.on('Runtime.bindingCalled', (params) => {
       const { name } = readProtocol(bindingCalledSchema, params, { method: 'Runtime.bindingCalled', sessionId: this.#session.id })
@@ -355,6 +363,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     // A dialog holds the page until it is answered, and the command whose input opened it waits until then.
     this.#session.on('Page.javascriptDialogOpening', (params) => this.#dialogs.opened(params))
     this.#session.on('Page.javascriptDialogClosed', (params) => this.#dialogs.closed(params))
+    // A `beforeunload` the test dismissed keeps the page, so the navigation it asked about never begins.
+    this.#dialogs.onClosed(({ type, accepted }) => {
+      if (type === 'beforeunload' && !accepted) this.#requestGone()
+    })
     this.#session.onDetach((reason) => {
       this.#lostReason ??= reason
       this.#dialogs.lost(reason)
@@ -402,8 +414,9 @@ export class ChromiumPage implements WebSession, ElementIdentity {
 
   /**
    * Reads each locator's matches as `observe` does, all in one call of Retest's world in the current document, and keys
-   * each element listed with the key that world keeps for the node. Waits for no change and sends no input; a page that
-   * is lost, closed or held by a dialog answers as it does a look.
+   * each element listed with the key that world keeps for the node. Waits for no change and sends no input, and reads
+   * nothing while another document is on its way, as a look does; a page that is lost, closed or held by a dialog
+   * answers as it does a look.
    */
   async readElements(locators: readonly LocatorRecipe[], timeoutMs: number, signal?: AbortSignal): Promise<KeyedReading> {
     const startedAt = monotonicClock()
@@ -416,7 +429,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       if (blocked !== undefined) return { ok: false, failure: blocked }
       const apart = framesApart(locators, described)
       if (apart !== undefined) return { ok: false, failure: apart }
-      const read = await observeKeyed(this.#worldOf(locators[0]), locators, deadline)
+      const world = this.#worldOf(locators[0])
+      const keyed = await this.#readDocument(world, deadline, (reading) => observeKeyed(world, locators, reading))
+      if ('opening' in keyed) return { ok: false, failure: unreadWhileOpening(described, keyed.opening, deadline) }
+      const read = keyed.value
       if ('reads' in read) return { ok: true, reads: read.reads, page: read.page }
       const named = locators[read.locator]
       if (named === undefined) throw new Error("Retest's keyed look named a locator it was not given")
@@ -472,7 +488,8 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   /**
    * A picture for a screenshot comparison: the viewport, or the one shown element `request.locator` finds, clipped to
    * its box, as `takeChromiumPicture` takes it. A page between a failed navigation and its error page is pictured once
-   * the error page is there, within the time. Sends no input; a page that is lost or held by a dialog answers as a look.
+   * the error page is there, within the time, and a page opening another document once that document is there, as a
+   * look reads it. Sends no input; a page that is lost or held by a dialog answers as a look.
    */
   async takePicture(request: PictureRequest, timeoutMs: number, signal?: AbortSignal): Promise<TakenPicture> {
     const startedAt = monotonicClock()
@@ -486,7 +503,8 @@ export class ChromiumPage implements WebSession, ElementIdentity {
         signal?.throwIfAborted()
         const blocked = this.#blocked(described, false)
         if (blocked !== undefined) return { ok: false, failure: blocked }
-        return await takeChromiumPicture({ session: this.#session, world: this.#world }, request, deadline)
+        const taken = await this.#readDocument(this.#world, deadline, (reading) => takeChromiumPicture({ session: this.#session, world: this.#world }, request, reading))
+        return 'opening' in taken ? { ok: false, failure: unreadWhileOpening(described, taken.opening, deadline) } : taken.value
       } catch (error) {
         if (signal?.aborted === true) return { ok: false, failure: commandStopped(described, false, signal.reason) }
         if (isBetweenDocuments(error) && !finalRead) {
@@ -525,9 +543,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
 
   /**
    * Reads the page in Retest's world. A document about to be replaced is not read, since the browser would hold
-   * the call until the new one commits. While the frame is opening another document, or once it begins to during
-   * the read, the reading says `navigating`, and `found` is empty: nothing was read. An answer that does not answer
-   * each query once is refused: only Retest's own function answers, so it is a fault of the browser.
+   * the call until the new one commits. While the frame is on its way to another document, from the moment the page
+   * asks for it, or once it sets off during the read, the reading says `navigating`, and `found` is empty: nothing was
+   * read. An answer that does not answer each query once is refused: only Retest's own function answers, so it is a
+   * fault of the browser.
    */
   async readPage(queries: readonly TextQuery[], timeoutMs: number): Promise<PageReading> {
     const started = monotonicClock()
@@ -537,7 +556,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const navigating = new AbortController()
     const stopListening = this.#navigationStarts.add(() => navigating.abort())
     try {
-      if (this.#pendingNavigation === undefined) {
+      if (this.#opening() === undefined) {
         const deadline = new Deadline(timeoutMs, { startedAt: started, signal: navigating.signal })
         const { found, title, body } = await this.#world.call(readPageFunction, [queries], readingSchema, deadline)
         if (found.length !== queries.length) {
@@ -545,7 +564,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
           throw new CdpInvalidResponseError(source, `it answered ${found.length} of ${queries.length} text queries`)
         }
         const titled = withTitle(pageTitleOf(title))
-        return { url: this.#address(), ...titled, navigating: this.#pendingNavigation !== undefined, found, ...(body ? {} : { body: false }) }
+        return { url: this.#address(), ...titled, navigating: this.#opening() !== undefined, found, ...(body ? {} : { body: false }) }
       }
     } catch (error) {
       if (!navigating.signal.aborted) throw this.#operationError(readCommand, error, timeoutMs)
@@ -714,9 +733,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
         return this.#history(command.kind, deadline, dispatch, commandToken)
       case 'observe': {
         const waitedMs = command.after === undefined ? 0 : await this.#awaitChange(command.after, deadline)
-        // Counted before the read, so a change during it is seen by the next look.
-        const changes = this.#changes
-        const observed = await observe(this.#worldOf(command.locator), command.locator, deadline)
+        const world = this.#worldOf(command.locator)
+        const read = await this.#readDocument(world, deadline, (reading) => observe(world, command.locator, reading))
+        if ('opening' in read) return { ok: false, failure: unreadWhileOpening(this.#describe(command), read.opening, deadline) }
+        const { value: observed, changes } = read
         if ('invalid' in observed) return { ok: false, failure: invalidSelector(observed.invalid, command.locator, undefined) }
         if ('shadow' in observed) return { ok: false, failure: shadowRefused(observed.shadow, command.locator, undefined) }
         return { ok: true, kind: 'observe', observation: observed.observation, page: observed.page, changes, ...(waitedMs > 0 ? { waitedMs } : {}) }
@@ -758,11 +778,11 @@ export class ChromiumPage implements WebSession, ElementIdentity {
         return this.#scroll(command, deadline, dispatch, commandToken)
       case 'setInputFiles':
         if (inFrame(command.locator)) return { ok: false, failure: notInFrames(this.#describe(command)) }
-        return setInputFiles({ world: this.#world, session: this.#session, pendingNavigation: () => this.#pendingNavigation }, command, deadline, dispatch)
+        return setInputFiles({ world: this.#world, session: this.#session, pendingNavigation: () => this.#opening() }, command, deadline, dispatch)
       case 'setChooserFiles':
         return this.#choosers.setFiles(command, this.#world, deadline, dispatch)
       case 'dragTo': {
-        const page = { session: this.#session, world: this.#world, touch: this.#touch, pendingNavigation: () => this.#pendingNavigation }
+        const page = { session: this.#session, world: this.#world, touch: this.#touch, pendingNavigation: () => this.#opening() }
         return dragTo({ ...page, delivering: (work) => this.#causes.delivering(commandToken, work) }, command, deadline, dispatch)
       }
     }
@@ -798,14 +818,15 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     return { ...result, page: await this.#loadedPage(result.url, deadline) }
   }
 
-  // The page's address and title as `readPage` reads them. A title is unknown while another document is on its way,
-  // and is empty, not unknown, on a page that has none.
+  // The page's address and title as `readPage` reads them. While another document is on its way, the look reads that
+  // one once it is there, as every look does. A title is empty, not unknown, on a page that has none.
   async #observePage(after: ObserveAfter | undefined, deadline: Deadline): Promise<CommandResult> {
     const waitedMs = after === undefined ? 0 : await this.#awaitChange(after, deadline)
-    const changes = this.#changes
     const blocked = this.#blocked(readCommand, false)
     if (blocked !== undefined) return { ok: false, failure: blocked }
-    const observation = await this.#lookAtPage(deadline)
+    const read = await this.#readDocument(this.#world, deadline, (reading) => this.#lookAtPage(reading))
+    if ('opening' in read) return { ok: false, failure: unreadWhileOpening(readCommand, read.opening, deadline) }
+    const { value: observation, changes } = read
     const base = this.#baseUrl === undefined ? null : URL.parse(this.#baseUrl)
     const baseUrl = base === null || !isWebUrl(base) ? {} : { baseUrl: originAndPath(base) }
     const url = this.#address()
@@ -817,38 +838,27 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // A layout look measures the page as it stands, and the elements the command names, in one call of Retest's world.
   async #observeLayout(command: Extract<BrowserCommand, { kind: 'observeLayout' }>, deadline: Deadline): Promise<CommandResult> {
     const waitedMs = command.after === undefined ? 0 : await this.#awaitChange(command.after, deadline)
-    // Counted before the read, so a change during it is seen by the next look.
-    const changes = this.#changes
     const measured = [command.locator, command.other].filter((locator) => locator !== undefined)
     const apart = framesApart(measured, this.#describe(command))
     if (apart !== undefined) return { ok: false, failure: apart }
-    const read = await readLayout(this.#worldOf(command.locator), command, deadline)
+    const world = this.#worldOf(command.locator)
+    const measuring = await this.#readDocument(world, deadline, (reading) => readLayout(world, command, reading))
+    if ('opening' in measuring) return { ok: false, failure: unreadWhileOpening(this.#describe(command), measuring.opening, deadline) }
+    const { value: read, changes } = measuring
     if ('invalid' in read) return { ok: false, failure: invalidSelector(read.invalid, read.locator, undefined) }
     if ('shadow' in read) return { ok: false, failure: shadowRefused(read.shadow, read.locator, undefined) }
     return { ok: true, kind: 'observeLayout', observation: read.look, page: read.page, changes, ...(waitedMs > 0 ? { waitedMs } : {}) }
   }
 
   // The page's whole address and title, as the page has them, for `toHaveURL` and `toHaveTitle`; the page facts keep
-  // origin and path. While another document is on its way the title is unread, and the address is the frame's own.
+  // origin and path.
   async #lookAtPage(deadline: Deadline): Promise<PageObservation> {
-    const held: PageObservation = { url: this.#url?.href ?? null, title: null }
-    if (this.#pendingNavigation !== undefined) return held
-    const navigating = new AbortController()
-    const stopListening = this.#navigationStarts.add(() => navigating.abort())
-    try {
-      const signal = deadline.signal === undefined ? navigating.signal : AbortSignal.any([deadline.signal, navigating.signal])
-      const { url, title, cut } = await this.#world.call(pageLookFunction, [], pageLookSchema, new Deadline(deadline.remainingMs, { signal }))
-      return cut.length === 0 ? { url, title } : { url, title, cut }
-    } catch (error) {
-      if (navigating.signal.aborted) return held
-      throw error
-    } finally {
-      stopListening()
-    }
+    const { url, title, cut } = await this.#world.call(pageLookFunction, [], pageLookSchema, deadline)
+    return cut.length === 0 ? { url, title } : { url, title, cut }
   }
 
   async #loadedPage(url: string, deadline: Deadline): Promise<PageFacts> {
-    if (this.#pendingNavigation !== undefined) return { url }
+    if (this.#opening() !== undefined) return { url }
     try {
       const budget = new Deadline(Math.min(loadedPageReadMs, deadline.remainingMs), { signal: deadline.signal })
       return pageFactsOf(await this.#world.call(pageFactsFunction, [], documentFactsSchema, budget))
@@ -908,10 +918,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const { locator } = command
     const intent = selectIntent(command)
     for (;;) {
-      const target = await waitUntilActionable({ world: this.#worldOf(locator), locator, intent, deadline, pendingNavigation: () => this.#pendingNavigation })
+      const target = await waitUntilActionable({ world: this.#worldOf(locator), locator, intent, deadline, pendingNavigation: () => this.#opening() })
       if (!target.ok) return target
       if (target.kind === 'unchanged') return { ok: true, kind: 'select', changed: false, page: target.page }
-      if (this.#pendingNavigation !== undefined) continue
+      if (this.#opening() !== undefined) continue
       if (target.plan === null) throw new Error("Retest's page script readied a select without the keys that choose it")
       const typed = await this.#typeSelection({ locator, intent, plan: target.plan, document: target.context, commandToken }, deadline, dispatch)
       // The page opened another document before the first key went, so the select is looked at and planned there.
@@ -995,7 +1005,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   async #actSeeing({ locator, intent, input, commandToken }: Acting, document: number | undefined, deadline: Deadline): Promise<Seeing | MovedOn> {
     const world = this.#worldOf(locator)
     // A frame on the element's path that is opening another document would take the input there, as the page would.
-    const pendingNavigation = () => this.#pendingNavigation ?? (world instanceof FrameWorld ? world.pendingNavigation() : undefined)
+    const pendingNavigation = () => this.#opening() ?? (world instanceof FrameWorld ? world.pendingNavigation() : undefined)
     const wait = { world, locator, intent, deadline, pendingNavigation }
     for (;;) {
       const target = await waitUntilActionable(wait)
@@ -1099,27 +1109,80 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const waitMs = Math.min(after.waitMs, deadline.remainingMs)
     if (this.#changes > after.changes || waitMs <= 0 || this.#lostReason !== undefined) return 0
     const startedAt = Date.now()
-    await new Promise<void>((resolve) => {
-      const wake = (): void => {
-        this.#changeWaiters.delete(wake)
-        clearTimeout(timer)
-        deadline.signal?.removeEventListener('abort', wake)
-        resolve()
-      }
-      const timer = setTimeout(wake, waitMs)
-      this.#changeWaiters.add(wake)
-      deadline.signal?.addEventListener('abort', wake, { once: true })
-    })
+    await awaitWake(this.#changeWaiters, waitMs, deadline.signal)
     return Date.now() - startedAt
+  }
+
+  // The document the main frame is on its way to, from the moment the page asks for it until it commits or the browser
+  // gives it up, or undefined while the frame holds the document it shows.
+  #opening(): PendingNavigation | undefined {
+    return this.#pendingNavigation ?? this.#requestedNavigation
+  }
+
+  // While the main frame is on its way to another document, a look reads nothing: this waits, within the look's time,
+  // until that document commits or the browser gives the navigation up, and gives the navigation still on its way when
+  // the time is up. Nothing is waited for when no navigation is under way. A page lost, or a look stopped, waits no more,
+  // and its read says so.
+  async #awaitDocument(deadline: Deadline): Promise<PendingNavigation | undefined> {
+    for (;;) {
+      const opening = this.#opening()
+      if (opening === undefined || this.#lostReason !== undefined || deadline.signal?.aborted === true) return undefined
+      if (deadline.reached) return opening
+      await awaitWake(this.#documentWaiters, deadline.waitToEndMs, deadline.signal)
+    }
+  }
+
+  /**
+   * A look's read of the document the main frame holds, once no other is on its way. A navigation the page asks for or
+   * the browser begins during the read throws the read away, since it read the document being left, and the look reads
+   * the one that arrives instead. A read made in a frame while that frame, or one around it, was on its way to another
+   * document is thrown away the same way, and made again once that document is there. `changes` is the page's count as
+   * the read began, so a change during it is seen by the next look. When the time runs out first, it gives the
+   * navigation still on its way.
+   */
+  async #readDocument<T>(world: PageWorld, deadline: Deadline, read: (deadline: Deadline) => Promise<T>): Promise<DocumentRead<T>> {
+    for (;;) {
+      const opening = await this.#awaitDocument(deadline)
+      if (opening !== undefined) return { opening }
+      const changes = this.#changes
+      const leaving = new AbortController()
+      const stopListening = this.#navigationStarts.add(() => leaving.abort())
+      let value: T
+      try {
+        const signal = deadline.signal === undefined ? leaving.signal : AbortSignal.any([deadline.signal, leaving.signal])
+        value = await read(new Deadline(deadline.remainingMs, { signal }))
+      } catch (error) {
+        if (!leaving.signal.aborted || deadline.signal?.aborted === true) throw error
+        continue
+      } finally {
+        stopListening()
+      }
+      if (!(world instanceof FrameWorld) || world.pendingNavigation() === undefined) return { value, changes }
+      const framed = await awaitFrames(world, deadline)
+      if (framed !== undefined) return { opening: framed }
+    }
   }
 
   #changed(): void {
     this.#changes += 1
-    this.#wake()
+    for (const wake of [...this.#changeWaiters]) wake()
   }
 
+  // A page that is lost or closed wakes every look that waits, so each reports that instead of waiting on.
   #wake(): void {
     for (const wake of [...this.#changeWaiters]) wake()
+    this.#documentArrived()
+  }
+
+  // The navigation the looks waited out ended, or the page asked for one the browser will now never begin.
+  #documentArrived(): void {
+    for (const wake of [...this.#documentWaiters]) wake()
+  }
+
+  // The navigation the page asked for will not begin: what it asked for went another way, or the page stayed.
+  #requestGone(): void {
+    this.#requestedNavigation = undefined
+    this.#documentArrived()
   }
 
   async #dispose(deadline: Deadline): Promise<void> {
@@ -1170,9 +1233,11 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     if (frame.parentId !== undefined) return
     this.#mainFrameId = frame.id
     this.#pendingNavigation = undefined
+    this.#requestedNavigation = undefined
     this.#world.reset()
     if (this.#heldFirstDocument) this.#rerunScripts()
     this.#changed()
+    this.#documentArrived()
     this.#moveTo(frame.url, frame.loaderId)
   }
 
@@ -1184,10 +1249,16 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   }
 
   // The page asked for a navigation of the main frame in its own tab: the request the cause of a navigation rests on.
+  // Chrome tells it as the page asks, before it answers any later call into the page, but begins a form's submission
+  // only in a later task, after the click that sent it has answered. From the request until the navigation begins, or
+  // the browser drops it, the main frame is on its way to the document it asked for.
   #navigationRequested(params: unknown): void {
     const source = { method: 'Page.frameRequestedNavigation', sessionId: this.#session.id }
     const { frameId, url, disposition } = readProtocol(requestedSchema, params, source)
-    if (frameId === this.#mainFrameId && disposition === 'currentTab') this.#causes.requested(url)
+    if (frameId !== this.#mainFrameId || disposition !== 'currentTab') return
+    this.#causes.requested(url)
+    this.#requestedNavigation = { url }
+    this.#navigationStarts.emit(url)
   }
 
   // The browser has begun a navigation of the main frame. Its document replaces the current one when it commits,
@@ -1197,6 +1268,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const { frameId, url, loaderId, navigationType } = readProtocol(navigatingSchema, params, source)
     if (frameId !== this.#mainFrameId || withinDocument.has(navigationType)) return
     this.#pendingNavigation = { url }
+    if (this.#requestedNavigation?.url === url) this.#requestedNavigation = undefined
     this.#causes.started(url, loaderId)
     this.#navigationStarts.emit(url)
   }
@@ -1207,7 +1279,16 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const { frameId } = readProtocol(frameSchema, params, { method: 'Page.frameStoppedLoading', sessionId: this.#session.id })
     if (frameId !== this.#mainFrameId) return
     this.#pendingNavigation = undefined
+    this.#requestedNavigation = undefined
     this.#causes.stoppedLoading()
+    this.#documentArrived()
+  }
+
+  // The page's own scheduling of a navigation of the main frame ended: Chrome tells it after the navigation began, and
+  // as the only sign of one it dropped, as when a `beforeunload` kept the page.
+  #scheduleCleared(params: unknown): void {
+    const { frameId } = readProtocol(frameSchema, params, { method: 'Page.frameClearedScheduledNavigation', sessionId: this.#session.id })
+    if (frameId === this.#mainFrameId) this.#requestGone()
   }
 
   #lifecycle(params: unknown): void {
@@ -1218,7 +1299,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   #navigatedWithinDocument(params: unknown): void {
     const source = { method: 'Page.navigatedWithinDocument', sessionId: this.#session.id }
     const { frameId, url } = readProtocol(sameDocumentSchema, params, source)
-    if (frameId === this.#mainFrameId) this.#moveTo(url, undefined)
+    if (frameId !== this.#mainFrameId) return
+    // A navigation the page asked for that the page's own Navigation API took within the document opens no other.
+    this.#requestGone()
+    this.#moveTo(url, undefined)
   }
 
   // The main frame as a read found it, when no event told of the document it holds: its address is the page's from now
@@ -1250,6 +1334,47 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     } else if (previous === undefined || originAndPath(previous) !== path) {
       this.#navigations.emit({ url: path, title: this.#titles.movedWithinDocument(), document: 'same', ...this.#causes.movedWithinDocument() })
     }
+  }
+}
+
+/** A look's read of the page's document, with the page's change count as it began, or the navigation it waited out in vain. */
+type DocumentRead<T> = { value: T; changes: number } | { opening: PendingNavigation }
+
+// Waits until `waiters` wakes it, `waitMs` pass, or `signal` aborts.
+function awaitWake(waiters: Set<() => void>, waitMs: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const wake = (): void => {
+      waiters.delete(wake)
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', wake)
+      resolve()
+    }
+    const timer = setTimeout(wake, waitMs)
+    waiters.add(wake)
+    signal?.addEventListener('abort', wake, { once: true })
+  })
+}
+
+// Waits, pausing between looks as an action does, until no frame on `world`'s path, as its last call found the path,
+// is opening another document. Gives the navigation still on its way when the time is up.
+async function awaitFrames(world: FrameWorld, deadline: Deadline): Promise<PendingNavigation | undefined> {
+  for (;;) {
+    const pending = world.pendingNavigation()
+    if (pending === undefined) return undefined
+    if (deadline.reached) return pending
+    await waitBeforeRead(deadline, retryPauseMs)
+  }
+}
+
+// A look whose time ran out while the page, or a frame on its locator's path, was still opening another document. It
+// read nothing, so it says nothing of the page either way; the address is the one the frame was opening.
+function unreadWhileOpening(command: string, opening: PendingNavigation, deadline: Deadline): Failure {
+  const target = URL.parse(opening.url)
+  const address = target === null ? opening.url : originAndPath(target)
+  return {
+    class: 'timeout',
+    message: `Could not ${command} within ${deadline.budgetMs} ms: the page was still opening ${address}, so Retest read nothing.`,
+    details: { check: 'navigation', url: address, waitedMs: deadline.budgetMs },
   }
 }
 

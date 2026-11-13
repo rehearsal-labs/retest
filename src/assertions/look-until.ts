@@ -2,7 +2,7 @@ import type { TestRun } from '../api/test-run.ts'
 import type { CommandResult, ObserveAfter } from '../protocol/commands.ts'
 import type { Failure, SourceLocation } from '../protocol/failures.ts'
 import { Deadline, elapsedMs, smallestBudget } from '../protocol/deadline.ts'
-import { withLocation } from '../protocol/failures.ts'
+import { failure, withLocation } from '../protocol/failures.ts'
 
 /** One look the parent served: what it saw, the id and session it was served with, and the page's change count. */
 export type Look<Observed> = {
@@ -49,7 +49,8 @@ export const lookFloorMs: number = 50
  * does not count them is looked at on the poll delays alone. The last look is sent once the deadline is reached on the
  * clock the deadline reads, never while part of a millisecond is left, so a `timeout` of 1500 never gives up at 1499.6.
  * A look that fails for any reason other than reaching the deadline after an earlier look stops the looking with its
- * failure.
+ * failure. A page reads nothing while it is opening another document, so a look whose time ran out then stops the
+ * looking with a failure that says so, whatever an earlier look read of the document being left.
  */
 export async function lookUntil<Observed>(options: LookOptions<Observed>): Promise<Looked<Observed>> {
   const { run, timeoutMs, location } = options
@@ -85,12 +86,37 @@ export async function lookUntil<Observed>(options: LookOptions<Observed>): Promi
     if (seen !== undefined) {
       last = seen
       if (options.passes(seen.observation)) break
-      // A look is given the whole milliseconds left, so a timeout after using them all can come with part of one still
-      // left: that is the deadline, and the loop looks once more when the end comes.
-    } else if (!result.ok && !(result.failure.class === 'timeout' && deadline.expired && last !== undefined)) {
-      return { last, attempts, startedAt, stopped: withLocation(result.failure, location) }
+    } else if (!result.ok) {
+      const stopped = lookStopped(result.failure, { expired: deadline.expired, looked: last !== undefined, attempts, timeoutMs, location })
+      if (stopped !== undefined) return { last, attempts, startedAt, stopped }
     }
     if (deadline.reached) break
   }
   return { last, attempts, startedAt, stopped: undefined }
+}
+
+/** Where the looks stood when one failed: whether the time is up, whether an earlier look read the page, and the check's own. */
+type FailedLook = { expired: boolean; looked: boolean; attempts: number; timeoutMs: number; location: SourceLocation | undefined }
+
+// What a failed look stops the looking with, or undefined when the loop looks once more. A look is given the whole
+// milliseconds left, so a timeout after using them all can come with part of one still left: that is the deadline, and
+// the loop looks once more when the end comes. A look the page could not take because it was still opening another
+// document read nothing, so once the time is up it ends the check as that, whatever an earlier look read of the
+// document being left.
+function lookStopped(problem: Failure, { expired, looked, attempts, timeoutMs, location }: FailedLook): Failure | undefined {
+  const opening = openingOf(problem)
+  if (opening !== undefined) return expired ? stillOpening(opening, { attempts, timeoutMs, location }) : undefined
+  if (problem.class === 'timeout' && expired && looked) return undefined
+  return withLocation(problem, location)
+}
+
+// The address a page was still opening when a look's time ran out, as a page that read nothing for that reason says it.
+function openingOf(problem: Failure): string | undefined {
+  const url = problem.details?.['url']
+  return problem.class === 'timeout' && problem.details?.['check'] === 'navigation' && typeof url === 'string' ? url : undefined
+}
+
+function stillOpening(url: string, { attempts, timeoutMs, location }: Omit<FailedLook, 'expired' | 'looked'>): Failure {
+  const message = `The page was still opening ${url} when the check's ${timeoutMs} ms ran out, so the check read nothing.`
+  return { ...failure('timeout', message, location), details: { check: 'navigation', url, attempts, timeoutMs } }
 }
