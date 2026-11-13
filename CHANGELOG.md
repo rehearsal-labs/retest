@@ -2,6 +2,23 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## Unreleased
+
+Checked on macOS on Apple silicon, with Google Chrome 157.
+
+### Fixed
+
+- **A check no longer reads the page an action is leaving, on Chrome.** From the moment the page asks for another document until that document is there, a look reads nothing, and the check reads the new document once it is there. Before, `click(save)` then `expect(heading).toBeVisible()` could pass on the form when the server answered with an error page, and so could `toBeHidden()`, `toHaveURL()` and `toHaveTitle()`. A check whose time runs out first fails `timeout`, naming the address the page was opening. Layout and screenshot checks, `page.url()`, `page.title()`, host checks and looks in a frame wait the same way.
+
+### Added
+
+- **Checks that pass on nothing say so.** `toBeHidden()`, `.not.toBeVisible()` and `toHaveCount(0)` still pass on a locator that matches nothing, as a misspelt test id does. When no look of the test's attempt had found that locator, the `assertion.passed` event says `neverMatched: true`, `result.json` counts such checks in `neverMatchedChecks`, and the human report prints one line for them. Both are additive fields of schema version 1.
+
+### Not in this release
+
+- A submit that a click listener defers with a timer. Until the page asks for the navigation, a check on the next line reads the page the click left.
+- Checks on Firefox and WebKit still read the document a page holds while another is on its way.
+
 ## 0.4.0
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.
