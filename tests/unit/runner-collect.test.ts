@@ -1,11 +1,13 @@
 import type { CollectedFile } from '../../src/runner/contract.ts'
 import assert from 'node:assert/strict'
+import { existsSync, readdirSync } from 'node:fs'
+import { availableParallelism } from 'node:os'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { configFileName, loadConfig } from '../../src/config/load.ts'
 import { collectFiles } from '../../src/runner/run.ts'
-import { tempProject } from '../support/project.ts'
-import { eventsOfType, rootDir, runSupportFiles, supportFile } from '../support/run-harness.ts'
+import { runProject, tempProject } from '../support/project.ts'
+import { eventsOfType, isGoneWithin, printedPids, rootDir, runSupportFiles, supportFile } from '../support/run-harness.ts'
 
 async function collectOne(name: string, collection = 5000): Promise<CollectedFile> {
   const { files } = await collectFiles({ files: [supportFile(name)], rootDir, timeouts: { collection } })
@@ -168,6 +170,132 @@ describe('collection in a run', () => {
     assert.match(looping?.failure?.message ?? '', /took longer than 700 ms, so Retest stopped its process\. Its output is in logs\/.+\.log\.$/)
     assert.equal(passing?.collection, 'ok')
     assert.equal(record.result.exitCode, 2)
+  })
+})
+
+// Two test files of which neither finishes loading until the other has started: each load leaves a mark and waits for
+// one of the other file's. They load only when Retest loads them at once, and otherwise the first waits out its budget.
+function meetingProject(): string {
+  const meets = (own: string, other: string): string => `import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { expect, test } from '@rehearsal-labs/retest'
+
+const marks = join(import.meta.dirname, '..', 'marks')
+mkdirSync(marks, { recursive: true })
+writeFileSync(join(marks, '${own}-' + process.pid), '')
+while (!readdirSync(marks).some((name) => name.startsWith('${other}-'))) await delay(10)
+
+test('meets ${other}', () => {
+  expect(1).toBe(1)
+})
+`
+  return tempProject({
+    'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
+`,
+    'tests/one.retest.ts': meets('one', 'two'),
+    'tests/two.retest.ts': meets('two', 'one'),
+  })
+}
+
+const meetingFiles = ['tests/one.retest.ts', 'tests/two.retest.ts']
+
+describe('collection on workers', () => {
+  test('a run on two workers loads two files at once to collect them, and keeps them in the order given', async () => {
+    const record = await runProject(meetingProject(), { files: meetingFiles, workers: 2 })
+    assert.deepEqual(record.result.files.map((file) => [file.file, file.collection]), [
+      ['tests/one.retest.ts', 'ok'],
+      ['tests/two.retest.ts', 'ok'],
+    ])
+    assert.deepEqual(eventsOfType(record.events, 'collection.completed').map((event) => event.file), meetingFiles)
+    assert.equal(record.result.exitCode, 0, JSON.stringify(record.result.counts))
+  })
+
+  test('a run on one worker loads one file at a time to collect them', async () => {
+    const record = await runProject(meetingProject(), { files: meetingFiles, workers: 1 })
+    const [one, two] = record.result.files
+    assert.equal(one?.collection, 'failed')
+    assert.match(one?.failure?.message ?? '', /^Loading tests\/one\.retest\.ts took longer than 5000 ms, so Retest stopped its process\./)
+    assert.equal(two?.collection, 'ok')
+  })
+
+  test('collectFiles loads files at once on a machine of two cores or more', { skip: availableParallelism() < 2 ? 'one core' : false }, async () => {
+    const { files } = await collectFiles({ files: meetingFiles, rootDir: meetingProject(), timeouts: { collection: 5000 } })
+    assert.deepEqual(files.map((file) => [file.file, file.collection]), [
+      ['tests/one.retest.ts', 'ok'],
+      ['tests/two.retest.ts', 'ok'],
+    ])
+  })
+
+  test('stopping a run while two files load ends both loads at once, and each file fails as the run was stopped', async () => {
+    // Each load leaves a mark named after its process and never ends; the run is stopped once both marks are there.
+    const loops = `import { mkdirSync, writeFileSync, writeSync } from 'node:fs'
+import { join } from 'node:path'
+
+const marks = join(import.meta.dirname, '..', 'marks')
+mkdirSync(marks, { recursive: true })
+writeSync(1, 'pid ' + process.pid + '\\n')
+writeFileSync(join(marks, String(process.pid)), '')
+for (;;) {
+  // Never ends: only stopping the run ends this load.
+}
+`
+    const root = tempProject({
+      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
+`,
+      'tests/first.retest.ts': loops,
+      'tests/second.retest.ts': loops,
+    })
+    const controller = new AbortController()
+    const marks = join(root, 'marks')
+    let stoppedAt = 0
+    const watch = setInterval(() => {
+      if (!existsSync(marks) || readdirSync(marks).length < 2) return
+      clearInterval(watch)
+      stoppedAt = performance.now()
+      controller.abort()
+    }, 10)
+    const record = await runProject(root, { files: ['tests/first.retest.ts', 'tests/second.retest.ts'], workers: 2, signal: controller.signal, timeouts: { collection: 30_000 } })
+    clearInterval(watch)
+    assert.ok(stoppedAt > 0, 'both files were loading when the run was stopped')
+    const took = performance.now() - stoppedAt
+    assert.ok(took < 10_000, `the run ended ${Math.round(took)} ms after it was stopped, well before the collection budget`)
+    assert.deepEqual(record.result.files.map((file) => [file.file, file.collection, file.failure]), [
+      ['tests/first.retest.ts', 'failed', { class: 'interrupted', message: 'The run was interrupted.' }],
+      ['tests/second.retest.ts', 'failed', { class: 'interrupted', message: 'The run was interrupted.' }],
+    ])
+    const pids = printedPids(record.output)
+    assert.deepEqual(new Set(pids), new Set(readdirSync(marks).map(Number)), 'the output names both loading processes')
+    for (const pid of pids) assert.ok(await isGoneWithin(pid, 2000), `process ${pid} is gone`)
+  })
+
+  test('what failed loads printed is written in the order the files were given, whichever failed first', async () => {
+    const root = tempProject({
+      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
+`,
+      'tests/slow.retest.ts': `import { setTimeout as delay } from 'node:timers/promises'
+console.log('the slow file loads')
+await delay(500)
+throw new Error('the slow file fails')
+`,
+      'tests/quick.retest.ts': `console.log('the quick file loads')
+throw new Error('the quick file fails')
+`,
+    })
+    const record = await runProject(root, { files: ['tests/slow.retest.ts', 'tests/quick.retest.ts'], workers: 2 })
+    assert.deepEqual(record.result.files.map((file) => [file.file, file.collection]), [
+      ['tests/slow.retest.ts', 'failed'],
+      ['tests/quick.retest.ts', 'failed'],
+    ])
+    // Every chunk of the slow file's comes before any of the quick file's, though the quick file failed first.
+    const files = record.output.map((chunk) => chunk.file).filter((file, index, all) => file !== all[index - 1])
+    assert.deepEqual(files, ['tests/slow.retest.ts', 'tests/quick.retest.ts'])
+    const printed = (file: string): string => record.output.filter((chunk) => chunk.file === file && chunk.stream === 'stdout').map((chunk) => chunk.text).join('')
+    assert.equal(printed('tests/slow.retest.ts'), 'the slow file loads\n')
+    assert.equal(printed('tests/quick.retest.ts'), 'the quick file loads\n')
   })
 })
 

@@ -2,7 +2,12 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
-## 0.4.0
+## Unreleased
+
+### Changed
+
+- **The first test starts sooner.** A run loads its test files to collect their tests several at once, as many as `--workers`, or one for each core when `--workers` is not given. It used to load them one at a time. The tests, their order and ids, and what a file that fails to load prints, are the same. `retest list` loads one file for each core at once.
+- Measured on Linux arm64 in Docker on a Mac, with 8 CPUs given to the container, Node 24.22.3 and Chrome 157.0.8103.78: 1,000 tests in 50 files, on the default 4 workers and 2 browsers, five runs of each, taking turns. The first test started after 1,106 ms, against 3,982 ms before. Collecting the 50 files took 746 ms, against 3,601 ms. The whole run took 70.7 s, against 77.6 s, and a test took 263 ms, against 268 ms; both ranges overlap. `retest list` of the 50 files took 1,100 ms, against 4,499 ms. These numbers come from one shared machine and are not the benchmark machine's.
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.
 

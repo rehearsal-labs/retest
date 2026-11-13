@@ -100,8 +100,9 @@ export type RunOptions = {
   /** Absent runs every test in `files`. */
   selection?: Selection
   /**
-   * How many test files run at once, each in a process of its own, sharing each target's browser. Setups run
-   * first, one after another. Absent: half the machine's cores, and at least one.
+   * How many test files run at once, each in a process of its own, sharing each target's browser, and how many load
+   * at once to collect their tests. Setups run first, one after another. Absent: half the machine's cores, and at
+   * least one, and collection loads one file for each core.
    */
   workers?: number
   /**

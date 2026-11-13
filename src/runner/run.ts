@@ -26,6 +26,7 @@ import { secretVariables } from './secrets.ts'
 import { searchSetups } from './setup-search.ts'
 import { findTargetExecutable } from './target-executable.ts'
 import { TestFileProcess } from './test-file-process.ts'
+import { collectionWorkers, mapInWorkers } from './workers.ts'
 
 export type { FindExecutable, LaunchBrowser } from './browser-pool.ts'
 export { RunFolderError } from '../store/run-store.ts'
@@ -53,9 +54,10 @@ export async function runFiles(
 }
 
 /**
- * Loads each file in its own process and lists the tests it declares, checked as a run would check them: with a
- * config, each test's apps and variants, its tags and states, and the setups a run would take from the project's
- * other test files, which follow the files given. A file whose process fails after its tests were collected, as
+ * Loads each file in its own process, as many at once as the machine has cores, and lists the tests it declares in
+ * the order the files were given, checked as a run would check them: with a config, each test's apps and variants,
+ * its tags and states, and the setups a run would take from the project's other test files, which follow the files
+ * given. A file whose process fails after its tests were collected, as
  * on an error it throws then, keeps its tests and fails, as in a run. With a selection, only the tests and
  * variants a run would start are listed, setups they need included. Never launches a browser.
  *
@@ -72,8 +74,8 @@ export async function collectFiles(options: CollectOptions): Promise<CollectResu
     if (processFailure !== undefined) processFailures.set(file, processFailure)
     return collected
   }
-  const collected: CollectedTests[] = []
-  for (const file of options.files) collected.push(await collect(relativePosixPath(rootDir, resolve(rootDir, file))))
+  const files = options.files.map((file) => relativePosixPath(rootDir, resolve(rootDir, file)))
+  const collected = await mapInWorkers(files, collectionWorkers(undefined), collect)
   const search = options.config === undefined ? undefined : await searchSetups({ rootDir, collected, collect })
   const plan = planTests(collected, config, search)
   const kept = options.selection === undefined ? undefined : scheduledVariants(plan, options.selection, config.variants)

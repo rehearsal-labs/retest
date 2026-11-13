@@ -69,7 +69,7 @@ import { bounded } from './bounded.ts'
 import { NativeBrowserAdapter, NativePageAdapter, NativePool } from './native-pool.ts'
 import type { LaunchWithLogs, ReadyNativeTarget, StartNative } from './native-pool.ts'
 import { BrowserPool } from './browser-pool.ts'
-import { defaultBrowsers, defaultWorkers, runInWorkers } from './workers.ts'
+import { collectionWorkers, defaultBrowsers, defaultWorkers, mapInWorkers, runInWorkers } from './workers.ts'
 import { EventLog } from './event-log.ts'
 import { attemptEvidence, evidenceFailure, runEvidence } from './evidence-status.ts'
 import { appBuildsProblem, bundleRecord, configurationRecord, executionRecord, executionSettings, hashModules, judgeFor, redactedRecord, Requirements, runJudges, secretDeclarations } from './fingerprint.ts'
@@ -206,6 +206,10 @@ type RecordedHostOptions = {
 
 /** A run's plan: the config it follows and what collection found. */
 type Planned = { config: RunConfig; plan: Plan }
+/** What a failed load printed, kept to be written in the order the files were given, and the log it goes to. */
+type HeldOutput = { logFile: string; chunks: [ChildOutput['stream'], string][] }
+/** What one file's load collected, with its output when the load failed. */
+type Collection = { collected: CollectedTests; held?: HeldOutput }
 /** A saved state to restore into an app's new page, and the names its event records. */
 type Restored = { storage: StorageState; named: { state: string; app: string; target: string } }
 /** A setup's state for one target: saved, or why it is not. */
@@ -214,11 +218,11 @@ type StateOutcome = { ok: true } | { ok: false; failure: Failure; target: string
 type ResultFacts = Omit<RunResult, keyof RunOutcome>
 
 /**
- * One run of selected files: the parent's whole lifecycle. Every file is collected first, in a process of its
- * own, so the run knows every test before any starts. Then each visit runs its attempts in a new process for its
- * file: setups first, once per target and one after another, then the rest in file order on the workers, up to
- * `workers` files at once. The browsers a scheduled test needs launch once the schedule is known; app servers
- * start the first time a test needs them, and every test gets a new page for each of its apps.
+ * One run of selected files: the parent's whole lifecycle. Every file is collected first, each in a process of its
+ * own and several at once, so the run knows every test before any starts. Then each visit runs its attempts in a new
+ * process for its file: setups first, once per target and one after another, then the rest in file order on the
+ * workers, up to `workers` files at once. A browser launches the first time a test that holds its lease needs it; app
+ * servers start the first time a test needs them, and every test gets a new page for each of its apps.
  */
 export class RunSession {
   readonly #options: RunOptions
@@ -253,6 +257,8 @@ export class RunSession {
   /** The run's judges, call budget and host AI checks. */
   readonly #evaluations: RunEvaluations
   readonly #workers: number
+  /** How many files load at once to collect their tests. */
+  readonly #collectionWorkers: number
   /** The most browsers a target's tests are spread over. */
   readonly #browserCount: number
   #stopReason: Failure | undefined
@@ -323,6 +329,7 @@ export class RunSession {
     const { apps, timeouts } = options
     this.#options = options
     this.#workers = options.workers ?? defaultWorkers()
+    this.#collectionWorkers = collectionWorkers(options.workers)
     this.#browserCount = options.browsers ?? defaultBrowsers(this.#workers)
     this.#store = store
     this.#rootDir = resolve(options.rootDir)
@@ -633,8 +640,7 @@ export class RunSession {
   }
 
   async #plan(config: RunConfig): Promise<Plan> {
-    const collected: CollectedTests[] = []
-    for (const file of this.#files) collected.push(await this.#collect(file))
+    const collected = await this.#collectAll()
     const search = this.#options.apps.kind === 'config' ? await searchSetups({ rootDir: this.#rootDir, collected, collect: (file) => this.#look(file) }) : undefined
     const plan = planTests(collected, config, search)
     for (const file of plan.files) {
@@ -644,19 +650,30 @@ export class RunSession {
     return plan
   }
 
+  // Files load up to `#collectionWorkers` at once, each in a process of its own. What each collected, and the output a
+  // failed load kept, come back in the order the files were given, whichever load ends first.
+  async #collectAll(): Promise<CollectedTests[]> {
+    const loads = await mapInWorkers(this.#files, this.#collectionWorkers, (file) => this.#collect(file))
+    for (const { collected, held } of loads) if (held !== undefined) this.#writeHeld(collected.file, held)
+    return loads.map(({ collected }) => collected)
+  }
+
   // Loading a file to plan the run keeps its output only when the load fails: the load that runs its tests
   // produces the same output again, and a file whose load failed is not loaded again.
-  async #collect(file: string): Promise<CollectedTests> {
-    if (this.#stopReason !== undefined) return { file, ok: false, failure: this.#notLoaded() }
-    if (!existsSync(resolve(this.#rootDir, file))) return { file, ok: false, failure: missingFileFailure(file) }
+  async #collect(file: string): Promise<Collection> {
+    if (this.#stopReason !== undefined) return { collected: { file, ok: false, failure: this.#notLoaded() } }
+    if (!existsSync(resolve(this.#rootDir, file))) return { collected: { file, ok: false, failure: missingFileFailure(file) } }
     const logFile = childLogFile(file)
-    const held: [ChildOutput['stream'], string][] = []
-    const collected = await this.#load(file, { onOutput: (stream, text) => held.push([stream, text]), logFile })
-    if (collected.ok) return collected
+    const chunks: HeldOutput['chunks'] = []
+    const collected = await this.#load(file, { onOutput: (stream, text) => chunks.push([stream, text]), logFile })
+    if (collected.ok) return { collected }
+    return { collected: { file, ok: false, failure: this.#interruption ?? collected.failure }, held: { logFile, chunks } }
+  }
+
+  #writeHeld(file: string, { logFile, chunks }: HeldOutput): void {
     const output = this.#outputFor(file, logFile)
-    for (const [stream, text] of held) output.write(stream, text)
+    for (const [stream, text] of chunks) output.write(stream, text)
     output.end()
-    return { file, ok: false, failure: this.#interruption ?? collected.failure }
   }
 
   // A file looked through for setups is not part of the run, so nothing it prints is kept.

@@ -6,6 +6,18 @@ export function defaultWorkers(): number {
 }
 
 /**
+ * How many test files load at once to collect their tests: the run's workers when it names them, and otherwise one
+ * for each core. Collection starts no browser, so the default is not halved as the workers' is. Collecting 50 files
+ * of 20 tests took 3.46 s one at a time, 0.98 s four at a time, 0.67 s eight at a time and 0.62 s twelve at a time
+ * on eight cores (Linux arm64 in Docker).
+ *
+ * @example collectionWorkers(undefined) // availableParallelism()
+ */
+export function collectionWorkers(workers: number | undefined): number {
+  return workers ?? Math.max(1, availableParallelism())
+}
+
+/**
  * How many browsers a target's tests are spread over unless the run says: one for every three workers. One browser
  * serves all its contexts from a single process, which many workers saturate, and a browser for each worker gains
  * nothing more: on seven workers, 200 tests took 27.3 s in one browser, 21.3 in two, 18.9 in three, 20.1 in four
@@ -34,4 +46,18 @@ export async function runInWorkers<T>(items: readonly T[], workers: number, work
   const settled = await Promise.allSettled(Array.from({ length: Math.min(workers, items.length) }, (_, worker) => loop(worker)))
   const failed = settled.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
   if (failed !== undefined) throw failed.reason
+}
+
+/**
+ * Runs `work` on every item as `runInWorkers` does, and gives each result back in the order of the items, whichever
+ * item ends first.
+ *
+ * @example const collected = await mapInWorkers(files, 8, (file) => collect(file))
+ */
+export async function mapInWorkers<T, R>(items: readonly T[], workers: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = []
+  await runInWorkers([...items.entries()], workers, async ([index, item]) => {
+    results[index] = await work(item)
+  })
+  return results
 }
