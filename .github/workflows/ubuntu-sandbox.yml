@@ -1,0 +1,201 @@
+name: Ubuntu sandbox
+run-name: Chrome's sandbox on Ubuntu 24.04 at ${{ inputs.ref }}
+
+# On stock Ubuntu 24.04, outside a container, AppArmor refuses the user namespaces Chrome's sandbox needs to a browser
+# no profile names. This proves the way through that Retest prints: install the pinned browser as a user would, see a
+# run stop with the commands, apply exactly the commands the message printed, and need the same test to pass with the
+# sandbox on. The test itself reads from /proc that the page's renderers run sandboxed. Started by hand only.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The branch, tag or full commit SHA to check.
+        required: true
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox:
+    name: Chrome for Testing with its sandbox on, outside a container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+
+      # The proof means something only where user namespaces are restricted as Ubuntu ships them, for an unconfined
+      # process outside a container. Stop here on any other machine.
+      - name: Check that this machine restricts user namespaces as stock Ubuntu does
+        run: |
+          set -euo pipefail
+          grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          uname -r
+          restriction="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)"
+          label="$(tr -d '\0' < /proc/self/attr/apparmor/current)"
+          echo "kernel.apparmor_restrict_unprivileged_userns=${restriction}; this shell's AppArmor label: ${label}"
+          test "$restriction" = 1
+          test "$label" = unconfined
+          test ! -e /.dockerenv
+          test ! -e /run/.containerenv
+
+      - name: Build and pack Retest from the checkout
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+
+      - name: Install Retest and its pinned Chromium as a user would
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/project/site"
+          cd "$RUNNER_TEMP/project"
+          npm init --yes > /dev/null
+          npm install --no-audit --no-fund "$RUNNER_TEMP"/pack/*.tgz
+          npx retest install chromium
+          npx retest install --list --json > builds.json
+          browser="$(node -e '
+            const { builds } = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))
+            const installed = builds.filter((build) => build.engine === "chromium" && build.state === "installed")
+            if (installed.length !== 1 || installed[0].executablePath === undefined) throw new Error(`Expected one installed Chromium, found ${installed.length}.`)
+            console.log(installed[0].executablePath)
+          ' builds.json)"
+          echo "The browser Retest installed: ${browser}"
+          echo "BROWSER=${browser}" >> "$GITHUB_ENV"
+          echo '<!doctype html><title>Sandbox</title><p>A page in a sandboxed renderer</p>' > site/index.html
+          cat > serve.mjs <<'SERVE'
+          import { readFileSync } from 'node:fs'
+          import { createServer } from 'node:http'
+
+          const page = readFileSync(new URL('site/index.html', import.meta.url))
+          createServer((request, response) => response.writeHead(200, { 'content-type': 'text/html' }).end(page)).listen(4173, '127.0.0.1')
+          SERVE
+          cat > sandbox.retest.ts <<'TEST'
+          import { readdirSync, readFileSync } from 'node:fs'
+          import { expect, test } from '@rehearsal-labs/retest'
+
+          type Seen = { args: string[]; status: string }
+
+          // Chrome's processes as /proc shows them while the page is open. Chrome rewrites a child's command line as one
+          // title with spaces, so it is split on both.
+          function chromeProcesses(): Seen[] {
+            const found: Seen[] = []
+            for (const entry of readdirSync('/proc')) {
+              if (!/^\d+$/.test(entry)) continue
+              try {
+                const args = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split(/[\0 ]+/)
+                if (args.some((arg) => arg === '--remote-debugging-pipe' || arg.startsWith('--type='))) found.push({ args, status: readFileSync(`/proc/${entry}/status`, 'utf8') })
+              } catch {
+                // A process that ended while it was read is not one the page needs.
+              }
+            }
+            return found
+          }
+
+          // One process ID for each PID namespace a process is in, from the one /proc belongs to down.
+          function pidNamespaces(status: string): number {
+            return (/^NSpid:\s*(.*)$/m.exec(status)?.[1] ?? '').trim().split(/\s+/).length
+          }
+
+          function seccompFilters(status: string): number {
+            return Number(/^Seccomp_filters:\s*(\d+)$/m.exec(status)?.[1] ?? Number.NaN)
+          }
+
+          test('Chrome shows a page with its sandbox on', async ({ page }) => {
+            await page.goto('/')
+            await expect(page.getByText('A page in a sandboxed renderer')).toBeVisible()
+            const processes = chromeProcesses()
+            expect(processes.filter((process) => process.args.includes('--no-sandbox')).length).toBe(0)
+            const renderers = processes.filter((process) => process.args.includes('--type=renderer'))
+            expect(renderers.length > 0).toBe(true)
+            // The sandbox puts each renderer in PID namespaces below this test's and adds seccomp filters to the ones
+            // this test runs under.
+            const own = readFileSync('/proc/self/status', 'utf8')
+            for (const renderer of renderers) {
+              expect(pidNamespaces(renderer.status) > pidNamespaces(own)).toBe(true)
+              expect(seccompFilters(renderer.status) > seccompFilters(own)).toBe(true)
+            }
+          })
+          TEST
+
+      - name: Run the test, which must stop with the commands that give the browser a profile
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/project"
+          node serve.mjs &
+          server=$!
+          curl --silent --show-error --fail --retry 10 --retry-connrefused --retry-delay 1 --output /dev/null http://127.0.0.1:4173/
+          status=0
+          npx retest run sandbox.retest.ts --browser "$BROWSER" --base-url http://127.0.0.1:4173 --output "$RUNNER_TEMP/refused" > refused.txt 2>&1 || status=$?
+          kill "$server"
+          cat refused.txt
+          echo "retest run exited ${status}"
+          test "$status" = 2
+          # The commands are the lines after the first of the failure's message, as Retest wrote it into the run's
+          # result. They are written to a file and run as they are, never typed again here.
+          node -e '
+            const { readFileSync, realpathSync } = require("node:fs")
+            const messages = new Set()
+            const visit = (value) => {
+              if (Array.isArray(value)) return value.forEach(visit)
+              if (value === null || typeof value !== "object") return
+              for (const [key, inner] of Object.entries(value)) {
+                if (key === "message" && typeof inner === "string" && inner.includes("AppArmor profile allows it")) messages.add(inner)
+                else visit(inner)
+              }
+            }
+            visit(JSON.parse(readFileSync(process.argv[1], "utf8")))
+            if (messages.size !== 1) throw new Error(`Expected one AppArmor message in the result, found ${messages.size}.`)
+            const [first, ...commands] = [...messages][0].split("\n")
+            const file = realpathSync(process.argv[2])
+            if (!first.includes(`the two commands below write one for ${file}`)) throw new Error(`The message does not name ${file}: ${first}`)
+            if (commands.length !== 2) throw new Error(`Expected two commands, found ${commands.length}.`)
+            if (!commands[1].endsWith(`/etc/apparmor.d/${file.slice(1).replaceAll("/", ".")}`)) throw new Error(`The last command does not load the profile for ${file}.`)
+            console.log(commands.join("\n"))
+          ' "$RUNNER_TEMP/refused/result.json" "$BROWSER" > "$RUNNER_TEMP/printed-commands.sh"
+          echo "The commands the message printed:"
+          cat "$RUNNER_TEMP/printed-commands.sh"
+
+      - name: Apply exactly the commands the message printed
+        run: |
+          set -euo pipefail
+          sh -eux "$RUNNER_TEMP/printed-commands.sh"
+          sudo aa-status | grep -F "$(realpath "$BROWSER")"
+
+      - name: Run the same test again, which must pass with the sandbox on
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/project"
+          node serve.mjs &
+          server=$!
+          curl --silent --show-error --fail --retry 10 --retry-connrefused --retry-delay 1 --output /dev/null http://127.0.0.1:4173/
+          status=0
+          npx retest run sandbox.retest.ts --browser "$BROWSER" --base-url http://127.0.0.1:4173 --output "$RUNNER_TEMP/passed" > passed.txt 2>&1 || status=$?
+          kill "$server"
+          cat passed.txt
+          echo "retest run exited ${status}"
+          test "$status" = 0
+          if grep -rF 'No usable sandbox' "$RUNNER_TEMP/passed"; then exit 1; fi
+
+      - name: Keep both runs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ubuntu-sandbox-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/refused
+            ${{ runner.temp }}/passed
+            ${{ runner.temp }}/printed-commands.sh
+            ${{ runner.temp }}/project/refused.txt
+            ${{ runner.temp }}/project/passed.txt
+          if-no-files-found: ignore
+          retention-days: 7
