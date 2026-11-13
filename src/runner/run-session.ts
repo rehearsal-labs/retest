@@ -241,6 +241,8 @@ export class RunSession {
   readonly #runFailures: Failure[] = []
   readonly #nativeStarts: NonNullable<RunResult['natives']> = []
   readonly #nativeEnded = new Set<string>()
+  // How many checks passed on a locator that had found no element in its attempt, as their events marked them.
+  #neverMatchedChecks = 0
   readonly #nativeScopes = new Map<string, Described>()
   readonly #native: NativePool
   readonly #browsers: BrowserPool
@@ -1500,6 +1502,7 @@ export class RunSession {
   // Every event of an attempt carries its variant, which the child never sends.
   #emitFor({ variant }: Pick<Described, 'variant'>, body: EventBody, origin?: EventOrigin): void {
     if (body.type === 'native.ended') this.#nativeEnded.add(body.sessionId)
+    if (body.type === 'assertion.passed' && body.neverMatched === true) this.#neverMatchedChecks += 1
     if (variant === undefined || !('attemptId' in body)) this.#events.emit(body, origin)
     else this.#events.emit({ ...body, variant, variantKey: variantKey(variant) }, origin)
     this.#observe(body)
@@ -1890,6 +1893,7 @@ export class RunSession {
       ...(this.#options.apps.kind === 'config' ? { browsers } : {}),
       ...(this.#narrowed === undefined ? {} : { narrowed: this.#narrowed }),
       ...(this.#baselines.written === 0 ? {} : { baselinesWritten: this.#baselines.written }),
+      ...(this.#neverMatchedChecks === 0 ? {} : { neverMatchedChecks: this.#neverMatchedChecks }),
       ...evidence,
       files,
     }

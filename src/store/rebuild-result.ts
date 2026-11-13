@@ -66,6 +66,7 @@ export function rebuildResult(events: readonly RetestEvent[]): RunResult {
     failure: missingResult(finished, record.outcome),
     ...narrowed,
     ...baselinesWritten(events),
+    ...neverMatchedChecks(events),
     ...(finished?.evidenceStatus !== undefined ? { evidenceStatus: finished.evidenceStatus } : files.some(file => file.tests.some(test => test.recordings !== undefined)) ? { evidenceStatus: runEvidence(files.flatMap(file => file.tests), [], false) } : {}),
     files,
   }
@@ -100,6 +101,12 @@ export function rebuildRecordedResult(events: readonly RetestEvent[]): RunResult
 function baselinesWritten(events: readonly RetestEvent[]): { baselinesWritten?: number } {
   const written = events.filter((event) => event.type === 'baseline.written').length
   return written === 0 ? {} : { baselinesWritten: written }
+}
+
+// A check that passed on a locator that found no element in its attempt says so in its event, as the result counts them.
+function neverMatchedChecks(events: readonly RetestEvent[]): { neverMatchedChecks?: number } {
+  const marked = events.filter((event) => event.type === 'assertion.passed' && event.neverMatched === true).length
+  return marked === 0 ? {} : { neverMatchedChecks: marked }
 }
 
 function missingResult(finished: EventOfType<'run.finished'> | undefined, outcome: EventOfType<'run.outcome'> | undefined): Failure {

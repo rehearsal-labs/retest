@@ -25,6 +25,7 @@ import {
   describeLeaseExpired,
   describeLocks,
   describeNarrowed,
+  describeNeverMatched,
   describeResources,
   describeSessions,
   describeStateEvent,
@@ -269,6 +270,7 @@ function summaryLines(result: RunResult, context: SummaryContext): string {
   const rows: [string, string][] = [['Tests', `${countParts(result.counts).join(' · ') || 'none'}${acrossTargets(summaries.length)}`]]
   const checks = countChecks(context.record)
   if (checks.length > 0) rows.push(['Checks', checks.join(' · ')])
+  if (result.neverMatchedChecks !== undefined) rows.push(['No match', describeNeverMatched(result.neverMatchedChecks)])
   const hostChecks = countHostChecks(result.files.flatMap((file) => file.tests))
   if (hostChecks.length > 0) rows.push(['Host checks', hostChecks.join(' · ')])
   const evaluations = countEvaluations(result.files.flatMap((file) => file.tests))

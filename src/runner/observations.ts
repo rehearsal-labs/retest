@@ -123,7 +123,17 @@ export class ServedObservations {
     }
     const actual = recorded.actual(this.#redactor?.redactObservation(observation) ?? observation)
     const written = { ...judged, actual: actual === null ? null : truncateText(actual), observationId, ...pageFields(served.pageUrl, served.pageTitle), sessionId: served.sessionId }
-    return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent' } : { ...kept, ...written } }
+    return { ok: true, event: kept.type === 'assertion.passed' ? { ...kept, ...written, judgedBy: 'parent', ...this.#neverMatched(served.app, locator, observation) } : { ...kept, ...written } }
+  }
+
+  // A pass on a look that found no element rests on absence alone, which a locator that matches nothing anywhere passes
+  // too, so it is marked while no look this attempt served for that app and locator has found one.
+  #neverMatched(app: string, locator: LocatorRecipe, observation: Observation): { neverMatched?: true } {
+    if (observation.count > 0) return {}
+    for (const served of this.#served.values()) {
+      if ('locator' in served && served.app === app && served.observation.count > 0 && sameLocator(served.locator, locator)) return {}
+    }
+    return { neverMatched: true }
   }
 
   // A page assertion is judged as a locator assertion is, on a look at the page of its own app, as the test process

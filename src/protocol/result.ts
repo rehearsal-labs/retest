@@ -141,6 +141,11 @@ export type RunResult = {
    * pass. Absent in a run that wrote none.
    */
   baselinesWritten?: number
+  /**
+   * How many locator checks passed on a look that found no element while their locator had found none in any look of
+   * their attempt, each an `assertion.passed` with `neverMatched`. Absent in a run that had none.
+   */
+  neverMatchedChecks?: number
   files: FileResult[]
 }
 
@@ -215,6 +220,7 @@ export const runResultSchema: Schema<RunResult> = s.object({
   ),
   evidenceStatus: s.optional(runEvidenceStatusSchema),
   baselinesWritten: s.optional(s.number({ integer: true, min: 1 })),
+  neverMatchedChecks: s.optional(s.number({ integer: true, min: 1 })),
   files: s.array(
     s.object({
       file: s.string(),

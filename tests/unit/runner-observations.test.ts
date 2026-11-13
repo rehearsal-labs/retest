@@ -172,6 +172,57 @@ describe("the parent's judgement", () => {
     )
   })
 
+  // A pass on no match cannot tell an element the page never showed from a locator that finds nothing, so the parent
+  // says when no look of the attempt has found an element for that locator.
+  test('a pass on a look with no match is marked as never matched while no look of the attempt has found that locator', async () => {
+    const run = await scriptedTest()
+    await run.command(1, { kind: 'observe', locator: missing })
+    run.event(claim(run, { locator: missing, observationId: 'o1', check: { matcher: 'toBeHidden' } }))
+    run.event(claim(run, { locator: missing, observationId: 'o1', check: { matcher: 'toBeVisible', not: true } }))
+    run.event(claim(run, { locator: missing, observationId: 'o1', check: { matcher: 'toHaveCount', count: 0 } }))
+    await run.finish()
+    assert.deepEqual(
+      bodies(run, 'assertion.passed').map((event) => [event.matcher, event.neverMatched]),
+      [
+        ['toBeHidden', true],
+        ['not.toBeVisible', true],
+        ['toHaveCount', true],
+      ],
+    )
+  })
+
+  test('a pass on a look with no match is not marked once a look of the attempt found that locator, nor a pass on an element', async () => {
+    const saved: LocatorRecipe = { by: 'testId', value: 'saved-task' }
+    const hidden: LocatorRecipe = { by: 'testId', value: 'hidden-note' }
+    const run = await scriptedTest()
+    await run.command(1, { kind: 'observe', locator: saved })
+    await run.command(2, { kind: 'click', locator: { by: 'testId', value: 'save-task' } })
+    await run.command(3, { kind: 'observe', locator: saved })
+    await run.command(4, { kind: 'observe', locator: hidden })
+    await run.command(5, { kind: 'observe', locator: title })
+    run.event(claim(run, { locator: saved, observationId: 'o1', check: { matcher: 'toBeHidden' } }))
+    run.event(claim(run, { locator: hidden, observationId: 'o3', check: { matcher: 'toBeHidden' } }))
+    run.event(claim(run, { locator: title, observationId: 'o4', check: { matcher: 'toBeVisible' } }))
+    await run.finish()
+    assert.deepEqual(
+      bodies(run, 'assertion.passed').map((event) => [event.locator, event.observationId, 'neverMatched' in event]),
+      [
+        [saved, 'o1', false],
+        [hidden, 'o3', false],
+        [title, 'o4', false],
+      ],
+    )
+  })
+
+  test('a pass on no match is marked when only another locator found an element', async () => {
+    const run = await scriptedTest()
+    await run.command(1, { kind: 'observe', locator: title })
+    await run.command(2, { kind: 'observe', locator: missing })
+    run.event(claim(run, { locator: missing, observationId: 'o2', check: { matcher: 'toBeHidden' } }))
+    await run.finish()
+    assert.deepEqual(bodies(run, 'assertion.passed').map((event) => event.neverMatched), [true])
+  })
+
   test('a test process that claims toBeVisible passed on a look with no match ends test_error, is killed, and no pass is written', async () => {
     const run = await scriptedTest()
     await run.command(1, { kind: 'observe', locator: missing })
