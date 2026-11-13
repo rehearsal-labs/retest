@@ -1,4 +1,4 @@
-import type { AppBuild, DispatchedRequest, NativeRuntimeIdentity } from '../../browser/contract.ts'
+import type { AppBuild, DispatchedRequest, InputDispatch, NativeRuntimeIdentity } from '../../browser/contract.ts'
 import type { LoadedAgentDeviceTarget } from '../../config/loaded.ts'
 import type { Failure } from '../../protocol/failures.ts'
 import type { AndroidDevice, AppBundle, NativeExecutionIdentity, PackageExecutor } from '../identity.ts'
@@ -203,12 +203,19 @@ export class AgentDeviceRuntime {
       const input = installed.started ? 'sent' : 'not_sent'
       return { result: { ok: false, failure: { class: 'setup_failed', message: this.#options.redact(`Installing the app on the simulator failed: ${describeCommand('xcrun simctl install', installed)}`), details: { inputSent: input } } }, input }
     }
-    // A reinstall removes any copy of the app first, so the app starts with no data of an earlier run.
-    const answer = await this.#host.port.call('apps.reinstall', { platform: 'android', serial: this.#platform.serial, app: this.#bundle.bundleId, appPath: build.appPath }, bounds)
-    if (answer.status !== 'answered') {
-      const input = answer.status === 'refused' || (answer.status === 'stopped' && answer.dispatched === 'no') ? 'not_sent' : 'unknown'
-      return { result: { ok: false, failure: { class: 'setup_failed', message: this.#options.redact(`agent-device did not install the APK: ${describeAnswer(answer)}`), details: { inputSent: input } } }, input }
-    }
+    // Any copy of the app goes first, with its data, so the app starts with no data of an earlier run. agent-device's
+    // uninstall reads the device's packages and removes the app only when it is there. Its reinstall runs adb's uninstall
+    // whatever the device holds, and on Android 15 that fails for an app the device does not have.
+    const deadline = new Deadline(Math.max(1, Math.min(maxTimeout, Math.floor(bounds.timeoutMs))))
+    const within = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: bounds.signal })
+    const device = { platform: 'android', serial: this.#platform.serial }
+    const failed = (message: string, input: InputDispatch): DispatchedRequest => ({ result: { ok: false, failure: { class: 'setup_failed', message: this.#options.redact(message), details: { inputSent: input } } }, input })
+    const removed = await this.#host.port.call('apps.uninstall', { ...device, app: this.#bundle.bundleId }, within())
+    if (removed.status !== 'answered') return failed(`agent-device did not remove the app before installing the APK: ${describeAnswer(removed)}`, inputOf(removed))
+    // An uninstall that says the app was not there changed nothing on the device.
+    const removal: InputDispatch = typeof removed.value === 'object' && removed.value !== null && Reflect.get(removed.value, 'wasInstalled') === false ? 'not_sent' : 'sent'
+    const answer = await this.#host.port.call('apps.install', { ...device, app: this.#bundle.bundleId, appPath: build.appPath }, within())
+    if (answer.status !== 'answered') return failed(`agent-device did not install the APK: ${describeAnswer(answer)}`, worse(removal, inputOf(answer)))
     const installed = installedPackage(answer.value)
     if (installed !== this.#bundle.bundleId) return { result: { ok: false, failure: { class: 'setup_failed', message: this.#options.redact(`The APK installed ${installed === undefined ? 'a package agent-device did not name' : installed}, not ${this.#bundle.bundleId}, the package the target names, so Retest launches nothing.`) } }, input: 'sent' }
     return { result: { ok: true }, input: 'sent' }
@@ -430,6 +437,18 @@ function readAndroidDevice(entry: unknown): ListedAndroid[] {
     ...(typeof model === 'string' ? { model } : {}),
     ...(typeof osVersion === 'string' ? { osVersion } : {}),
   }]
+}
+
+// Whether a request that did not succeed reached the device: only agent-device's refusal, or a stop before it went,
+// proves it did not.
+function inputOf(answer: Exclude<AgentDeviceAnswer, { readonly status: 'answered' }>): InputDispatch {
+  return answer.status === 'refused' || (answer.status === 'stopped' && answer.dispatched === 'no') ? 'not_sent' : 'unknown'
+}
+
+// The less certain of two steps' inputs, as one request that took both reports it.
+function worse(first: InputDispatch, second: InputDispatch): InputDispatch {
+  if (first === 'unknown' || second === 'unknown') return 'unknown'
+  return first === 'sent' || second === 'sent' ? 'sent' : 'not_sent'
 }
 
 // The package an install answer names: its package, or its app id.

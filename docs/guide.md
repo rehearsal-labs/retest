@@ -407,7 +407,7 @@ On the simulator, the check pressed Enter. A single character, `getByLabel` and 
 
 - iOS: as with Retest's own driver, each runtime creates a simulator of its own from the device type and runtime, boots it and installs the app with simctl, so the app's data and keychain start empty. At the end Retest closes agent-device's session, shuts the simulator down and deletes it, and checks that no process naming it is left.
 - agent-device builds its XCTest runner with the installed Xcode the first time it drives a simulator, into `~/.agent-device/apple-runner`, and reuses it afterwards. Retest builds nothing for it. XCTest writes its result bundles into the same folder, and agent-device keeps them.
-- Android: the emulator or device is not Retest's. Retest boots an emulator that is not running and shuts down only one it booted. It removes the app and installs the APK afresh when the runtime starts.
+- Android: the emulator or device is not Retest's. Retest boots an emulator that is not running and shuts down only one it booted. It removes the app and its data, if the device has it, and installs the APK afresh when the runtime starts. On the Android 15 emulator this ran on a device without the app, and on one whose copy held a task saved by an earlier run, which was gone.
 - agent-device's daemon runs inside Retest's process, in a state folder of the runtime's own, with the environment Retest's tools get, so it never sees a secret's variable. The folder is deleted at the end, and a later run deletes one that a killed run left.
 
 #### How an action goes

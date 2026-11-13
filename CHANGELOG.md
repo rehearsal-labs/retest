@@ -2,6 +2,12 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## Unreleased
+
+### Fixed
+
+- **Android: a test's app installs on a device that does not have it yet.** Set-up failed there with `adb uninstall failed`. Retest installed through agent-device's reinstall, which runs adb's uninstall first, and Android 15 fails an uninstall of an app the device does not have. Retest now asks agent-device to remove the app, which it does only when the device has it, then installs the APK. Either way the app starts with no data of an earlier run. Checked on the Android 15 emulator.
+
 ## 0.4.0
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.

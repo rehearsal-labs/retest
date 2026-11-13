@@ -1,4 +1,5 @@
 import type { LoadedAgentDeviceTarget } from '../../src/config/loaded.ts'
+import type { AgentDeviceInteraction } from '../../src/native/agent-device/interaction.ts'
 import type { AgentDeviceAnswer, AgentDeviceHost, AgentDeviceMethod, AgentDeviceStarter } from '../../src/native/agent-device/package.ts'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
@@ -23,13 +24,22 @@ const apk = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3])
 
 type Call = { readonly method: AgentDeviceMethod; readonly options: Readonly<Record<string, unknown>> }
 
-/** agent-device's daemon as the runtime sees it: devices it lists, what it installs, every call it gets, and its close. */
+/**
+ * agent-device's daemon as the runtime sees it: devices it lists, what it installs, every call it gets, and its close.
+ * The device holds the app or not, with what an earlier run saved. Its install, uninstall and reinstall answer as
+ * agent-device 0.21.36 answered them on the Android 15 emulator: a reinstall of an app the device does not have fails,
+ * since adb's uninstall of it fails there with `DELETE_FAILED_INTERNAL_ERROR`; an uninstall reads the device's packages
+ * first and says whether the app was there.
+ */
 class StandInDaemon {
   readonly calls: Call[] = []
   readonly started: { readonly stateDir: string; readonly env: Readonly<Record<string, string>> }[] = []
+  readonly answers = new Map<AgentDeviceMethod, AgentDeviceAnswer>()
   booted: boolean
   closed = 0
   installs = 'dev.retest.tasks'
+  installed = true
+  saved: string | undefined
   readonly kind: 'emulator' | 'device'
 
   constructor(options: { readonly booted: boolean; readonly kind?: 'emulator' | 'device' }) {
@@ -58,6 +68,9 @@ class StandInDaemon {
   async #answer(method: AgentDeviceMethod, options: Readonly<Record<string, unknown>>): Promise<AgentDeviceAnswer> {
     this.calls.push({ method, options })
     const answered = (value: unknown): AgentDeviceAnswer => ({ status: 'answered', value, durationMs: 1 })
+    const given = this.answers.get(method)
+    if (given !== undefined) return given
+    const app = String(options['app'])
     switch (method) {
       case 'devices.list':
         return answered([
@@ -68,7 +81,18 @@ class StandInDaemon {
         this.booted = true
         return answered({})
       case 'apps.reinstall':
+        if (!this.installed) return { status: 'failed', code: 'COMMAND_FAILED', message: `adb uninstall failed for ${app}`, durationMs: 1 }
+        this.saved = undefined
         return answered({ app: options['app'], appPath: options['appPath'], platform: 'android', package: this.installs, identifiers: {} })
+      case 'apps.uninstall': {
+        const was = this.installed
+        this.installed = false
+        this.saved = undefined
+        return answered(was ? { platform: 'android', app, wasInstalled: true, appId: app, message: `Uninstalled: ${app}` } : { platform: 'android', app, wasInstalled: false, message: `Not installed: ${app}` })
+      }
+      case 'apps.install':
+        this.installed = true
+        return answered({ app: options['app'], appPath: options['appPath'], platform: 'android', appId: this.installs, package: this.installs, identifiers: { session: 'default', appId: this.installs, package: this.installs } })
       case 'capture.screenshot':
         await writeFile(String(options['path']), png)
         return answered({ path: options['path'] })
@@ -135,7 +159,8 @@ test('the APK is installed afresh through agent-device, and an install of anothe
   assert.equal(session.platform, 'android')
   const installed = await session.install({ appPath: '/work/app-debug.apk' }, 5000)
   assert.ok(installed.result.ok)
-  assert.deepEqual(daemon.sent('apps.reinstall')[0]?.options, { platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks', appPath: '/work/app-debug.apk' })
+  assert.deepEqual(daemon.sent('apps.uninstall')[0]?.options, { platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks' })
+  assert.deepEqual(daemon.sent('apps.install')[0]?.options, { platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks', appPath: '/work/app-debug.apk' })
   daemon.installs = 'com.example.other'
   const other = await session.install({ appPath: '/work/app-debug.apk' }, 5000)
   assert.ok(!other.result.ok)
@@ -149,6 +174,65 @@ test('the APK is installed afresh through agent-device, and an install of anothe
   assert.deepEqual(daemon.sent('apps.open')[0]?.options, { app: 'dev.retest.tasks', relaunch: true, platform: 'android', serial: 'emulator-5554', session: daemon.sent('apps.open')[0]?.options['session'] })
   await session.dispose(5000)
   await started.runtime.close(10_000)
+})
+
+// The interaction session a test's app opens on the runtime, disposed when the test ends.
+async function interactionOf(t: TestContext, runtime: AgentDeviceRuntime): Promise<AgentDeviceInteraction> {
+  const opened = await runtime.openInteraction({ owner: { runId: 'r', testId: 't', attemptId: 'a1', app: 'tasks' }, launch: { arguments: [], environment: {} }, redact: (text) => text }, 1000, new AbortController().signal)
+  assert.ok(opened.ok)
+  t.after(() => opened.value.dispose(5000))
+  return opened.value
+}
+
+test('the APK installs on a device without the app and on one with it, and the app starts with no data of an earlier run', androidHost, async (t) => {
+  for (const had of [false, true]) {
+    const daemon = new StandInDaemon({ booted: true })
+    daemon.installed = had
+    daemon.saved = had ? 'Release checklist 1' : undefined
+    const started = await start(t, daemon, { serial: 'emulator-5554' })
+    assert.ok(started.ok, started.ok ? '' : started.failure.message)
+    const session = await interactionOf(t, started.runtime)
+    const installed = await session.install({ appPath: '/work/app-debug.apk' }, 5000)
+    const which = had ? 'a device with the app' : 'a device without the app'
+    assert.ok(installed.result.ok, installed.result.ok ? '' : `${which}: ${installed.result.failure.message}`)
+    assert.equal(installed.input, 'sent', which)
+    assert.equal(daemon.installed, true, which)
+    assert.equal(daemon.saved, undefined, `${which} keeps nothing an earlier run saved`)
+    assert.equal(daemon.sent('apps.reinstall').length, 0, which)
+    assert.deepEqual(daemon.sent('apps.uninstall').map((call) => call.options), [{ platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks' }], which)
+    assert.deepEqual(daemon.sent('apps.install').map((call) => call.options), [{ platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks', appPath: '/work/app-debug.apk' }], which)
+    await started.runtime.close(10_000)
+  }
+})
+
+test('an install that fails says truthfully whether anything reached the device, and is never sent again', androidHost, async (t) => {
+  const refused: AgentDeviceAnswer = { status: 'refused', code: 'DEVICE_NOT_READY', message: 'The device is not ready.', durationMs: 1 }
+  const failed: AgentDeviceAnswer = { status: 'failed', code: 'COMMAND_FAILED', message: 'adb install failed', durationMs: 1 }
+  const cases: readonly { readonly name: string; readonly had: boolean; readonly method: AgentDeviceMethod; readonly answer: AgentDeviceAnswer; readonly input: 'sent' | 'not_sent' | 'unknown'; readonly installs: number }[] = [
+    { name: 'an uninstall agent-device refused', had: true, method: 'apps.uninstall', answer: refused, input: 'not_sent', installs: 0 },
+    { name: 'an uninstall that failed', had: true, method: 'apps.uninstall', answer: { ...failed, message: 'adb uninstall failed for dev.retest.tasks' }, input: 'unknown', installs: 0 },
+    { name: 'an uninstall stopped before it went', had: true, method: 'apps.uninstall', answer: { status: 'stopped', dispatched: 'no', durationMs: 1 }, input: 'not_sent', installs: 0 },
+    { name: 'an install refused where there was no app', had: false, method: 'apps.install', answer: refused, input: 'not_sent', installs: 1 },
+    { name: 'an install refused after the app was removed', had: true, method: 'apps.install', answer: refused, input: 'sent', installs: 1 },
+    { name: 'an install that failed', had: false, method: 'apps.install', answer: failed, input: 'unknown', installs: 1 },
+    { name: 'an install that timed out', had: true, method: 'apps.install', answer: { status: 'timeout', message: 'agent-device did not answer apps.install within 5000 ms.', durationMs: 5000 }, input: 'unknown', installs: 1 },
+  ]
+  for (const entry of cases) {
+    const daemon = new StandInDaemon({ booted: true })
+    daemon.installed = entry.had
+    daemon.answers.set(entry.method, entry.answer)
+    const started = await start(t, daemon, { serial: 'emulator-5554' })
+    assert.ok(started.ok, started.ok ? '' : started.failure.message)
+    const session = await interactionOf(t, started.runtime)
+    const installed = await session.install({ appPath: '/work/app-debug.apk' }, 5000)
+    assert.ok(!installed.result.ok, entry.name)
+    assert.equal(installed.result.failure.class, 'setup_failed', entry.name)
+    assert.equal(installed.input, entry.input, entry.name)
+    assert.equal(installed.result.failure.details?.['inputSent'], entry.input, entry.name)
+    assert.equal(daemon.sent('apps.install').length, entry.installs, `${entry.name}: the install is sent at most once`)
+    assert.equal(daemon.sent('apps.reinstall').length, 0, entry.name)
+    await started.runtime.close(10_000)
+  }
 })
 
 test('a device agent-device does not list is refused by name, listing what it does list, and nothing is left', androidHost, async (t) => {
