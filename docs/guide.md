@@ -1831,9 +1831,36 @@ Without the profile, Chrome stops before it answers and the run exits 2 with the
 
 Docker gives a container 64 MB of `/dev/shm`, which was enough for Retest's own tests. Debian's `chromium` command adds `--disable-dev-shm-usage` by itself when there is less. For Google Chrome and large pages, give the container more with `--shm-size`.
 
-Outside a container, Ubuntu 23.10 and later restrict user namespaces with AppArmor, and the browser needs an AppArmor profile that allows them. That was not tried.
+Outside a container, Ubuntu 23.10 and later restrict user namespaces with AppArmor instead. [Run on Ubuntu](#run-on-ubuntu) has the steps.
 
 Retest's own checks run on Linux with [`docker/linux/run.sh`](../docker/linux/run.sh). It builds [`docker/linux/Dockerfile`](../docker/linux/Dockerfile), Node.js 24 on Debian 13 with Google Chrome and Debian's Chromium, and runs it as the user `node` with the settings above. With no arguments it runs every gate; `docker/linux/run.sh npm run test:unit` runs one.
+
+## Run on Ubuntu
+
+Ubuntu 23.10 and later let a program create user namespaces only when an AppArmor profile allows it. Chrome's sandbox needs them. The profiles AppArmor ships include one for Google Chrome at `/opt/google/chrome/chrome`, but none names a browser in a folder of its own, such as the Chrome for Testing that `retest install chromium` puts under `~/.cache/retest/browsers`, or under `$XDG_CACHE_HOME/retest/browsers` when that is set. That browser stops before it answers, and the run exits 2.
+
+The message says what to type when three things hold: `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads `1`, Retest's own AppArmor label is `unconfined`, and Retest is not in a Docker or Podman container. Then its last two lines are commands that write a profile for the browser's file and load it. For the build `retest install chromium` installs for a user named `runner`, they are:
+
+```sh
+printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' '' '/home/runner/.cache/retest/browsers/chromium-153.0.8010.12-linux-x64/build/chrome-linux64/chrome flags=(unconfined) {' '  userns,' '}' | sudo tee /etc/apparmor.d/home.runner..cache.retest.browsers.chromium-153.0.8010.12-linux-x64.build.chrome-linux64.chrome > /dev/null
+sudo apparmor_parser -r /etc/apparmor.d/home.runner..cache.retest.browsers.chromium-153.0.8010.12-linux-x64.build.chrome-linux64.chrome
+```
+
+This is the profile [Chromium documents](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md) for its own builds, narrowed to one file. The browser stays unconfined, as it was, and may now create user namespaces. Every other program stays restricted. AppArmor loads the file again at each boot.
+
+- The profile names the file with every symbolic link resolved, because that is the path AppArmor matches.
+- The path holds the user's home folder and the build's version. Another user, or a Retest that pins another build, needs a profile of its own.
+- Anyone who can put a program at that path gets the same permission. Under a home folder, that is the folder's owner.
+- A path with characters other than letters, digits and `. _ + @ -`, which a profile could read as a pattern, gets the advice in words and no commands. So does a path whose profile file AppArmor would not load at boot, such as one that would start with a dot.
+
+Chromium and Ubuntu document two other ways. Retest prints neither: the first lifts the restriction for every program, and the second adds a program that runs as root.
+
+- `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` turns the restriction off for every program until the next boot. Chromium warns that this "disables a useful Ubuntu security feature".
+- Chrome's setuid helper: `chrome_sandbox` beside the browser, owned by root with mode 4755, and named by `CHROME_DEVEL_SANDBOX` in the browser's environment. It runs as root for whoever starts it, and Chromium says the older sandbox it starts may be slightly weaker.
+
+In every other case, such as a container, a setting that reads `0`, Retest running under an AppArmor profile, or a fact Retest cannot read, the message names both ways in words and prints no commands, as in a container above.
+
+These commands were not run on Ubuntu while writing this. Unit tests check the message, and a Docker run on Docker Desktop, which has no such restriction, showed the refusal a container gets. [`.github/workflows/ubuntu-sandbox.yml`](../.github/workflows/ubuntu-sandbox.yml) runs the whole path on GitHub's `ubuntu-24.04` runner, outside a container: it installs the browser, sees the run stop, applies the commands the message printed, and needs the same test to pass with the sandbox on. It is started by hand and has not been run yet.
 
 ## List and inspect
 

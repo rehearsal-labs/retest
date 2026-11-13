@@ -7,6 +7,8 @@ import { join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { LaunchError } from '../../src/browser/contract.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
+import { readStartAttempt } from '../../src/browser/sandbox-system.ts'
+import { commandLines, explainStartFailure } from '../../src/browser/start-failure.ts'
 import { windowsStandIn } from '../support/stand-in-program.ts'
 import { browserPath, closeMs, groupExists, scratchFolder, timed } from './browser-harness.ts'
 
@@ -133,7 +135,16 @@ test('a browser whose sandbox cannot start is told why and how to allow it, not 
   const program = await script(t, 'sandboxless-browser', { sh: `echo "$@"\necho '${noSandboxLine}' >&2\nexit 1`, node: `${printArguments}; console.error(${JSON.stringify(noSandboxLine)}); process.exit(1)` })
   const log = join(await scratchFolder(t), 'browser.log')
   const { error } = await launchFailure(program, log)
-  assert.equal(error.message, `${program} exited with exit code 1 before it answered as a browser. ${sandboxCause} Its output is in ${log}.`)
+  const attempt = await readStartAttempt(program)
+  const explained = explainStartFailure(noSandboxLine, attempt)
+  if (explained?.commands.length === 0) {
+    // In a container, on macOS and on Windows, and wherever AppArmor does not decide, the cause names both ways.
+    assert.equal(error.message, `${program} exited with exit code 1 before it answered as a browser. ${sandboxCause} Its output is in ${log}.`)
+    return
+  }
+  // On Ubuntu outside a container the commands for this file's profile end the message, the loading one last.
+  assert.equal(error.message, `${program} exited with exit code 1 before it answered as a browser. ${explained?.text} Its output is in ${log}.${commandLines(explained)}`)
+  assert.ok(error.message.endsWith(`\nsudo apparmor_parser -r /etc/apparmor.d/${attempt.file.slice(1).replaceAll('/', '.')}`), error.message)
 })
 
 test('what an earlier launch left in the same log explains nothing about this one', async (t) => {
