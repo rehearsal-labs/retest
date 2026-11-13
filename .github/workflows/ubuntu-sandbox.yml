@@ -60,6 +60,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/project/site"
           cd "$RUNNER_TEMP/project"
           npm init --yes > /dev/null
+          # A Retest test file is an ES module, as the project `retest init` writes is.
+          npm pkg set type=module
           npm install --no-audit --no-fund "$RUNNER_TEMP"/pack/*.tgz
           npx retest install chromium
           npx retest install --list --json > builds.json
