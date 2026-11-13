@@ -23,6 +23,7 @@ export const agentDeviceVersion = '0.21.36'
 export type AgentDeviceMethod =
   | 'apps.install'
   | 'apps.reinstall'
+  | 'apps.uninstall'
   | 'apps.open'
   | 'apps.close'
   | 'capture.snapshot'
