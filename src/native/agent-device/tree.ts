@@ -6,7 +6,8 @@ import { fieldTypes, toggleTypes } from '../locators.ts'
 // A screen as agent-device reads it, turned into the tree Retest's locators and checks read. agent-device's snapshot is
 // a flat list of nodes, each naming its parent; this keeps their order, gives each node the element type Retest's
 // tables use, and writes the facts the readings need as the attributes they read: `label`, `value`,
-// `placeholderValue`, `enabled`, `visible`, `selected` (and `traits` on iOS), `hintShowing` on Android, and the frame.
+// `placeholderValue`, `enabled`, `visible`, `selected` (and `traits` on iOS), `hintShowing` and, where it can be told
+// from a content description, `text` on Android, and the frame.
 // Every text the app wrote passes through `redact` before it is kept. The test ids an element has are read here once,
 // as `TestIdReading`: an iOS node's accessibility identifier, or an Android node's resource id and content description.
 // Nothing here is from agent-device's own code; it reads the fields agent-device 0.21.36 documents for its nodes.
@@ -201,6 +202,10 @@ function buildElement(node: SnapshotNode, platform: Exclude<NativeKind, 'macos'>
     if (value !== undefined) attributes[key] = value ? 'true' : 'false'
   }
   put('label', node.label)
+  if (platform === 'android' && !fieldTypes.has(type)) {
+    const shown = androidText(node)
+    if (shown !== undefined) put('text', shown)
+  }
   put('placeholderValue', node.placeholder)
   if (node.type !== undefined) put(platform === 'android' ? 'class' : 'type', platform === 'android' ? node.type : `XCUIElementType${node.type}`)
   // A switch, toggle, checkbox or radio button holds its state as its value, 1 or 0, as the platform's executors write it.
@@ -219,6 +224,17 @@ function buildElement(node: SnapshotNode, platform: Exclude<NativeKind, 'macos'>
     attributes['height'] = String(node.rect.height)
   }
   return { index: node.index, type, attributes, frame: node.rect, parent: undefined, children: [], testIds: testIdsOf(node, platform, redact) }
+}
+
+// The text an Android view shows, where agent-device lets it be told. agent-device labels a view by its text, or by its
+// content description when the view shows no text, and reports the content description apart only beside text that
+// differs from it. So a label with a content description beside it is the text, and no label is no text. A label alone
+// is the text, or the content description of a view that shows none: agent-device writes a title with no content
+// description and an empty view with one alike. Such a label carries no `text`; it is read as the text, and a text check
+// that fails on it says what it may be.
+function androidText(node: SnapshotNode): string | undefined {
+  if (node.label === undefined) return ''
+  return node.contentDescription === undefined ? undefined : node.label
 }
 
 // iOS names its element types as XCTest does, and agent-device writes the name; Android writes the widget class, which

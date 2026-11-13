@@ -1,5 +1,5 @@
 import type { NativeLook } from '../native/assertions.ts'
-import { unsupportedCheck } from '../native/assertions.ts'
+import { textCheckNote, unsupportedCheck } from '../native/assertions.ts'
 import { describeElement } from '../native/locators.ts'
 import { isLayoutCheck, isPageCheck, isScreenshotCheck, locatorCheck } from '../protocol/locator-checks.ts'
 import { NativePageAdapter } from './native-pool.ts'
@@ -790,7 +790,8 @@ export class RunningTest {
       if (unsupported !== undefined || !rule.passes(native.look.observation)) {
         const element = native.look.matches[0]
         const description = element === undefined ? undefined : describeElement(element, native.look.tree.platform)
-        nativeFailure = unsupported ?? failure('check_failed', `${rule.mismatch(native.look.observation, describeCommand({ kind: 'observe', locator: event.locator }))}${description === undefined ? '' : ` Element: ${description}.`}`)
+        const note = textCheckNote(event.check, native.look.matches, native.look.tree.platform)
+        nativeFailure = unsupported ?? failure('check_failed', `${rule.mismatch(native.look.observation, describeCommand({ kind: 'observe', locator: event.locator }))}${description === undefined ? '' : ` Element: ${description}.`}${note === undefined ? '' : ` ${note}`}`)
         assertion = event.type === 'assertion.failed' ? event : { ...event, type: 'assertion.failed', failure: nativeFailure }
       }
     }

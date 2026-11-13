@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { diagnosticsCardLines } from '../diagnostics/report.ts'
 import { evaluationCardLines } from '../evaluation/report.ts'
+import { holdsOneLabelNote } from '../protocol/locator-checks.ts'
 import { actionNotes, describeWrittenAction } from './actions.ts'
 import { canRerun, formatRerunCommand } from './commands.ts'
 import { plural, testTitle } from './format.ts'
@@ -289,10 +290,12 @@ export function recordedValues(call: FailingCall | undefined): RecordedValues | 
 /**
  * Whether the failure's message only repeats the recorded values, as the message of a check that failed on
  * them does. Any other failure, such as a timeout that stopped the check, says something the values do not, and so
- * does a screenshot comparison's, which names the baseline's file, the ratio of pixels and how many may differ.
+ * does a screenshot comparison's, which names the baseline's file, the ratio of pixels and how many may differ, and an
+ * Android text check's whose text may be the view's content description.
  */
 export function messageRepeatsValues(card: FailureCard): boolean {
   if (card.call?.type === 'assertion.failed' && card.call.matcher === 'toHaveScreenshot') return false
+  if (card.failure !== undefined && holdsOneLabelNote(card.failure.message)) return false
   return card.failure?.class === 'check_failed' && recordedValues(card.call) !== undefined
 }
 
