@@ -1,6 +1,6 @@
 import type { MetadataProcessRequest } from '../../src/shared/metadata-process.ts'
 import { parentPort } from 'node:worker_threads'
-import { metadataComplete, metadataPending, metadataRunning, metadataSuccess } from '../../src/shared/metadata-process.ts'
+import { metadataComplete, metadataPending, metadataRunning, metadataSuccess, writeMetadataOutput } from '../../src/shared/metadata-process.ts'
 
 const waiting: MetadataProcessRequest[] = []
 let released = false
@@ -10,7 +10,7 @@ function answer(request: MetadataProcessRequest): void {
   if (Atomics.compareExchange(control, 0, metadataPending, metadataRunning) !== metadataPending) return
   // Echoes the query's last argument, the text where `/bin/echo` or the Node script that stands in for it on Windows takes it.
   const text = new TextEncoder().encode(`${request.args.at(-1) ?? ''}\n`)
-  new Uint8Array(request.output).set(text)
+  writeMetadataOutput(request.output, 0, text)
   Atomics.store(control, 1, metadataSuccess)
   Atomics.store(control, 2, text.length)
   Atomics.store(control, 0, metadataComplete)

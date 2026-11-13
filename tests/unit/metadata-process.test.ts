@@ -40,9 +40,9 @@ test('completed metadata readings reuse their output buffer instead of allocatin
   const buffers = new Map<number, Set<SharedArrayBuffer>>()
   const post = Worker.prototype.postMessage
   t.mock.method(Worker.prototype, 'postMessage', function (this: Worker, request: MetadataProcessRequest): void {
-    const seen = buffers.get(request.output.byteLength) ?? new Set<SharedArrayBuffer>()
+    const seen = buffers.get(request.output.maxByteLength) ?? new Set<SharedArrayBuffer>()
     seen.add(request.output)
-    buffers.set(request.output.byteLength, seen)
+    buffers.set(request.output.maxByteLength, seen)
     post.call(this, request)
   })
   for (let reading = 0; reading < 6; reading += 1) {
@@ -135,6 +135,17 @@ test('a worker that ends before it answers fails a query that holds the thread a
   assert.ok(performance.now() - started < 3000, 'the query did not wait out its whole bound')
   restore()
   assert.equal(answered(), 'answered\n', 'the usual worker answers again')
+})
+
+// Node's spawn throws, rather than reporting later, when fork() fails with ENOMEM. That failure once lost the system's
+// code, so a run's cleanup said only that its readings could not start.
+test('a metadata process the host has no room to start fails naming the system\'s reason, without and with holding the thread', async (t) => {
+  const restore = useMetadataWorkerModule(new URL('./metadata-unstartable-worker.ts', import.meta.url))
+  t.after(restore)
+  assert.throws(() => readMetadataProcess({ ...echo('never'), environment }), /^Error: The metadata process could not start \(ENOMEM\)\.$/)
+  await assert.rejects(readMetadataProcessAsync({ ...echo('never'), environment }), /^Error: The metadata process could not start \(ENOMEM\)\.$/)
+  restore()
+  assert.equal(answered(), 'answered\n', 'a host with room again is read again')
 })
 
 test('a caller deadline bounds a stalled synchronous worker including its startup allowance', () => {

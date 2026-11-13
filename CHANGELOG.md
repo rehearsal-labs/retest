@@ -2,6 +2,13 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## Unreleased
+
+### Fixed
+
+- A long run no longer piles up memory reading its own processes. A reading of the process table that began while another was under way took a 64 MiB buffer of its own, and a spent one stayed until garbage collection. In 1,000-test runs on Linux they reached 12 GiB, up to 6.9 GiB of it in one mapping, while the whole process held about 350 MB. Linux charges a fork for that memory, and a host that refuses the charge lets no reading start. A run whose tests all passed then ended `cleanup_failed`, since it could not confirm that its browsers had ended. A buffer now grows only as far as its reading prints, and spent ones are used again.
+- A reading the system refuses to start names the system's reason, as in "The metadata process could not start (ENOMEM)."
+
 ## 0.4.0
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.

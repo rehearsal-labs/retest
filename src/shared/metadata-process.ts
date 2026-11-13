@@ -26,6 +26,10 @@ export type MetadataProcessRequest = {
   /** Absolute monotonic time, including the worker's time origin, when the caller must stop waiting. */
   readonly deadline?: number
   readonly control: SharedArrayBuffer
+  /**
+   * Grows as the worker writes into it, through `writeMetadataOutput`, up to its `maxByteLength`, which is the query's
+   * output limit.
+   */
   readonly output: SharedArrayBuffer
 }
 
@@ -39,7 +43,7 @@ export const metadataDeadlineVariable = 'RETEST_METADATA_DEADLINE_MS'
  * The bound a whole process table is read under. A `ps -ww` table passed 4 MiB on a busy Mac (4.53 MB with about 3,600
  * processes), and a table refused for its size leaves every ownership decision without a reading, so nothing could be
  * started or ended. At that 1.3 KB a line, a table of kern.maxproc's 9,000 processes is under 12 MiB. A larger table is
- * still refused, as an unreadable one; it is never cut. The buffer is committed only as far as it is written.
+ * still refused, as an unreadable one; it is never cut. A query's buffer grows only as far as its output does.
  */
 export const processTableOutputLimit: number = 64 * 1024 * 1024
 export const metadataPending: number = 0
@@ -56,9 +60,18 @@ const workerAllowanceMs = 1000
 // How many fresh workers one query is asked of after workers it was posted to ended by themselves before answering
 // anything, as one whose module cannot load does, which would otherwise be replaced as fast as each one ends.
 const workerRetries = 2
-// One spare of each production capacity. Only a completed query can return its buffer: an abandoned worker may
-// still be writing, and a concurrent query must hold a different buffer until its completion signal is consumed.
-const spareOutputs = new Map<number, SharedArrayBuffer>()
+// A query's buffer starts at what a short reading prints and grows as its output arrives, up to its bound. A buffer of
+// the whole bound is charged in full from the start, and a spent one stays mapped until garbage collection, which does
+// not count shared memory. Linux charges a fork for each such mapping, so spent ones can leave the host refusing to
+// start any reading, which is every reading a cleanup needs.
+const initialOutputBytes = 64 * 1024
+// Spares of each production capacity, as many as queries have run at once, up to `spareLimit`, so readings that overlap
+// use buffers again rather than leave new ones for garbage collection. Only a completed query can return its buffer: an
+// abandoned worker may still be writing, and a concurrent query must hold a different buffer until its completion
+// signal is consumed.
+const spareOutputs = new Map<number, SharedArrayBuffer[]>()
+// More than the three whole-table readings a 1,000-test run with two browsers had at once.
+const spareLimit = 8
 // Queries posted and not yet settled. A worker ended for one query fails the others it holds at once, rather than
 // leaving each to wait out its whole bound for an answer that cannot come.
 const inFlight = new Set<Query>()
@@ -165,8 +178,7 @@ function submit(options: MetadataProcessOptions, retries = 0): Query {
   if (!Number.isSafeInteger(outputLimit) || outputLimit < metadataOutputLimit || outputLimit > processTableOutputLimit) throw new RangeError(`A metadata query's output limit lies between ${metadataOutputLimit} and ${processTableOutputLimit} bytes.`)
   const worker = metadataWorker()
   const controlBuffer = new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
-  const output = spareOutputs.get(outputLimit) ?? new SharedArrayBuffer(outputLimit)
-  spareOutputs.delete(outputLimit)
+  const output = spareOutputs.get(outputLimit)?.pop() ?? new SharedArrayBuffer(initialOutputBytes, { maxByteLength: outputLimit })
   const control = new Int32Array(controlBuffer)
   const request: MetadataProcessRequest = {
     command: options.command, args: options.args, environment: { ...options.environment, TZ: 'UTC0' }, timeoutMs,
@@ -215,10 +227,33 @@ function abandoned(query: Query): boolean {
 }
 
 function releaseOutput(query: Query): void {
-  const capacity = query.output.byteLength
+  const capacity = query.output.maxByteLength
   if (Atomics.load(query.control, 0) !== metadataComplete) return
   if (capacity !== metadataOutputLimit && capacity !== processTableOutputLimit) return
-  if (!spareOutputs.has(capacity)) spareOutputs.set(capacity, query.output)
+  const spares = spareOutputs.get(capacity) ?? []
+  if (spares.length < spareLimit && !spares.includes(query.output)) spares.push(query.output)
+  spareOutputs.set(capacity, spares)
+}
+
+/**
+ * Writes `bytes` into a query's output from `offset`, first growing the shared buffer as far as they need, so a buffer
+ * holds only what has been written into it. False when they would pass the query's output limit, or when the host has
+ * no room to grow it.
+ *
+ * @example writeMetadataOutput(request.output, 0, new TextEncoder().encode('42 1 42 S ...'))
+ */
+export function writeMetadataOutput(output: SharedArrayBuffer, offset: number, bytes: Uint8Array): boolean {
+  const end = offset + bytes.length
+  if (end > output.maxByteLength) return false
+  if (end > output.byteLength) {
+    try {
+      output.grow(Math.min(output.maxByteLength, Math.max(end, 2 * output.byteLength)))
+    } catch {
+      return false
+    }
+  }
+  new Uint8Array(output, offset, bytes.length).set(bytes)
+  return true
 }
 
 function answer(query: Query): string {
