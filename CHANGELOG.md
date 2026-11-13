@@ -2,6 +2,36 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## Unreleased
+
+Each entry says where it was checked.
+
+### Fixed
+
+- **A check no longer reads the page an action is leaving, on Chrome.** From the moment the page asks for another document until that document is there, a look reads nothing, and the check reads the new document once it is there. Before, `click(save)` then `expect(heading).toBeVisible()` could pass on the form when the server answered with an error page, and so could `toBeHidden()`, `toHaveURL()` and `toHaveTitle()`. A check whose time runs out first fails `timeout`, naming the address the page was opening. Layout and screenshot checks, `page.url()`, `page.title()`, host checks and looks in a frame wait the same way. Checked on macOS on Apple silicon, with Google Chrome 157.
+- **A long run no longer piles up memory reading its own processes.** A reading of the process table that began while another was under way took a 64 MiB buffer of its own, and a spent one stayed until garbage collection. In 1,000-test runs on Linux they reached 12 GiB, up to 6.9 GiB of it in one mapping, while the whole process held about 350 MB. Linux charges a fork for that memory, and a host that refuses the charge lets no reading start. A run whose tests all passed then ended `cleanup_failed`, since it could not confirm that its browsers had ended. A buffer now grows only as far as its reading prints, and spent ones are used again. Measured on Linux in Docker.
+- A reading the system refuses to start names the system's reason, as in "The metadata process could not start (ENOMEM)."
+- **On Ubuntu 23.10 and later, outside a container, a browser whose sandbox AppArmor refuses now stops with two commands to paste.** They write and load a profile that lets the browser's own file create user namespaces, with its real path filled in. The sandbox stays on. The commands follow the profile Chromium documents. Checked on GitHub's `ubuntu-24.04` runner, Ubuntu 24.04.5, with Chrome for Testing 153: [`.github/workflows/ubuntu-sandbox.yml`](.github/workflows/ubuntu-sandbox.yml) runs them there when started by hand. [Run on Ubuntu](docs/guide.md#run-on-ubuntu) has the steps.
+- **Android: a test's app installs on a device that does not have it yet.** Set-up failed there with `adb uninstall failed`. Retest installed through agent-device's reinstall, which runs adb's uninstall first, and Android 15 fails an uninstall of an app the device does not have. Retest now asks agent-device to remove the app, which it does only when the device has it, then installs the APK. Either way the app starts with no data of an earlier run. Checked on the Android 15 emulator.
+- **Android: a failed text check says when the text may be a content description.** agent-device reports a view's text and its content description as one label, so a view with no text reads as its content description. `toHaveText('')` cannot pass on such a view, and `toHaveText('saved_task')` passes on an empty view whose content description is `saved_task`. A text check that fails on such a label now says the label may be the view's content description. Checked on the Android 15 emulator.
+- **Android: a view with neither text nor a content description reads as empty text.** Its text checks failed before, saying the text was not reported. Unit-tested on nodes the Android 15 emulator gave, not run as a check there.
+- A text check on an element whose text the tree did not report no longer says the element has the text `""`. It says Retest could read no text.
+- The README and the guide said Retest refuses a covered element on every target. On a phone driven through agent-device, Retest checks only for the software keyboard itself. Any other cover is agent-device's reading, which can miss a bar an app draws over its own button, and the tap then counts as sent. The docs now say so.
+
+### Changed
+
+- **The first test starts sooner.** A run loads its test files to collect their tests several at once, as many as `--workers`, or one for each core when `--workers` is not given. It used to load them one at a time. The tests, their order and ids, and what a file that fails to load prints, are the same. `retest list` loads one file for each core at once.
+- Measured on Linux arm64 in Docker on a Mac, with 8 CPUs given to the container, Node 24.22.3 and Chrome 157.0.8103.78: 1,000 tests in 50 files, on the default 4 workers and 2 browsers, five runs of each, taking turns. The first test started after 1,106 ms, against 3,982 ms before. Collecting the 50 files took 746 ms, against 3,601 ms. The whole run took 70.7 s, against 77.6 s, and a test took 263 ms, against 268 ms; both ranges overlap. `retest list` of the 50 files took 1,100 ms, against 4,499 ms. These numbers come from one shared machine and are not the benchmark machine's.
+
+### Added
+
+- **Checks that pass on nothing say so.** `toBeHidden()`, `.not.toBeVisible()` and `toHaveCount(0)` still pass on a locator that matches nothing, as a misspelt test id does. When no look of the test's attempt had found that locator, the `assertion.passed` event says `neverMatched: true`, `result.json` counts such checks in `neverMatchedChecks`, and the human report prints one line for them. Both are additive fields of schema version 1.
+
+### Not in this release
+
+- A submit that a click listener defers with a timer. Until the page asks for the navigation, a check on the next line reads the page the click left.
+- Checks on Firefox and WebKit still read the document a page holds while another is on its way.
+
 ## 0.4.0
 
 Checked on macOS on Apple silicon. The release gates also ran the Firefox and Electron entries on Windows x64. Linux skips them by name, and Windows refuses every phone target before it starts.
