@@ -1,6 +1,6 @@
 import type { MetadataProcessRequest } from '../../src/shared/metadata-process.ts'
 import { parentPort } from 'node:worker_threads'
-import { metadataComplete, metadataFailure, metadataSuccess } from '../../src/shared/metadata-process.ts'
+import { metadataComplete, metadataFailure, metadataSuccess, writeMetadataOutput } from '../../src/shared/metadata-process.ts'
 
 const pids = [50_000_001, 50_000_002, 50_000_003, 50_000_004, process.pid]
 const parts = new Date(0).toUTCString().split(' ')
@@ -26,7 +26,7 @@ export function installTableFixture(reused = false): void {
       text = 'The metadata process exceeded its output limit.'
     }
     const bytes = new TextEncoder().encode(text)
-    new Uint8Array(request.output).set(bytes)
+    writeMetadataOutput(request.output, 0, bytes)
     Atomics.store(control, 1, status)
     Atomics.store(control, 2, bytes.length)
     Atomics.store(control, 0, metadataComplete)

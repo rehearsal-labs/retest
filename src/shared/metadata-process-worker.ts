@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { parentPort } from 'node:worker_threads'
 import { errorCode } from './error-code.ts'
-import { metadataAbandoned, metadataComplete, metadataDeadlineVariable, metadataFailure, metadataPending, metadataRunning, metadataSuccess } from './metadata-process.ts'
+import { metadataAbandoned, metadataComplete, metadataDeadlineVariable, metadataFailure, metadataPending, metadataRunning, metadataSuccess, writeMetadataOutput } from './metadata-process.ts'
 import { launchesHeldByJob } from './process-system.ts'
 
 // Children whose query failed, until each one's own exit is seen. On macOS and Linux none is ever signalled. A stuck one
@@ -16,7 +16,7 @@ const unresolvedLimit = 4
 parentPort?.on('message', (request: MetadataProcessRequest) => {
   const control = new Int32Array(request.control)
   if (Atomics.compareExchange(control, 0, metadataPending, metadataRunning) !== metadataPending) return
-  const output = new Uint8Array(request.output)
+  const { output } = request
   if (unresolved.size >= unresolvedLimit) {
     finish(control, output, metadataFailure, `${unresolved.size} earlier metadata processes that did not answer have not been confirmed ended.`)
     return
@@ -30,8 +30,11 @@ parentPort?.on('message', (request: MetadataProcessRequest) => {
   let child: ChildProcess
   try {
     child = spawn(request.command, request.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...request.environment, TZ: 'UTC0', [metadataDeadlineVariable]: `${Math.floor(performance.timeOrigin + deadline)}` } })
-  } catch {
-    finish(control, output, metadataFailure, 'The metadata process could not start.')
+  } catch (error) {
+    // Node throws here, rather than reporting later, when the system refuses the process outright, as when fork() finds
+    // no room for it, so the code is the only account of why.
+    const code = errorCode(error)
+    finish(control, output, metadataFailure, code === undefined ? 'The metadata process could not start.' : `The metadata process could not start (${code}).`)
     return
   }
   let closed = false
@@ -69,16 +72,18 @@ parentPort?.on('message', (request: MetadataProcessRequest) => {
       fail('The metadata process did not answer before its deadline.')
       return
     }
-    // Each query brings its own bound, as the size of the buffer it shares.
-    if (chunk.length > output.byteLength - bytes) {
+    // Each query brings its own bound, as the most the buffer it shares may grow to.
+    if (chunk.length > output.maxByteLength - bytes) {
       fail('The metadata process exceeded its output limit.')
       return
     }
     bytes += chunk.length
-    if (stdout) {
-      output.set(chunk, stdoutBytes)
-      stdoutBytes += chunk.length
+    if (!stdout) return
+    if (!writeMetadataOutput(output, stdoutBytes, chunk)) {
+      fail('The metadata process output could not be held.')
+      return
     }
+    stdoutBytes += chunk.length
   }
   child.stdout?.on('data', (chunk: Buffer) => { read(chunk, true) })
   child.stderr?.on('data', (chunk: Buffer) => { read(chunk, false) })
@@ -109,11 +114,12 @@ parentPort?.on('message', (request: MetadataProcessRequest) => {
   })
 })
 
-function finish(control: Int32Array, output: Uint8Array, status: number, message: string): void {
+function finish(control: Int32Array, output: SharedArrayBuffer, status: number, message: string): void {
   if (Atomics.load(control, 0) === metadataAbandoned) return
   const bytes = new TextEncoder().encode(message)
-  output.set(bytes)
+  // A message fits the buffer as it starts; one that could not be held still fails its query, without the words.
+  const written = writeMetadataOutput(output, 0, bytes)
   Atomics.store(control, 1, status)
-  Atomics.store(control, 2, bytes.length)
+  Atomics.store(control, 2, written ? bytes.length : 0)
   if (Atomics.compareExchange(control, 0, metadataRunning, metadataComplete) === metadataRunning) Atomics.notify(control, 0)
 }

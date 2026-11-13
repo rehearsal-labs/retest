@@ -19,3 +19,12 @@ export function unixOnly(reason: string): string | false {
 export function windowsOnly(reason: string): string | false {
   return process.platform === 'win32' ? false : reason
 }
+
+/**
+ * The skip for a case whose subject exists only on Linux, or false on Linux.
+ *
+ * @example test('a fork is refused past RAM and swap', { skip: linuxOnly('heuristic overcommit is Linux\'s') }, () => {})
+ */
+export function linuxOnly(reason: string): string | false {
+  return process.platform === 'linux' ? false : reason
+}
