@@ -1855,7 +1855,7 @@ Chromium and Ubuntu document two other ways. Retest prints neither: the first li
 
 In every other case, such as a container, a setting that reads `0`, Retest running under an AppArmor profile, or a fact Retest cannot read, the message names both ways in words and prints no commands, as in a container above.
 
-These commands were not run on Ubuntu while writing this. Unit tests check the message, and a Docker run on Docker Desktop, which has no such restriction, showed the refusal a container gets. [`.github/workflows/ubuntu-sandbox.yml`](../.github/workflows/ubuntu-sandbox.yml) runs the whole path on GitHub's `ubuntu-24.04` runner, outside a container: it installs the browser, sees the run stop, applies the commands the message printed, and needs the same test to pass with the sandbox on. It is started by hand and has not been run yet.
+Checked on GitHub's `ubuntu-24.04` runner, Ubuntu 24.04.5, outside a container, with the Chrome for Testing 153 that `retest install chromium` installs. [`.github/workflows/ubuntu-sandbox.yml`](../.github/workflows/ubuntu-sandbox.yml) runs the whole path: it installs the browser, sees the run stop, applies the commands the message printed, and needs the same test to pass with the sandbox on. It is started by hand. Other Ubuntu versions, other browsers and Electron were not run.
 
 ## List and inspect
 

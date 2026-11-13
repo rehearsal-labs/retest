@@ -6,7 +6,7 @@ Retest publishes releases from `main` through the Promote workflow. Each entry n
 
 ### Fixed
 
-- On Ubuntu 23.10 and later, outside a container, a browser whose sandbox AppArmor refuses now stops with two commands to paste. They write and load a profile that lets the browser's own file create user namespaces, with its real path filled in. The sandbox stays on. The commands follow the profile Chromium documents, and they have not been run on Ubuntu yet: [`.github/workflows/ubuntu-sandbox.yml`](.github/workflows/ubuntu-sandbox.yml) runs them on GitHub's `ubuntu-24.04` runner when started by hand. [Run on Ubuntu](docs/guide.md#run-on-ubuntu) has the steps.
+- On Ubuntu 23.10 and later, outside a container, a browser whose sandbox AppArmor refuses now stops with two commands to paste. They write and load a profile that lets the browser's own file create user namespaces, with its real path filled in. The sandbox stays on. The commands follow the profile Chromium documents. Checked on GitHub's `ubuntu-24.04` runner, Ubuntu 24.04.5, with Chrome for Testing 153: [`.github/workflows/ubuntu-sandbox.yml`](.github/workflows/ubuntu-sandbox.yml) runs them there when started by hand. [Run on Ubuntu](docs/guide.md#run-on-ubuntu) has the steps.
 
 ## 0.4.0
 
