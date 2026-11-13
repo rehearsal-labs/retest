@@ -412,7 +412,8 @@ On the simulator, the check pressed Enter. A single character, `getByLabel` and 
 
 #### How an action goes
 
-- Retest reads agent-device's snapshot and finds exactly one element by its own rules. It waits until the element is visible, enabled, not covered, not under the software keyboard, and holds still across two looks at least 100 ms apart. Then it sends one action to that element by the ref agent-device gave it, pinned to that snapshot. If the screen moved on in between, agent-device refuses the ref and sends nothing, and Retest looks again within the action's time.
+- Retest reads agent-device's snapshot and finds exactly one element by its own rules. It waits until the element is visible, enabled, not marked covered by agent-device, not under the software keyboard, and holds still across two looks at least 100 ms apart. Then it sends one action to that element by the ref agent-device gave it, pinned to that snapshot. If the screen moved on in between, agent-device refuses the ref and sends nothing, and Retest looks again within the action's time.
+- Retest itself checks only for the software keyboard over the element. Its tree says where each element is, but not which of two overlapping elements is drawn on top. So for `tap`, `fill` and `press` on an element, any other cover is agent-device's reading. agent-device can miss a cover, such as a bar an app draws over its own button. The tap then counts as sent, and only a later check fails.
 - An action agent-device did not prove unsent is never sent again. A timeout, a failure without that proof, or agent-device's runtime going away while an action was out is an unknown outcome, and `native.ended` keeps it.
 - A scroll that agent-device saw move nothing, its `scroll_no_progress`, counts as sent: the gesture went and the content was at its end.
 - A `fill` is one fill, then a read-back: a plain field must hold the text, and a secure field one masking character for each character typed.

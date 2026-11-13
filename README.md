@@ -218,7 +218,7 @@ Every run also writes versioned events, one JSON object per line, with a publish
 ## What makes it different
 
 - **It says what happened, not what it hopes happened.** A test with no assertions fails. A forgotten `await` fails and names its line. If the browser dies after a click was sent, the result is "outcome unknown", never a guess.
-- **Real input.** A click goes through the mouse at the element's centre, after checking it is visible, still, enabled and not covered. A covered button is refused. Nothing is force-clicked.
+- **Real input.** A click goes through the mouse at the element's centre, after checking it is visible, still, enabled and not covered. A covered button is refused. Nothing is force-clicked. On a phone driven through agent-device, Retest itself checks only for the software keyboard. Any other cover is agent-device's reading, which can miss a bar an app draws over its own button.
 - **Checks look again. Actions never repeat.** An assertion keeps reading the page until its deadline. A click is sent once.
 - **Made for agents from the start.** Finite commands, stable test ids, exit codes that mean something (`0`, `1`, `2`, `130`, `143`), and output an agent can act on.
 - **Nothing hidden.** No account and no telemetry. Nothing downloads unless you run `retest install`. Screenshots stay on your machine unless an AI check sends one to the judge you chose.
