@@ -4,6 +4,14 @@ Retest publishes releases from `main` through the Promote workflow. Each entry n
 
 ## Unreleased
 
+### Changed
+
+- **Android tests share one agent-device for the run.** Each Android test used to start agent-device, find the device, open a session, set up agent-device's keyboard, and close all of it again. Now the tests of one target on one device share agent-device's daemon and session until the run ends. Each test still removes the app and installs the APK afresh, so it starts with no data of an earlier test or run. A test leaves its app open, and the next test's removal ends it. A runtime that lost agent-device, or whose call went unanswered, serves no later test.
+- Measured on an 8-CPU Linux machine with the Android 15 emulator, each test one fill, one tap and one text check. 1,000 tests took 65.7 min, down from 109.5 min, and every test passed. 100 tests took 388 s and 398 s in two rounds, against 633 s and 643 s. On the Android 17 emulator there, 300 tests passed.
+- Measured on an Apple silicon Mac with the Android 15 emulator, three runs each of 100 tests, medians. The time around each test fell from 2.96 s to 1.36 s. Two parts got slower. The test's own fill, tap and check rose from 0.85 s to 0.99 s: agent-device's tap mostly took about 0.2 s in a session kept from earlier tests, and about 0.07 s in a new one. Closing agent-device at the end of the run takes 0.85 s, once.
+
+## 0.4.1
+
 Each entry says where it was checked.
 
 ### Fixed

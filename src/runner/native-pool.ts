@@ -55,6 +55,11 @@ export type NativePoolRuntime = Omit<NativeRuntime, 'openSession'> & {
   readonly bundle: AppBundle
   openSession(options: NativeSessionOptions, timeoutMs: number, signal?: AbortSignal): Promise<{ readonly ok: true; readonly session: NativeAppSession; readonly client?: ExecutorClient; readonly executor?: ExecutorSession } | { readonly ok: false; readonly failure: Failure }>
   readonly openInteraction?: (options: NativeSessionOptions, timeoutMs: number, signal: AbortSignal) => Promise<Opened<NativeInteraction>>
+  /**
+   * Whether the runtime may serve the next test of its own target once its current test's app has closed cleanly. A
+   * runtime that has none, or answers false, is closed when its test ends.
+   */
+  readonly reusable?: () => boolean
 }
 export type NativeFactoryContext = { readonly tools: NativeTools; readonly logFolder: string; readonly timeoutMs: number; readonly signal: AbortSignal; readonly redact: (text: string) => string }
 export type StartNative = (target: LoadedNativeTarget, context: NativeFactoryContext) => Promise<{ readonly ok: true; readonly value: { readonly runtime: NativePoolRuntime; readonly close: (timeoutMs: number) => Promise<void> } } | { readonly ok: false; readonly failure: Failure; readonly idle?: true; readonly cleaned?: true }>
@@ -75,7 +80,14 @@ export type NativePoolOptions = {
   readonly launchWithLogs?: LaunchWithLogs
 }
 
-/** Native runtimes start only for an acquired lease and end before its resource can be handed on. */
+type StartedNative = Extract<Awaited<ReturnType<StartNative>>, { readonly ok: true }>['value']
+
+/**
+ * Native runtimes start only for an acquired lease. Most end before its resource can be handed on. One that says it is
+ * reusable, as an Android runtime does, is kept when its test ends cleanly, and the next test that leases the same
+ * resource for the same target takes it over; a test of another target on that resource closes it first, and the run's
+ * end closes whatever is kept.
+ */
 export class NativePool {
   readonly #options: NativePoolOptions
   readonly #freeStarts = new Set<string>()
@@ -85,6 +97,8 @@ export class NativePool {
   readonly #starting = new Set<Promise<Opened<ReadyNativeTarget>>>()
   /** Apps whose failed close an attempt already recorded, which the run's end does not report again. */
   readonly #reported = new WeakSet<NativeBrowserAdapter>()
+  /** Runtimes kept for the next test, by the resource they run on, with the target they serve. */
+  readonly #kept = new Map<string, { readonly target: LoadedNativeTarget; readonly started: StartedNative }>()
   #closing = false
 
   constructor(options: NativePoolOptions) { this.#options = options }
@@ -112,19 +126,35 @@ export class NativePool {
     void free.promise.then(() => this.#runtimeHolders.delete(runtimeKey))
     const tools: NativeTools = { ...systemTools, hiddenVariables: this.#options.hiddenVariables, redact: this.#options.redact }
     const options: NativeSessionOptions = { owner, launch: { arguments: target.arguments ?? [], environment: target.environment ?? {} }, redact: this.#options.redact }
-    let started: Awaited<ReturnType<StartNative>>
-    try {
-      started = await (this.#options.start ?? startNative)(target, { tools, logFolder: this.#options.logFolder(app, target.name, owner.attemptId), timeoutMs: this.#options.setupMs, signal: this.#options.signal, redact: this.#options.redact })
-    } catch (error) {
-      // A thrown start supplies no proof that it launched nothing. Keep its release signal unresolved.
-      return refused(this.#options.redact(errorMessage(error)))
+    let started: Awaited<ReturnType<StartNative>> | undefined
+    const kept = this.#kept.get(runtimeKey)
+    if (kept !== undefined) {
+      this.#kept.delete(runtimeKey)
+      if (sameTarget(kept.target, target) && kept.started.runtime.reusable?.() === true) started = { ok: true, value: kept.started }
+      else {
+        const problem = await closeStarted(kept.started, this.#options.cleanupMs)
+        // A runtime that could not be closed may still hold the resource, so this attempt's part of it stays held.
+        if (problem !== undefined) return refused(this.#options.redact(`The native runtime an earlier test left on ${runtimeKey} could not be closed: ${problem}`))
+      }
+    }
+    if (started === undefined) {
+      try {
+        started = await (this.#options.start ?? startNative)(target, { tools, logFolder: this.#options.logFolder(app, target.name, owner.attemptId), timeoutMs: this.#options.setupMs, signal: this.#options.signal, redact: this.#options.redact })
+      } catch (error) {
+        // A thrown start supplies no proof that it launched nothing. Keep its release signal unresolved.
+        return refused(this.#options.redact(errorMessage(error)))
+      }
     }
     if (!started.ok) { if (started.idle === true || started.cleaned === true) { this.#freeStarts.add(key); free.resolve() }; return started }
-    const browser = new NativeBrowserAdapter({ ...started.value, target, owner, options, tools, signal: this.#options.signal, interact: this.#options.interact ?? openInteraction, launchWithLogs: this.#options.launchWithLogs ?? launchLoggedNativeApp, cleanupMs: this.#options.cleanupMs })
+    const value = started.value
+    const keep = (): boolean => this.#keep(runtimeKey, target, value)
+    const browser = new NativeBrowserAdapter({ ...value, keep, target, owner, options, tools, signal: this.#options.signal, interact: this.#options.interact ?? openInteraction, launchWithLogs: this.#options.launchWithLogs ?? launchLoggedNativeApp, cleanupMs: this.#options.cleanupMs })
     // Record ownership before opening a session, so partial setup is also closed at run end.
     this.#apps.set(key, browser)
     void browser.ended.then(() => { free.resolve(); this.#options.onEnded?.(browser) })
-    browser.onDisconnect((reason) => this.#options.onLost(browser, reason))
+    // A kept runtime outlives this test, so the test stops listening for its loss once its app has closed.
+    const unwatch = browser.onDisconnect((reason) => this.#options.onLost(browser, reason))
+    void browser.ended.then(unwatch)
     try {
       await browser.prepare(this.#options.setupMs)
       if (this.#closing || this.#options.signal.aborted) { await browser.close(this.#options.cleanupMs); return refused('The native pool stopped during setup.') }
@@ -171,14 +201,44 @@ export class NativePool {
       if (this.#reported.has(browser)) continue
       await browser.close(this.#options.cleanupMs).catch((error: unknown) => failures.push({ class: 'cleanup_failed', message: this.#options.redact(errorMessage(error)) }))
     }
+    for (const [resource, kept] of this.#kept) {
+      this.#kept.delete(resource)
+      const problem = await closeStarted(kept.started, this.#options.cleanupMs)
+      if (problem !== undefined) failures.push({ class: 'cleanup_failed', message: this.#options.redact(`Closing the native runtime kept on ${resource}: ${problem}`) })
+    }
     for (const [key] of this.#free) if (!this.#apps.has(key) && !this.#freeStarts.has(key)) failures.push({ class: 'cleanup_failed', message: `Retest could not prove the native start for ${key} ended. Its lease stays held unless the start proved it left no resource in use.` })
     return failures
+  }
+
+  // Keeps a runtime whose test's app closed cleanly for the next test of its target, when it says it can serve one and
+  // the run goes on. Says whether it was kept; one that was not is closed by its app.
+  #keep(resource: string, target: LoadedNativeTarget, started: StartedNative): boolean {
+    if (this.#closing || this.#options.signal.aborted || started.runtime.reusable?.() !== true) return false
+    this.#kept.set(resource, { target, started })
+    return true
+  }
+}
+
+// Two loaded targets are one when every setting matches; a kept runtime serves only the target it started for.
+function sameTarget(first: LoadedNativeTarget, second: LoadedNativeTarget): boolean {
+  return first === second || JSON.stringify(first) === JSON.stringify(second)
+}
+
+// Closes a runtime within `timeoutMs`, and says why it could not.
+async function closeStarted(started: StartedNative, timeoutMs: number): Promise<string | undefined> {
+  try {
+    await started.close(timeoutMs)
+    return undefined
+  } catch (error) {
+    return errorMessage(error)
   }
 }
 
 type NativeBrowserOptions = {
   readonly runtime: NativePoolRuntime
   readonly close: (timeoutMs: number) => Promise<void>
+  /** Hands the runtime on to the next test instead of closing it, and says whether it did. */
+  readonly keep?: () => boolean
   readonly target: LoadedNativeTarget
   readonly owner: SessionOwner
   readonly options: NativeSessionOptions
@@ -268,7 +328,9 @@ export class NativeBrowserAdapter implements OwnedBrowser {
     // its app, should the session have left it, and the simulator's console launcher. One that cannot settle keeps the
     // lease held.
     if (this.#logged !== undefined) failures.push(...(await stopLogged(this.#logged, deadline)))
-    await this.#options.close(deadline.commandTimeoutMs).catch((error: unknown) => failures.push(errorMessage(error)))
+    // Only a runtime whose app closed without a failure can serve another test; any other closes here.
+    const kept = failures.length === 0 && this.#options.keep?.() === true
+    if (!kept) await this.#options.close(deadline.commandTimeoutMs).catch((error: unknown) => failures.push(errorMessage(error)))
     if (this.#networkLock !== undefined) await endHolder(this.#networkLock).catch((error: unknown) => failures.push(errorMessage(error)))
     // A rejection keeps the lease held. A disconnected pipe is not proof that an app has ended.
     if (failures.length > 0) throw new NativeError({ class: 'cleanup_failed', message: failures.join(' ') })

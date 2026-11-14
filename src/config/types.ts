@@ -136,7 +136,7 @@ export type IosSimulatorTarget = NativeTargetSettings & {
 
 /**
  * An Android app on an emulator or a device, driven through the agent-device package, an optional peer the project
- * installs itself. `appPath` is the APK, relative to the config's folder, which Retest installs afresh for each runtime;
+ * installs itself. `appPath` is the APK, relative to the config's folder, which Retest installs afresh for each test;
  * `package` is the application id the APK installs, which Retest launches and which `secretOrigins` names for a
  * secret to be typed into the app. `device` names an emulator or device as agent-device lists it, and `serial` names one
  * by its adb serial, such as 'emulator-5554'; give one of the two. Android is built but has not run on a real emulator

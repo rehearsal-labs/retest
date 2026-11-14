@@ -6,7 +6,7 @@ import type { NativeTools } from '../processes.ts'
 import type { NativeSessionOptions, ProcessReading } from '../session.ts'
 import type { RequestBounds } from '../webdriver-client.ts'
 import type { AgentDeviceTarget, ScreenCapture } from './interaction.ts'
-import type { AgentDeviceAnswer, AgentDeviceHost, AgentDeviceStarter } from './package.ts'
+import type { AgentDeviceAnswer, AgentDeviceHost, AgentDevicePort, AgentDeviceStarter } from './package.ts'
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
@@ -32,8 +32,12 @@ import { agentDeviceVersion, loadAgentDevice } from './package.ts'
 // checks that no process of that simulator is left. An Android emulator or device is not Retest's: agent-device finds
 // it by its name or serial, boots an emulator that is not running, which Retest then shuts down at the end, and installs
 // the APK afresh. Either way agent-device's daemon runs inside this process, in a state folder of the runtime's own that
-// is deleted at the end, with the environment Retest's tools get, so it never sees a secret's variable. The Android
-// path is built and covered by unit tests against a stand-in; it has not run on a real emulator or device.
+// is deleted at the end, with the environment Retest's tools get, so it never sees a secret's variable.
+//
+// An iOS runtime serves one test. An Android runtime can serve every test of its target in a run, one at a time: its
+// daemon, its agent-device session and the emulator stay up between tests, and each test removes the app and installs
+// the APK afresh within that session. A runtime that lost agent-device, or one of whose calls may still be running in
+// the daemon, serves no further test.
 
 
 type AgentDeviceTargetConfig = LoadedAgentDeviceTarget
@@ -64,12 +68,30 @@ export class AgentDeviceRuntime {
   readonly #host: AgentDeviceHost
   readonly #platform: Platform
   readonly #session: string
-  readonly #bundle: AppBundle
-  readonly #execution: NativeExecutionIdentity
   readonly #listeners = new Set<(reason: string) => void>()
+  #bundle: AppBundle
+  #execution: NativeExecutionIdentity
   #lost: string | undefined
   #closing: Promise<void> | undefined
   #screens = 0
+  // Whether the app is known not to run: its install just ended any copy, and nothing has opened it since.
+  #stopped = false
+  // Whether this runtime opened the app since its last install, so its close closes it.
+  #opened = false
+  // Whether a call went unanswered, so it may still be running in the daemon when the next test starts.
+  #unsettled = false
+  // Every call of this runtime and its interactions goes through here, so the runtime knows what each left behind.
+  readonly #port: AgentDevicePort = {
+    call: async (method, options, bounds) => {
+      if (method === 'apps.open') {
+        this.#stopped = false
+        this.#opened = true
+      }
+      const answer = await this.#host.port.call(method, options, bounds)
+      if (answer.status === 'timeout' || answer.status === 'lost' || (answer.status === 'stopped' && answer.dispatched === 'unknown')) this.#unsettled = true
+      return answer
+    },
+  }
 
   /**
    * Starts a runtime: loads agent-device and checks its version, then makes the device ready. A refusal before anything
@@ -112,6 +134,15 @@ export class AgentDeviceRuntime {
     return this.#lost === undefined && this.#closing === undefined
   }
 
+  /**
+   * Whether this runtime may serve its target's next test once the current one has ended: an Android runtime that
+   * still has agent-device and no call that may still be running. An iOS runtime serves one test, on a simulator of its
+   * own.
+   */
+  reusable(): boolean {
+    return this.#platform.kind === 'android' && this.connected && !this.#unsettled
+  }
+
   onDisconnect(listener: (reason: string) => void): () => void {
     if (this.#lost !== undefined) {
       const reason = this.#lost
@@ -131,11 +162,12 @@ export class AgentDeviceRuntime {
   openInteraction(options: NativeSessionOptions, _timeoutMs: number, _signal: AbortSignal): Promise<{ readonly ok: true; readonly value: AgentDeviceInteraction } | { readonly ok: false; readonly failure: Failure }> {
     if (!this.connected) return Promise.resolve({ ok: false, failure: { class: 'setup_failed', message: `The agent-device runtime is ${this.#lost === undefined ? 'closing' : `lost: ${this.#lost}`}.` } })
     const device: AgentDeviceTarget = this.#platform.kind === 'ios' ? { platform: 'ios', udid: this.#platform.udid } : { platform: 'android', serial: this.#platform.serial }
+    const android = this.#platform.kind === 'android'
     const interaction = new AgentDeviceInteraction({
-      port: this.#host.port,
+      port: this.#port,
       session: this.#session,
       sessionId: `${options.owner.attemptId}:${options.owner.app}`,
-      platform: this.#platform.kind === 'ios' ? 'ios-simulator' : 'android',
+      platform: android ? 'android' : 'ios-simulator',
       device,
       bundleId: this.#bundle.bundleId,
       launch: options.launch,
@@ -144,6 +176,10 @@ export class AgentDeviceRuntime {
       processes: (bounds) => this.#processes(bounds),
       screen: this.#screen(),
       onLost: (reason) => this.#lose(reason),
+      // An Android app the runtime has just installed is not running, so its launch need not stop it first.
+      relaunch: () => !android || !this.#stopped,
+      // The Android app stays open until the runtime's next test removes it, or the runtime closes.
+      closeOnDispose: !android,
     })
     return Promise.resolve({ ok: true, value: interaction })
   }
@@ -164,6 +200,12 @@ export class AgentDeviceRuntime {
     const problems: string[] = []
     const shutdown = this.#platform.kind === 'ios' || this.#platform.bootedHere
     const selection = this.#platform.kind === 'ios' ? { platform: 'ios', udid: this.#platform.udid } : { platform: 'android', serial: this.#platform.serial }
+    // The last test's Android app is still open: its interaction left it for a next test. A runtime agent-device lost
+    // cannot close it.
+    if (this.#platform.kind === 'android' && this.#opened && this.#lost === undefined) {
+      const ended = await this.#host.port.call('apps.close', { session: this.#session, ...selection, app: this.#bundle.bundleId }, { timeoutMs: Math.min(deadline.commandTimeoutMs, 60_000) })
+      if (ended.status !== 'answered' && !(ended.status === 'refused' || (ended.status === 'failed' && ended.code === 'SESSION_NOT_FOUND'))) problems.push(this.#options.redact(`agent-device did not close the app: ${describeAnswer(ended)}`))
+    }
     const closed = await this.#host.port.call('sessions.close', { session: this.#session, ...selection, ...(shutdown ? { shutdown: true } : {}) }, { timeoutMs: Math.min(deadline.commandTimeoutMs, 60_000) })
     // A session never opened, as when no test launched the app, is one agent-device does not know.
     if (closed.status !== 'answered' && !(closed.status === 'refused' || (closed.status === 'failed' && closed.code === 'SESSION_NOT_FOUND'))) problems.push(this.#options.redact(`agent-device did not close its session: ${describeAnswer(closed)}`))
@@ -203,21 +245,39 @@ export class AgentDeviceRuntime {
       const input = installed.started ? 'sent' : 'not_sent'
       return { result: { ok: false, failure: { class: 'setup_failed', message: this.#options.redact(`Installing the app on the simulator failed: ${describeCommand('xcrun simctl install', installed)}`), details: { inputSent: input } } }, input }
     }
-    // Any copy of the app goes first, with its data, so the app starts with no data of an earlier run. agent-device's
-    // uninstall reads the device's packages and removes the app only when it is there. Its reinstall runs adb's uninstall
-    // whatever the device holds, and on Android 15 that fails for an app the device does not have.
     const deadline = new Deadline(Math.max(1, Math.min(maxTimeout, Math.floor(bounds.timeoutMs))))
     const within = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: bounds.signal })
     const device = { platform: 'android', serial: this.#platform.serial }
     const failed = (message: string, input: InputDispatch): DispatchedRequest => ({ result: { ok: false, failure: { class: 'setup_failed', message: this.#options.redact(message), details: { inputSent: input } } }, input })
-    const removed = await this.#host.port.call('apps.uninstall', { ...device, app: this.#bundle.bundleId }, within())
+    // Until this install succeeds, the app may be running, as a failed one can leave it.
+    this.#stopped = false
+    // The APK is read for every test the runtime serves, so the identity names the build this test's install pushed.
+    let sha256: string
+    try {
+      sha256 = sha256Hex(await (this.#options.readBytes ?? readApk)(build.appPath))
+    } catch (error) {
+      return failed(`Retest cannot read the APK at ${build.appPath}: ${errorMessage(error)}`, 'not_sent')
+    }
+    // Any copy of the app goes first, with its data, so the app starts with no data of an earlier test or run.
+    // agent-device's uninstall reads the device's packages and removes the app only when it is there. Its reinstall runs
+    // adb's uninstall whatever the device holds, and on Android 15 that fails for an app the device does not have. adb's
+    // pm clear would be faster, but on Android 15 it keeps an account of the app's own type, files in its OBB folder and
+    // the enabled state it gave its own components, which removing the app does not. Both calls name the session: once a
+    // test has opened the app, agent-device's session holds the device and refuses a call without it.
+    const removed = await this.#port.call('apps.uninstall', { ...device, session: this.#session, app: this.#bundle.bundleId }, within())
     if (removed.status !== 'answered') return failed(`agent-device did not remove the app before installing the APK: ${describeAnswer(removed)}`, inputOf(removed))
     // An uninstall that says the app was not there changed nothing on the device.
     const removal: InputDispatch = typeof removed.value === 'object' && removed.value !== null && Reflect.get(removed.value, 'wasInstalled') === false ? 'not_sent' : 'sent'
-    const answer = await this.#host.port.call('apps.install', { ...device, app: this.#bundle.bundleId, appPath: build.appPath }, within())
+    const answer = await this.#port.call('apps.install', { ...device, session: this.#session, app: this.#bundle.bundleId, appPath: build.appPath }, within())
     if (answer.status !== 'answered') return failed(`agent-device did not install the APK: ${describeAnswer(answer)}`, worse(removal, inputOf(answer)))
     const installed = installedPackage(answer.value)
     if (installed !== this.#bundle.bundleId) return { result: { ok: false, failure: { class: 'setup_failed', message: this.#options.redact(`The APK installed ${installed === undefined ? 'a package agent-device did not name' : installed}, not ${this.#bundle.bundleId}, the package the target names, so Retest launches nothing.`) } }, input: 'sent' }
+    this.#stopped = true
+    this.#opened = false
+    if (sha256 !== this.#bundle.sha256) {
+      this.#bundle = { ...this.#bundle, sha256 }
+      this.#execution = { ...this.#execution, app: { ...this.#execution.app, sha256 } }
+    }
     return { result: { ok: true }, input: 'sent' }
   }
 
@@ -339,7 +399,7 @@ async function startAndroid(options: AgentDeviceRuntimeOptions, target: Extract<
   const bounds = (): RequestBounds => ({ timeoutMs: deadline.commandTimeoutMs, signal: options.signal })
   let apk: Uint8Array
   try {
-    apk = await (options.readBytes ?? ((path) => readFile(path).then((bytes) => new Uint8Array(bytes))))(target.appPath)
+    apk = await (options.readBytes ?? readApk)(target.appPath)
   } catch (error) {
     return idle(`Retest cannot read the APK at ${target.appPath}: ${errorMessage(error)}`)
   }
@@ -449,6 +509,11 @@ function inputOf(answer: Exclude<AgentDeviceAnswer, { readonly status: 'answered
 function worse(first: InputDispatch, second: InputDispatch): InputDispatch {
   if (first === 'unknown' || second === 'unknown') return 'unknown'
   return first === 'sent' || second === 'sent' ? 'sent' : 'not_sent'
+}
+
+// An APK's bytes, as Node reads them.
+function readApk(path: string): Promise<Uint8Array> {
+  return readFile(path).then((bytes) => new Uint8Array(bytes))
 }
 
 // The package an install answer names: its package, or its app id.

@@ -70,6 +70,13 @@ export type AgentDeviceInteractionOptions = {
   readonly screen: ScreenCapture
   /** Told once when agent-device's runtime is gone, so the runner stops the test. */
   readonly onLost?: (reason: string) => void
+  /**
+   * Whether a launch first stops a copy of the app that may be running, asked at each launch: true unless given. The
+   * runtime answers false when it has just installed the app, which ended any copy.
+   */
+  readonly relaunch?: () => boolean
+  /** Whether disposing closes the app: true unless given. False when the runtime keeps the app for its next test and closes it itself. */
+  readonly closeOnDispose?: boolean
 }
 
 type Target = { readonly element: NativeElement; readonly tree: NativeTree; readonly ref: string; readonly generation: number | undefined; readonly reference: NativeReference; readonly read: ReadTree; readonly appBundleId: string | undefined }
@@ -142,10 +149,14 @@ export class AgentDeviceInteraction implements NativeInteraction {
     })
   }
 
-  /** Launches the app afresh with the session's arguments: agent-device's open, with a relaunch. A launch that may have happened is never sent again. */
+  /**
+   * Launches the app afresh with the session's arguments: agent-device's open, with a relaunch unless the runtime says
+   * no copy of the app runs. A launch that may have happened is never sent again.
+   */
   launch(timeoutMs: number, signal?: AbortSignal): Promise<DispatchedRequest> {
     return this.#lifecycleRequest('launch', timeoutMs, signal, async (deadline, combined) => {
-      const options = { app: this.bundleId, relaunch: true, ...(this.#options.launch.arguments.length === 0 ? {} : { launchArgs: [...this.#options.launch.arguments] }) }
+      const relaunch = this.#options.relaunch?.() ?? true
+      const options = { app: this.bundleId, ...(relaunch ? { relaunch: true } : {}), ...(this.#options.launch.arguments.length === 0 ? {} : { launchArgs: [...this.#options.launch.arguments] }) }
       const answer = await this.#call('apps.open', options, deadline, combined)
       const dispatched = this.#requestOf(answer, 'Launching the app', combined)
       if (!dispatched.result.ok) return dispatched
@@ -279,8 +290,9 @@ export class AgentDeviceInteraction implements NativeInteraction {
   }
 
   /**
-   * Ends the session: stops what is in flight, then closes the app through agent-device once the lane is free. A close
-   * whose outcome is unknown is kept as a lifecycle outcome. Rejects with a `NativeError` when input did not settle.
+   * Ends the session: stops what is in flight, then, unless the runtime closes the app itself, closes it through
+   * agent-device once the lane is free. A close whose outcome is unknown is kept as a lifecycle outcome. Rejects with a
+   * `NativeError` when input did not settle.
    */
   async dispose(timeoutMs: number): Promise<void> {
     if (!this.#cancel.signal.aborted) this.#cancel.abort({ class: 'interrupted', message: 'The session was disposed.' })
@@ -289,7 +301,7 @@ export class AgentDeviceInteraction implements NativeInteraction {
     try {
       if (this.#disposed) return
       this.#disposed = true
-      if (turn.ok && this.#open && this.#lost === undefined) {
+      if (turn.ok && this.#open && this.#lost === undefined && this.#options.closeOnDispose !== false) {
         const closed = await this.#call('apps.close', { app: this.bundleId }, deadline, undefined)
         if (closed.status !== 'answered' && !(closed.status === 'refused' || (closed.status === 'stopped' && closed.dispatched === 'no'))) {
           this.#lifecycle.push({ id: `l${++this.#lifecycleCount}`, kind: 'terminate', generation: this.#generation, failure: this.#failureOf(closed, 'Closing the app', undefined, true) })

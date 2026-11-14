@@ -40,6 +40,8 @@ class StandInDaemon {
   installs = 'dev.retest.tasks'
   installed = true
   saved: string | undefined
+  /** The agent-device session that holds the device once it opened the app, until it closes. */
+  heldBy: string | undefined
   readonly kind: 'emulator' | 'device'
 
   constructor(options: { readonly booted: boolean; readonly kind?: 'emulator' | 'device' }) {
@@ -54,6 +56,7 @@ class StandInDaemon {
         port: { call: (method, callOptions) => this.#answer(method, callOptions) },
         close: () => {
           this.closed += 1
+          this.heldBy = undefined
           return Promise.resolve({ ok: true, leftovers: [] })
         },
       }
@@ -71,6 +74,8 @@ class StandInDaemon {
     const given = this.answers.get(method)
     if (given !== undefined) return given
     const app = String(options['app'])
+    const session = options['session']
+    if (this.heldBy !== undefined && method.startsWith('apps.') && session !== this.heldBy) return { status: 'refused', code: 'DEVICE_IN_USE', message: `android device emulator-5554 is owned by session "${this.heldBy}".`, durationMs: 1 }
     switch (method) {
       case 'devices.list':
         return answered([
@@ -93,6 +98,14 @@ class StandInDaemon {
       case 'apps.install':
         this.installed = true
         return answered({ app: options['app'], appPath: options['appPath'], platform: 'android', appId: this.installs, package: this.installs, identifiers: { session: 'default', appId: this.installs, package: this.installs } })
+      case 'apps.open':
+        if (typeof session === 'string') this.heldBy = session
+        return answered({ session, appBundleId: app })
+      case 'apps.close':
+      case 'sessions.close':
+        if (session !== this.heldBy) return { status: 'failed', code: 'SESSION_NOT_FOUND', message: 'No active session', durationMs: 1 }
+        this.heldBy = undefined
+        return answered({ session })
       case 'capture.screenshot':
         await writeFile(String(options['path']), png)
         return answered({ path: options['path'] })
@@ -107,8 +120,9 @@ function androidTarget(device: { readonly name: string } | { readonly serial: st
 }
 
 // Starts a runtime that is closed when the test ends however it ends, so a failing check leaves no state folder behind.
-async function start(t: TestContext, daemon: StandInDaemon, device: { readonly name: string } | { readonly serial: string }): ReturnType<typeof AgentDeviceRuntime.start> {
-  const started = await AgentDeviceRuntime.start({ target: androidTarget(device), tools: { ...systemTools, hiddenVariables: ['RETEST_SECRET_VARIABLE'] }, timeoutMs: 30_000, redact: (text) => text, starter: daemon.starter, readBytes: () => Promise.resolve(apk) })
+// The APK reads as `apk` unless the test gives what each read returns.
+async function start(t: TestContext, daemon: StandInDaemon, device: { readonly name: string } | { readonly serial: string }, readBytes: () => Promise<Uint8Array> = () => Promise.resolve(apk)): ReturnType<typeof AgentDeviceRuntime.start> {
+  const started = await AgentDeviceRuntime.start({ target: androidTarget(device), tools: { ...systemTools, hiddenVariables: ['RETEST_SECRET_VARIABLE'] }, timeoutMs: 30_000, redact: (text) => text, starter: daemon.starter, readBytes })
   if (started.ok) t.after(() => started.runtime.close(10_000))
   return started
 }
@@ -159,8 +173,11 @@ test('the APK is installed afresh through agent-device, and an install of anothe
   assert.equal(session.platform, 'android')
   const installed = await session.install({ appPath: '/work/app-debug.apk' }, 5000)
   assert.ok(installed.result.ok)
-  assert.deepEqual(daemon.sent('apps.uninstall')[0]?.options, { platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks' })
-  assert.deepEqual(daemon.sent('apps.install')[0]?.options, { platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks', appPath: '/work/app-debug.apk' })
+  // Both name the runtime's agent-device session, which holds the device once a test has opened the app.
+  const named = daemon.sent('apps.uninstall')[0]?.options['session']
+  assert.match(String(named), /^retest-\d+-[0-9a-f]{8}$/)
+  assert.deepEqual(daemon.sent('apps.uninstall')[0]?.options, { platform: 'android', serial: 'emulator-5554', session: named, app: 'dev.retest.tasks' })
+  assert.deepEqual(daemon.sent('apps.install')[0]?.options, { platform: 'android', serial: 'emulator-5554', session: named, app: 'dev.retest.tasks', appPath: '/work/app-debug.apk' })
   daemon.installs = 'com.example.other'
   const other = await session.install({ appPath: '/work/app-debug.apk' }, 5000)
   assert.ok(!other.result.ok)
@@ -177,8 +194,8 @@ test('the APK is installed afresh through agent-device, and an install of anothe
 })
 
 // The interaction session a test's app opens on the runtime, disposed when the test ends.
-async function interactionOf(t: TestContext, runtime: AgentDeviceRuntime): Promise<AgentDeviceInteraction> {
-  const opened = await runtime.openInteraction({ owner: { runId: 'r', testId: 't', attemptId: 'a1', app: 'tasks' }, launch: { arguments: [], environment: {} }, redact: (text) => text }, 1000, new AbortController().signal)
+async function interactionOf(t: TestContext, runtime: AgentDeviceRuntime, attemptId = 'a1'): Promise<AgentDeviceInteraction> {
+  const opened = await runtime.openInteraction({ owner: { runId: 'r', testId: 't', attemptId, app: 'tasks' }, launch: { arguments: [], environment: {} }, redact: (text) => text }, 1000, new AbortController().signal)
   assert.ok(opened.ok)
   t.after(() => opened.value.dispose(5000))
   return opened.value
@@ -199,8 +216,9 @@ test('the APK installs on a device without the app and on one with it, and the a
     assert.equal(daemon.installed, true, which)
     assert.equal(daemon.saved, undefined, `${which} keeps nothing an earlier run saved`)
     assert.equal(daemon.sent('apps.reinstall').length, 0, which)
-    assert.deepEqual(daemon.sent('apps.uninstall').map((call) => call.options), [{ platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks' }], which)
-    assert.deepEqual(daemon.sent('apps.install').map((call) => call.options), [{ platform: 'android', serial: 'emulator-5554', app: 'dev.retest.tasks', appPath: '/work/app-debug.apk' }], which)
+    const named = daemon.sent('apps.uninstall')[0]?.options['session']
+    assert.deepEqual(daemon.sent('apps.uninstall').map((call) => call.options), [{ platform: 'android', serial: 'emulator-5554', session: named, app: 'dev.retest.tasks' }], which)
+    assert.deepEqual(daemon.sent('apps.install').map((call) => call.options), [{ platform: 'android', serial: 'emulator-5554', session: named, app: 'dev.retest.tasks', appPath: '/work/app-debug.apk' }], which)
     await started.runtime.close(10_000)
   }
 })
@@ -251,4 +269,79 @@ test('a physical device that is not running is refused: Retest boots only an emu
   assert.ok(!started.ok)
   assert.match(started.failure.message, /is not running, and Retest boots only an emulator/)
   assert.equal(daemon.sent('devices.boot').length, 0)
+})
+
+test('one runtime serves each test of its target: the daemon starts once, and each test removes the app and installs the APK in its session, starting with no data of the one before', androidHost, async (t) => {
+  const daemon = new StandInDaemon({ booted: true })
+  daemon.saved = 'Saved by an earlier run'
+  const started = await start(t, daemon, { serial: 'emulator-5554' })
+  assert.ok(started.ok, started.ok ? '' : started.failure.message)
+  const { runtime } = started
+  for (const attempt of ['a1', 'a2', 'a3']) {
+    const session = await interactionOf(t, runtime, attempt)
+    const installed = await session.install({ appPath: '/work/app-debug.apk' }, 5000)
+    assert.ok(installed.result.ok, installed.result.ok ? '' : `${attempt}: ${installed.result.failure.message}`)
+    assert.equal(installed.input, 'sent', attempt)
+    assert.equal(daemon.saved, undefined, `${attempt} starts with nothing an earlier test or run saved`)
+    const launched = await session.launch(5000)
+    assert.ok(launched.result.ok, attempt)
+    daemon.saved = `Saved by ${attempt}`
+    await session.dispose(5000)
+    assert.equal(runtime.reusable(), true, `${attempt}: the runtime can serve the next test`)
+  }
+  assert.equal(daemon.started.length, 1, "agent-device's daemon starts once")
+  const named = daemon.sent('apps.open')[0]?.options['session']
+  assert.deepEqual(daemon.sent('apps.uninstall').map((call) => call.options['session']), [named, named, named], 'each test removes the app, in the session that holds the device')
+  assert.deepEqual(daemon.sent('apps.install').map((call) => call.options['session']), [named, named, named], 'and installs the APK in it')
+  // An install ended any copy of the app, so no launch stops one first.
+  assert.deepEqual(daemon.sent('apps.open').map((call) => call.options['relaunch']), [undefined, undefined, undefined])
+  assert.equal(daemon.sent('apps.close').length, 0, "a test leaves the app for the next test's install to remove")
+  await runtime.close(10_000)
+  assert.deepEqual(daemon.calls.slice(-2).map((call) => [call.method, call.options['app'], call.options['session']]), [['apps.close', 'dev.retest.tasks', named], ['sessions.close', undefined, named]], 'the close ends the app the last test left, then the session')
+  assert.equal(daemon.closed, 1)
+})
+
+test('an APK rebuilt between two tests of one runtime is the build installed, and the identity names it', androidHost, async (t) => {
+  const daemon = new StandInDaemon({ booted: true })
+  const rebuilt = new Uint8Array([...apk, 9])
+  const reads = [apk, apk]
+  const started = await start(t, daemon, { serial: 'emulator-5554' }, () => Promise.resolve(reads.shift() ?? rebuilt))
+  assert.ok(started.ok, started.ok ? '' : started.failure.message)
+  const { runtime } = started
+  const first = await interactionOf(t, runtime, 'a1')
+  assert.ok((await first.install({ appPath: '/work/app-debug.apk' }, 5000)).result.ok)
+  await first.dispose(5000)
+  assert.equal(runtime.execution.app.sha256, sha256Hex(apk))
+  const second = await interactionOf(t, runtime, 'a2')
+  assert.ok((await second.install({ appPath: '/work/app-debug.apk' }, 5000)).result.ok)
+  await second.dispose(5000)
+  assert.equal(daemon.sent('apps.install').length, 2)
+  assert.equal(runtime.execution.app.sha256, sha256Hex(rebuilt), 'the identity names the build now on the device')
+  assert.equal(runtime.bundle.sha256, sha256Hex(rebuilt))
+  assert.equal(runtime.identity.processIds.length, 0)
+})
+
+test('a runtime that lost agent-device, or one of whose calls went unanswered, serves no further test', androidHost, async (t) => {
+  const cases: readonly { readonly name: string; readonly answer: AgentDeviceAnswer; readonly connected: boolean }[] = [
+    { name: 'agent-device gone', answer: { status: 'lost', message: "agent-device's capture.snapshot failed outside agent-device: the daemon is gone", durationMs: 1 }, connected: false },
+    { name: 'a look that timed out', answer: { status: 'timeout', message: 'agent-device did not answer capture.snapshot within 1000 ms.', durationMs: 1000 }, connected: true },
+    { name: 'a look stopped once it had gone', answer: { status: 'stopped', dispatched: 'unknown', durationMs: 1 }, connected: true },
+  ]
+  for (const entry of cases) {
+    const daemon = new StandInDaemon({ booted: true })
+    const started = await start(t, daemon, { serial: 'emulator-5554' })
+    assert.ok(started.ok, started.ok ? '' : started.failure.message)
+    const { runtime } = started
+    const session = await interactionOf(t, runtime, 'a1')
+    assert.ok((await session.install({ appPath: '/work/app-debug.apk' }, 5000)).result.ok)
+    assert.ok((await session.launch(5000)).result.ok)
+    assert.equal(runtime.reusable(), true, entry.name)
+    daemon.answers.set('capture.snapshot', entry.answer)
+    const looked = await session.observe({ by: 'testId', value: 'saved_task' }, 1000)
+    assert.ok(!looked.ok, entry.name)
+    await session.dispose(5000)
+    assert.equal(runtime.connected, entry.connected, entry.name)
+    assert.equal(runtime.reusable(), false, `${entry.name}: the runtime serves no further test`)
+    await runtime.close(10_000).catch(() => undefined)
+  }
 })

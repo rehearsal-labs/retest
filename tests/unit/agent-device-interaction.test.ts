@@ -395,6 +395,20 @@ test('disposing closes the app through agent-device once, and the session then r
   assert.ok(!after.result.ok && after.input === 'not_sent')
 })
 
+test('a launch the runtime says follows an install sends no relaunch, and a session whose runtime closes the app leaves it open', async () => {
+  const device = new StandIn(signInScreen())
+  let stopped = true
+  const { session } = await opened(device, { platform: 'android', device: { platform: 'android', serial: 'emulator-5554' }, launch: { arguments: [], environment: {} }, relaunch: () => !stopped, closeOnDispose: false })
+  stopped = false
+  const again = await session.launch(5000)
+  assert.ok(again.result.ok)
+  assert.deepEqual(device.sent('apps.open').map((call) => call.options['relaunch']), [undefined, true], 'a launch while a copy may run stops it first')
+  await session.dispose(5000)
+  assert.equal(device.sent('apps.close').length, 0)
+  const after = await session.dispatch({ kind: 'tap', locator: { by: 'testId', value: 'sign-in-button' } }, 1000)
+  assert.ok(!after.result.ok && after.input === 'not_sent', 'a disposed session refuses every request all the same')
+})
+
 test('a message from agent-device is redacted before it reaches a failure', async () => {
   const device = new StandIn(signInScreen())
   device.handlers.set('interactions.press', () => refused('ambiguous_target hunter-2-secret', 'AMBIGUOUS_MATCH'))

@@ -61,23 +61,25 @@ export const agentDeviceIosResetPolicy: NativeResetPolicy = {
 }
 
 /**
- * Android apps, driven through agent-device. Retest does not create the emulator or device: it installs the app afresh
- * when the runtime starts, removing any copy first, and leaves the device as it found it otherwise. Not yet checked on
- * a real emulator or device.
+ * Android apps, driven through agent-device. Retest does not create the emulator or device: before each test it
+ * removes the app and installs it afresh, and leaves the device as it found it otherwise. What removing the app clears
+ * was checked on the Android 15 emulator.
  */
 export const androidResetPolicy: NativeResetPolicy = {
   platform: 'android',
-  boundary: 'One runtime: Retest removes the app from the emulator or device and installs the APK afresh through agent-device when the runtime starts. Sessions within one runtime share that install. Retest boots an emulator only when it is not running, and shuts down only an emulator it booted.',
+  boundary: "One test: before each test Retest removes the app from the emulator or device and installs the APK afresh through agent-device. The tests of one target on one device share agent-device's daemon and session for the run. Retest boots an emulator only when it is not running, keeps it up until the run ends, and shuts down only an emulator it booted.",
   cleared: [
-    { state: "The app's data, caches and preferences", how: 'Removing the app deletes them; the new install starts with none.' },
-    { state: 'Keys the app kept in the Android keystore', how: 'Removing the app deletes the keys it owns.' },
+    { state: "The app's data, caches and preferences, and its own folders on shared storage, OBB included", how: 'Removing the app deletes them; the new install starts with none.' },
+    { state: 'Keys the app kept in the Android keystore, and accounts of its own type', how: 'Removing the app deletes them.' },
+    { state: 'Permissions granted while it ran, its notification channels and shortcuts, and the enabled state it gave its own components', how: 'Removing the app forgets them; the new install starts from its manifest.' },
   ],
-  leftToTheApp: [{ state: 'Anything the app writes while it runs, across a relaunch within one runtime', how: 'A relaunch keeps it. A test that needs a clean app within one runtime uses a new runtime.' }],
+  leftToTheApp: [{ state: 'Anything the app writes while it runs, within one test', how: 'A test launches the app once. The next test removes it.' }],
   notIsolated: [
     { state: "The app's backend: accounts, records and sessions on its servers", how: 'Outside the device. The host prepares it, for example through a reset route of its service.' },
-    { state: 'Other apps, accounts, settings and files on the emulator or device', how: "The device is not Retest's: Retest neither creates nor erases it." },
+    { state: "Other apps, other accounts, settings, and files outside the app's own folders on the emulator or device", how: "The device is not Retest's: Retest neither creates nor erases it." },
     { state: 'Permissions the app was granted', how: 'Removing the app forgets them, but a device policy can grant them again on install.' },
     { state: "agent-device's helper apps on the device", how: 'agent-device installs its snapshot and keyboard helpers and keeps them installed.' },
+    { state: "agent-device's keyboard and its hold on the device", how: "While its session is open agent-device makes its own keyboard the device's input method, and the session holds the device for every test of the target. Both end with the run." },
   ],
   contract: { appData: 'reset', keychain: 'reset' },
 }
