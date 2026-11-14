@@ -1304,7 +1304,7 @@ Each test file runs in a process of its own, and each test gets new browser cont
 
 A file is loaded once to collect its tests, and again each time the run visits it: usually twice, and more when its setups run in a visit of their own before its tests. Code at the top level of a file runs on every load.
 
-Because tests in one process share it, code one test leaves behind can fail another. An error from a timer or callback an earlier test started fails whichever test is running when it throws. Its message says an earlier test may be the cause, and gives the `file:line` that threw. An error thrown while no test runs fails the file itself. The tests left in the file do not run, and the run is incomplete.
+Because tests in one process share it, code one test leaves behind can fail another. An error from a timer or callback an earlier test started fails whichever test is running when it throws. Its message says an earlier test may be the cause, and gives the `file:line` that threw. An error thrown while no test runs fails the file itself. The tests left in the file do not run, and the run is incomplete. A process that ends badly while no test runs, as on a `process.exit(3)` in a timer, fails the file too. Once Retest has asked the process to close and it has said that its work is done, how it ends fails nothing, and `logs/<file>.log` says how it ended.
 
 A test that runs out of time ends its file's process, because its code may still be running there. The command it was waiting on is stopped in the page: input not yet sent is never sent, and input already sent is not taken back. The file's remaining tests do not run. The next file runs in a new process. Retest never reruns a test.
 

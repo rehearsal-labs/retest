@@ -728,6 +728,22 @@ export function childLog(run: FinishedRun, file: string): string {
   return readFileSync(join(run.output, childLogFile(file)), 'utf8')
 }
 
+/** What a test file's process printed, from a run folder, or nothing when it printed nothing and so left no log. */
+export function childLogIfAny(run: Pick<FinishedRun, 'output'>, file: string): string {
+  const path = join(run.output, childLogFile(file))
+  return existsSync(path) ? readFileSync(path, 'utf8') : ''
+}
+
+/**
+ * Prints a test file's process log as a diagnostic when it says the process ended badly after it had finished, which
+ * fails nothing, so a run's output shows that it happened and what the process wrote as it ended. Nothing is asserted:
+ * Node has ended such a process so on Windows only now and then.
+ */
+export function showEndingAfterFinishing(t: TestContext, run: Pick<FinishedRun, 'output'>, file: string): void {
+  const log = childLogIfAny(run, file)
+  if (log.includes('after it had finished its work')) t.diagnostic(`The process log of ${file}:\n${log}`)
+}
+
 /** The process ids a test file printed as `pid <n>`. */
 export function printedPids(text: string): number[] {
   return [...text.matchAll(/pid (\d+)/g)].map((match) => Number(match[1]))

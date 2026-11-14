@@ -45,14 +45,28 @@ export type FileProcessEnd = {
 
 /**
  * The failure of a file whose process failed outside its tests: every error it reported while no test
- * was running, or else an ending that Retest did not cause and no test result explains.
+ * was running, or else an ending that Retest did not cause, no test result explains and that did not come after
+ * the process said it had finished.
  *
- * @example fileProcessFailure({ file, closed: { exit: { code: 3, signal: null }, forced: false }, errors: [], killed: false, exitRecorded: false })
+ * @example fileProcessFailure({ file, closed: { exit: { code: 3, signal: null }, forced: false, finished: false }, errors: [], killed: false, exitRecorded: false })
  */
 export function fileProcessFailure(end: FileProcessEnd): Failure | undefined {
   const reported = reportedErrors(end.file, end.errors)
   const [first, ...rest] = reported.length > 0 ? reported : unexplainedEnding(end)
   return first === undefined ? undefined : withAlso(first, rest)
+}
+
+/**
+ * The line a file's process log keeps when its process ended badly after it said it had finished, which fails
+ * nothing; undefined for every other ending.
+ *
+ * @example endedAfterFinishing({ file, closed: { exit: { code: 3, signal: null }, forced: false, finished: true }, errors: [], killed: false, exitRecorded: false }) // 'The process ended with exit code 3 after it had finished its work. No test was running, so nothing fails.'
+ */
+export function endedAfterFinishing(end: FileProcessEnd): string | undefined {
+  const { closed } = end
+  if (!closed.finished || closed.forced || end.killed || end.exitRecorded || endedCleanly(closed.exit)) return undefined
+  if (fileProcessFailure(end) !== undefined) return undefined
+  return `The process ended with ${describeExit(closed.exit)} after it had finished its work. No test was running, so nothing fails.`
 }
 
 /** Errors a file's process reported while no test was running, as failures of that file. */
@@ -67,5 +81,9 @@ function unexplainedEnding({ file, closed, killed, exitRecorded }: FileProcessEn
     return [failure('test_error', message)]
   }
   if (killed || endedCleanly(closed.exit)) return []
+  // `finished` counts only after Retest asked the process to close, once every test had reported and the work the
+  // process had queued had run. How it ends after that, as when Node fails while the process exits on Windows, can
+  // change no result, so it fails nothing.
+  if (closed.finished) return []
   return [failure('test_error', `The process for ${file} ended with ${describeExit(closed.exit)} while no test was running.`)]
 }

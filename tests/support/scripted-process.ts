@@ -10,6 +10,7 @@ import type { FakeOptions, FakePage } from './fake-browser.ts'
 import { childMessageSchema } from '../../src/protocol/messages.ts'
 import { parse } from '../../src/protocol/schema.ts'
 import { RunningTest } from '../../src/runner/running-test.ts'
+import { unaskedFinished } from '../../src/runner/test-file-process.ts'
 import { FakeBrowser } from './fake-browser.ts'
 import { quickTimeouts } from './run-harness.ts'
 
@@ -66,7 +67,11 @@ export class ScriptedProcess implements TestProcess {
   deliver(message: unknown): void {
     const parsed = parse(childMessageSchema, message)
     if (!parsed.ok) return this.#listener?.({ kind: 'invalid', problem: parsed.issues.map((issue) => `${issue.path} ${issue.message}`).join('; ') })
-    if (parsed.value.type !== 'process-error') this.#listener?.({ kind: 'message', message: parsed.value })
+    const { value } = parsed
+    if (value.type === 'process-error') return
+    // Nobody asks this process to close, so a `finished` is one the parent did not ask for.
+    if (value.type === 'finished') return this.#listener?.({ kind: 'invalid', problem: unaskedFinished })
+    this.#listener?.({ kind: 'message', message: value })
   }
 
   /** The answer the parent gives command `id`, once it gives one. */

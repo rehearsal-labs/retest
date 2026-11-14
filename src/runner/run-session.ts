@@ -82,7 +82,7 @@ import { inDeclarationOrder } from './result-order.ts'
 import { interruptionOf, runOutcome, stopReasonOf, testStatus } from './outcome.ts'
 import { collectedTest, planTests } from './plan.ts'
 import { declaredBackend, preparationsScopeProblem, preparationsShapeProblem, prepareAttempt, readPreparations, testPreparations } from './preparation.ts'
-import { endedBeforeTest, fileProcessFailure, laterTestsReason, reportedErrors } from './process-failures.ts'
+import { endedAfterFinishing, endedBeforeTest, fileProcessFailure, laterTestsReason, reportedErrors } from './process-failures.ts'
 import { AttemptFiles } from './files.ts'
 import { AttemptInbox } from './inbox.ts'
 import { Redactor } from './redactor.ts'
@@ -698,7 +698,8 @@ export class RunSession {
   }
 
   // The process is closed before the visit's results are final, so an error it reports after its last test, or
-  // an ending no test explains, fails the file. The event keeps that failure for a run that stops before it finishes.
+  // an ending no test explains before it said it had finished, fails the file. The event keeps that failure for a run
+  // that stops before it finishes.
   async #runVisit({ file, attempts }: Visit, planned: Planned, worker: number): Promise<void> {
     const record = this.#record(file)
     if (this.#stopReason !== undefined) {
@@ -714,7 +715,11 @@ export class RunSession {
       const closed = await child.close(abortGraceMs)
       record.tests.push(...ran.tests)
       if (!ran.loaded) return
-      const problem = fileProcessFailure({ file, closed, errors: child.errors, killed: child.killed, exitRecorded: ran.exitRecorded })
+      const end = { file, closed, errors: child.errors, killed: child.killed, exitRecorded: ran.exitRecorded }
+      // An ending that fails nothing is still written down, beside whatever the process printed as it ended.
+      const note = endedAfterFinishing(end)
+      if (note !== undefined) output.write('stderr', `${note}\n`)
+      const problem = fileProcessFailure(end)
       if (problem === undefined) return
       this.#events.emit({ type: 'file.failed', file, failure: problem })
       record.failures.push(problem)

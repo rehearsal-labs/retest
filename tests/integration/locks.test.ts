@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 import { openApp } from './browser-harness.ts'
-import { budgets, configSource, eventsOf, finishRun, repositoryRoot, resultOf, runCli, runProject, secondBrowserPath, startRun, testNamed, writeProject } from './cli-harness.ts'
+import { budgets, configSource, eventsOf, finishRun, repositoryRoot, resultOf, runCli, runProject, secondBrowserPath, showEndingAfterFinishing, startRun, testNamed, writeProject } from './cli-harness.ts'
 
 // Shared-state locks on real Chrome, under workers. The task app counts how many visitors hold a named thing at
 // once (`/holders/hold`), so a run shows from the outside whether two holders of one lock ever overlapped.
@@ -156,6 +156,7 @@ test('has a short budget', { locks: ['inbox'], timeout: ${budgetMs} }, async () 
   // A run can end in an error with every test passed, so the message names the run's and each file's own failure too.
   const why = { run: outcome.failure?.message, files: outcome.files.map((each) => [each.file, each.failure?.message]), tests: outcome.files.flatMap((each) => each.tests).map((each) => [each.name, each.status, each.failure?.message]), stderr: run.stderr }
   assert.equal(run.exit.code, 0, JSON.stringify(why))
+  showEndingAfterFinishing(t, run, 'tests/b.retest.ts')
   const short = testNamed(run, 'has a short budget')
   assert.equal(short.status, 'passed')
   const wait = eventsOf(run.events, 'lock.acquired').find((event) => event.testId === short.testId)

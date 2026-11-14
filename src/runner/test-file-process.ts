@@ -13,8 +13,11 @@ import { parse } from '../protocol/schema.ts'
 import { withoutVariables } from '../shared/environment.ts'
 import { holdOwnChild, prepareOwnedLaunch } from '../shared/process-system.ts'
 
-/** A message about the file or the test running in it. Errors outside any test are kept by the process. */
-export type TestFileMessage = Exclude<ChildMessage, { type: 'process-error' }>
+/**
+ * A message about the file or the test running in it. Errors outside any test, and the answer to a request to close,
+ * are kept by the process.
+ */
+export type TestFileMessage = Exclude<ChildMessage, { type: 'process-error' | 'finished' }>
 
 /** Everything a test file's process can tell the parent. Messages are validated before they arrive here. */
 export type ProcessEvent =
@@ -24,9 +27,12 @@ export type ProcessEvent =
 
 /**
  * How a process ended once it was asked to close. `forced` means it had not ended within the grace
- * period and Retest killed it.
+ * period and Retest killed it. `finished` means it said it had finished, after Retest asked it to close.
  */
-export type ClosedProcess = { exit: ProcessExit; forced: boolean }
+export type ClosedProcess = { exit: ProcessExit; forced: boolean; finished: boolean }
+
+/** What an `invalid` event says of a `finished` that came before Retest asked the process to close. */
+export const unaskedFinished = 'finished came before Retest asked the process to close'
 
 export type SpawnOptions = {
   /** The file is a Playwright test file: its imports of `@playwright/test` resolve to Retest's own subpath. */
@@ -73,6 +79,8 @@ export class TestFileProcess {
   #listener: ((event: ProcessEvent) => void) | undefined
   #exit: ProcessExit | undefined
   #killed = false
+  #closeRequested = false
+  #finished = false
 
   private constructor(child: ChildProcess) {
     this.#child = child
@@ -181,7 +189,8 @@ export class TestFileProcess {
 
   /** Asks the process to finish, and kills it if it has not within `graceMs`. */
   async close(graceMs: number): Promise<ClosedProcess> {
-    if (!this.alive) return { exit: await this.#closed, forced: false }
+    if (!this.alive) return { exit: await this.#closed, forced: false, finished: this.#finished }
+    this.#closeRequested = true
     this.send({ type: 'close' })
     let forced = false
     const timer = setTimeout(() => {
@@ -192,7 +201,7 @@ export class TestFileProcess {
     }, graceMs)
     try {
       const exit = await this.#closed
-      return { exit, forced }
+      return { exit, forced, finished: this.#finished }
     } finally {
       clearTimeout(timer)
     }
@@ -206,7 +215,17 @@ export class TestFileProcess {
     }
     const message = parsed.value
     if (message.type === 'process-error') this.#errors.push(message.failure)
+    else if (message.type === 'finished') this.#finishedReceived()
     else this.#listener?.({ kind: 'message', message })
+  }
+
+  // Test code runs in this process and can send `finished` itself. That is harmless only because it counts after
+  // Retest's own request to close, which comes once every test of the file has reported: all it can excuse then is how
+  // the process ends. One that comes before the request is no answer to anything, so it is reported as a message Retest
+  // could not read, never kept.
+  #finishedReceived(): void {
+    if (this.#closeRequested) this.#finished = true
+    else this.#listener?.({ kind: 'invalid', problem: unaskedFinished })
   }
 
   #ended(exit: ProcessExit): void {

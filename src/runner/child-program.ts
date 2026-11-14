@@ -71,9 +71,16 @@ function receive(message: ParentMessage): void {
 
 // Work the file queued before the request arrived, such as an error thrown on the turn after its tests were
 // collected, runs first: immediates run in the order they were queued. An error it throws ends the process instead.
+// Otherwise the parent is told the file has finished before the process exits: Node itself can fail as a process
+// exits, as on Windows, and an ending after this message is then no failure of the file's.
+// It is told last, once the output is flushed, and the process exits as soon as the message is handed over: whatever
+// the file's code does between the message and the exit is excused with it, so nothing of the file's runs there.
 function closeAfterQueuedWork(): void {
   setImmediate(() => {
-    if (!endingAfterError) exitWhenFlushed(0)
+    if (endingAfterError) return
+    whenFlushed(() => {
+      if (!endingAfterError) send({ type: 'finished' }, () => process.exit(0))
+    })
   })
 }
 
@@ -150,5 +157,9 @@ function send(message: ChildMessage, sent?: () => void): void {
 
 // Output written just before exit would be lost on a pipe that is not flushed yet.
 function exitWhenFlushed(code: number): void {
-  process.stdout.write('', () => process.stderr.write('', () => process.exit(code)))
+  whenFlushed(() => process.exit(code))
+}
+
+function whenFlushed(flushed: () => void): void {
+  process.stdout.write('', () => process.stderr.write('', flushed))
 }

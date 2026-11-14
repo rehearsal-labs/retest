@@ -63,7 +63,8 @@ export type ParentMessage =
  * A message from the child to the parent. A command names the app whose page takes it, and carries the step
  * the test code was in when it sent it. `callTimeoutMs` is the time an action gave itself with `{ timeout }`, which
  * the parent cuts to its own budget for the action. `process-error` is an error thrown while no test was running,
- * sent just before the process ends. `modules` on `collected` and `test-finished` names every project module the
+ * sent just before the process ends. `finished` answers the parent's `close`: everything the process had queued has
+ * run, and it is about to exit with code 0. `modules` on `collected` and `test-finished` names every project module the
  * process has loaded so far, by its path from the root; the parent reads and hashes each file itself.
  */
 export type ChildMessage =
@@ -117,6 +118,7 @@ export type ChildMessage =
       modules?: string[]
     }
   | { type: 'process-error'; failure: Failure }
+  | { type: 'finished' }
 
 const count = s.number({ integer: true, min: 0 })
 const names = s.optional(s.array(s.string()))
@@ -238,4 +240,5 @@ export const childMessageSchema: Schema<ChildMessage> = s.discriminatedUnion('ty
     modules: s.optional(s.array(s.string())),
   }),
   s.object({ type: s.literal('process-error'), failure: failureSchema }),
+  s.object({ type: s.literal('finished') }),
 ])

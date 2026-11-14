@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
-import { eventsOf, runCli, writeProject } from './cli-harness.ts'
+import { eventsOf, runCli, showEndingAfterFinishing, writeProject } from './cli-harness.ts'
 import { holders, resultNamed, runHostProgram } from './participants-harness.ts'
 
 // Resources and leases on real Chrome, through a host program that calls runFiles with session limits, as Rehearsal's
@@ -113,6 +113,7 @@ process.stdout.write(JSON.stringify({ exitCode: result.exitCode, peak: peak.host
   // A run can end in an error with every test passed, so the message names the run's and each file's own failure too.
   const why = { printed: printedOf(hosted.stdout), run: run.result.failure?.message, files: run.result.files.map((each) => [each.file, each.failure?.message]), tests: run.result.files.flatMap((each) => each.tests).map((each) => [each.name, each.status, each.failure?.message]) }
   assert.deepEqual(printedOf(hosted.stdout), { exitCode: 0, peak: 2, after: { host: 0, waiting: 0 } }, JSON.stringify(why))
+  showEndingAfterFinishing(t, run, 'tests/b.retest.ts')
   assert.equal(run.result.counts.passed, 4)
   const inbox = await holders(app.url, 'inbox')
   assert.deepEqual([inbox.most, inbox.current, inbox.holds], [1, 0, 1], 'the holder held the inbox once, and let go')

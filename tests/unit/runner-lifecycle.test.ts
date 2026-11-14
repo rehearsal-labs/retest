@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
+import { childLogFile, eventsFile, resultFile } from '../../src/protocol/run-folder.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { createAgentReporter } from '../../src/reporters/agent.ts'
 import { createHumanReporter } from '../../src/reporters/human.ts'
@@ -585,6 +585,47 @@ describe('a file process that fails outside its tests', () => {
     assert.equal(record.result.files[0]?.failure, undefined)
     assert.deepEqual(eventsOfType(record.events, 'file.failed'), [])
     assert.deepEqual([record.result.exitCode, record.result.complete], [0, true])
+  })
+
+  // The test file kills its own process as it exits, standing in for Node failing then, as it can on Windows. On Windows
+  // a process that kills itself ends with an exit code rather than a signal.
+  const endedBadly = '(signal SIGKILL|exit code \\d+)'
+
+  test('dies as it exits, after it said it had finished: the file has no failure, and its log says how the process ended', async () => {
+    const name = 'dies-after-finishing.retest.ts'
+    const record = await runSupportFiles([name])
+    assert.equal(testNamed(record.result, 'passes before its process ends badly').status, 'passed')
+    assert.equal(record.result.files[0]?.failure, undefined, JSON.stringify(record.result.files[0]?.failure))
+    assert.deepEqual(eventsOfType(record.events, 'file.failed'), [])
+    assert.deepEqual([record.result.exitCode, record.result.complete], [0, true])
+    const note = new RegExp(`^The process ended with ${endedBadly} after it had finished its work\\. No test was running, so nothing fails\\.\n`, 'm')
+    const stderr = record.output.filter((chunk) => chunk.stream === 'stderr' && chunk.file === file(name)).map((chunk) => chunk.text).join('')
+    assert.match(stderr, note)
+    assert.match(readFileSync(join(record.folder, childLogFile(file(name))), 'utf8'), note)
+  })
+
+  test('dies on the request to close, before it could say it had finished: the file fails with the way its process ended', async () => {
+    const name = 'dies-on-close.retest.ts'
+    const record = await runSupportFiles([name])
+    assert.equal(testNamed(record.result, 'passes before its process ends on the request to close').status, 'passed')
+    const failed = record.result.files[0]?.failure
+    assert.equal(failed?.class, 'test_error')
+    assert.match(failed?.message ?? '', new RegExp(`^The process for ${file(name).replaceAll('.', '\\.')} ended with ${endedBadly} while no test was running\\.$`))
+    assert.deepEqual(eventsOfType(record.events, 'file.failed').map((event) => event.failure), [failed])
+    assert.equal(record.result.exitCode, 2)
+    assert.ok(!record.output.some((chunk) => chunk.text.includes('after it had finished its work')), 'nothing says the process had finished')
+  })
+
+  test('says the file has finished while a test runs: that test fails as for a message Retest could not read, and the process is ended', async () => {
+    const record = await runSupportFiles(['finished-in-test.retest.ts'])
+    const forged = testNamed(record.result, 'says the file has finished while it runs')
+    assert.deepEqual([forged.status, forged.failure?.class, forged.failure?.message], [
+      'failed',
+      'test_error',
+      'The process for this file sent a message Retest could not read: finished came before Retest asked the process to close.',
+    ])
+    assert.equal(testNamed(record.result, 'never gets a turn').status, 'not_run')
+    assert.equal(record.result.exitCode, 1)
   })
 })
 

@@ -15,6 +15,10 @@ Each entry says where it was measured.
 - Measured on an 8-CPU Linux machine with the Android 15 emulator, each test one fill, one tap and one text check. 1,000 tests took 65.7 min, down from 109.5 min, and every test passed. 100 tests took 388 s and 398 s in two rounds, against 633 s and 643 s. On the Android 17 emulator there, 300 tests passed.
 - Measured on an Apple silicon Mac with the Android 15 emulator, three runs each of 100 tests, medians. The time around each test fell from 2.96 s to 1.36 s. Two parts got slower. The test's own fill, tap and check rose from 0.85 s to 0.99 s: agent-device's tap mostly took about 0.2 s in a session kept from earlier tests, and about 0.07 s in a new one. Closing agent-device at the end of the run takes 0.85 s, once.
 
+### Fixed
+
+- **A run whose tests all passed no longer fails because Node ended a test file's process badly as it exited.** Seen on GitHub's `windows-2025` runner with Node 24.12: after every test of a file had passed, Node ended its process with exit code 3221226505, and the run failed the file and exited 2. Now, once Retest asks a file's process to close, the process says its work is done before it exits, and how it ends after that fails nothing. The file's log in `logs/` says how it ended. A process that ends before it says so still fails its file, and so does an error it reports. Checked on GitHub's `windows-2025` runner with Node 24.12: in three runs of the lock tests, Node ended a finished process this way three times, printing `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76`, and every run passed. Also checked on macOS on Apple silicon, with a test file that kills its own process as it exits.
+
 ## 0.4.1
 
 Each entry says where it was checked.

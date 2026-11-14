@@ -1264,6 +1264,7 @@ describe('messages', () => {
     { type: 'test-finished', ...scope, status: 'passed', assertionCount: 2, durationMs: 120 },
     { type: 'test-finished', ...scope, status: 'failed', failure, assertionCount: 0, durationMs: 5 },
     { type: 'process-error', failure: { class: 'test_error', message: 'Error: thrown after the last test', location } },
+    { type: 'finished' },
   ]
 
   test('every message survives a JSON round trip', () => {
@@ -1309,6 +1310,9 @@ describe('messages', () => {
     ])
     assert.deepEqual(issues(childMessageSchema, { type: 'process-error', failure: { class: 'test_error' } }), [
       { path: '$.failure.message', message: 'missing required key' },
+    ])
+    assert.deepEqual(issues(childMessageSchema, { type: 'finished', exitCode: 0 }), [
+      { path: '$.exitCode', message: 'unknown key' },
     ])
   })
 })

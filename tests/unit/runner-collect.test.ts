@@ -108,6 +108,19 @@ describe('collectFiles', () => {
     assert.equal(file.tests.length, 1)
   })
 
+  test('a file whose process ends badly after it said it had finished keeps its tests and fails nothing', async () => {
+    const file = await collectOne('dies-after-finishing.retest.ts')
+    assert.deepEqual([file.collection, file.failure, file.tests.length], ['ok', undefined, 1])
+  })
+
+  test('a file whose process ends on the request to close, before it could say it had finished, fails, naming how it ended', async () => {
+    const file = await collectOne('dies-on-close.retest.ts')
+    const name = supportFile('dies-on-close.retest.ts').replaceAll('.', '\\.')
+    assert.equal(file.collection, 'ok')
+    // On Windows a process that kills itself ends with an exit code rather than a signal.
+    assert.match(file.failure?.message ?? '', new RegExp(`^The process for ${name} ended with (signal SIGKILL|exit code \\d+) while no test was running\\.$`))
+  })
+
   test('work a file queued before it was asked to close still runs, however soon the request comes', async () => {
     // One collection seldom meets a request that arrives before the file's next turn; many at once make it likely.
     const names = Array.from({ length: 16 }, (_, index) => (index % 2 === 0 ? 'after-collection-error.retest.ts' : 'after-collection-exit.retest.ts'))

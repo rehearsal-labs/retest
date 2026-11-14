@@ -1,9 +1,10 @@
+import type { ProcessEvent } from '../../src/runner/test-file-process.ts'
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { newAttemptId } from '../../src/runner/attempt-id.ts'
 import { bounded } from '../../src/runner/bounded.ts'
 import { loadTests } from '../../src/runner/load-tests.ts'
-import { conditionArguments, endedCleanly, testFileEnvironment, TestFileProcess } from '../../src/runner/test-file-process.ts'
+import { conditionArguments, endedCleanly, testFileEnvironment, TestFileProcess, unaskedFinished } from '../../src/runner/test-file-process.ts'
 import { describeExit } from '../../src/shared/process-exit.ts'
 import { isRunning, rootDir, supportFile } from '../support/run-harness.ts'
 import { unixOnly } from '../support/platform-skip.ts'
@@ -56,7 +57,7 @@ describe('TestFileProcess', () => {
     const pid = child.pid
     assert.ok(pid !== undefined)
     const closed = await child.close(1000)
-    assert.deepEqual(closed, { exit: { code: 0, signal: null }, forced: false })
+    assert.deepEqual(closed, { exit: { code: 0, signal: null }, forced: false, finished: true })
     assert.equal(child.alive, false)
     assert.equal(child.killed, false)
     assert.equal(isRunning(pid), false)
@@ -71,7 +72,7 @@ describe('TestFileProcess', () => {
     assert.equal(child.killed, true)
     child.send({ type: 'close' })
     assert.deepEqual(events, ['exit'])
-    assert.deepEqual(await child.close(1000), { exit, forced: false })
+    assert.deepEqual(await child.close(1000), { exit, forced: false, finished: false })
   })
 
   test('an error thrown while no test runs is kept, and has arrived once the process has closed', async () => {
@@ -101,7 +102,7 @@ describe('TestFileProcess', () => {
     assert.equal((await loadTests(child, { file, rootDir, timeoutMs: 5000 })).ok, true)
     await busy.promise
     const closed = await child.close(200)
-    assert.deepEqual(closed, { exit: { code: null, signal: 'SIGKILL' }, forced: true })
+    assert.deepEqual(closed, { exit: { code: null, signal: 'SIGKILL' }, forced: true, finished: false })
     assert.equal(child.killed, true)
   })
 
@@ -115,12 +116,39 @@ describe('TestFileProcess', () => {
     try {
       const startedAt = Date.now()
       const closed = await child.close(1000)
-      assert.deepEqual(closed, { exit: { code: 0, signal: null }, forced: false })
+      assert.deepEqual(closed, { exit: { code: 0, signal: null }, forced: false, finished: true })
       assert.ok(Date.now() - startedAt < 2500, `closed in ${Date.now() - startedAt} ms while the grandchild still ran`)
       assert.equal(isRunning(pid), true, 'the grandchild is not Retest\'s to end')
     } finally {
       process.kill(pid, 'SIGKILL')
     }
+  })
+
+  test('a process that said it had finished after the request to close is known to have, however it then ended', async () => {
+    const file = supportFile('dies-after-finishing.retest.ts')
+    const child = TestFileProcess.spawn({ onOutput: () => undefined })
+    assert.equal((await loadTests(child, { file, rootDir, timeoutMs: 5000 })).ok, true)
+    const kinds: string[] = []
+    child.listen((event) => kinds.push(event.kind))
+    const closed = await child.close(1000)
+    assert.deepEqual([closed.forced, closed.finished, endedCleanly(closed.exit), child.killed], [false, true, false, false], describeExit(closed.exit))
+    assert.deepEqual(kinds, ['exit'], 'the answer is not a message for whoever listens')
+  })
+
+  test('a finished that comes before the request to close is an invalid event, and is not kept', async () => {
+    const file = supportFile('finishes-early.retest.ts')
+    const child = TestFileProcess.spawn({ onOutput: () => undefined })
+    const events: ProcessEvent[] = []
+    const collected = Promise.withResolvers<void>()
+    child.listen((event) => {
+      events.push(event)
+      if (event.kind === 'exit' || (event.kind === 'message' && event.message.type === 'collected')) collected.resolve()
+    })
+    child.send({ type: 'collect', file, rootDir })
+    await collected.promise
+    const closed = await child.close(1000)
+    assert.deepEqual(events.slice(0, 2).map((event) => (event.kind === 'message' ? event.message.type : event)), [{ kind: 'invalid', problem: unaskedFinished }, 'collected'])
+    assert.deepEqual([closed.forced, closed.finished, endedCleanly(closed.exit), child.killed], [false, false, false, false], 'it ended on the request to close, before it said it had finished')
   })
 
   test('an abort or an answer with no test running changes nothing', async () => {
