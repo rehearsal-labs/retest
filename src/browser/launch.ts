@@ -95,6 +95,15 @@ export function chromiumArguments(profile: string, headless: boolean): string[] 
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
+    // Chrome for Testing and Chromium builds otherwise switch on the experiments of Chromium's field trial testing config
+    // (testing/variations/README.md) as they start. With them on, Chrome started one more renderer process for every new
+    // browser context and spent about a sixth more CPU on each test (Linux x64, Chrome for Testing 153, 14 November
+    // 2026). Playwright passes the same switch first (playwright-core 1.65.0, chromiumSwitches, Apache-2.0).
+    '--disable-field-trial-config',
+    // Chrome keeps a spare renderer process started for the next page that needs one. Each test's browser context is
+    // new and closes after its test, so the spare it started went with it unused: 3.1 renderer processes a test against
+    // 2.0 without, and 3.7 with two workers on one browser. A navigation that needs a process now starts one.
+    '--disable-features=SpareRendererForSitePerProcess',
     // A page whose window another window covers, or that is not in front, keeps its renderer's priority and its
     // timers: Chromium otherwise backgrounds an occluded window's renderer and throttles a background page's timers,
     // and a step that waits for the page's next frame or its answer waits on them. These are Chromium's switches

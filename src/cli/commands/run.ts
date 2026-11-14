@@ -56,11 +56,11 @@ const options = {
   }),
   workers: value({
     placeholder: '<n>',
-    description: `How many test files run at once, each in its own process, sharing each browser.\nDefault: half the cores, ${defaultWorkers()} here`,
+    description: `How many test files run at once, each in its own process.\nDefault: half the cores, ${defaultWorkers()} here`,
   }),
   browsers: value({
     placeholder: '<n>',
-    description: `How many browsers each target's tests are spread over, each worker keeping to one.\nDefault: one for every three workers, ${defaultBrowsers(defaultWorkers())} here`,
+    description: `How many browsers each target's tests are spread over, each worker keeping to one.\nDefault: one for each worker, ${defaultBrowsers(defaultWorkers())} here`,
   }),
   playwright: flag('Run Playwright test files: @playwright/test resolves to Retest,\nas far as its compatibility goes. With no files, every .spec file under this folder'),
   'allow-only': flag('Run the tests marked only even when CI is set, which otherwise refuses them'),

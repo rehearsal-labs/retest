@@ -153,7 +153,9 @@ test('--target keeps only the runs on that target, and starts only the browsers 
   const versions = testBrowserVersions()
   const [app, site] = [await openApp(t), await reportSite(t)]
   const root = await writeProject(t, { 'retest.config.ts': matrixConfig(app.url, pairings), ...reportTests(site) })
-  const run = await runProject(t, root, { args: ['--target', 'web=testing'] })
+  // One browser for the run, so each target it uses starts one and the list below is the same on any number of cores:
+  // by default each worker would have its own, and web=testing, which both files use, would start two.
+  const run = await runProject(t, root, { args: ['--target', 'web=testing', '--browsers', '1'] })
 
   assert.equal(run.exit.code, 0, run.stderr)
   assert.deepEqual(variantsOf(run, 'reports its browser'), ['web=testing'])

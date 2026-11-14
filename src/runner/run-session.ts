@@ -601,10 +601,10 @@ export class RunSession {
     this.#events.emit({ type: 'run.narrowed', ...narrowed })
   }
 
-  // A target's browsers follow its load. The workers that will really run, no more than there are files, get one
-  // browser for every three, or what the run asked for; a target that carries a share of the run's tests gets that
-  // share of them, at least one, and never more than the files that use it. So a run of one target on many workers
-  // spreads over a few browsers, and a matrix of many targets starts one of each.
+  // A target's browsers follow its load. The workers that will really run, no more than there are files, get a
+  // browser each, or what the run asked for; a target that carries a share of the run's tests gets that share of them,
+  // at least one, and never more than the files that use it. So a run of one target gives each worker its own browser,
+  // and the targets of a matrix divide the workers' browsers by their share of the tests.
   #spreadBrowsers(config: RunConfig, tests: readonly Visit[]): void {
     const workers = Math.min(this.#workers, tests.length)
     if (workers < 2) return

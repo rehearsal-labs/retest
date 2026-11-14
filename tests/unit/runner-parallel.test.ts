@@ -12,7 +12,8 @@ function firstIndex(record: RunRecord, type: 'test.started' | 'test.finished', f
 
 describe('test files on workers', () => {
   test('two workers run two files at the same time, sharing one browser, and every test passes', async () => {
-    const record = await runSupportFiles(files, { workers: 2, fake: { saveDelayMs: 400 }, timeouts: { assertion: 1500 } })
+    // One browser, as the run asks: by default each worker would have its own.
+    const record = await runSupportFiles(files, { workers: 2, browsers: 1, fake: { saveDelayMs: 400 }, timeouts: { assertion: 1500 } })
     assert.equal(record.result.exitCode, 0, JSON.stringify(record.result.counts))
     assert.deepEqual(record.result.counts, { passed: 5, failed: 0, error: 0, notRun: 0, inconclusive: 0 })
     assert.equal(record.browsers.length, 1, 'one browser for both files')

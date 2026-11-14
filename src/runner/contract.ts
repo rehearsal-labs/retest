@@ -100,7 +100,7 @@ export type RunOptions = {
   /** Absent runs every test in `files`. */
   selection?: Selection
   /**
-   * How many test files run at once, each in a process of its own, sharing each target's browser, and how many load
+   * How many test files run at once, each in a process of its own, and how many load
    * at once to collect their tests. Setups run first, one after another. Absent: half the machine's cores, and at
    * least one, and collection loads one file for each core.
    */
@@ -108,7 +108,7 @@ export type RunOptions = {
   /**
    * How many browsers a target that runs all of the run's tests is spread over, each worker keeping to one. A
    * target that runs a share of the tests gets that share of them, at least one, and never more than the workers
-   * or the files that use it. Absent: one browser for every three workers that have a file to run.
+   * or the files that use it. Absent: one browser for each worker that has a file to run.
    */
   browsers?: number
   /**

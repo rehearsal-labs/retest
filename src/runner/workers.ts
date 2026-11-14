@@ -18,13 +18,14 @@ export function collectionWorkers(workers: number | undefined): number {
 }
 
 /**
- * How many browsers a target's tests are spread over unless the run says: one for every three workers. One browser
- * serves all its contexts from a single process, which many workers saturate, and a browser for each worker gains
- * nothing more: on seven workers, 200 tests took 27.3 s in one browser, 21.3 in two, 18.9 in three, 20.1 in four
- * and 19.3 in seven (speed plan, S8).
+ * How many browsers a target's tests are spread over unless the run says: one for each worker. One browser opens and
+ * closes all its contexts from a single process, which two workers already saturate: on four workers on an 8-CPU Linux
+ * machine, 1,000 tests took 147 s in two browsers and 134 s in four, a test 549 ms against 495 (14 November 2026). On
+ * seven workers on a Mac, 200 tests took 27.3 s in one browser, 21.3 in two, 18.9 in three, 20.1 in four and 19.3 in
+ * seven (speed plan, S8).
  */
 export function defaultBrowsers(workers: number): number {
-  return Math.max(1, Math.ceil(workers / 3))
+  return Math.max(1, workers)
 }
 
 /**

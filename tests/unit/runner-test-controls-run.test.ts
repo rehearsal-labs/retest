@@ -220,7 +220,9 @@ test('second holder', { locks: ['inbox'] }, async () => {
 })`),
     }
     const root = tempProject(files)
-    const running = runProject(root, { files: ['tests/a.retest.ts', 'tests/b.retest.ts', 'tests/c.retest.ts'], workers: 3 })
+    // One browser for the three workers: three fake browsers starting at once can hold the first holder's grant past the
+    // millisecond, and the report would then show a wait it did not have to make.
+    const running = runProject(root, { files: ['tests/a.retest.ts', 'tests/b.retest.ts', 'tests/c.retest.ts'], workers: 3, browsers: 1 })
     await waitForFile(join(root, 'signals/other-done'))
     // The second holder asks for the inbox soon after it is held; the first holds it a good while longer.
     await sleep(1200)
