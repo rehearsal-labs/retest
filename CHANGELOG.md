@@ -2,7 +2,9 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
-## Unreleased
+## 0.4.2
+
+Each entry says where it was measured.
 
 ### Changed
 
