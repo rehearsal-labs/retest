@@ -152,7 +152,10 @@ test('has a short budget', { locks: ['inbox'], timeout: ${budgetMs} }, async () 
   const released = await fetch(new URL('/holders/release?name=inbox', app.url))
   assert.equal(released.ok, true)
   const run = await finishRun(started)
-  assert.equal(run.exit.code, 0, JSON.stringify(resultOf(run).files.flatMap((each) => each.tests).map((each) => [each.name, each.status, each.failure?.message])))
+  const outcome = resultOf(run)
+  // A run can end in an error with every test passed, so the message names the run's and each file's own failure too.
+  const why = { run: outcome.failure?.message, files: outcome.files.map((each) => [each.file, each.failure?.message]), tests: outcome.files.flatMap((each) => each.tests).map((each) => [each.name, each.status, each.failure?.message]), stderr: run.stderr }
+  assert.equal(run.exit.code, 0, JSON.stringify(why))
   const short = testNamed(run, 'has a short budget')
   assert.equal(short.status, 'passed')
   const wait = eventsOf(run.events, 'lock.acquired').find((event) => event.testId === short.testId)
