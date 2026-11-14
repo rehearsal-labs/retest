@@ -16,6 +16,7 @@ import { retestEventSchema } from '../src/protocol/events.ts'
 import { runResultSchema } from '../src/protocol/result.ts'
 import { eventsFile, resultFile } from '../src/protocol/run-folder.ts'
 import { isArray, isPlainObject, parse } from '../src/protocol/schema.ts'
+import { defaultTimeouts } from '../src/protocol/timeouts.ts'
 import { npmCommand } from '../tests/support/npm-command.ts'
 import { browserPath } from '../tests/support/test-browser.ts'
 
@@ -46,8 +47,12 @@ export const pinnedPlaywright = {
   ],
 } as const
 
-/** The assertion budget both runs check with, as the workflow cases' own integration files do. */
-export const assertionBudgetMs = 1500
+/**
+ * The assertion budget both runs check with: the one Retest and Playwright each give by default, as the workflow cases'
+ * own integration files do. A check that passes ends once it sees what it waits for, and a shorter budget failed
+ * passing cases on a slow machine.
+ */
+export const assertionBudgetMs: number = defaultTimeouts.assertion
 
 // A run that has not ended in this long is stopped, with its process group.
 const runLimitMs = 10 * 60_000

@@ -5,7 +5,7 @@ import { HTML_TYPE, JSON_TYPE, queryOf, respondWith } from './route.ts'
 /** How long a hold lasts at most, so a page that asks for longer, or is never released, still answers. */
 const longestHoldMs = 20_000
 
-type Holder = { current: number; most: number; holds: number }
+type Holder = { current: number; most: number; holds: number; cut: number }
 
 /**
  * Routes that count how many visitors hold a named thing at once, as tests that share outside state would.
@@ -15,8 +15,8 @@ type Holder = { current: number; most: number; holds: number }
  *   soon as that many hold it at once, which shows two visitors overlapping without waiting out the whole hold. With
  *   `release=1` it holds until `GET /holders/release?name=inbox`, so a test decides when the hold ends. With
  *   `barrier=3` the first requests wait for three actual holders to overlap; after that, later requests answer at once.
- * - `GET /holders?name=inbox` answers `{ current, most, holds }` as JSON: holders now, the most at once since the
- *   app started, and how many holds began.
+ * - `GET /holders?name=inbox` answers `{ current, most, holds, cut }` as JSON: holders now, the most at once since the
+ *   app started, how many holds began, and how many of them ended because their visitor went away before they answered.
  */
 export function holderRoutes(): Route[] {
   const holders = new Map<string, Holder>()
@@ -25,7 +25,7 @@ export function holderRoutes(): Route[] {
   const holderOf = (name: string): Holder => {
     const known = holders.get(name)
     if (known !== undefined) return known
-    const holder = { current: 0, most: 0, holds: 0 }
+    const holder = { current: 0, most: 0, holds: 0, cut: 0 }
     holders.set(name, holder)
     return holder
   }
@@ -65,7 +65,10 @@ export function holderRoutes(): Route[] {
         if (released) releases.set(name, (releases.get(name) ?? new Set()).add(finish))
         waiting.add(watch)
         watch()
-        response.on('close', finish)
+        response.on('close', () => {
+          if (!finished) holder.cut += 1
+          finish()
+        })
       },
     ],
     [

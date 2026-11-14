@@ -29,7 +29,7 @@ test('a check that passed on a locator no look of its test found is marked in it
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: source,
   })
-  const run = await runProject(t, root, { reporter: 'human', timeouts: budgets({ assertion: 3000 }) })
+  const run = await runProject(t, root, { reporter: 'human', timeouts: budgets() })
   assert.equal(run.exit.code, 0, run.stdout)
   const misspelt = testNamed(run, 'a misspelt banner check')
   const gone = testNamed(run, 'a heading seen, then gone')

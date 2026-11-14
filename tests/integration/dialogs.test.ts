@@ -113,7 +113,7 @@ test('dialogs are handed to the test, answered, written down, and a dialog nothi
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) }, secrets: { password: env('RETEST_DIALOG_PASSWORD') } }`),
     'tests/dialogs.retest.ts': testsFor(app.url),
   })
-  const run = await runProject(t, root, { timeouts: budgets({ action: 3000, assertion: 2000 }), env: { RETEST_DIALOG_PASSWORD: password } })
+  const run = await runProject(t, root, { timeouts: budgets(), env: { RETEST_DIALOG_PASSWORD: password } })
   assert.equal(run.exit.code, 1, run.stderr)
 
   for (const name of ['accepts a confirm', 'dismisses a confirm', 'answers a prompt', 'accepts an alert', 'answers two dialogs in a row', 'leaves through a beforeunload dialog', 'shows a secret in a dialog only as its name']) {
@@ -207,7 +207,7 @@ test('starts past its alert', async ({ page }) => {
 `,
   })
   await writeFiles(root, { 'retest.config.ts': `import { defineConfig, electron } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: ${JSON.stringify(join(root, 'app'))} }) } })\n` })
-  const run = await runProject(t, root, { timeouts: budgets({ action: 5000, assertion: 5000 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 0, run.stderr)
   const started = testNamed(run, 'starts past its alert')
   assert.deepEqual([started.status, started.failure ?? null], ['passed', null])

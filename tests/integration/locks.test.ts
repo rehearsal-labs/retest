@@ -79,7 +79,7 @@ test('without a lock, tests in different files hold the same thing at once under
     'tests/a.retest.ts': holdingFile([holdingTest('first', '{}', 'shared', 'ms=8000&until=2', '2')]),
     'tests/b.retest.ts': holdingFile([holdingTest('second', '{}', 'shared', 'ms=8000&until=2', '2')]),
   })
-  const run = await runProject(t, root, { args: ['--workers', '2'], timeouts: budgets({ navigation: 10_000, test: 15_000 }) })
+  const run = await runProject(t, root, { args: ['--workers', '2'], timeouts: budgets() })
   assert.equal(run.exit.code, 0, run.stderr)
   assert.deepEqual(await holders(url, 'shared'), { current: 0, most: 2, holds: 2 })
 })
@@ -116,13 +116,13 @@ test('two tests that hold a common lock never run at the same time across worker
 })
 
 test('a test is not charged against its own budget for the time it waits for a lock', async (t) => {
-  // The holder keeps the inbox until this test releases it, more than three times the waiter's budget after the
-  // waiter has asked, so the wait is long by construction, not by timing.
+  // The waiter waits for the inbox longer than its whole budget and still passes, which a budget charged for the wait
+  // would not let it. Its body asks the app one question, so its short budget bounds nothing but the wait.
   const budgetMs = 1500
   const app = await openApp(t)
   const holding = `import { expect, test } from '@rehearsal-labs/retest'
 
-test('holds the inbox until released', { locks: ['inbox'], timeout: 30000 }, async ({ page }) => {
+test('holds the inbox until released', { locks: ['inbox'] }, async ({ page }) => {
   await page.goto('/holders/hold?name=inbox&release=1')
   await expect(page.getByTestId('overlap')).toHaveText('1')
 })
@@ -130,48 +130,47 @@ test('holds the inbox until released', { locks: ['inbox'], timeout: 30000 }, asy
   const waiting = `import { expect, test } from '@rehearsal-labs/retest'
 
 const appUrl = ${JSON.stringify(app.url)}
+const held = async () => ((await (await fetch(new URL('/holders?name=inbox', appUrl))).json()) as { current: number }).current
 
-test('waits until the inbox is held', { timeout: 30000 }, async () => {
-  const held = async () => ((await (await fetch(new URL('/holders?name=inbox', appUrl))).json()) as { current: number }).current
+test('waits until the inbox is held', async () => {
   await expect.poll(held, { timeout: 25000 }).toBe(1)
 })
 
-test('has a short budget', { locks: ['inbox'], timeout: ${budgetMs} }, async ({ page }) => {
-  await page.goto('/holders/hold?name=inbox&ms=0')
-  await expect(page.getByTestId('overlap')).toHaveText('1')
+test('has a short budget', { locks: ['inbox'], timeout: ${budgetMs} }, async () => {
+  expect(await held()).toBe(0)
 })
 `
   const config = configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) }, locks: ['inbox'] }`)
   const root = await writeProject(t, { 'retest.config.ts': config, 'tests/a.retest.ts': holding, 'tests/b.retest.ts': waiting })
-  const started = startRun(t, { files: [], cwd: root, browser: false, args: ['--workers', '2'], timeouts: budgets({ test: 30_000, assertion: 25_000, navigation: 20_000 }) })
-  await waitForAsync('the inbox is held', async () => (await holders(app.url, 'inbox')).current === 1, 20_000)
-  await delay(budgetMs * 3 + 1000)
+  const started = await startRun(t, { files: [], cwd: root, browser: false, args: ['--workers', '2'] })
+  // Right after its file's first test has seen the holder hold the inbox, the waiter asks for it. Retest writes no event
+  // as a test begins to wait for a lock, so that test's end is the signal, and the holder lets go twice the waiter's
+  // budget after it.
+  const looked = await started.retest.waitForEvent('test.finished', (event) => event.testId.endsWith(' > waits until the inbox is held'))
+  assert.equal(looked.status, 'passed', JSON.stringify(looked.failure))
+  await delay(budgetMs * 2) // a wait longer than a budget takes real time, on the clock the run keeps both by
   const released = await fetch(new URL('/holders/release?name=inbox', app.url))
   assert.equal(released.ok, true)
-  const run = await finishRun(await started)
+  const run = await finishRun(started)
   assert.equal(run.exit.code, 0, JSON.stringify(resultOf(run).files.flatMap((each) => each.tests).map((each) => [each.name, each.status, each.failure?.message])))
   const short = testNamed(run, 'has a short budget')
   assert.equal(short.status, 'passed')
-  assert.ok(short.durationMs < budgetMs, `the test took ${short.durationMs} ms of its own ${budgetMs} ms budget`)
   const wait = eventsOf(run.events, 'lock.acquired').find((event) => event.testId === short.testId)
   assert.ok(wait !== undefined && wait.waitedMs > budgetMs, `the test waited ${wait?.waitedMs} ms for the lock, longer than its budget, and passed`)
+  // The test starts once it holds the lock, and its time counts from there: its recorded duration fits between the
+  // lock's grant and its end, both whole milliseconds of the run's clock, so the span may read a millisecond short.
+  const begun = eventsOf(run.events, 'test.started').find((event) => event.attemptId === short.attemptId)
+  const ended = eventsOf(run.events, 'test.finished').find((event) => event.attemptId === short.attemptId)
+  assert.ok(begun !== undefined && ended !== undefined && wait.sequence < begun.sequence, 'the test started after it held the lock')
+  assert.ok(short.durationMs <= ended.elapsedMs - wait.elapsedMs + 1, `the test's ${short.durationMs} ms count from the lock's grant, ${ended.elapsedMs - wait.elapsedMs} ms before it ended, not from the ${wait.waitedMs} ms wait`)
   assertNoOverlap(holds(run, 'inbox'))
-  assert.equal((await holders(app.url, 'inbox')).most, 1)
+  assert.deepEqual(await holders(app.url, 'inbox'), { current: 0, most: 1, holds: 1 }, 'the holder held the inbox once, and let go')
   const shown = await runCli(t, ['inspect', run.output, '--test', short.testId], { cwd: root })
   assert.equal(shown.exit.code, 0, shown.stderr)
   assert.match(shown.stdout, /holds lock inbox, after waiting [\d.]+s/, 'inspect shows the wait in the timeline')
   const human = await runCli(t, ['inspect', run.output], { cwd: root })
   assert.match(human.stdout, /has a short budget {2}(\d+ ms|[\d.]+s)\n {6}holds lock inbox, after waiting [\d.]+s\n/, 'the human report shows the wait under the test')
 })
-
-/** Waits until an asynchronous condition holds, looking every 50 ms, and fails after `timeoutMs`. */
-async function waitForAsync(what: string, condition: () => Promise<boolean>, timeoutMs: number): Promise<void> {
-  const end = performance.now() + timeoutMs
-  while (!(await condition())) {
-    if (performance.now() > end) assert.fail(`${what} did not happen within ${timeoutMs} ms`)
-    await delay(50)
-  }
-}
 
 const example = join(repositoryRoot, 'examples/tasks')
 

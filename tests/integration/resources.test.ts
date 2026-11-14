@@ -69,13 +69,25 @@ async function inspect(t: TestContext, root: string, run: HostedRun, testId?: st
 
 test('two workers, a shared lock and session limits: holders never overlap, and a wait is recorded and left out of the duration', async (t) => {
   const app = await openApp(t)
+  // The short test waits for the inbox longer than its whole budget and still passes. Its body asks the app one
+  // question, so its budget bounds nothing but the wait.
   const budgetMs = 1500
-  const waitsUntilHeld = `test('b waits until the inbox is held', { timeout: 30000 }, async () => {
-  const held = async () => ((await (await fetch(new URL('/holders?name=inbox', ${JSON.stringify(app.url)}))).json()) as { current: number }).current
+  const held = `const held = async () => ((await (await fetch(new URL('/holders?name=inbox', ${JSON.stringify(app.url)}))).json()) as { current: number }).current`
+  const waitsUntilHeld = `test('b waits until the inbox is held', async () => {
   await expect.poll(held, { timeout: 25000 }).toBe(1)
 })`
-  const body = `const budget = new SessionBudget({ perOwner: 2, host: 2 })
-const result = await run('shared', ['tests/a.retest.ts', 'tests/b.retest.ts'], { sessions: { owner: 'agent-1', budget, waitMs: 30000 } })
+  const shortBudget = `test('b has a short budget', { locks: ['inbox'], timeout: ${budgetMs} }, async () => {
+  expect(await held()).toBe(0)
+})`
+  // Right after b's first test has seen the holder hold the inbox, b asks for it, and the holder lets go twice b's
+  // budget after that test has finished.
+  const body = `const letGo = async () => {
+  await new Promise((resolve) => setTimeout(resolve, ${budgetMs * 2})) // a wait longer than a budget takes real time
+  await fetch(new URL('/holders/release?name=inbox', ${JSON.stringify(app.url)}))
+}
+const releaser = { name: 'releaser', onEvent: (event) => { if (event.type === 'test.finished' && event.testId.endsWith(' > b waits until the inbox is held')) void letGo() }, onRunEnd: () => undefined }
+const budget = new SessionBudget({ perOwner: 2, host: 2 })
+const result = await run('shared', ['tests/a.retest.ts', 'tests/b.retest.ts'], { sessions: { owner: 'agent-1', budget, waitMs: 30000 }, reporters: [releaser] })
 const peak = budget.peak()
 const after = budget.snapshot()
 process.stdout.write(JSON.stringify({ exitCode: result.exitCode, peak: peak.host, after: { host: after.host, waiting: after.waiting } }) + '\\n')`
@@ -83,13 +95,16 @@ process.stdout.write(JSON.stringify({ exitCode: result.exitCode, peak: peak.host
     'package.json': '{ "type": "module" }\n',
     'host.ts': hostProgram(app.url, body),
     'tests/a.retest.ts': file(
-      holdingTest('a holds the inbox', "{ locks: ['inbox'] }", 'inbox', 3500),
+      `test('a holds the inbox', { locks: ['inbox'] }, async ({ page }) => {
+  await page.goto('/holders/hold?name=inbox&release=1')
+  await expect(page.getByTestId('overlap')).toHaveText('1')
+})`,
       `test('a uses both apps', { apps: ['web', 'admin'] }, async ({ web, admin }) => {
   await Promise.all([web.goto('/holders/hold?name=pair&ms=300'), admin.goto('/holders/hold?name=pair&ms=300')])
   await expect(web.getByTestId('held-name')).toHaveText('pair')
 })`,
     ),
-    'tests/b.retest.ts': file(waitsUntilHeld, holdingTest('b has a short budget', `{ locks: ['inbox'], timeout: ${budgetMs} }`, 'inbox', 0)),
+    'tests/b.retest.ts': file(held, waitsUntilHeld, shortBudget),
   })
   const hosted = await runHostProgram(t, root, 'host.ts', ['shared'])
   assert.equal(hosted.code, 0, hosted.stderr)
@@ -98,14 +113,17 @@ process.stdout.write(JSON.stringify({ exitCode: result.exitCode, peak: peak.host
   assert.ok(run?.result !== undefined)
   assert.equal(run.result.counts.passed, 4)
   const inbox = await holders(app.url, 'inbox')
-  assert.deepEqual([inbox.most, inbox.current, inbox.holds], [1, 0, 2], 'the app never saw two holders of the inbox at once')
+  assert.deepEqual([inbox.most, inbox.current, inbox.holds], [1, 0, 1], 'the holder held the inbox once, and let go')
 
   const holder = resultNamed(run.result, 'a holds the inbox')
   const short = resultNamed(run.result, 'b has a short budget')
   const acquired = ofAttempt(run.events, 'lock.acquired', short.attemptId)[0]
   assert.ok(acquired !== undefined)
   assert.ok(acquired.waitedMs > budgetMs, `it waited ${acquired.waitedMs} ms for the inbox, longer than its ${budgetMs} ms budget`)
-  assert.ok(short.durationMs < budgetMs, `and passed in ${short.durationMs} ms of its own budget`)
+  // Its time counts from once it held the lock: its recorded duration fits between the lock's grant and its end, both
+  // whole milliseconds of the run's clock, so the span may read a millisecond short.
+  const ended = ofAttempt(run.events, 'test.finished', short.attemptId)[0]
+  assert.ok(ended !== undefined && short.durationMs <= ended.elapsedMs - acquired.elapsedMs + 1, `and passed, its ${short.durationMs} ms counted from the lock's grant, not from the ${acquired.waitedMs} ms wait`)
   assert.deepEqual(acquired.heldBy, [holder.testId])
   const reserved = ofAttempt(run.events, 'session.reserved', short.attemptId)[0]
   const taken = ofAttempt(run.events, 'lease.taken', short.attemptId)[0]

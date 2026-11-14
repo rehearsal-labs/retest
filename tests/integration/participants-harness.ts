@@ -119,16 +119,19 @@ export function assertShowsAccount(folder: string, path: string, account: string
   assert.ok(close, `${path} shows the banner of ${account}, ${expected.join(',')}, and its pixel is ${rgb.join(',')}`)
 }
 
-/** What the task app's holders counter saw of a name: holders now, the most at once, and how many holds began. */
-export type Holders = { current: number; most: number; holds: number }
+/**
+ * What the task app's holders counter saw of a name: holders now, the most at once, how many holds began, and how many
+ * ended because their page went away before they answered.
+ */
+export type Holders = { current: number; most: number; holds: number; cut: number }
 
 export async function holders(url: string, name: string): Promise<Holders> {
   const response = await fetch(new URL(`/holders?name=${encodeURIComponent(name)}`, url))
   const body: unknown = await response.json()
-  assert.ok(typeof body === 'object' && body !== null && 'most' in body && 'holds' in body && 'current' in body)
-  const { current, most, holds } = body
-  assert.ok(typeof current === 'number' && typeof most === 'number' && typeof holds === 'number')
-  return { current, most, holds }
+  assert.ok(typeof body === 'object' && body !== null && 'most' in body && 'holds' in body && 'current' in body && 'cut' in body)
+  const { current, most, holds, cut } = body
+  assert.ok(typeof current === 'number' && typeof most === 'number' && typeof holds === 'number' && typeof cut === 'number')
+  return { current, most, holds, cut }
 }
 
 /** One run a host program wrote: its folder, its events and its result. */

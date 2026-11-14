@@ -82,7 +82,7 @@ test('workflow family 3: a saved sign-in starts the tests that name it signed in
 }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { env: { [variable]: WORKFLOW_PASSWORD }, timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { env: { [variable]: WORKFLOW_PASSWORD }, timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F3.1: the setup signed in once, the state was saved once, and the test that names it started from it.

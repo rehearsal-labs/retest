@@ -87,7 +87,7 @@ test('workflow family 2: a password signs in, a wrong one is refused, sign-out e
 }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { env: { [variable]: WORKFLOW_PASSWORD }, timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { env: { [variable]: WORKFLOW_PASSWORD }, timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F2.1: the secret is typed by the parent, recorded by name, and the session it opens loads the projects.

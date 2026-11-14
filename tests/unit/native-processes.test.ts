@@ -20,7 +20,7 @@ import { commandOf, endProblem, endRecorded, killRecordedNow, listProcesses, Own
 import { makeOwnedFolder, sweepOwnedFolders } from '../../src/native/temporary-folders.ts'
 import { metadataComplete, metadataOutputLimit, metadataSuccess, processTableOutputLimit, readMetadataProcess } from '../../src/shared/metadata-process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
-import { endedPid, processStart } from './native-fake-tools.ts'
+import { endedPid, processStart, stubbornTool } from './native-fake-tools.ts'
 import { unixOnly } from '../support/platform-skip.ts'
 
 // The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
@@ -953,29 +953,28 @@ test('a port held on ::1 alone is not free, and the executor\'s port is drawn pa
   assert.equal(probe, held, '127.0.0.1 alone shows the port free')
 })
 
-// A tool that ignores SIGTERM, as do the processes it starts, so only SIGKILL ends it.
-async function stubbornTool(t: TestContext): Promise<string> {
-  const folder = await mkdtemp(join(tmpdir(), 'retest-native-stubborn-'))
-  t.after(() => rm(folder, { recursive: true, force: true }))
-  const script = join(folder, 'stubborn')
-  await writeFile(script, "#!/bin/sh\ntrap '' TERM\nsleep 30\n")
-  await chmod(script, 0o755)
-  return script
-}
-
 test('a command that ignores SIGTERM is killed once the grace it is given has passed, the default one unless it is given another', macDriver, async (t) => {
-  const script = await stubbornTool(t)
-  // The timeout leaves the shell time to set its trap before SIGTERM comes, even on a loaded machine.
-  const timeoutMs = 500
-  const timed = async (graceMs: number | undefined): Promise<number> => {
-    const began = performance.now()
-    const result = await runCommand(script, [], { timeoutMs, ...(graceMs === undefined ? {} : { graceMs }) })
-    assert.equal(result.timedOut, true)
+  const tool = await stubbornTool(t)
+  // The command is stopped once the tool has set its trap, so nothing but its grace ends it, however late the shell
+  // sets the trap. Its timeout bounds a command that never says so.
+  const graced = async (graceMs: number | undefined): Promise<number> => {
+    const stop = new AbortController()
+    const running = runCommand(tool.path, [], { timeoutMs: 60_000, signal: stop.signal, ...(graceMs === undefined ? {} : { graceMs }) })
+    const first = await Promise.race([tool.ready().then((said) => (said ? 'trapped' : 'silent')), running.then(() => 'ended')])
+    assert.equal(first, 'trapped', 'the tool set its trap before anything signalled it')
+    const stoppedAt = performance.now()
+    stop.abort()
+    const result = await running
+    assert.equal(result.stopped, true)
     assert.deepEqual(result.cleanupProblems, [])
-    return performance.now() - began
+    return performance.now() - stoppedAt
   }
-  const short = await timed(300)
-  assert.ok(short >= timeoutMs + 300 && short < timeoutMs + terminationGraceMs, `a 300 ms grace ended the command after ${short} ms`)
-  const standard = await timed(undefined)
-  assert.ok(standard >= timeoutMs + terminationGraceMs, `the default grace ended the command after ${standard} ms`)
+  const short = await graced(300)
+  const standard = await graced(undefined)
+  assert.ok(short >= 300, `a 300 ms grace ended the command ${short} ms after it was stopped`)
+  assert.ok(standard >= terminationGraceMs, `the default grace ended the command ${standard} ms after it was stopped`)
+  // Both stops pay the same costs around their grace, so the default one takes about 1700 ms longer; half of that is
+  // the least it may take longer, which a grace that was not kept cannot reach whatever the machine's speed.
+  const apart = (terminationGraceMs - 300) / 2
+  assert.ok(standard - short > apart, `the default grace took ${standard} ms and the 300 ms one ${short} ms, less than ${apart} ms apart`)
 })

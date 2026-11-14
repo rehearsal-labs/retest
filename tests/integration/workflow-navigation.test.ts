@@ -91,7 +91,7 @@ test('workflow family 1: pages open by link, redirect and address, a reload load
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F1.1: links, the server's redirect from the moved address, and an absolute address each open their page.

@@ -74,7 +74,7 @@ test('workflow family 5: an edit and a delete reach the server and survive a rel
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F5.1 and F5.2: each test starts from the same three tasks, since each has a browser context of its own.

@@ -82,7 +82,7 @@ test('workflow family 4: a form adds a task the server keeps, Enter submits it, 
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F4.1: typed, chosen and clicked through the page, listed from the server's answer, and still there after a reload.

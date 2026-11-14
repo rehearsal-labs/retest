@@ -21,7 +21,7 @@ import { commandOf, listProcesses, ProcessListUnread, recordedIdentity, systemTo
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { controlledClock } from '../support/controlled-clock.ts'
 import { alive, readApps, readJsonFile, readRequests } from './native-fake-executor.ts'
-import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, processStart, startedProcesses } from './native-fake-tools.ts'
+import { endedPid, fakeAppBundle, fakeTools, fakeWindowProcess, processStart, silentTool, startedProcesses, stubbornTool } from './native-fake-tools.ts'
 import { unixOnly } from '../support/platform-skip.ts'
 
 // The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
@@ -698,39 +698,55 @@ test('a window capture given less than a whole capture\'s time keeps the grace b
 })
 
 test('the window route\'s readings keep the default grace: one that ignores SIGTERM is killed only once that grace has passed', macDriver, async (t) => {
-  const folder = await mkdtemp(join(tmpdir(), 'retest-macos-stubborn-'))
-  t.after(() => rm(folder, { recursive: true, force: true }))
-  const stubborn = join(folder, 'stubborn')
-  await writeFile(stubborn, "#!/bin/sh\ntrap '' TERM\nsleep 30\n")
-  await chmod(stubborn, 0o755)
-  const tools = { ...systemTools, lsappinfo: stubborn, ps: stubborn, osascript: stubborn }
-  // The timeout leaves the shell time to set its trap before SIGTERM comes, even on a loaded machine.
-  const timeoutMs = 500
-  const readings: readonly (readonly [string, () => Promise<unknown>])[] = [
-    ['lsappinfo', () => macosAppProcesses(tools, bundleId, { timeoutMs })],
-    ['ps', () => commandOf(tools, process.pid, timeoutMs)],
-    ['osascript', () => windowsOnScreen(tools, { timeoutMs })],
+  const tool = await stubbornTool(t)
+  const tools = { ...systemTools, lsappinfo: tool.path, ps: tool.path, osascript: tool.path }
+  // What came first: the tool saying it set its trap, or the reading ending.
+  const firstOf = (reading: Promise<unknown>): Promise<string> => Promise.race([tool.ready().then((said) => (said ? 'trapped' : 'silent')), reading.then(() => 'ended')])
+  // A reading that takes a stop is stopped once the tool has set its trap, so nothing but the grace ends it however
+  // late the shell sets the trap; its timeout bounds a reading that never says so.
+  const stoppable: readonly (readonly [string, (signal: AbortSignal) => Promise<unknown>])[] = [
+    ['lsappinfo', (signal) => macosAppProcesses(tools, bundleId, { timeoutMs: 60_000, signal })],
+    ['osascript', (signal) => windowsOnScreen(tools, { timeoutMs: 60_000, signal })],
   ]
-  for (const [name, read] of readings) {
-    const began = performance.now()
-    await read()
-    const tookMs = performance.now() - began
-    assert.ok(tookMs >= timeoutMs + terminationGraceMs, `${name} was ended after ${tookMs} ms`)
+  for (const [name, read] of stoppable) {
+    const stop = new AbortController()
+    const reading = read(stop.signal)
+    assert.equal(await firstOf(reading), 'trapped', `${name} set its trap before anything signalled it`)
+    const stoppedAt = performance.now()
+    stop.abort()
+    await reading
+    const tookMs = performance.now() - stoppedAt
+    assert.ok(tookMs >= terminationGraceMs, `${name} was ended ${tookMs} ms after it was stopped`)
   }
+  // A ps reading takes no stop, so it runs out of its time, the 10 s commandOf gives by default: real time, which leaves
+  // the shell all of it to set its trap.
+  const commandReadingMs = 10_000
+  const began = performance.now()
+  const reading = commandOf(tools, process.pid, commandReadingMs)
+  assert.equal(await firstOf(reading), 'trapped', 'ps set its trap before anything signalled it')
+  await reading
+  const tookMs = performance.now() - began
+  assert.ok(tookMs >= commandReadingMs + terminationGraceMs, `ps was ended after ${tookMs} ms`)
 })
 
 test('a window list or process list that ran out of its time is told from one that could not be read', macDriver, async (t) => {
   const folder = await mkdtemp(join(tmpdir(), 'retest-macos-readings-'))
   t.after(() => rm(folder, { recursive: true, force: true }))
-  const slow = join(folder, 'slow')
+  const slow = await silentTool(t)
   const failing = join(folder, 'failing')
-  await writeFile(slow, '#!/bin/sh\nsleep 30\n')
   await writeFile(failing, "#!/bin/sh\necho 'execution error: the window server did not answer (-1712)' >&2\nexit 1\n")
-  await chmod(slow, 0o755)
   await chmod(failing, 0o755)
-  assert.deepEqual(await readWindowsOnScreen({ ...systemTools, osascript: slow }, { timeoutMs: 200 }), { ok: false, problem: 'osascript did not finish in time and was ended', timedOut: true })
+  // A slow reading gets the 10 s a step gets by default: real time, since the subject is a time that runs out, and all
+  // of it for the tool to start before its time is up, which the tool says it did before the reading ends.
+  const readingMs = 10_000
+  const ranOut = async <Read>(reading: Promise<Read>): Promise<Read> => {
+    const first = await Promise.race([slow.ready().then((said) => (said ? 'running' : 'silent')), reading.then(() => 'ended', () => 'ended')])
+    assert.equal(first, 'running', 'the slow tool was running before its time ran out')
+    return reading
+  }
+  assert.deepEqual(await ranOut(readWindowsOnScreen({ ...systemTools, osascript: slow.path }, { timeoutMs: readingMs })), { ok: false, problem: 'osascript did not finish in time and was ended', timedOut: true })
   assert.deepEqual(await readWindowsOnScreen({ ...systemTools, osascript: failing }, { timeoutMs: 10_000 }), { ok: false, problem: 'osascript ended with exit code 1: execution error: the window server did not answer (-1712)', timedOut: false })
-  await assert.rejects(listProcesses({ ...systemTools, ps: slow }, 200), (error: unknown) => error instanceof ProcessListUnread && error.timedOut && error.message === 'ps did not finish in time and was ended')
+  await assert.rejects(ranOut(listProcesses({ ...systemTools, ps: slow.path }, readingMs)), (error: unknown) => error instanceof ProcessListUnread && error.timedOut && error.message === 'ps did not finish in time and was ended')
   await assert.rejects(listProcesses({ ...systemTools, ps: failing }, 10_000), (error: unknown) => error instanceof ProcessListUnread && !error.timedOut)
 })
 

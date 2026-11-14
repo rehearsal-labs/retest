@@ -41,12 +41,14 @@ test('a scoped click that matches several elements is ambiguous', async ({ page 
 
 test('a click whose outer step matches nothing names that step', async ({ page }) => {
   await page.goto('/lookup/find')
-  await page.getByTestId('trash').getByRole('button').click()
+  // Nothing ever matches, so the click runs out of the time it is given here.
+  await page.getByTestId('trash').getByRole('button').click({ timeout: 1500 })
 })
 
 test('a click whose index is past the matches says how many there were', async ({ page }) => {
   await page.goto('/lookup/find')
-  await page.getByRole('listitem').nth(9).click()
+  // Nothing ever matches, so the click runs out of the time it is given here.
+  await page.getByRole('listitem').nth(9).click({ timeout: 1500 })
 })
 
 test('a CSS selector the page cannot read fails at once', async ({ page }) => {
@@ -56,7 +58,8 @@ test('a CSS selector the page cannot read fails at once', async ({ page }) => {
 
 test('an assertion whose outer step matches nothing names that step', async ({ page }) => {
   await page.goto('/lookup/find')
-  await expect(page.getByTestId('trash').getByRole('button')).toBeVisible()
+  // Nothing ever matches, so the check runs out of the time it is given here.
+  await expect(page.getByTestId('trash').getByRole('button')).toBeVisible({ timeout: 1500 })
 })
 
 test('state matchers and their negations pass on what the page shows', async ({ page }) => {
@@ -185,7 +188,8 @@ test.describe('a hover that cannot reach its element', (test) => {
 
   test('does not move onto a covered element', async ({ page }) => {
     await page.goto('/lookup/hover')
-    await page.getByTestId('under').hover()
+    // The cover never moves, so the hover runs out of the time it is given here.
+    await page.getByTestId('under').hover({ timeout: 1500 })
   })
 })
 

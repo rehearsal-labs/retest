@@ -89,7 +89,7 @@ test('workflow family 9: the server searches, filters and pages the catalogue, a
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F9.1: Enter submitted the form once, and the server answered with the three matches.

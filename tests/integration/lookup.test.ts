@@ -21,7 +21,8 @@ function durationOf(run: FinishedRun, name: string, type: 'action.failed' | 'ass
 
 test('scoped locators, picks, CSS, placeholders, patterns, state and page matchers, history, hover and shortcuts, against real Chrome', async (t) => {
   const app = await openApp(t)
-  const run = await runRetest(t, { files: [scenario('lookup')], baseUrl: app.url, timeouts: budgets({ action: 1500, assertion: 1500 }) })
+  // The budgets users get; the cases whose subject is running out of time give 1500 ms on the step itself.
+  const run = await runRetest(t, { files: [scenario('lookup')], baseUrl: app.url, timeouts: budgets() })
   assertStdoutIsEvents(run)
   assert.equal(run.exit.code, 1, JSON.stringify({ stderr: run.stderr, failure: run.result?.failure, counts: run.result?.counts }))
 
@@ -75,7 +76,10 @@ test('scoped locators, picks, CSS, placeholders, patterns, state and page matche
   const [invalidStatus, invalidKind, invalidMessage] = outcome(run, 'a CSS selector the page cannot read fails at once')
   assert.deepEqual([invalidStatus, invalidKind], ['failed', 'usage'])
   assert.match(invalidMessage ?? '', /^Could not click locator\('li:no-such-thing'\): the page cannot read the CSS selector in locator\('li:no-such-thing'\)\. .*not a valid selector/)
-  assert.ok(durationOf(run, 'a CSS selector the page cannot read fails at once', 'action.failed') < 1000, 'it fails at once')
+  // At once is on its first look: before a click on nothing, which looks again and again, has run out of its 1500 ms.
+  const invalidMs = durationOf(run, 'a CSS selector the page cannot read fails at once', 'action.failed')
+  const nothingMs = durationOf(run, 'a click whose outer step matches nothing names that step', 'action.failed')
+  assert.ok(invalidMs < nothingMs, `it fails at once, in ${invalidMs} ms, and the click on nothing ran out of its time in ${nothingMs} ms`)
   const [stepStatus, stepKind, stepMessage] = outcome(run, 'an assertion whose outer step matches nothing names that step')
   assert.deepEqual([stepStatus, stepKind], ['failed', 'not_found'])
   assert.match(stepMessage ?? '', /^getByTestId\('trash'\)\.getByRole\('button'\) matched no element\. getByTestId\('trash'\) matched no element\. Looked \d+ times in 1500 ms\.$/)

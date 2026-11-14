@@ -143,7 +143,7 @@ test('two owners share one host budget without oversubscribing it, and both get 
 })
 
 // A run stopped while attempts wait for and hold sessions gives every one of them back, and the next run on the same
-// budget gets its sessions at once.
+// budget gets its sessions in the turn it asks for them.
 function cancelProgram(url: string): string {
   return `import { chrome, defineConfig } from '@rehearsal-labs/retest'
 import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
@@ -154,9 +154,23 @@ const loaded = validateConfig(defineConfig({ apps: { web: chrome({ baseUrl: ${JS
 if (!loaded.ok) throw new Error(loaded.failure.message)
 const secrets = resolveSecrets(loaded.config, {})
 if (!secrets.ok) throw new Error(secrets.failure.message)
-const budget = new SessionBudget({ perOwner: 1, host: 1 })
-// A stopped run ends within its cleanup budget, given here as 5 s, so it ends before the 8 s hold could.
-const timeouts = ${JSON.stringify({ ...defaultTimeouts, cleanup: 5000 })}
+// The budget's clock counts turns of the event loop, so its waits are in turns: a request granted in the turn it was
+// made waited 0, and one granted once sessions came back, which happens in a later turn, waited at least 1. A clock
+// in milliseconds rounds a slow turn up to 1 too.
+let turn = 0
+let turning = false
+const turns = () => {
+  if (!turning) {
+    turning = true
+    setImmediate(() => {
+      turn += 1
+      turning = false
+    })
+  }
+  return turn
+}
+const budget = new SessionBudget({ perOwner: 1, host: 1 }, turns)
+const timeouts = ${JSON.stringify(defaultTimeouts)}
 const stop = new AbortController()
 let waitingWhenStopped = -1
 let hostWhenStopped = -1
@@ -189,21 +203,21 @@ const options = (output, files, signal) => ({
   files, rootDir: process.cwd(), apps: { kind: 'config', config: loaded.config, secrets: secrets.secrets }, timeouts,
   outputDir: join(folder, output), headless: true, signal, workers: 3, lastRunFile: false, sessions: { owner: 'agent-1', budget, waitMs: 60000 },
 })
-const startedAt = performance.now()
 const stopped = await runFiles(options('stopped', ['tests/a.retest.ts', 'tests/b.retest.ts', 'tests/c.retest.ts'], stop.signal), [reporter])
-const stoppedMs = Math.round(performance.now() - startedAt)
 const after = budget.snapshot()
 const next = await runFiles(options('next', ['tests/quick.retest.ts'], new AbortController().signal), [])
-process.stdout.write(JSON.stringify({ stopped: stopped.exitCode, stoppedMs, waitingWhenStopped, hostWhenStopped, after: { host: after.host, waiting: after.waiting }, next: next.exitCode }) + '\\n')
+process.stdout.write(JSON.stringify({ stopped: stopped.exitCode, waitingWhenStopped, hostWhenStopped, after: { host: after.host, waiting: after.waiting }, next: next.exitCode }) + '\\n')
 `
 }
 
 test('cancelling a run gives back the sessions it held and the ones it was waiting for, within a bounded time', async (t) => {
   const app = await openApp(t)
+  // The hold answers only once released, which nothing here asks for, or at the app's longest hold, so the stop is what
+  // ends it, by closing its page: the app counts that hold as cut short.
   const long = (letter: string): string => `import { expect, test } from '@rehearsal-labs/retest'
 
 test('${letter} holds for long', async ({ page }) => {
-  await page.goto('/holders/hold?name=cancelled&ms=8000')
+  await page.goto('/holders/hold?name=cancelled&release=1')
   await expect(page.getByTestId('held-name')).toHaveText('cancelled')
 })
 `
@@ -218,20 +232,18 @@ test('${letter} holds for long', async ({ page }) => {
   const hosted = await runHostProgram(t, root, 'host.ts', ['stopped', 'next'])
   assert.equal(hosted.code, 0, hosted.stderr)
   const printed: unknown = JSON.parse(hosted.stdout.trim().split('\n').at(-1) ?? '{}')
-  assert.ok(typeof printed === 'object' && printed !== null)
   assert.deepEqual(
-    Object.fromEntries(Object.entries(printed).filter(([key]) => key !== 'stoppedMs')),
+    printed,
     { stopped: 130, waitingWhenStopped: 2, hostWhenStopped: 1, after: { host: 0, waiting: 0 }, next: 0 },
     'one attempt held the only session and two waited when the run stopped; afterwards nothing is held or waiting, and the next run ran',
   )
-  const stoppedMs = 'stoppedMs' in printed && typeof printed.stoppedMs === 'number' ? printed.stoppedMs : Infinity
-  assert.ok(stoppedMs < 8000, `the stopped run ended in ${stoppedMs} ms, before the hold it was in could finish`)
+  assert.deepEqual(await holders(app.url, 'cancelled'), { current: 0, most: 1, holds: 1, cut: 1 }, 'the stopped run ended the hold it was in by closing its page, and did not wait for it')
   const stopped = hosted.runs['stopped']?.result
   assert.equal(stopped?.status, 'interrupted')
   const statuses = stopped?.files.flatMap((file) => file.tests.map((each) => each.status)).sort()
   assert.deepEqual(statuses, ['error', 'not_run', 'not_run'], 'the attempt that held the session was stopped and the two waiting never ran')
   const next = reserved(hosted.runs['next']?.events ?? [])
-  assert.deepEqual(next.map((event) => event.waitedMs), [0], 'the next run got its session at once')
+  assert.deepEqual(next.map((event) => event.waitedMs), [0], 'the next run got its session in the turn it asked for it')
 })
 
 // One owner's run is stopped while it holds the host's only session and another owner's run waits for it. The waiting

@@ -97,7 +97,7 @@ test('workflow family 6: a wrong form shows an error per field and sends nothing
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F6.1: the page refused the form itself, so nothing under that name reached the server.

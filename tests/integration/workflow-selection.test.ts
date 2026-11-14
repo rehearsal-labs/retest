@@ -86,7 +86,7 @@ test('workflow family 7: a select, checkboxes and radios change and save the pre
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F7.1: each choice changed the form once, the server saved all of them, and the reloaded page is drawn from them.

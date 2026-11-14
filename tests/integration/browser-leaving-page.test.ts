@@ -4,10 +4,10 @@ import type { CommandResult } from '../../src/protocol/commands.ts'
 import type { FrameRecipe, LocatorRecipe } from '../../src/protocol/locator.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { EDIT_HEADING } from '../../fixtures/task-app/leaving-page.ts'
+import { EDIT_HEADING, RELEASE_PATH, TELL_PATH } from '../../fixtures/task-app/leaving-page.ts'
 import { ChromiumPage } from '../../src/browser/page.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
-import { assertOk, awaitFirstLook, byTestId, click, failureOf, goto, launchGated, openApp, openPage, sharedBrowser, timed } from './browser-harness.ts'
+import { assertOk, awaitFirstLook, byTestId, click, failureOf, goto, launchGated, openApp, openPage, sharedBrowser, timed, within } from './browser-harness.ts'
 
 // A check right after an action that leaves the page must read the page the action opens, never the one it leaves: a
 // look reads nothing while the main frame has another document on its way, and reads the new one once it is there. The
@@ -20,12 +20,43 @@ const heading = byTestId('task-heading')
 type Edit = { url: string; page: OwnedPage }
 
 // The edit page, opened and looked at once, so the first look of a case is not the one Chrome lays the page out for.
-async function openEdit(t: TestContext, from: OwnedBrowser, waitMs = 600): Promise<Edit> {
+async function openEdit(t: TestContext, from: OwnedBrowser, query = 'wait=600'): Promise<Edit> {
   const app = await openApp(t)
   const page = await openPage(t, from, app.url)
-  assertOk(await goto(page, `/leaving/edit?wait=${waitMs}`))
+  assertOk(await goto(page, `/leaving/edit?${query}`))
   await awaitFirstLook(page, heading)
   return { url: app.url, page }
+}
+
+// A browser that resolves `requested` once the page asks for the save, after Retest has heard it ask.
+function savingBrowser(t: TestContext): { browser: Promise<OwnedBrowser>; requested: Promise<void> } {
+  const requested = Promise.withResolvers<void>()
+  const browser = launchGated(t, {
+    watch: (message) => {
+      const params = message['params']
+      const asked = typeof params === 'object' && params !== null && 'url' in params ? String(params.url) : ''
+      if (message['method'] === 'Page.frameRequestedNavigation' && asked.includes('/leaving/save')) requested.resolve()
+    },
+  })
+  return { browser, requested: requested.promise }
+}
+
+// Opens the edit page on a server that holds the save until this test lets it go, and sets the page off for the save
+// once its click has answered: Chrome holds a call into a document that has set off for another until that one
+// arrives, so a click that sets the page off itself can end only once the save answers, or its own time runs out.
+async function setOffForHeldSave(t: TestContext): Promise<Edit> {
+  const { browser, requested } = savingBrowser(t)
+  const edit = await openEdit(t, await browser, 'held=1')
+  assertOk(await click(edit.page, 'save-when-told'))
+  const told = await fetch(new URL(TELL_PATH, edit.url), { method: 'POST' })
+  assert.deepEqual(await told.json(), { told: 1 })
+  await within(requested, defaultTimeouts.navigation, 'the page did not ask for the save once told')
+  return edit
+}
+
+// Lets go of the saves the server holds, and says how many it held.
+async function releaseSaves(url: string): Promise<unknown> {
+  return (await fetch(new URL(RELEASE_PATH, url), { method: 'POST' })).json()
 }
 
 function look(page: OwnedPage, timeoutMs: number = defaultTimeouts.assertion): Promise<CommandResult> {
@@ -69,30 +100,23 @@ test('an action right after a click that posts a form waits for the page the ser
 // Nothing tells Retest of a submit a timer makes until the page asks for it, after the click has answered, so a look
 // before then reads the edit page. Once the page has asked, a look waits for the page that answers.
 test('a look once the page asked for the submit its click listener deferred with a timer of 0 reads the page that answers', async (t) => {
-  const requested = Promise.withResolvers<void>()
-  const gated = await launchGated(t, {
-    watch: (message) => {
-      const params = message['params']
-      const asked = typeof params === 'object' && params !== null && 'url' in params ? String(params.url) : ''
-      if (message['method'] === 'Page.frameRequestedNavigation' && asked.includes('/leaving/save')) requested.resolve()
-    },
-  })
-  const { url, page } = await openEdit(t, gated)
+  const { browser: gated, requested } = savingBrowser(t)
+  const { url, page } = await openEdit(t, await gated)
   assertOk(await click(page, 'save-soon'))
-  await requested.promise
+  await within(requested, defaultTimeouts.navigation, 'the page did not ask for the save')
   assert.deepEqual(readOn(await look(page)), [0, `${url}/leaving/save`])
 })
 
 test('a look while the page is still opening another document fails once its time is up, naming the address, having read nothing', async (t) => {
-  const { url, page } = await openEdit(t, browser(), 10_000)
-  assertOk(await click(page, 'save'))
+  const { url, page } = await setOffForHeldSave(t)
   const { value, ms } = await timed(look(page, 800))
   assert.deepEqual(failureOf(value), {
     class: 'timeout',
     message: `Could not read getByTestId('task-heading') within 800 ms: the page was still opening ${url}/leaving/save, so Retest read nothing.`,
     details: { check: 'navigation', url: `${url}/leaving/save`, waitedMs: 800 },
   })
-  assert.ok(ms >= 790 && ms < 5000, `took ${ms} ms, and the server answers after 10000`)
+  assert.ok(ms >= 790, `took ${ms} ms, and the look waits out its 800`)
+  assert.deepEqual(await releaseSaves(url), { released: 1 }, 'the look ended while the server still held the save')
 })
 
 test("a look at the page itself right after the form's click reads the address and title of the page the server answers", async (t) => {
@@ -104,14 +128,14 @@ test("a look at the page itself right after the form's click reads the address a
 })
 
 test("a look at the page itself while the page is still opening another document fails once its time is up, naming the address", async (t) => {
-  const { url, page } = await openEdit(t, browser(), 10_000)
-  assertOk(await click(page, 'save'))
+  const { url, page } = await setOffForHeldSave(t)
   const result = await page.execute({ kind: 'observePage' }, 800)
   assert.deepEqual(failureOf(result), {
     class: 'timeout',
     message: `Could not read the page within 800 ms: the page was still opening ${url}/leaving/save, so Retest read nothing.`,
     details: { check: 'navigation', url: `${url}/leaving/save`, waitedMs: 800 },
   })
+  assert.deepEqual(await releaseSaves(url), { released: 1 }, 'the look ended while the server still held the save')
 })
 
 test("a layout look right after the form's click measures the page the server answers", async (t) => {

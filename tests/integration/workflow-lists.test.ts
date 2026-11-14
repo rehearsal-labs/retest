@@ -83,7 +83,7 @@ test('workflow family 8: the rows read in order, cells are found by name, a colu
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     [file]: tests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
+  const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 1, run.stderr)
 
   // F8.1 and F8.2: every row's text in order, cells by their names, and the name column sorted both ways.

@@ -2,6 +2,7 @@ import type { TestContext } from 'node:test'
 import type { NativeTools } from '../../src/native/processes.ts'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
+import { closeSync, constants, openSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -135,6 +136,51 @@ export async function fakeCheckout(root: string, options: { readonly name: strin
     await writeFile(join(folder, path), text)
   }
   return folder
+}
+
+/** A tool that never answers, and `ready`, which says whether a run of it got as far as saying so before its pipe closed. */
+export type WaitingTool = { readonly path: string; ready(): Promise<boolean> }
+
+/**
+ * Writes a tool that ignores SIGTERM, as do the processes it starts, so only SIGKILL ends it. Each run says through a
+ * named pipe once it has set its trap, since a signal that comes first ends it at once, and a loaded machine can make
+ * the shell late to set it.
+ */
+export function stubbornTool(t: TestContext): Promise<WaitingTool> {
+  return waitingTool(t, 'stubborn', (said) => `#!/bin/sh\ntrap '' TERM\necho ready > ${said}\nsleep 30\n`)
+}
+
+/**
+ * Writes a tool that never answers until SIGTERM ends it, one shell and no process of its own: each run says through a
+ * named pipe once it is running, then waits on a second pipe nothing writes to. A tool still starting when a signal or
+ * a reading's end comes is not yet the process Retest recorded, which a loaded machine can make it.
+ */
+export function silentTool(t: TestContext): Promise<WaitingTool> {
+  return waitingTool(t, 'silent', (said, folder) => `#!/bin/sh\necho ready > ${said}\nread line < ${quoteShellArgument(join(folder, 'never'))}\n`)
+}
+
+// A tool whose script says `ready` through the pipe `said` names, in a folder of its own with a pipe `never` beside it.
+// A reader still waiting on `said` after the test, for a run that never said, is let go.
+async function waitingTool(t: TestContext, name: string, script: (said: string, folder: string) => string): Promise<WaitingTool> {
+  const folder = await mkdtemp(join(tmpdir(), `retest-native-${name}-`))
+  const said = join(folder, 'said')
+  for (const pipe of [said, join(folder, 'never')]) {
+    const made = spawnSync('mkfifo', [pipe])
+    if (made.status !== 0) throw new Error(`mkfifo could not make ${pipe}: ${made.stderr.toString()}`)
+  }
+  const path = join(folder, name)
+  await writeFile(path, script(quoteShellArgument(said), folder))
+  await chmod(path, 0o755)
+  t.after(async () => {
+    try {
+      closeSync(openSync(said, constants.O_WRONLY | constants.O_NONBLOCK))
+    } catch (error) {
+      // No reader is waiting on the pipe.
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENXIO')) throw error
+    }
+    await rm(folder, { recursive: true, force: true })
+  })
+  return { path, ready: async () => (await readFile(said, 'utf8')) === 'ready\n' }
 }
 
 /** Quotes one literal shell argument; fixture paths can contain spaces or apostrophes. */
