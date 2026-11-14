@@ -6,7 +6,7 @@ import type { FakeTools } from './native-fake-tools.ts'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { createServer, Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -519,10 +519,14 @@ test('a window recording that starts before the app\'s window is on screen asks 
   assert.equal(stats.dropped, 3)
 })
 
-// Sets whether the fake executor's tree holds the app's window, keeping its other settings.
+// Sets whether the fake executor's tree holds the app's window, keeping its other settings. The executor reads the
+// file on every request, while a recording is asking for trees, so the new settings replace the file in one step: a
+// file caught half written reads as no settings at all, and the tree then names another app.
 async function treeWithoutWindow(root: string, windowless: boolean): Promise<void> {
   const config = readJsonFile(join(root, 'config.json'))
-  await writeFile(join(root, 'config.json'), JSON.stringify({ ...(isPlainObject(config) ? config : {}), windowless }))
+  const next = join(root, 'config.json.next')
+  await writeFile(next, JSON.stringify({ ...(isPlainObject(config) ? config : {}), windowless }))
+  await rename(next, join(root, 'config.json'))
 }
 
 test('a window recording that starts before the app\'s tree holds its window asks again within its start budget, and a running one drops that frame', darwinOnly, async (t) => {

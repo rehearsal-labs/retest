@@ -508,7 +508,11 @@ describe('a run stopped while a judge is answering', async () => {
   const root = tempProject({ 'retest.config.ts': config({ tag: 'late' }), 'tests/late.retest.ts': `${imports}\ntest('late reply', async () => {\n  ${check('late')}\n})\n` })
   const controller = new AbortController()
   const running = runProject(root, { files: ['tests/late.retest.ts'], signal: controller.signal })
-  for (let waited = 0; !callsOf('late').some((call) => call.behaviour === 'late') && waited < 5000; waited += 20) await sleep(20)
+  // The run is stopped once the judge has the call, however long the file's process took to start: a wait that gave up
+  // after some seconds stopped a slow run before its check began. A run that ends first ends the wait.
+  let ended = false
+  void running.then(() => (ended = true), () => (ended = true))
+  while (!ended && !callsOf('late').some((call) => call.behaviour === 'late')) await sleep(20)
   controller.abort('SIGINT')
   const record = await running
 
