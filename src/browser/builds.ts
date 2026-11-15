@@ -299,7 +299,7 @@ export const pinnedBuilds: readonly BuildPin[] = [
         { path: 'chrome-headless-shell-win64/LICENSE.headless_shell', ...headlessShellNotice, sha256: '477eecded4058f14bee802ac3a97b439e89ca2a8b4e8aed2ce70485d84c9b5b5' },
       ],
     },
-    provenance: 'Archive size and checksum, executable and both licence files read from the Google publisher download of 15 November 2026, unpacked with unzip on a Linux x64 machine. Not yet installed or run on Windows.',
+    provenance: 'Archive size and checksum, executable and both licence files read from the Google publisher download of 15 November 2026, unpacked with unzip on a Linux x64 machine. Installed by retest install on Windows Server 2025 x64, on a GitHub windows-2025 runner on 15 November 2026, where install --list --verify passed, and run there headless.',
   },
   {
     kind: 'archive',

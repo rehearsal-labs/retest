@@ -79,7 +79,7 @@ On macOS on Apple silicon, Retest pins Chrome for Testing and its headless shell
 
 | | |
 | --- | --- |
-| Browsers | Chrome and Chromium. A headless `chromium()` target runs Chrome's headless shell, checked on Ubuntu 24.04 x64 and macOS arm64. Firefox 158.0.1 on macOS on Apple silicon and on Windows x64. WebKit build 2359 on macOS on Apple silicon |
+| Browsers | Chrome and Chromium. A headless `chromium()` target runs Chrome's headless shell, checked on Ubuntu 24.04 x64, macOS arm64 and Windows Server 2025 x64. Firefox 158.0.1 on macOS on Apple silicon and on Windows x64. WebKit build 2359 on macOS on Apple silicon |
 | iOS simulator apps | Find, tap, fill and check elements through WebDriverAgent, built on your Mac from a pinned commit, or through agent-device 0.21.36, an optional peer, with `driver: 'agent-device'`. agent-device was checked on the iOS 26.5 simulator |
 | macOS apps | Find, click, fill and check elements through the macOS runner of appium-mac2-driver |
 | Electron apps | The app's first window, driven like a Chrome page, its downloads, and the windows it opens through `page.popup()`. Checked with Electron 44.5.1 on macOS and Windows; downloads and second windows on macOS only |

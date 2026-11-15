@@ -3,7 +3,7 @@ import type { CdpSession } from './cdp/session.ts'
 import type { ChromiumProcess } from './chromium-process.ts'
 import type { NewPageOptions, ProxyOptions, WebRuntime, WebRuntimeIdentity, WebSession } from './contract.ts'
 import type { RecordedWindow } from './default-window.ts'
-import type { ShellParity } from './shell-parity.ts'
+import type { ShellHost, ShellParity } from './shell-parity.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -36,6 +36,8 @@ export type BrowserOptions = {
   note?: ((line: string) => void) | undefined
   /** Whether the browser was started headless: only a headless page is given the window Retest 0.4.2 gave it. */
   headless?: boolean | undefined
+  /** The machine as Chrome's headless shell is given it, read while it started; this process's own when absent. */
+  host?: ShellHost | undefined
 }
 
 const contextSchema = s.object({ browserContextId: s.string() })
@@ -85,7 +87,7 @@ export class ChromiumBrowser implements WebRuntime {
     this.#disconnects = new Listeners(options.onListenerError)
     this.#popups = new PopupWatch(options.connection)
     this.#downloads = new BrowserDownloads(options.connection, options.onListenerError)
-    this.#parity = shellParity(options.version)
+    this.#parity = shellParity(options.version, options.host)
     this.#window = options.headless === true ? recordedWindow(options.version) : undefined
     this.#note = options.note
     this.#connection.onDisconnect((reason) => {

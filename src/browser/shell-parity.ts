@@ -3,7 +3,9 @@ import type { CdpConnection } from './cdp/connection.ts'
 import type { CdpSession } from './cdp/session.ts'
 import type { Deadline } from '../protocol/deadline.ts'
 import type { Emulation } from '../protocol/emulation.ts'
+import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { s } from '../protocol/schema.ts'
 import { request, sendOptions } from './cdp-results.ts'
 import { recordedScreen } from './default-window.ts'
@@ -55,16 +57,18 @@ export type ShellHost = {
   readonly env: Readonly<Record<string, string | undefined>>
   /** The macOS version as the system names it, such as `27.2`, where it could be read. */
   readonly macosVersion?: string | undefined
+  /** On Windows, the version Chrome gives as the platform's, such as `19.0.0`, where it could be read. */
+  readonly windowsVersion?: string | undefined
 }
 
 const empty = s.object({})
 
 // Chrome's defaults from its locale_settings_linux, _mac and _win resources and its per-script font settings, as
 // Playwright 1.65.1 sends them to every Chromium page (playwright-core, platformToFontFamilies, Apache-2.0), except the
-// fixed family on macOS: Chrome for Testing 153 resolves monospace to Menlo there, where that table names Courier. The
-// Linux and macOS tables were held against Chrome for Testing 153, which with them drew a page of text and form controls
-// pixel for pixel as the shell did; without them the generic families were other fonts. The per-script tables and
-// Windows were not checked.
+// fixed family on macOS: Chrome for Testing 153 resolves monospace to Menlo there, where that table names Courier. Held
+// against Chrome for Testing 153, the shell with these tables drew a page of text and form controls pixel for pixel as it
+// did on Linux and Windows, and on macOS differed in 215 of 312,228 pixels, at form controls; without them the generic
+// families were other fonts on Linux and macOS. The per-script tables were not checked.
 const chromeFonts: Readonly<Record<'linux' | 'darwin' | 'win32', FontFamilies>> = {
   linux: { fontFamilies: { standard: 'Times New Roman', fixed: 'Monospace', serif: 'Times New Roman', sansSerif: 'Arial', cursive: 'Comic Sans MS', fantasy: 'Impact' } },
   darwin: {
@@ -103,22 +107,37 @@ export function thisHost(): ShellHost {
   return { platform: process.platform, arch: process.arch, env: process.env, macosVersion: process.platform === 'darwin' ? readMacosVersion() : undefined }
 }
 
+// Reading the Windows version starts a program, so it is read once for the process; the version is the machine's.
+let windowsVersionReading: Promise<string | undefined> | undefined
+
+/**
+ * The machine as Chrome's headless shell is given it: `thisHost()`, and on Windows the version Chrome gives as the
+ * platform's, read from the registry as Chrome reads it. A launch reads it while the shell starts.
+ */
+export async function shellHost(): Promise<ShellHost> {
+  const host = thisHost()
+  if (host.platform !== 'win32') return host
+  windowsVersionReading ??= readWindowsVersion()
+  return { ...host, windowsVersion: await windowsVersionReading }
+}
+
 /**
  * What a page of this browser is given to read as Chrome for Testing does, or undefined for any browser but the
  * headless shell.
  *
  * @example shellParity({ product: 'HeadlessChrome', version: '153.0.8010.12', userAgent }, { platform: 'linux', arch: 'x64', env: process.env })?.userAgent.acceptLanguage // 'en-US,en'
  */
-export function shellParity(version: BrowserVersion, host: ShellHost = thisHost()): ShellParity | undefined {
+export function shellParity(version: BrowserVersion, given?: ShellHost): ShellParity | undefined {
   if (version.product !== shellProduct) return undefined
+  const host = given ?? thisHost()
   const acceptLanguage = chromeLanguages(host.platform, host.env)
   const major = version.version.split('.')[0] ?? ''
   const shellAgent = `${shellProduct}/${version.version}`
   // Chrome gives its major version and zeros in its user agent, where the shell gives the whole version.
   const reduced = /^\d+$/.test(major) && version.userAgent.includes(shellAgent) ? version.userAgent.replace(shellAgent, `${shellProduct}/${major}.0.0.0`) : undefined
   // Chrome's client hints name Chromium and a grease brand, where the shell's add a HeadlessChrome brand. The other
-  // hints are the operating system's, which Retest knows on Linux, where Chrome gives no platform version, and on macOS,
-  // where it gives the system's version; on Windows the shell keeps its own brands and user agent.
+  // hints are the operating system's: on Linux Chrome gives no platform version, on macOS the system's version, and on
+  // Windows the version of the system's API contract; where Retest could not read it, the shell keeps its own.
   const system = clientHintsSystem(host)
   const metadata = reduced === undefined || system === undefined ? undefined : chromeMetadata(Number(major), version.version, system)
   const userAgent = metadata === undefined ? { userAgent: '', acceptLanguage } : { userAgent: reduced ?? '', acceptLanguage, userAgentMetadata: metadata }
@@ -183,13 +202,39 @@ export function chromeLanguages(platform: NodeJS.Platform, env: Readonly<Record<
 type HintedSystem = { readonly platform: string; readonly platformVersion: string; readonly arch: string }
 
 // What Chrome for Testing 153 named the system in its client hints: on Linux no version, on macOS the system's version
-// in three parts (27.2.0 on macOS 27.2).
+// in three parts (27.2.0 on macOS 27.2), and on Windows the version Retest read as Chrome reads it (19.0.0 on Windows
+// Server 2025).
 function clientHintsSystem(host: ShellHost): HintedSystem | undefined {
   if (host.platform === 'linux') return { platform: 'Linux', platformVersion: '', arch: host.arch }
+  if (host.platform === 'win32') return host.windowsVersion === undefined ? undefined : { platform: 'Windows', platformVersion: host.windowsVersion, arch: host.arch }
   if (host.platform !== 'darwin' || host.macosVersion === undefined) return undefined
   const parts = host.macosVersion.split('.')
   if (parts.length > 3 || !parts.every((part) => /^\d+$/.test(part))) return undefined
   return { platform: 'macOS', platformVersion: [...parts, '0', '0'].slice(0, 3).join('.'), arch: host.arch }
+}
+
+// Chromium's components/embedder_support/user_agent_utils.cc (BSD-3-Clause) gives Windows 10 1809 and later the version
+// of the Windows.Foundation.UniversalApiContract in the registry: its high word, its low word, then 0.
+const contractKey = 'HKLM\\SOFTWARE\\Microsoft\\WindowsRuntime\\WellKnownContracts'
+const contractValue = 'Windows.Foundation.UniversalApiContract'
+
+function readWindowsVersion(): Promise<string | undefined> {
+  const reg = join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'reg.exe')
+  return new Promise((resolve) => {
+    execFile(reg, ['query', contractKey, '/v', contractValue], { windowsHide: true, timeout: 5_000 }, (error, stdout) => resolve(error === null ? windowsVersionFrom(stdout) : undefined))
+  })
+}
+
+/**
+ * The platform version Chrome gives on Windows, from what `reg query` prints of the contract's value, or undefined.
+ *
+ * @example windowsVersionFrom('    Windows.Foundation.UniversalApiContract    REG_DWORD    0x130000') // '19.0.0'
+ */
+export function windowsVersionFrom(printed: string): string | undefined {
+  const found = /Windows\.Foundation\.UniversalApiContract\s+REG_DWORD\s+0x([0-9a-fA-F]{1,8})\b/.exec(printed)?.[1]
+  if (found === undefined) return undefined
+  const value = Number.parseInt(found, 16)
+  return `${Math.floor(value / 0x10000)}.${value % 0x10000}.0`
 }
 
 function readMacosVersion(): string | undefined {

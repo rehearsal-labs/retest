@@ -29,13 +29,15 @@ export type RecordedWindow = { readonly window: Size; readonly screen: Size; rea
 export type WindowKind = 'page' | 'tab' | 'none'
 
 // Read through Retest 0.4.2 with Chrome for Testing 153.0.8010.12, headless, with no viewport: on Linux x64 from the
-// published package (Ubuntu 24.04, 15 November 2026), on macOS arm64 from the same source, commit 8f2d789. Windows was
-// not read, so neither program is given a window there. On macOS the headless shell reports a page's view as its window
+// published package (Ubuntu 24.04, 15 November 2026), on macOS arm64 from the same source, commit 8f2d789, and on Windows
+// x64 from the published package (Windows Server 2025 on GitHub's windows-2025 runner, 15 November 2026), where the
+// window's frame takes 16 pixels of its width. On macOS the headless shell reports a page's view as its window
 // once device metrics resize the view, so the page read its viewport's size as its outer size (756x413 where Chrome
 // read 756x556); the recorded viewport fits inside the window, so the view need not shrink with it.
 const recorded: Readonly<Partial<Record<NodeJS.Platform, RecordedWindow>>> = {
   linux: { window: { width: 780, height: 580 }, screen: { width: 800, height: 600 }, page: { viewport: { width: 780, height: 437 }, position: { x: 20, y: 20 } }, tab: { viewport: { width: 780, height: 493 }, position: { x: 20, y: 20 } } },
   darwin: { window: { width: 756, height: 556 }, screen: { width: 800, height: 600 }, page: { viewport: { width: 756, height: 413 }, position: { x: 44, y: 44 } }, tab: { viewport: { width: 756, height: 413 }, position: { x: 44, y: 44 } }, keepView: true },
+  win32: { window: { width: 780, height: 580 }, screen: { width: 800, height: 600 }, page: { viewport: { width: 764, height: 429 }, position: { x: 20, y: 20 } }, tab: { viewport: { width: 764, height: 485 }, position: { x: 20, y: 20 } } },
 }
 
 const empty = s.object({})

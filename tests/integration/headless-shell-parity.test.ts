@@ -20,11 +20,12 @@ const skip = shell === undefined || shell === '' || chrome === undefined || chro
   : false
 
 // What a page with no viewport read in Retest 0.4.2 on Chrome for Testing 153.0.8010.12, measured through the published
-// package on Linux x64 and through its source on macOS arm64: a page Retest opened, and a window a page opened as a tab.
-// The change of default must leave both as they were, on Chrome and on the shell. Windows was never read.
+// package on Linux x64 and Windows x64 and through its source on macOS arm64: a page Retest opened, and a window a page
+// opened as a tab. The change of default must leave both as they were, on Chrome and on the shell.
 const window042: Partial<Record<NodeJS.Platform, { readonly page: unknown; readonly tab: unknown }>> = {
   linux: { page: { viewport: [780, 437], window: [780, 580], screen: [800, 600, 800, 600], position: [20, 20] }, tab: { viewport: [780, 493], window: [780, 580], screen: [800, 600, 800, 600], position: [20, 20] } },
   darwin: { page: { viewport: [756, 413], window: [756, 556], screen: [800, 600, 800, 600], position: [44, 44] }, tab: { viewport: [756, 413], window: [756, 556], screen: [800, 600, 800, 600], position: [44, 44] } },
+  win32: { page: { viewport: [764, 429], window: [780, 580], screen: [800, 600, 800, 600], position: [20, 20] }, tab: { viewport: [764, 485], window: [780, 580], screen: [800, 600, 800, 600], position: [20, 20] } },
 }
 
 // What a page reads of the browser, posted back to the server under the app's name, then shown in the title.

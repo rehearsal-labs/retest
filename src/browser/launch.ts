@@ -22,7 +22,7 @@ import { checkExecutable } from './executable.ts'
 import { isHeadlessShell } from './executables.ts'
 import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
 import { readStartAttempt } from './sandbox-system.ts'
-import { shellSwitches } from './shell-parity.ts'
+import { shellHost, shellSwitches } from './shell-parity.ts'
 import { commandLines, explainStartFailure } from './start-failure.ts'
 
 const launchTimeoutMs = 30_000
@@ -54,7 +54,10 @@ export async function launchBrowser(
   const profile = await createTemporaryProfile(tmpdir()).catch((error: unknown) => {
     throw new LaunchError(`Cannot create a temporary browser profile: ${errorMessage(error)}`, { cause: error })
   })
-  const args = chromiumArguments(profile, options.headless, isHeadlessShell(executable) ? shellSwitches() : [])
+  const shell = isHeadlessShell(executable)
+  const args = chromiumArguments(profile, options.headless, shell ? shellSwitches() : [])
+  // What the shell is told of the machine is read while it starts; on Windows that starts a program, once a process.
+  const host = shell ? shellHost() : undefined
   const outputStart = await logLength(options.logFile)
   const hidden = options.hiddenVariables === undefined ? {} : { hiddenVariables: options.hiddenVariables }
   const redacting = options.redact === undefined ? {} : { redact: options.redact }
@@ -72,7 +75,7 @@ export async function launchBrowser(
     })
     const version = await handshake(connection, deadline)
     const onListenerError = (error: unknown) => log(`a listener failed: ${errorMessage(error)}`)
-    return new ChromiumBrowser({ process: chromium, executablePath: executable, connection, version, onListenerError, note: log, headless: options.headless })
+    return new ChromiumBrowser({ process: chromium, executablePath: executable, connection, version, onListenerError, note: log, headless: options.headless, host: await host })
   } catch (error) {
     const ended = error instanceof CdpDisconnectedError || error instanceof CdpClosedError
     // A program that closed its pipe is usually exiting; how it exits is the best explanation there is.

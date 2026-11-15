@@ -10,7 +10,7 @@ import { buildFolder, cacheFolders, describePin, findPin, installedExecutablePat
 import { LaunchError } from '../../src/browser/contract.ts'
 import { headlessShellVariable, isHeadlessShell, resolveExecutable } from '../../src/browser/executables.ts'
 import { recordedWindow, sizedWindow } from '../../src/browser/default-window.ts'
-import { chromeLanguages, shellParity, shellSwitches } from '../../src/browser/shell-parity.ts'
+import { chromeLanguages, shellParity, shellSwitches, windowsVersionFrom } from '../../src/browser/shell-parity.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { checkBuilds } from '../../src/cli/install/doctor-rows.ts'
 import { describeResult, licenceSummary } from '../../src/cli/install/report.ts'
@@ -337,12 +337,34 @@ describe('what the shell is given to act as Chrome', () => {
     assert.equal(shellParity(mac, { platform: 'darwin', arch: 'arm64', env: {}, macosVersion: 'unknown' })?.userAgent.userAgentMetadata, undefined)
   })
 
-  test('on Windows, the languages and fonts alone, since Retest has read neither Chrome\'s window nor its client hints there', () => {
+  test('on Windows, Chrome\'s user agent and client hints with the platform version Chrome reads from the registry', () => {
+    const windows = { ...version, userAgent: version.userAgent.replace('X11; Linux x86_64', 'Windows NT 10.0; Win64; x64') }
+    const parity = shellParity(windows, { platform: 'win32', arch: 'x64', env: {}, windowsVersion: '19.0.0' })
+    assert.deepEqual(parity?.userAgent, {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36',
+      acceptLanguage: parity?.userAgent.acceptLanguage,
+      userAgentMetadata: {
+        brands: [{ brand: 'Chromium', version: '153' }, { brand: 'Not_A Brand', version: '8' }],
+        fullVersionList: [{ brand: 'Chromium', version: '153.0.8010.12' }, { brand: 'Not_A Brand', version: '8.0.0.0' }],
+        platform: 'Windows', platformVersion: '19.0.0', architecture: 'x86', model: '', mobile: false, bitness: '64', wow64: false, formFactors: ['Desktop'],
+      },
+    })
+    assert.equal(parity?.fonts.fontFamilies['fixed'], 'Consolas')
+    assert.deepEqual(shellSwitches('win32', {}).slice(2), ['--window-size=780,580', '--screen-info={0,0 800x600}'])
+  })
+
+  test('the Windows platform version is the contract version reg prints, high word, low word, then 0', () => {
+    const printed = '\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\WindowsRuntime\\WellKnownContracts\r\n    Windows.Foundation.UniversalApiContract    REG_DWORD    0x130000\r\n\r\n'
+    assert.equal(windowsVersionFrom(printed), '19.0.0')
+    assert.equal(windowsVersionFrom('    Windows.Foundation.UniversalApiContract    REG_DWORD    0xf0002'), '15.2.0')
+    assert.equal(windowsVersionFrom('ERROR: The system was unable to find the specified registry key or value.'), undefined)
+  })
+
+  test('on Windows with no platform version to read, the shell keeps its own user agent and client hints', () => {
     const parity = shellParity({ ...version, userAgent: version.userAgent.replace('X11; Linux x86_64', 'Windows NT 10.0; Win64; x64') }, { platform: 'win32', arch: 'x64', env: {} })
     assert.equal(parity?.userAgent.userAgent, '')
     assert.equal(parity?.userAgent.userAgentMetadata, undefined)
     assert.equal(parity?.fonts.fontFamilies['fixed'], 'Consolas')
-    assert.equal(shellSwitches('win32', {}).some((entry) => entry.startsWith('--window-size')), false)
   })
 
   test('the languages Chrome sends, from the locale it reads on Linux', () => {
@@ -358,21 +380,23 @@ describe('what the shell is given to act as Chrome', () => {
 describe('the window Retest 0.4.2 gave a page with no viewport', () => {
   const chrome = { product: 'Chrome', version: '153.0.8010.12', userAgent: '' }
 
-  test('is given to Chrome for Testing and its headless shell of the pinned release, on Linux and macOS', () => {
+  test('is given to Chrome for Testing and its headless shell of the pinned release, on Linux, macOS and Windows', () => {
     assert.deepEqual(recordedWindow(chrome, 'linux'), { window: { width: 780, height: 580 }, screen: { width: 800, height: 600 }, page: { viewport: { width: 780, height: 437 }, position: { x: 20, y: 20 } }, tab: { viewport: { width: 780, height: 493 }, position: { x: 20, y: 20 } } })
     assert.deepEqual(recordedWindow({ ...chrome, product: 'HeadlessChrome' }, 'linux'), recordedWindow(chrome, 'linux'))
     assert.deepEqual(recordedWindow(chrome, 'darwin')?.page, { viewport: { width: 756, height: 413 }, position: { x: 44, y: 44 } })
+    assert.deepEqual(recordedWindow(chrome, 'win32'), { window: { width: 780, height: 580 }, screen: { width: 800, height: 600 }, page: { viewport: { width: 764, height: 429 }, position: { x: 20, y: 20 } }, tab: { viewport: { width: 764, height: 485 }, position: { x: 20, y: 20 } } })
   })
 
   test('keeps the page view at the window size on macOS only, where the shell reports the view as its window', () => {
     assert.equal(recordedWindow(chrome, 'darwin')?.keepView, true)
     assert.equal(recordedWindow(chrome, 'linux')?.keepView, undefined)
+    assert.equal(recordedWindow(chrome, 'win32')?.keepView, undefined)
   })
 
   test('is given to no other browser, release or platform, since no other was recorded', () => {
     assert.equal(recordedWindow({ ...chrome, version: '157.0.8103.52' }, 'linux'), undefined)
     assert.equal(recordedWindow({ ...chrome, product: 'Edg' }, 'linux'), undefined)
-    assert.equal(recordedWindow(chrome, 'win32'), undefined)
+    assert.equal(recordedWindow(chrome, 'freebsd'), undefined)
   })
 
   test('a window a page opens with a size keeps its own', () => {
