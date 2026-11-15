@@ -6,7 +6,10 @@ import { readProtocol } from '../browser/cdp-results.ts'
 import { s } from '../protocol/schema.ts'
 import { argumentText, consoleArgumentSchema, consoleText } from './console-text.ts'
 
-/** What the collector needs of a CDP session: its events, its end and commands. A Chromium page's session is one. */
+/**
+ * What the collector needs of a CDP session: its events, its end and commands, with the Runtime domain already enabled.
+ * A Chromium page's session is one.
+ */
 export interface ProtocolSession {
   on(method: string, listener: (params: unknown) => void): () => void
   onDetach(listener: (reason: string) => void): () => void
@@ -130,9 +133,9 @@ const logLevels: Readonly<Record<string, 'debug' | 'info' | 'warning' | 'error'>
 
 /**
  * Collects a Chromium page's console messages, runtime errors and network metadata into a sink, from the page's own
- * target session. Listeners are added before the domains are enabled, so nothing the page does afterwards is missed;
- * the parent starts it before the page's first navigation. It sends no command after it starts, never reads a page
- * object, and never asks for a body.
+ * target session. Listeners are added before the Log and Network domains are enabled, and the Runtime domain's events
+ * are heard from then on, so nothing the page does afterwards is missed; the parent starts it before the page's first
+ * navigation. It sends no command after it starts, never reads a page object, and never asks for a body.
  */
 export class ChromiumCollector implements DiagnosticCollection {
   readonly scope: DiagnosticScope = chromiumScope
@@ -184,17 +187,19 @@ export class ChromiumCollector implements DiagnosticCollection {
   }
 
   /**
-   * Enables the domains whose events the collector hears, within `timeoutMs`. Retest never records a body, so post
-   * bodies are left out of the events and Chrome is asked to keep no response body for later reading. Rejects when the
-   * page does not answer; the collector is then stopped.
+   * Enables the Log and Network domains within `timeoutMs`, both at once, since neither waits on the other. The Runtime
+   * domain, whose events the collector hears too, is the page's own: a Chromium page enables it as it opens, for its
+   * binding, and Chrome answers a second `Runtime.enable` on a session without doing anything. Retest never records a
+   * body, so post bodies are left out of the events and Chrome is asked to keep no response body for later reading.
+   * Rejects when the page does not answer; the collector is then stopped.
    */
   async start(timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs
-    const options = (): { timeoutMs: number } => ({ timeoutMs: Math.max(1, deadline - Date.now()) })
+    const options = { timeoutMs }
     try {
-      await this.#session.send('Runtime.enable', undefined, options())
-      await this.#session.send('Log.enable', undefined, options())
-      await this.#session.send('Network.enable', { maxPostDataSize: 0, maxTotalBufferSize: 0, maxResourceBufferSize: 0 }, options())
+      await Promise.all([
+        this.#session.send('Log.enable', undefined, options),
+        this.#session.send('Network.enable', { maxPostDataSize: 0, maxTotalBufferSize: 0, maxResourceBufferSize: 0 }, options),
+      ])
     } catch (error) {
       this.stop()
       throw error

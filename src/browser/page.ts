@@ -237,30 +237,46 @@ export class ChromiumPage implements WebSession, ElementIdentity {
    * The frame is read again once its events are on, since a document that committed before that, as an app's own
    * window commits its first, is told by no event.
    *
-   * @example const page = await ChromiumPage.open({ connection, session, browserContextId, baseUrl, emulation, restoredOrigins: [], onListenerError }, deadline)
+   * No command needs another's answer, so all go out at once, and the page is open once all have answered; where an
+   * order matters, the session keeps the order they were sent in, so each read finds the frame as it was when the
+   * browser reached it. The page listens before anything goes, knowing its main frame from the start, since a page
+   * target's main frame has the target's own id. `Runtime.enable` goes before the binding: Chrome delivers a binding's
+   * calls only while the Runtime domain is enabled (fact F7 of the speed plan), as Playwright and Puppeteer enable it
+   * on every page, and its other events have no listeners and are dropped. The popup watch, the scripts and the binding
+   * are in place before the page runs a document of the test's, which it does only once the test navigates, after this
+   * returns.
+   *
+   * @example const page = await ChromiumPage.open({ connection, session, browserContextId, baseUrl, emulation, restoredOrigins: [], onListenerError, popups }, deadline)
    */
-  static async open(options: PageOptions, deadline: Deadline): Promise<ChromiumPage> {
-    const { session, emulation } = options
-    if (emulation !== undefined) await applyEmulation(session, emulation, deadline)
-    const { frameTree } = await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))
-    const page = new ChromiumPage(options, frameTree.frame)
-    await request(session, 'Page.enable', undefined, s.object({}), sendOptions(deadline))
-    if (options.popups !== undefined) await keepFocus(session, deadline)
-    // The browser holds every new page from here on, so each popup this page opens is attached, waited for or not.
-    if (options.popups !== undefined) await options.popups.watch.start(deadline)
-    // A commit told while the frame is read again is at least as new as the read, so the read is kept only without one.
+  static async open(options: PageOptions & { readonly popups: PopupHome }, deadline: Deadline): Promise<ChromiumPage> {
+    const { session, emulation, popups } = options
+    const page = new ChromiumPage(options, { id: popups.targetId, url: '' })
+    const sent = sendOptions(deadline)
+    // A commit told before the reads answer is at least as new as both, so the reads are kept only without one.
     const commits = page.#commits
-    const current = await request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sendOptions(deadline))
-    if (page.#commits === commits) page.#holdFrame(current.frameTree.frame)
-    await request(session, 'Page.setLifecycleEventsEnabled', { enabled: true }, s.object({}), sendOptions(deadline))
-    // Chrome delivers a binding's calls only while the Runtime domain is enabled (fact F7 of the speed plan), so it is
-    // enabled here, as Playwright and Puppeteer enable it on every page. Its other events have no listeners and are dropped.
-    await request(session, 'Runtime.enable', undefined, s.object({}), sendOptions(deadline))
-    await request(session, 'Runtime.addBinding', { name: changeBinding, executionContextName: worldName }, s.object({}), sendOptions(deadline))
-    await page.#world.addScript(guardScript, deadline)
-    await page.#world.addScript(changeScript, deadline)
-    await page.#world.addScript(dragListenerScript, deadline)
-    await page.#choosers.intercept(deadline)
+    const emulating = emulation === undefined ? Promise.resolve() : applyEmulation(session, emulation, deadline)
+    const before = request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sent)
+    const following = [
+      request(session, 'Page.enable', undefined, s.object({}), sent),
+      keepFocus(session, deadline),
+      // The browser holds every new page from here on, so each popup this page opens is attached, waited for or not.
+      popups.watch.start(deadline),
+    ]
+    const current = request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sent)
+    const preparing = [
+      request(session, 'Page.setLifecycleEventsEnabled', { enabled: true }, s.object({}), sent),
+      request(session, 'Runtime.enable', undefined, s.object({}), sent),
+      request(session, 'Runtime.addBinding', { name: changeBinding, executionContextName: worldName }, s.object({}), sent),
+      page.#world.addScript(guardScript, deadline),
+      page.#world.addScript(changeScript, deadline),
+      page.#world.addScript(dragListenerScript, deadline),
+      page.#choosers.intercept(deadline),
+    ]
+    const [first, again] = await Promise.all([before, current, emulating, ...following, ...preparing])
+    if (page.#commits === commits) {
+      page.#startFrom(first.frameTree.frame)
+      page.#holdFrame(again.frameTree.frame)
+    }
     return page
   }
 
@@ -1303,6 +1319,16 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     // A navigation the page asked for that the page's own Navigation API took within the document opens no other.
     this.#requestGone()
     this.#moveTo(url, undefined)
+  }
+
+  // The main frame as the page found it before it heard its events: the document it held before Retest set it up, as an
+  // app's own window may, whose origin is not one the main frame opened.
+  #startFrom(frame: { id: string; url: string }): void {
+    if (frame.id !== this.#mainFrameId) {
+      this.#mainFrameId = frame.id
+      this.#world.reset()
+    }
+    this.#url = URL.parse(frame.url) ?? undefined
   }
 
   // The main frame as a read found it, when no event told of the document it holds: its address is the page's from now

@@ -1,4 +1,5 @@
 import type { CdpConnection } from './cdp/connection.ts'
+import type { CdpSession } from './cdp/session.ts'
 import type { ChromiumProcess } from './chromium-process.ts'
 import type { NewPageOptions, ProxyOptions, WebRuntime, WebRuntimeIdentity, WebSession } from './contract.ts'
 import type { Schema } from '../protocol/schema.ts'
@@ -31,6 +32,9 @@ export type BrowserOptions = {
 
 const contextSchema = s.object({ browserContextId: s.string() })
 const targetSchema = s.object({ targetId: s.string() })
+
+/** A page's target in its new context, attached, with the origins whose storage the context was given first. */
+type OpenedTarget = { restoredOrigins: string[]; target: { targetId: string }; session: CdpSession }
 
 /** A Chromium browser this run launched and owns: a web runtime. */
 export class ChromiumBrowser implements WebRuntime {
@@ -108,13 +112,14 @@ export class ChromiumBrowser implements WebRuntime {
     const { browserContextId } = await this.#request('Target.createBrowserContext', browserContextOptions(options.proxy), contextSchema, deadline)
     try {
       // A download goes to the folder the runner gave the page, and otherwise is refused: it would land in the person's
-      // own Downloads folder, whatever the profile.
-      await this.#downloads.configure(browserContextId, options.downloads, deadline)
+      // own Downloads folder, whatever the profile. Only a navigation the test makes can start one, after the page is
+      // open, so the setting goes out beside the page's target rather than before it.
       const { storageState } = options
       const context = { connection: this.#connection, browserContextId }
-      const restoredOrigins = storageState === undefined ? [] : await restoreState(context, storageState, deadline)
-      const target = await this.#request('Target.createTarget', { url: 'about:blank', browserContextId }, targetSchema, deadline)
-      const session = await this.#connection.attach(target.targetId, sendOptions(deadline))
+      const [, { restoredOrigins, target, session }] = await Promise.all([
+        this.#downloads.configure(browserContextId, options.downloads, deadline),
+        this.#openTarget(context, storageState, deadline),
+      ])
       const pageOptions = {
         connection: this.#connection,
         session,
@@ -135,6 +140,13 @@ export class ChromiumBrowser implements WebRuntime {
       })
       throw this.#setupError(error)
     }
+  }
+
+  async #openTarget(context: { connection: CdpConnection; browserContextId: string }, storageState: NewPageOptions['storageState'], deadline: Deadline): Promise<OpenedTarget> {
+    const restoredOrigins = storageState === undefined ? [] : await restoreState(context, storageState, deadline)
+    const target = await this.#request('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId }, targetSchema, deadline)
+    const session = await this.#connection.attach(target.targetId, sendOptions(deadline))
+    return { restoredOrigins, target, session }
   }
 
   onDisconnect(listener: (reason: string) => void): () => void {

@@ -42,12 +42,19 @@ export function pollDelay(attempt: number): number {
 /** The least time between two looks at a page that keeps changing, so a page in constant motion is not read on every frame. */
 export const lookFloorMs: number = 50
 
+// The least time between the first look and the second: none. A check made just after an action usually misses on its
+// first look by the moment the app takes to answer the action, and the page tells of the change that answer makes. A
+// page in constant motion gets one look more from this, never a look on every frame, since every later look keeps the
+// floor.
+const secondLookFloorMs = 0
+
 /**
  * Looks at an app's page until what it sees passes or the time runs out. It only ever reads the page: it never
  * repeats the action that came before it. A page that counts its changes is asked to answer the next look as soon as
- * it has changed again, at most `lookFloorMs` after the last look and at the latest after the poll delay; a page that
- * does not count them is looked at on the poll delays alone. The last look is sent once the deadline is reached on the
- * clock the deadline reads, never while part of a millisecond is left, so a `timeout` of 1500 never gives up at 1499.6.
+ * it has changed again, and at the latest after the poll delay: the second look is sent at once, every later one at
+ * least `lookFloorMs` after the last look. A page that does not count them is looked at on the poll delays alone. The
+ * last look is sent once the deadline is reached on the clock the deadline reads, never while part of a millisecond
+ * is left, so a `timeout` of 1500 never gives up at 1499.6.
  * A look that fails for any reason other than reaching the deadline after an earlier look stops the looking with its
  * failure. A page reads nothing while it is opening another document, so a look whose time ran out then stops the
  * looking with a failure that says so, whatever an earlier look read of the document being left.
@@ -72,7 +79,8 @@ export async function lookUntil<Observed>(options: LookOptions<Observed>): Promi
         while (!deadline.reached) await sleep(deadline.waitToEndMs)
       }
     } else {
-      const pause = Math.min(Math.max(0, lookFloorMs - elapsedMs(lastLookAt, now)), delay)
+      const floorMs = attempts === 1 ? secondLookFloorMs : lookFloorMs
+      const pause = Math.min(Math.max(0, floorMs - elapsedMs(lastLookAt, now)), delay)
       if (pause > 0) await sleep(pause)
       if (pause > 0 && pause === waitToEndMs) {
         while (!deadline.reached) await sleep(deadline.waitToEndMs)

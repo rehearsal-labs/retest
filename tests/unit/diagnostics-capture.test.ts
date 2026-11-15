@@ -281,10 +281,19 @@ describe('the Chromium collector', () => {
     return { session, observed, unread, losses, collector }
   }
 
-  test('enables Runtime, Log and Network, and sends nothing after that', async () => {
+  test('enables Log and Network at once, leaves the Runtime domain to the page, and sends nothing after that', async () => {
     const { session, collector } = collect()
-    await collector.start(1000)
-    assert.deepEqual(session.sent, ['Runtime.enable', 'Log.enable', 'Network.enable'])
+    const answers: (() => void)[] = []
+    session.send = (method: string) => {
+      session.sent.push(method)
+      return new Promise((resolve) => answers.push(() => resolve({})))
+    }
+    const starting = collector.start(1000)
+    // Both are on their way before either is answered.
+    assert.deepEqual(session.sent, ['Log.enable', 'Network.enable'])
+    for (const answer of answers) answer()
+    await starting
+    assert.deepEqual(session.sent, ['Log.enable', 'Network.enable'])
   })
 
   test('reads a console call from a frame main world, and leaves out any other world', () => {

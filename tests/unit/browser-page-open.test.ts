@@ -45,6 +45,7 @@ async function opened(frames: Frames): Promise<{ page: ChromiumPage; methods: st
     onListenerError: (error: unknown) => {
       throw error
     },
+    popups: { watch: { register: () => () => {}, start: async () => {} }, targetId: mainFrame },
   }
   const page = await ChromiumPage.open(options, new Deadline(2000))
   return { page, methods: scripted.sent.map(({ method }) => method) }
@@ -54,7 +55,8 @@ describe('opening a page', () => {
   test('a document that commits before the page hears its events is the page\'s address from the start', async () => {
     const { page, methods } = await opened({ reads: ['', 'file:///work/desktop/index.html'] })
     assert.equal(page.url, 'file:///work/desktop/index.html')
-    assert.deepEqual(methods.slice(0, 3), ['Page.getFrameTree', 'Page.enable', 'Page.getFrameTree'], 'the frame is read again once its events are on')
+    const reads = methods.filter((method) => method === 'Page.getFrameTree' || method === 'Page.enable')
+    assert.deepEqual(reads, ['Page.getFrameTree', 'Page.enable', 'Page.getFrameTree'], 'the frame is read again once its events are on')
   })
 
   test('so is an http address, whose origin then counts as one the page opened', async () => {

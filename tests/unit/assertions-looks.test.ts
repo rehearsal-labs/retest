@@ -1,4 +1,5 @@
 import type { CommandResult, PageCommand } from '../../src/protocol/commands.ts'
+import type { ManualTime } from '../support/manual-time.ts'
 import assert from 'node:assert/strict'
 import { describe, test as check } from 'node:test'
 import { expect } from '../../src/index.ts'
@@ -27,19 +28,19 @@ function observes(commands: readonly PageCommand[]) {
 }
 
 describe('a locator assertion on a page that counts its changes', () => {
-  check('asks each later look to wait for the next change, at most the poll delay, and at least the floor apart', async () => {
+  check('asks each later look to wait for the next change, at most the poll delay, and from the third on at least the floor apart', async () => {
     const time = manualTime()
     const { runPage, commands, events } = inProcessRun(file, changingPage(['Saving…', 'Saving…', 'Saving…', 'Saved'], [1, 1, 2, 3]), { time })
     const verdict = await time.runUntil(runPage(({ page }) => expect(page.getByTestId('saved-task')).toHaveText('Saved')))
     assert.equal(verdict.status, 'passed')
-    // The clock moves only while the test process sleeps, so each wait reads exactly: the floor is the whole pause while
-    // the delay is 50, and the page is asked for what the delay leaves beyond it. The in-process budget is 300 ms,
-    // which cuts the fourth delay from 250 to the 200 that are left.
+    // The clock moves only while the test process sleeps, and this page answers at once, so each wait reads exactly:
+    // the second look goes at once and asks the page for the whole delay of 50; each later look pays the floor and asks
+    // the page for what the delay leaves beyond it.
     assert.deepEqual(observes(commands), [
       null,
-      { changes: 1, waitMs: 0 },
+      { changes: 1, waitMs: 50 },
       { changes: 1, waitMs: 100 - lookFloorMs },
-      { changes: 2, waitMs: 200 - lookFloorMs },
+      { changes: 2, waitMs: 250 - lookFloorMs },
     ])
     const passed = events().find((event) => event.type === 'assertion.passed')
     assert.ok(passed?.type === 'assertion.passed')
@@ -60,9 +61,70 @@ describe('a locator assertion on a page that counts its changes', () => {
     const { runPage, commands } = inProcessRun(file, changingPage(['Saving…'], [1]), { time, timeouts: { assertion: 120 } })
     const verdict = await time.runUntil(runPage(({ page }) => expect(page.getByTestId('saved-task')).toHaveText('Saved')))
     assert.equal(verdict.failure?.class, 'check_failed')
-    // Looks at 0, 50, 100 and 120: the floor is paid in full while time allows, and the last look's pause is cut to the deadline.
-    assert.deepEqual(observes(commands), [null, { changes: 1, waitMs: 0 }, { changes: 1, waitMs: 20 }, { changes: 1, waitMs: 0 }])
-    assert.match(verdict.failure?.message ?? '', /Looked 4 times in 120 ms\./)
+    // This page answers each look at once, whatever it is asked to wait for. Looks at 0, 0, 50, 100 and 120: the second
+    // goes at once, the floor is paid in full from the third while time allows, and the last look's pause is cut to the
+    // deadline.
+    assert.deepEqual(observes(commands), [null, { changes: 1, waitMs: 50 }, { changes: 1, waitMs: 50 }, { changes: 1, waitMs: 20 }, { changes: 1, waitMs: 0 }])
+    assert.match(verdict.failure?.message ?? '', /Looked 5 times in 120 ms\./)
+  })
+})
+
+/**
+ * A page that counts its changes as a browser's page does: its text changes at the given times on the run's clock, and
+ * a look asked to wait for a change past a count answers once the page has one, or once its wait is over. `looks` holds
+ * when each look read the page.
+ */
+function timedPage(time: ManualTime, changes: readonly { at: number; text: string }[], first: string) {
+  const looks: number[] = []
+  const count = (): number => changes.filter((change) => change.at <= time.now()).length
+  const page = async (command: PageCommand): Promise<CommandResult> => {
+    if (command.kind !== 'observe') return { ok: false, failure: { class: 'unsupported', message: 'looks only' } }
+    const { after } = command
+    if (after !== undefined && count() <= after.changes) {
+      const next = changes.find((change) => change.at > time.now())
+      await time.sleep(next === undefined ? after.waitMs : Math.min(next.at - time.now(), after.waitMs))
+    }
+    looks.push(time.now())
+    const text = changes.findLast((change) => change.at <= time.now())?.text ?? first
+    return { ok: true, kind: 'observe', observation: observationOf([{ text, visible: true }]), changes: count() }
+  }
+  return { page, looks }
+}
+
+describe('the second look of a check on a page that counts its changes', () => {
+  check('reads the page as soon as it tells of the change that answers the action, without waiting out the floor', async () => {
+    const time = manualTime()
+    const { page, looks } = timedPage(time, [{ at: 5, text: 'Saved' }], 'Saving…')
+    const { runPage, events } = inProcessRun(file, page, { time })
+    const verdict = await time.runUntil(runPage(({ page: app }) => expect(app.getByTestId('saved-task')).toHaveText('Saved')))
+    assert.equal(verdict.status, 'passed')
+    assert.deepEqual(looks, [0, 5], 'the second look reads the page as it changes')
+    const passed = events().find((event) => event.type === 'assertion.passed')
+    assert.ok(passed?.type === 'assertion.passed')
+    assert.deepEqual([passed.attempts, passed.durationMs], [2, 5])
+  })
+
+  check('is no sooner on a page that does not change, and a check that never passes looks as many times as before', async () => {
+    const time = manualTime()
+    const { page, looks } = timedPage(time, [], 'Saving…')
+    const { runPage } = inProcessRun(file, page, { time })
+    const verdict = await time.runUntil(runPage(({ page: app }) => expect(app.getByTestId('saved-task')).toHaveText('Saved')))
+    assert.equal(verdict.failure?.class, 'check_failed')
+    // Looks at 0, then after each poll delay of 50, 100 and the 150 left of the 300 ms budget.
+    assert.deepEqual(looks, [0, 50, 150, 300])
+    assert.match(verdict.failure?.message ?? '', /Looked 4 times in 300 ms\./)
+  })
+
+  check('adds one look, no more, on a page in constant motion that never passes', async () => {
+    const time = manualTime()
+    const motion = Array.from({ length: 300 }, (_, index) => ({ at: index + 1, text: `Saving ${index + 1}` }))
+    const { page, looks } = timedPage(time, motion, 'Saving 0')
+    const { runPage } = inProcessRun(file, page, { time })
+    const verdict = await time.runUntil(runPage(({ page: app }) => expect(app.getByTestId('saved-task')).toHaveText('Saved')))
+    assert.equal(verdict.failure?.class, 'check_failed')
+    // The second look waits for the first change, a millisecond on; every later one comes the floor after the last.
+    assert.deepEqual(looks, [0, 1, 51, 101, 151, 201, 251, 300])
+    assert.match(verdict.failure?.message ?? '', /Looked 8 times in 300 ms\./)
   })
 })
 
