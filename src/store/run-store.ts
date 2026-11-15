@@ -2,7 +2,7 @@ import type { RetestEvent } from '../protocol/events.ts'
 import type { Failure } from '../protocol/failures.ts'
 import type { RunResult } from '../protocol/result.ts'
 import type { StorageState } from '../protocol/storage-state.ts'
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { redactArtifactText } from '../diagnostics/artifact.ts'
 import { monotonicClock } from '../protocol/deadline.ts'
@@ -10,6 +10,7 @@ import { errorMessage } from '../protocol/failures.ts'
 import { diagnosticsFolder, eventsFile, logsFolder, resultFile, statesFolder } from '../protocol/run-folder.ts'
 import { parse } from '../protocol/schema.ts'
 import { storageStateSchema } from '../protocol/storage-state.ts'
+import { learnedSoFar } from '../runner/redactor.ts'
 import { errorCode } from '../shared/error-code.ts'
 import { keepFolderToUser, PrivateFolderError } from '../shared/private-file.ts'
 
@@ -25,6 +26,15 @@ export class RunFolderError extends Error {
 }
 
 /**
+ * A file or folder as a pass found it. Its contents are the same while all of these are, as every change of them moves
+ * its change time, and one put in its place has another inode.
+ */
+type FileState = { readonly inode: bigint; readonly size: bigint; readonly modifiedNs: bigint; readonly changedNs: bigint }
+
+/** A file as the last pass that read it left it, with `learnedSoFar()` as it stood then. */
+type PassedFile = { readonly learned: number; readonly state: FileState }
+
+/**
  * The folder one run writes: events as whole lines, logs, artifacts, and `result.json` last. It never
  * writes over another run.
  */
@@ -32,6 +42,14 @@ export class RunStore {
   readonly directory: string
   readonly #events: number
   readonly #logs = new Map<string, number>()
+  // Each artifact this store wrote, by its absolute path, with `learnedSoFar()` as it stood when it was written or last
+  // redacted again. An artifact whose mark still equals the count holds no value any redactor knows.
+  readonly #redactedAt = new Map<string, number>()
+  // Each file another writer may add to, by its absolute path, as the last pass that read it left it.
+  readonly #passed = new Map<string, PassedFile>()
+  // The diagnostics folder as the last pass over it found it, while every file in it was an artifact of this store's.
+  #diagnosticsPass: { readonly learned: number; readonly written: number; readonly folder: FileState } | undefined
+  #diagnosticsWritten = 0
   #resultWritten = false
   #closed = false
   #removeStatesOnExit: (() => void) | undefined
@@ -97,18 +115,18 @@ export class RunStore {
   /**
    * Rewrites every log with `redact`, for once nothing writes to them any more. A log was redacted as it was
    * written with what was known then; a value learned later, such as a one-time code a server printed before a
-   * fill read it, is only hidden by this pass.
+   * fill read it, is only hidden by this pass. A run passes over its logs more than once as it ends, so a log an
+   * earlier pass left as it still is, with no value learned since, is not read again.
    */
   redactLogs(redact: (text: string) => string): void {
+    const learned = learnedSoFar()
     const visit = (folder: string): void => {
       for (const entry of readdirSync(folder, { withFileTypes: true })) {
         const path = join(folder, entry.name)
         if (entry.isDirectory()) { visit(path); continue }
         // A link in a run folder never authorizes rewriting its target outside that folder.
         if (!entry.isFile()) continue
-        const text = readFileSync(path, 'utf8')
-        const redacted = redact(text)
-        if (redacted !== text) writeFileSync(path, redacted)
+        this.#redactFile(path, redact, learned)
       }
     }
     visit(this.#path(logsFolder))
@@ -116,25 +134,64 @@ export class RunStore {
 
   /**
    * Rewrites every diagnostics artifact with each page text passed through `redact`, as `redactLogs` rewrites the logs.
-   * A run with no artifact has nothing to rewrite.
+   * Its records were redacted as it was written, so an artifact this store wrote with no value learned since holds none
+   * and is not read again; one written before a value was learned is. A pass that follows another with no value learned
+   * and nothing added to the folder since reads nothing. A run with no artifact has nothing to rewrite.
    */
   redactDiagnostics(redact: (text: string) => string): void {
     const folder = this.#path(diagnosticsFolder)
     if (!existsSync(folder)) return
+    const learned = learnedSoFar()
+    const listed = stateOf(folder)
+    const last = this.#diagnosticsPass
+    if (last !== undefined && last.learned === learned && last.written === this.#diagnosticsWritten && sameState(last.folder, listed)) return
+    let others = false
     for (const entry of readdirSync(folder, { withFileTypes: true })) {
       if (!entry.isFile()) continue
       const path = join(folder, entry.name)
+      const mark = this.#redactedAt.get(path)
+      if (mark === undefined) {
+        others = true
+        this.#redactFile(path, (text) => redactArtifactText(text, redact), learned)
+        continue
+      }
+      if (mark === learned) continue
       const text = readFileSync(path, 'utf8')
       const redacted = redactArtifactText(text, redact)
       if (redacted !== text) writeFileSync(path, redacted)
+      this.#redactedAt.set(path, learned)
     }
+    // A file this store did not write may change without the store hearing of it, so a folder holding one is listed again.
+    this.#diagnosticsPass = others ? undefined : { learned, written: this.#diagnosticsWritten, folder: listed }
   }
 
-  /** Writes a new artifact. An existing file is never replaced. */
+  // A file another writer may add to, as a log is, is read unless the last pass left it as it is now with no value
+  // learned since. Its state is taken before it is read, so text added while it is read makes the next pass read it
+  // again. A writer adding to a file while this pass rewrites it races that rewrite, as it always has.
+  #redactFile(path: string, rewrite: (text: string) => string, learned: number): void {
+    const before = stateOf(path)
+    const passed = this.#passed.get(path)
+    if (passed !== undefined && passed.learned === learned && sameState(passed.state, before)) return
+    const text = readFileSync(path, 'utf8')
+    const redacted = rewrite(text)
+    if (redacted === text) {
+      this.#passed.set(path, { learned, state: before })
+      return
+    }
+    writeFileSync(path, redacted)
+    this.#passed.set(path, { learned, state: stateOf(path) })
+  }
+
+  /**
+   * Writes a new artifact. An existing file is never replaced. Its writer redacts any text in it with what the run knows
+   * as it writes, as a diagnostics artifact's records are.
+   */
   writeArtifact(path: string, bytes: Uint8Array): void {
     const target = this.#path(path)
     mkdirSync(dirname(target), { recursive: true })
     writeFileSync(target, bytes, { flag: 'wx' })
+    this.#redactedAt.set(target, learnedSoFar())
+    if (dirname(target) === this.#path(diagnosticsFolder)) this.#diagnosticsWritten += 1
   }
 
   /** Writes `result.json` once, through a temporary file renamed into place, so it is never half written. */
@@ -246,6 +303,15 @@ function withLeftover(error: unknown, path: string, remove: () => void): unknown
     if (error instanceof PrivateFolderError) return new PrivateFolderError(error.message, `${error.detail}; ${leftover}`)
     return new Error(`${errorMessage(error)} ${leftover}`, { cause: error })
   }
+}
+
+function stateOf(path: string): FileState {
+  const { ino, size, mtimeNs, ctimeNs } = statSync(path, { bigint: true })
+  return { inode: ino, size, modifiedNs: mtimeNs, changedNs: ctimeNs }
+}
+
+function sameState(first: FileState, second: FileState): boolean {
+  return first.inode === second.inode && first.size === second.size && first.modifiedNs === second.modifiedNs && first.changedNs === second.changedNs
 }
 
 function writeAll(descriptor: number, text: string): void {

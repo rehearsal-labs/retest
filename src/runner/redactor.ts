@@ -39,6 +39,20 @@ const writtenKeys: readonly { keys: ReadonlySet<string>; holds: (record: Record<
 // A page's title reaches the parent as the page has it, and is cleaned and cut only once it is redacted.
 const titleKeys: ReadonlySet<string> = new Set(['title', 'pageTitle'])
 
+// Counts every value any redactor in this process learns, as it learns it. Text redacted while the count stood where it
+// stands now holds no value any redactor here knows, so a store reads again only what was written before the count moved.
+let valuesLearned = 0
+
+/**
+ * How many values the redactors of this process have learned so far, as a mark that only grows: once it moves, any text
+ * redacted before it moved may hold a value learned since.
+ *
+ * @example const mark = learnedSoFar(); redactor.learn('password', 'hunter2'); learnedSoFar() > mark // true
+ */
+export function learnedSoFar(): number {
+  return valuesLearned
+}
+
 /**
  * Replaces every secret value the run has read with `{{name}}` in free text: page text, addresses, failure
  * messages and details, assertion values and output. It learns each value as the parent reads it, so a value a
@@ -59,6 +73,7 @@ export class Redactor {
 
   learn(name: string, value: string): void {
     if (value === '' || this.#names.get(value) === name) return
+    valuesLearned += 1
     for (const form of writtenForms(value)) this.#names.set(form, name)
     this.#placeholders.add(secretPlaceholder(name))
     const known = [...this.#names].map(([each, owner]) => ({ value: each, placeholder: secretPlaceholder(owner) }))

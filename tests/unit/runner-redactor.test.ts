@@ -7,7 +7,7 @@ import { describe, test } from 'node:test'
 import { retestEventSchema } from '../../src/protocol/events.ts'
 import { pageTitleLimit, titleReadLimit } from '../../src/protocol/page-facts.ts'
 import { runResultSchema } from '../../src/protocol/result.ts'
-import { Redactor } from '../../src/runner/redactor.ts'
+import { learnedSoFar, Redactor } from '../../src/runner/redactor.ts'
 
 function runResult(fields: Partial<RunResult>): RunResult {
   return {
@@ -34,6 +34,21 @@ function taught(values: Record<string, string>): Redactor {
 }
 
 describe('Redactor', () => {
+  test('every value any redactor learns moves the mark a store reads artifacts again by, and nothing else does', () => {
+    const redactor = new Redactor()
+    const before = learnedSoFar()
+    redactor.learn('password', 'hunter2')
+    assert.equal(learnedSoFar(), before + 1)
+    redactor.learn('password', 'hunter2')
+    redactor.learn('password', '')
+    redactor.redact('hunter2')
+    assert.equal(learnedSoFar(), before + 1, 'a value learned again as it was, an empty one and a redaction are nothing new')
+    redactor.learn('token', 'hunter2')
+    assert.equal(learnedSoFar(), before + 2, 'a value given another name is written otherwise from then on')
+    new Redactor().learn('code', '739104')
+    assert.equal(learnedSoFar(), before + 3, 'every redactor of the process counts')
+  })
+
   test('passes text through until it learns a value', () => {
     const redactor = new Redactor()
     assert.equal(redactor.active, false)
