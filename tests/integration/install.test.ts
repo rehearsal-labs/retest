@@ -178,6 +178,18 @@ describe('installing the pinned Electron from a stand-in mirror', { skip: unveri
 const browserArchives = process.env['RETEST_TEST_BROWSER_ARCHIVES'] ?? join(homedir(), 'Library/Caches/retest-proofs/downloads')
 const browserProofLogs = process.env['RETEST_TEST_INSTALL_LOGS']
 
+// Serves the real archive of Chrome's headless shell for a platform from the local fixtures, and gives its route.
+function serveShellArchive(platform: 'mac-arm64' | 'win-x64'): string {
+  const pin = findPin('headless-shell', platform)
+  assert.ok(pin?.kind === 'archive')
+  const archiveName = decodeURIComponent(new URL(pin.archive.url).pathname.split('/').at(-1) ?? assert.fail('an archive name'))
+  const archive = join(browserArchives, `headless-shell-${platform}-${archiveName}`)
+  assert.ok(existsSync(archive), `The real archive is required at ${archive}`)
+  const route = `/${new URL(pin.archive.url).host}${new URL(pin.archive.url).pathname}`
+  serveFile(route, archive)
+  return route
+}
+
 describe('installing the three pinned browsers from real publisher archives on a local mirror', { skip: unverified }, () => {
   const home = tempFolder('retest-browser-install-home-')
   const folders = cacheFolders({ HOME: home }) ?? assert.fail('a cache')
@@ -201,6 +213,8 @@ describe('installing the three pinned browsers from real publisher archives on a
       assert.ok(existsSync(archive), `The real archive is required at ${archive}`)
       const route = `/${new URL(pin.archive.url).host}${new URL(pin.archive.url).pathname}`
       serveFile(route, archive)
+      // `install chromium` fetches what a default run needs: Chrome for Testing, then Chrome's headless shell.
+      const fetched = engine === 'chromium' ? [route, serveShellArchive('mac-arm64')] : [route]
       const save = async (name: string, result: Awaited<ReturnType<typeof runCli>>) => {
         if (browserProofLogs !== undefined) {
           await mkdir(browserProofLogs, { recursive: true })
@@ -214,7 +228,7 @@ ${result.stderr}`)
       await save('install', installed)
       assert.equal(installed.exit.code, 0, `${installed.stdout}
 ${installed.stderr}`)
-      assert.deepEqual(requestsSince(start), [route], 'exactly one request reaches the local mirror')
+      assert.deepEqual(requestsSince(start), fetched, 'one request for each archive reaches the local mirror')
       assert.match(installed.stdout, new RegExp(`✓ ${engine} +`))
       assert.ok(installed.stdout.includes(`archive SHA-256 ${pin.archive.sha256}`))
       assert.equal(existsSync(archivePath(folders, pin)), false, 'the installer deletes its archive')
@@ -266,7 +280,7 @@ ${installed.stderr}`)
       await save('repeat', again)
       assert.equal(again.exit.code, 0, again.stdout)
       assert.ok(again.stdout.includes('was already installed'))
-      assert.deepEqual(requestsSince(start), [route], 'list, verify and repeat fetch nothing')
+      assert.deepEqual(requestsSince(start), fetched, 'list, verify and repeat fetch nothing')
       const executable = engine === 'webkit' ? join(buildFolder(folders, pin), 'build') : installedExecutablePath(buildFolder(folders, pin), pin)
       const root = await writeProject(t, {
         'retest.config.ts': `import { app, defineConfig } from '@rehearsal-labs/retest'
@@ -279,7 +293,7 @@ export default defineConfig({ apps: { web: app({ baseUrl: ${JSON.stringify(`${mi
 ${doctor.stderr}`)
       assert.match(doctor.stdout, new RegExp(`builds +${engine} +✓ .+installed by Retest`))
       if (engine === 'webkit') assert.ok(lines(doctor.stdout).includes(`builds | webkit | ✓ ${describePin(pin)}, installed by Retest · sha256 ${pin.archive.sha256?.slice(0, 12) ?? assert.fail('an archive checksum')}; licence notices present and verified | ${installedExecutablePath(buildFolder(folders, pin), pin)}`), doctor.stdout)
-      assert.deepEqual(requestsSince(start), [route, '/doctor-app'], 'doctor reads the fixture URL once and fetches no archive')
+      assert.deepEqual(requestsSince(start), [...fetched, '/doctor-app'], 'doctor reads the fixture URL once and fetches no archive')
     })
   }
 })
@@ -546,11 +560,13 @@ describe('installing the three pinned Windows builds from real publisher archive
       assert.ok(existsSync(archive), `The real archive is required at ${archive}; scripts/ci/prepare-windows-integration.ts puts it there.`)
       const route = `/${new URL(pin.archive.url).host}${new URL(pin.archive.url).pathname}`
       serveFile(route, archive)
+      // `install chromium` fetches what a default run needs: Chrome for Testing, then Chrome's headless shell.
+      const fetched = engine === 'chromium' ? [route, serveShellArchive('win-x64')] : [route]
       const run = { ...env, RETEST_DOWNLOAD_MIRROR: mirror, RETEST_CHROMIUM: '' }
       const start = requests.length
       const installed = await runCli(t, ['install', engine], { env: run })
       assert.equal(installed.exit.code, 0, `${installed.stdout}\n${installed.stderr}`)
-      assert.deepEqual(requestsSince(start), [route], 'exactly one request reaches the local mirror')
+      assert.deepEqual(requestsSince(start), fetched, 'one request for each archive reaches the local mirror')
       assert.ok(installed.stdout.includes(`Downloading ${describePin(pin)} for Windows x64 from ${mirror}${route}`), installed.stdout)
       assert.ok(installed.stdout.includes(`archive SHA-256 ${pin.archive.sha256}`), installed.stdout)
       assert.equal(existsSync(archivePath(folders, pin)), false, 'the installer deletes its archive')
@@ -581,7 +597,7 @@ describe('installing the three pinned Windows builds from real publisher archive
       const again = await runCli(t, ['install', engine], { env: run })
       assert.equal(again.exit.code, 0, again.stdout)
       assert.ok(again.stdout.includes('was already installed'))
-      assert.deepEqual(requestsSince(start), [route], 'list, verify and repeat fetch nothing')
+      assert.deepEqual(requestsSince(start), fetched, 'list, verify and repeat fetch nothing')
     })
   }
 
