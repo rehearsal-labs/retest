@@ -960,7 +960,8 @@ export class RunSession {
     )
     if (!grant.ok) return { ok: false, failure: grant.stopped ? (this.#stopReason ?? grant.failure) : grant.failure }
     const { lease } = grant
-    this.#leases.add(lease)
+    // A lease that holds nothing has nothing to finish when the run ends, so the run does not keep it.
+    if (!lease.empty) this.#leases.add(lease)
     // A run stopped as the grant came gives everything back at once: nothing was launched or opened that could still be
     // in use, and its sessions were never recorded as reserved.
     if (this.#stopReason !== undefined) {
@@ -1227,6 +1228,8 @@ export class RunSession {
       await recorder?.finish()
       this.#recorders.delete(described.attemptId)
       for (const { session } of pages) this.#policy?.pageLeft(recordIdentity(described, session.owner.app, session.sessionId), 'session_ended')
+      // The policy records nothing more of an attempt whose pages are gone.
+      this.#attempts.delete(described.attemptId)
     }
   }
 
@@ -1346,7 +1349,6 @@ export class RunSession {
   // is not ready.
   async #prepare(described: Described, config: RunConfig, worker: number, launched: Map<string, ReadyTarget>, lease: ResourceLease): Promise<Opened<Map<string, ReadyTarget>>> {
     const { test, targets, testId, attemptId } = described
-    this.#nativeScopes.set(attemptId, described)
     const ready = new Map<string, ReadyTarget>()
     for (const name of test.apps) {
       const app = config.apps.get(name)
@@ -1357,6 +1359,8 @@ export class RunSession {
       if (!driver.ok) return driver
       let browser: Opened<ReadyTarget>
       if (driver.driver === 'macos' || driver.driver === 'ios-simulator' || driver.driver === 'android') {
+        // Only a native app's end, which can come once the attempt is over, needs the attempt found by its id.
+        this.#nativeScopes.set(attemptId, described)
         const unready = await this.#servers.ensure(app)
         if (unready !== undefined) return { ok: false, failure: this.#interruption ?? unready }
         browser = await this.#native.ensure(name, driver.target, { runId: this.#runId, testId, attemptId, app: name }, lease)

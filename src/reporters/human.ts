@@ -81,8 +81,17 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
     options.stdout.write(text)
   }
   let headed = false
+  const checks: CheckCounts = { passed: 0, failed: 0 }
   const shownGaps = new Set<string>()
   const gapKey = (attemptId: string, gap: EvidenceGap): string => JSON.stringify([attemptId, gap.code, gap.app, gap.sessionId, gap.message])
+  // The targets change only when the record gains a test, a browser or a native app, so a finished test reads every
+  // test of the run again only then.
+  let known: { key: string; targets: RunTargets } | undefined
+  const currentTargets = (): RunTargets => {
+    const key = `${record.tests.size} ${record.browsers.length} ${record.natives.length}`
+    if (known?.key !== key) known = { key, targets: runTargets(record) }
+    return known.targets
+  }
 
   const head = (): void => {
     if (headed) return
@@ -135,11 +144,18 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
         case 'test.finished': {
           head()
           const test = record.test(event.testId, event.variantKey)
-          write(testLines(event, test, { style, targets: runTargets(record) }))
+          write(testLines(event, test, { style, targets: currentTargets() }))
           if (event.evidenceStatus?.state === 'partial' || event.evidenceStatus?.state === 'unavailable') {
             for (const gap of event.evidenceStatus.gaps ?? []) shownGaps.add(gapKey(event.attemptId, gap))
           }
+          // Its lines are written, and only a test the end of the run makes a card for is read again.
+          record.release(event)
+          return
         }
+        case 'assertion.passed':
+        case 'assertion.failed':
+          // Counted as the record keeps a test's checks: one whose test no collection or start described is not.
+          if (record.test(event.testId, event.variantKey) !== undefined) checks[event.type === 'assertion.passed' ? 'passed' : 'failed'] += 1
       }
     },
     onOutput(output) {
@@ -176,7 +192,7 @@ export function createHumanReporter(options: HumanReporterOptions): HumanReporte
         write(`\n  ${style.yellow('!')} Run evidence\n${gapLines(result.evidenceStatus?.gaps ?? [], style)}`)
       }
       if (result.narrowed !== undefined) write(`\n  ${style.yellow('!')} ${describeNarrowed(result.narrowed)}\n`)
-      write(summaryLines(result, { record, targets, runFolder, style }))
+      write(summaryLines(result, { checks, targets, runFolder, style }))
     },
   }
 }
@@ -262,13 +278,16 @@ function runFailureLines(result: RunResult, style: Style): string {
   return `\n  ${style.bold('Run failed')}\n${lines.map((line) => `    ${line}`).join('\n')}\n`
 }
 
-type SummaryContext = { record: RunRecord; targets: RunTargets; runFolder: string; style: Style }
+/** How many of the run's checks passed and failed, as the events of its tests said. */
+type CheckCounts = { passed: number; failed: number }
+
+type SummaryContext = { checks: CheckCounts; targets: RunTargets; runFolder: string; style: Style }
 
 function summaryLines(result: RunResult, context: SummaryContext): string {
   const { style } = context
   const summaries = targetSummaries(result, context.targets)
   const rows: [string, string][] = [['Tests', `${countParts(result.counts).join(' · ') || 'none'}${acrossTargets(summaries.length)}`]]
-  const checks = countChecks(context.record)
+  const checks = countChecks(context.checks)
   if (checks.length > 0) rows.push(['Checks', checks.join(' · ')])
   if (result.neverMatchedChecks !== undefined) rows.push(['No match', describeNeverMatched(result.neverMatchedChecks)])
   const hostChecks = countHostChecks(result.files.flatMap((file) => file.tests))
@@ -338,14 +357,6 @@ function fileProblemCounts(result: RunResult): string[] {
   return [...counted('collection'), ...counted('process')]
 }
 
-function countChecks(record: RunRecord): string[] {
-  let passed = 0
-  let failed = 0
-  for (const test of record.tests.values()) {
-    for (const event of test.events) {
-      if (event.type === 'assertion.passed') passed++
-      if (event.type === 'assertion.failed') failed++
-    }
-  }
+function countChecks({ passed, failed }: CheckCounts): string[] {
   return [...(failed > 0 ? [`${failed} failed`] : []), ...(passed > 0 ? [`${passed} passed`] : [])]
 }

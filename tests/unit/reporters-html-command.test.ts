@@ -1,8 +1,11 @@
+import type { CliDependencies } from '../../src/cli/command.ts'
+import type { RetestEvent } from '../../src/protocol/events.ts'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { describe, test } from 'node:test'
-import { fakeCli, playing } from './cli-fixtures.ts'
+import { eventsFile } from '../../src/protocol/run-folder.ts'
+import { fakeCli } from './cli-fixtures.ts'
 import { failureScreenshot, png, writeFolder } from './reporters-html-fixtures.ts'
 import { browserPath, failingRun, file, plain, projectFolder, resultOf } from './reporters-fixtures.ts'
 
@@ -10,6 +13,22 @@ import { browserPath, failingRun, file, plain, projectFolder, resultOf } from '.
 // writes report.html into the run folder, and both state the same outcome for the same run.
 
 const root = projectFolder()
+
+/**
+ * A runner that plays recorded events as a run hands them out: each is written to the run folder's events.jsonl before
+ * any reporter receives it, which is where the html reporter reads them back from.
+ */
+function playingWritten(events: readonly RetestEvent[]): CliDependencies['runFiles'] {
+  return async (options, reporters) => {
+    const result = resultOf([...events])
+    for (const event of events) {
+      appendFileSync(join(options.outputDir, eventsFile), `${JSON.stringify(event)}\n`)
+      for (const reporter of reporters) await reporter.onEvent(event)
+    }
+    for (const reporter of reporters) await reporter.onRunEnd(result)
+    return result
+  }
+}
 
 /** What a report marks about the run and each test, without where its result came from. */
 function outcomeMarks(html: string): string[] {
@@ -77,7 +96,7 @@ describe('retest run --reporter html', () => {
   test('prints the human report, writes report.html into the run folder, and says where', async () => {
     const events = failingRun(root)
     mkdirSync(join(root, 'html-run'), { recursive: true })
-    const fake = fakeCli({ cwd: root, runFiles: playing(events) })
+    const fake = fakeCli({ cwd: root, runFiles: playingWritten(events) })
     const code = await fake.cli(['run', file, '--browser', browserPath, '--output', 'html-run', '--reporter', 'html'])
     assert.equal(code, 1, fake.stderr.text)
     const printed = plain(fake.stdout.text)

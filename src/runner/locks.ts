@@ -1,6 +1,7 @@
 import type { Clock } from '../protocol/deadline.ts'
 import { elapsedMs, monotonicClock } from '../protocol/deadline.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
+import { whenStopped } from './bounded.ts'
 
 /**
  * What an attempt asks for: the locks its test holds, its place in the run's order, which decides who goes first
@@ -105,6 +106,7 @@ export class SharedLocks {
     const { promise, resolve } = Promise.withResolvers<LockGrant>()
     const holders = this.#holdersOf(request.names, request.scope)
     let settled = false
+    let leave: (() => void) | undefined
     const waiter: Waiter = {
       request,
       arrival: this.#arrivals++,
@@ -120,17 +122,21 @@ export class SharedLocks {
         settled = true
         clearTimeout(waiter.timer)
         this.#waiting.delete(waiter)
+        leave?.()
         resolve(grant)
       },
     }
     this.#waiting.add(waiter)
     this.#offer()
-    void stopped.then(() => {
-      if (settled) return
-      waiter.settle({ ok: false, reason: 'stopped', waitedMs: elapsedMs(waiter.startedAt, this.#clock), ...this.#blocking(waiter) })
-      // Its place no longer keeps anyone from the locks it wanted.
-      this.#offer()
-    })
+    // An answered request stops waiting on the run's stop, which would otherwise keep it until the run ended.
+    if (!settled) {
+      leave = whenStopped(stopped, () => {
+        if (settled) return
+        waiter.settle({ ok: false, reason: 'stopped', waitedMs: elapsedMs(waiter.startedAt, this.#clock), ...this.#blocking(waiter) })
+        // Its place no longer keeps anyone from the locks it wanted.
+        this.#offer()
+      })
+    }
     return promise
   }
 

@@ -5,6 +5,7 @@ import { failure } from '../protocol/failures.ts'
 import { describeValue, isPlainObject } from '../protocol/schema.ts'
 import { maxTimeout } from '../protocol/timeouts.ts'
 import { listWords } from '../shared/list-words.ts'
+import { whenStopped } from './bounded.ts'
 
 /** The most sessions active at once: for any one owner, and on the whole host. */
 export type SessionLimits = { readonly perOwner: number; readonly host: number }
@@ -101,6 +102,7 @@ export class SessionBudget {
     }
     let settled = false
     let timer: NodeJS.Timeout | undefined
+    let unwait: (() => void) | undefined
     const waiter: Waiter = {
       request,
       arrival: this.#arrivals++,
@@ -110,6 +112,7 @@ export class SessionBudget {
         settled = true
         clearTimeout(timer)
         this.#waiting.delete(waiter)
+        unwait?.()
         resolve(grant)
       },
     }
@@ -123,7 +126,8 @@ export class SessionBudget {
     this.#offer()
     if (!settled) {
       timer = setTimeout(() => leave('timed_out'), Math.min(request.waitMs, maxTimeout))
-      void stopped.then(() => leave('stopped'))
+      // An answered request stops waiting on the run's stop, which would otherwise keep it until the run ended.
+      unwait = whenStopped(stopped, () => leave('stopped'))
     }
     return promise
   }

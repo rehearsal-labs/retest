@@ -1,4 +1,4 @@
-import type { RetestEvent } from '../protocol/events.ts'
+import type { RetestEvent, TestStatus } from '../protocol/events.ts'
 import type { SourceLocation } from '../protocol/failures.ts'
 import { variantKey, type Variant } from '../protocol/variant.ts'
 
@@ -28,8 +28,10 @@ export type TestDescription = {
 export type TestRecord = TestDescription & {
   /** Every event of the test, in sequence order. */
   events: TestEvent[]
-  started?: EventOfType<'test.started'>
-  finished?: EventOfType<'test.finished'>
+  started?: EventOfType<'test.started'> | undefined
+  finished?: EventOfType<'test.finished'> | undefined
+  /** The attempt its latest start named, which a retention event that names no variant finds it by. */
+  attemptId?: string
 }
 
 export type FileRecord = {
@@ -48,6 +50,9 @@ export type FileRecord = {
 function resultKey(testId: string, variant?: string): string {
   return variant === undefined ? testId : `${testId} [${variant}]`
 }
+
+// The statuses a failure card is made for once the run ends, from every event of the test.
+const carded: ReadonlySet<TestStatus> = new Set<TestStatus>(['failed', 'error', 'inconclusive'])
 
 /** What a run's events say so far. Reporters and `inspect` read it; it never decides an outcome. */
 export class RunRecord {
@@ -74,6 +79,8 @@ export class RunRecord {
   readonly tests: Map<string, TestRecord> = new Map()
   /** Events naming a test that no collection or start described. */
   readonly strays: TestEvent[] = []
+  /** The tests whose events were let go, which keep none of the events that still come for them. */
+  readonly #released = new WeakSet<TestRecord>()
 
   add(event: RetestEvent): void {
     this.last = event
@@ -113,9 +120,9 @@ export class RunRecord {
         this.removals.push(event)
         if (event.testId !== undefined && event.attemptId !== undefined) {
           const scoped = { ...event, testId: event.testId, attemptId: event.attemptId }
-          const test = this.test(scoped.testId, scoped.variantKey) ?? [...this.tests.values()].find((record) => record.testId === scoped.testId && record.started?.attemptId === scoped.attemptId)
+          const test = this.test(scoped.testId, scoped.variantKey) ?? [...this.tests.values()].find((record) => record.testId === scoped.testId && record.attemptId === scoped.attemptId)
           if (test === undefined) this.strays.push(scoped)
-          else test.events.push(scoped)
+          else this.#keep(test, scoped)
         }
         return
       case 'collection.completed': {
@@ -136,7 +143,10 @@ export class RunRecord {
         return
       case 'test.started': {
         const test = this.#test(event)
+        // A new attempt of a test that was let go is kept again from its start.
+        this.#released.delete(test)
         test.started = event
+        test.attemptId = event.attemptId
         test.events.push(event)
         return
       }
@@ -146,7 +156,7 @@ export class RunRecord {
           this.strays.push(event)
           return
         }
-        test.events.push(event)
+        this.#keep(test, event)
         if (event.type === 'test.finished') test.finished = event
       }
     }
@@ -155,6 +165,29 @@ export class RunRecord {
   /** The record of one test, or of one of its variants. */
   test(testId: string, variant?: string): TestRecord | undefined {
     return this.tests.get(resultKey(testId, variant))
+  }
+
+  /**
+   * Lets go of the events of a test that has just finished, its start and its end among them, once a reporter has read
+   * what it needs of them, unless the test failed, ended in an error or could not be decided: its card is made from every
+   * event of it once the run ends. Its description stays, and an event that still comes for it is not kept. A reporter of
+   * a running run calls this, so what it holds does not grow with every test that passes.
+   *
+   * @example record.add(finished); print(record.test(finished.testId, finished.variantKey)); record.release(finished)
+   */
+  release(finished: EventOfType<'test.finished'>): void {
+    if (carded.has(finished.status)) return
+    const test = this.test(finished.testId, finished.variantKey)
+    if (test === undefined) return
+    // Set rather than deleted, so every record keeps one shape and none turns into a slower, larger dictionary.
+    test.events = []
+    test.started = undefined
+    test.finished = undefined
+    this.#released.add(test)
+  }
+
+  #keep(test: TestRecord, event: TestEvent): void {
+    if (!this.#released.has(test)) test.events.push(event)
   }
 
   #file(name: string): FileRecord {

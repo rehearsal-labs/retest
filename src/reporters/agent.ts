@@ -60,6 +60,8 @@ export function createAgentReporter(options: AgentReporterOptions): Reporter {
     name: 'agent',
     onEvent(event) {
       record.add(event)
+      // Only a test this report makes a card for is read again.
+      if (event.type === 'test.finished') record.release(event)
     },
     onRunEnd(result) {
       options.stdout.write(renderAgentReport(result, record, options.runFolder))
