@@ -76,7 +76,7 @@ import { appBuildsProblem, bundleRecord, configurationRecord, executionRecord, e
 import { focusOf, onlyRefusal } from './focus.ts'
 import { hostChecksScopeProblem, hostChecksShapeProblem, notRunHostChecks, recordedHostChecks, testHostChecks } from './host-checks.ts'
 import { lastRunOf, lastRunPath, writeLastRun } from './last-run.ts'
-import { loadTests, missingFileFailure } from './load-tests.ts'
+import { FileLoad, loadTests, missingFileFailure } from './load-tests.ts'
 import { SharedLocks } from './locks.ts'
 import { inDeclarationOrder } from './result-order.ts'
 import { interruptionOf, runOutcome, stopReasonOf, testStatus } from './outcome.ts'
@@ -191,6 +191,41 @@ type Ran =
 /** What a file's visits added up to: its results in the order they ran, and its process failures. */
 type FileRecord = { tests: TestResult[]; failures: Failure[] }
 type Output = { write: (stream: ChildOutput['stream'], text: string) => void; end: () => void }
+/** What a visit's attempts came to in its file's process, and whether the file loaded. */
+type VisitRun = { loaded: boolean; tests: TestResult[]; exitRecorded: boolean }
+/**
+ * One phase's visits, in the order workers take them, and how many have been taken. With `overlap`, the processes of
+ * the next files load their files before a worker takes them, and a worker goes on to its next file while the last
+ * one's process closes. Without it, one file's code runs at a time: the next file's process is started ahead, but is
+ * sent its file only once the file before it has closed.
+ */
+type Phase = { visits: readonly Visit[]; overlap: boolean; taken: number }
+/**
+ * A process started for a visit before its turn: what it printed meanwhile, kept for its file's log, and its load,
+ * once its file was sent to it.
+ */
+type Ahead = { child: TestFileProcess; output: HeldBack; load?: FileLoad }
+/** Output held back until it can be written to its file's log, in the order it came, and passed straight on after. */
+type HeldBack = { write: Output['write']; passTo: (output: Output) => void }
+
+// How many files' processes load ahead of their turn on two workers or more. Workers often free up close together, and
+// with one file ahead they waited on loads: 1,000 tests in 50 files on four workers on an 8-CPU Linux machine lost 4.2 s
+// of worker time between files with one ahead, 1.4 s with two and 0.7 s with four, against 13.9 s loading each file in
+// its turn; four ahead kept ten file processes alive at once, two seven (15 November 2026).
+const filesAhead = 2
+
+function heldBack(): HeldBack {
+  const held: [ChildOutput['stream'], string][] = []
+  let target: Output | undefined
+  return {
+    write: (stream, text) => (target === undefined ? void held.push([stream, text]) : target.write(stream, text)),
+    passTo: (output) => {
+      for (const [stream, text] of held.splice(0)) output.write(stream, text)
+      target = output
+    },
+  }
+}
+
 // A target's first browser keeps the log's name; each further one adds its number, as logs/browser-2.log.
 function instanceLogFile(file: string, instance: number): string {
   return instance === 0 ? file : file.replace(/\.log$/, `-${instance + 1}.log`)
@@ -221,8 +256,10 @@ type ResultFacts = Omit<RunResult, keyof RunOutcome>
  * One run of selected files: the parent's whole lifecycle. Every file is collected first, each in a process of its
  * own and several at once, so the run knows every test before any starts. Then each visit runs its attempts in a new
  * process for its file: setups first, once per target and one after another, then the rest in file order on the
- * workers, up to `workers` files at once. A browser launches the first time a test that holds its lease needs it; app
- * servers start the first time a test needs them, and every test gets a new page for each of its apps.
+ * workers, up to `workers` files at once. On two workers or more the next files' processes load them while other files
+ * run, and a worker goes on while its last file's process closes; on one, and for setups, one file's code runs at a
+ * time. A browser launches the first time a test that holds its lease needs it; app servers start the first time a test
+ * needs them, and every test gets a new page for each of its apps.
  */
 export class RunSession {
   readonly #options: RunOptions
@@ -240,6 +277,10 @@ export class RunSession {
   readonly #stopped = Promise.withResolvers<void>()
   readonly #releases: Promise<unknown>[] = []
   readonly #processes = new Set<TestFileProcess>()
+  /** Each process started before its visit's turn, by the visit. */
+  readonly #ahead = new Map<Visit, Ahead>()
+  /** Processes still closing behind a worker that went on, each completing its file's record once closed. */
+  readonly #closing: Promise<void>[] = []
   readonly #records = new Map<string, FileRecord>()
   readonly #states = new Map<string, StateOutcome>()
   readonly #runFailures: Failure[] = []
@@ -531,8 +572,14 @@ export class RunSession {
     const phases = phasesOf(visits)
     for (const [position, attempt] of phases.tests.flatMap((visit) => visit.attempts).entries()) this.#lockOrder.set(attemptKey(attempt), position)
     this.#spreadBrowsers(planned.config, phases.tests)
-    for (const visit of phases.setups) await this.#runVisit(visit, planned, 0)
-    await runInWorkers(phases.tests, this.#workers, (visit, worker) => this.#runVisit(visit, planned, worker))
+    try {
+      const setups: Phase = { visits: phases.setups, overlap: false, taken: 0 }
+      for (const visit of phases.setups) await this.#runVisit(visit, planned, 0, setups)
+      const tests: Phase = { visits: phases.tests, overlap: this.#workers > 1, taken: 0 }
+      await runInWorkers(phases.tests, this.#workers, (visit, worker) => this.#runVisit(visit, planned, worker, tests))
+    } finally {
+      await this.#settleBehind()
+    }
     return planned.plan.files.map((file) => (file.ok ? this.#fileResult(file, planned.config.variants) : { file: file.file, collection: 'failed', failure: file.failure, tests: [] }))
   }
 
@@ -719,21 +766,43 @@ export class RunSession {
     }
   }
 
-  // The process is closed before the visit's results are final, so an error it reports after its last test, or
-  // an ending no test explains before it said it had finished, fails the file. The event keeps that failure for a run
-  // that stops before it finishes.
-  async #runVisit({ file, attempts }: Visit, planned: Planned, worker: number): Promise<void> {
+  // A visit takes the process started for it ahead, when there is one, and what that process printed meanwhile goes to
+  // the file's log first. A visit the run no longer runs closes it, keeping nothing of it: its file never ran.
+  async #runVisit(visit: Visit, planned: Planned, worker: number, phase: Phase): Promise<void> {
+    const { file, attempts } = visit
     const record = this.#record(file)
+    const ahead = this.#take(visit, phase)
     if (this.#stopReason !== undefined) {
+      if (ahead !== undefined) this.#behind(this.#dismiss(ahead.child))
       const reason = this.#stopReason
       record.tests.push(...attempts.map((attempt) => this.#notRun(this.#describe(attempt, planned), reason)))
       return
     }
     const logFile = childLogFile(file)
     const output = this.#outputFor(file, logFile)
-    const child = this.#spawn(output.write)
+    const child = ahead?.child ?? this.#spawn(output.write)
+    ahead?.output.passTo(output)
+    const load = ahead?.load ?? FileLoad.begin(child, { file, rootDir: this.#rootDir, logFile })
+    let ran: VisitRun
     try {
-      const ran = await this.#loadAndRun(child, file, attempts, planned, worker)
+      ran = await this.#loadAndRun(child, load, visit, planned, { worker, startedAhead: ahead !== undefined, startAhead: () => this.#startAhead(phase) })
+    } catch (error) {
+      await this.#forget(child)
+      output.end()
+      throw error
+    }
+    const closing = this.#closeVisit(child, file, ran, output)
+    if (!phase.overlap) return closing
+    // The worker goes on to its next file while this one's process closes; the file's results are complete once it has.
+    this.#behind(closing.catch((error: unknown) => this.#events.reportFailure(failure('cleanup_failed', `Retest could not finish with the process for ${file}: ${errorMessage(error)}`))))
+  }
+
+  // The process is closed before the visit's results are final, so an error it reports after its last test, or
+  // an ending no test explains before it said it had finished, fails the file. The event keeps that failure for a run
+  // that stops before it finishes.
+  async #closeVisit(child: TestFileProcess, file: string, ran: VisitRun, output: Output): Promise<void> {
+    const record = this.#record(file)
+    try {
       const closed = await child.close(abortGraceMs)
       record.tests.push(...ran.tests)
       if (!ran.loaded) return
@@ -751,11 +820,68 @@ export class RunSession {
     }
   }
 
-  async #loadAndRun(child: TestFileProcess, file: string, attempts: readonly Attempt[], planned: Planned, worker: number): Promise<{ loaded: boolean; tests: TestResult[]; exitRecorded: boolean }> {
-    const logFile = childLogFile(file)
-    const loaded = await loadTests(child, { file, rootDir: this.#rootDir, timeoutMs: this.#options.timeouts.collection, logFile })
+  // The processes for the next visits, which with overlap load their files at once, two ahead; without, one is started
+  // and waits. A process that cannot be started ahead is left to its visit, which starts it in its turn and says why it
+  // could not.
+  #startAhead(phase: Phase): void {
+    if (this.#stopReason !== undefined) return
+    const count = phase.overlap ? filesAhead : 1
+    for (const visit of phase.visits.slice(phase.taken, phase.taken + count)) {
+      if (this.#ahead.has(visit)) continue
+      const output = heldBack()
+      let child: TestFileProcess
+      try {
+        child = this.#spawn(output.write)
+      } catch {
+        return
+      }
+      const ahead: Ahead = { child, output }
+      if (phase.overlap) ahead.load = FileLoad.begin(child, { file: visit.file, rootDir: this.#rootDir, logFile: childLogFile(visit.file) })
+      this.#ahead.set(visit, ahead)
+    }
+  }
+
+  // Workers take visits in order, so the visits after the last one taken are the next to run.
+  #take(visit: Visit, phase: Phase): Ahead | undefined {
+    phase.taken = Math.max(phase.taken, phase.visits.indexOf(visit) + 1)
+    const ahead = this.#ahead.get(visit)
+    this.#ahead.delete(visit)
+    return ahead
+  }
+
+  // A process that will run nothing is asked to close, and killed if it does not.
+  async #dismiss(child: TestFileProcess): Promise<void> {
+    await child.close(abortGraceMs)
+    await this.#forget(child)
+  }
+
+  #behind(work: Promise<void>): void {
+    this.#closing.push(work)
+  }
+
+  // Every process still closing behind a worker has closed, and any started for a visit that never took it is closed
+  // too, before the run's results are read.
+  async #settleBehind(): Promise<void> {
+    for (const { child } of this.#ahead.values()) this.#behind(this.#dismiss(child))
+    this.#ahead.clear()
+    await Promise.all(this.#closing)
+  }
+
+  // A visit whose process was started ahead starts the next ones once its file has loaded. One whose process started in
+  // its turn, as the first visits of a phase do, starts them once its first test is over, so they never slow the loads,
+  // browser launches and first tests a run begins with: started as soon as the first file loaded, they made a run's
+  // first test start 40 ms later on four workers (15 November 2026).
+  async #loadAndRun(child: TestFileProcess, load: FileLoad, { file, attempts }: Visit, planned: Planned, place: { worker: number; startedAhead: boolean; startAhead: () => void }): Promise<VisitRun> {
+    const { worker } = place
+    let startAhead: (() => void) | undefined = place.startAhead
+    const startOnce = (): void => {
+      startAhead?.()
+      startAhead = undefined
+    }
+    const { loaded, errors } = await load.within(this.#options.timeouts.collection)
+    if (place.startedAhead || !loaded.ok) startOnce()
     if (!loaded.ok) {
-      const reason = this.#interruption ?? withAlso(loaded.failure, reportedErrors(file, child.errors))
+      const reason = this.#interruption ?? withAlso(loaded.failure, reportedErrors(file, errors))
       return { loaded: false, tests: attempts.map((attempt) => this.#notRun(this.#describe(attempt, planned), reason)), exitRecorded: false }
     }
     const declared = new Set(loaded.tests.map((test) => testId(file, testTitle(test.name, (test.describes ?? []).map((block) => block.name)))))
@@ -774,6 +900,7 @@ export class RunSession {
       tests.push(outcome.result)
       laterTests ??= outcome.laterTests
       known = outcome.paths ?? known
+      startOnce()
     }
     return { loaded: true, tests, exitRecorded: laterTests !== undefined }
   }
