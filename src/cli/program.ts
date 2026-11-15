@@ -1,13 +1,12 @@
 /**
  * The CLI, started by `main.ts` once the compile cache is on: wires the commands to the runner, the browser and the
- * terminal, runs the one the arguments name, and exits with its code once every write has settled.
+ * terminal, runs the one the arguments name, and exits with its code once every write has settled. The runner, the
+ * browser launch, the config loader and the app server load only when a command first calls them, so `retest
+ * --version` and the commands that need none of them never load that code.
  */
+import type { CliDependencies } from './command.ts'
 import process from 'node:process'
 import { resolveExecutable, systemHost } from '../browser/executables.ts'
-import { launchBrowser } from '../browser/launch.ts'
-import { loadConfig } from '../config/load.ts'
-import { probeReady, startAppServer } from '../runner/app-server.ts'
-import { collectFiles, runFiles } from '../runner/run.ts'
 import { executableRequest } from '../runner/target-executable.ts'
 import { retestVersion } from '../version.ts'
 import { createCli } from './cli.ts'
@@ -18,14 +17,19 @@ import { exitCodeAfterOutput, messageTerminal, reportTerminal } from './terminal
 const stdout = reportTerminal(process.stdout)
 const stderr = messageTerminal(process.stderr)
 
+const loadedWhenCalled: Pick<CliDependencies, 'runFiles' | 'collectFiles' | 'loadConfig' | 'launchBrowser' | 'probeReady' | 'startAppServer'> = {
+  runFiles: async (options, reporters) => (await import('../runner/run.ts')).runFiles(options, reporters),
+  collectFiles: async (options) => (await import('../runner/run.ts')).collectFiles(options),
+  loadConfig: async (path) => (await import('../config/load.ts')).loadConfig(path),
+  launchBrowser: async (options, timeoutMs) => (await import('../browser/launch.ts')).launchBrowser(options, timeoutMs),
+  probeReady: async (url, timeoutMs) => (await import('../runner/app-server.ts')).probeReady(url, timeoutMs),
+  startAppServer: async (options, timeoutMs) => (await import('../runner/app-server.ts')).startAppServer(options, timeoutMs),
+}
+
 const cli = createCli({
-  runFiles,
-  collectFiles,
-  loadConfig,
+  ...loadedWhenCalled,
+  // Commands call it without awaiting it, so its module loads with the program.
   resolveExecutable: (target) => resolveExecutable(executableRequest(target), systemHost()),
-  launchBrowser,
-  probeReady,
-  startAppServer,
   version: retestVersion,
   stdout: stdout.terminal,
   stderr,

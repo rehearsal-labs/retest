@@ -2,9 +2,7 @@ import type { RunFolder } from '../../store/read-run-folder.ts'
 import type { Command } from '../command.ts'
 import { join, resolve } from 'node:path'
 import { errorMessage } from '../../protocol/failures.ts'
-import { buildReport } from '../../reporters/html/build-report.ts'
 import { reportPath, writeReport } from '../../reporters/html/write-report.ts'
-import { readRunFolder, RunFolderReadError } from '../../store/read-run-folder.ts'
 import { parseArguments } from '../arguments.ts'
 import { CliError, UsageError } from '../errors.ts'
 
@@ -27,8 +25,10 @@ export const reportCommand: Command = {
     if (shown === undefined) throw new UsageError('Name the run folder to report on, such as .retest/runs/<time>.')
     if (extra.length > 0) throw new UsageError(`report reads one run folder, received ${parsed.positionals.length}.`)
     const directory = resolve(dependencies.cwd, shown)
-    const folder = readFolder(directory, shown)
+    const folder = await readFolder(directory, shown)
     for (const warning of folder.warnings) dependencies.stderr.write(`warning: ${warning}\n`)
+    // The report's builder loads only when report runs, not with every other command.
+    const { buildReport } = await import('../../reporters/html/build-report.ts')
     const report = await buildReport({ directory, shown, source: folder.source, result: folder.result, events: folder.events, warnings: folder.warnings })
     try {
       writeReport(directory, report)
@@ -41,7 +41,8 @@ export const reportCommand: Command = {
 }
 
 // A folder that is not a run folder is an expected failure, told as the store tells it.
-function readFolder(directory: string, shown: string): RunFolder {
+async function readFolder(directory: string, shown: string): Promise<RunFolder> {
+  const { readRunFolder, RunFolderReadError } = await import('../../store/read-run-folder.ts')
   try {
     return readRunFolder(directory, shown)
   } catch (error) {

@@ -82,10 +82,11 @@ describe('mapInWorkers', () => {
 })
 
 describe('collectionWorkers', () => {
-  test('is the workers a run names, and one for each core when it names none', () => {
-    assert.equal(collectionWorkers(1), 1)
-    assert.equal(collectionWorkers(3), 3)
-    assert.equal(collectionWorkers(undefined), availableParallelism())
+  test('is one for each core whatever the workers a run names, and the workers when they are more', () => {
+    const cores = availableParallelism()
+    assert.equal(collectionWorkers(1), cores)
+    assert.equal(collectionWorkers(undefined), cores)
+    assert.equal(collectionWorkers(cores + 3), cores + 3)
     assert.ok(collectionWorkers(undefined) >= defaultWorkers())
   })
 })

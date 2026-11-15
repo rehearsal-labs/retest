@@ -604,10 +604,32 @@ export class RunSession {
   // A target's browsers follow its load. The workers that will really run, no more than there are files, get a
   // browser each, or what the run asked for; a target that carries a share of the run's tests gets that share of them,
   // at least one, and never more than the files that use it. So a run of one target gives each worker its own browser,
-  // and the targets of a matrix divide the workers' browsers by their share of the tests.
+  // and the targets of a matrix divide the workers' browsers by their share of the tests. Then the browsers the workers'
+  // first visits ask for start launching, while the files' processes start. Only a run whose plan holds a test to run
+  // warms any, so a run with nothing to run launches none; a warmed browser no test asks for after all, as when the run
+  // stops first, is closed with the others and never told.
   #spreadBrowsers(config: RunConfig, tests: readonly Visit[]): void {
     const workers = Math.min(this.#workers, tests.length)
-    if (workers < 2) return
+    if (workers >= 2) this.#spreadOver(config, tests, workers)
+    if (this.#stopReason === undefined) this.#warmFirstVisits(config, tests.slice(0, workers))
+  }
+
+  // Each worker takes the next visit as it starts, so the first visits go to the workers in order, and each target of a
+  // visit warms the browser its worker will be given.
+  #warmFirstVisits(config: RunConfig, first: readonly Visit[]): void {
+    const asks = first.flatMap((visit, worker) => visit.attempts.flatMap((attempt) => Object.entries(attempt.targets).map(([app, target]) => ({ app, target, worker }))))
+    const warmed = new Set<string>()
+    for (const ask of asks) {
+      const id = JSON.stringify([ask.app, ask.target, ask.worker])
+      const app = config.apps.get(ask.app)
+      const target = app?.targets.get(ask.target)
+      if (warmed.has(id) || app === undefined || target === undefined) continue
+      warmed.add(id)
+      this.#browsers.warm(app, target, ask.worker)
+    }
+  }
+
+  #spreadOver(config: RunConfig, tests: readonly Visit[], workers: number): void {
     const base = this.#options.browsers ?? defaultBrowsers(workers)
     const total = tests.reduce((count, visit) => count + visit.attempts.length, 0)
     const uses = new Map<string, { app: string; target: string; attempts: number; visits: number }>()

@@ -1,6 +1,9 @@
 import type { LoadedApp, LoadedTarget } from '../../src/config/loaded.ts'
 import type { BrowserPoolOptions, StartedTarget } from '../../src/runner/browser-pool.ts'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { LaunchError } from '../../src/browser/contract.ts'
 import { BrowserError } from '../../src/browser/browser-error.ts'
@@ -292,5 +295,121 @@ describe('targets with spreads of their own', () => {
     const betaOnes = await Promise.all([browsers.ensure(web, beta, 0), browsers.ensure(web, beta, 1)])
     assert.ok(stableOnes.every((ready) => ready.ok) && betaOnes.every((ready) => ready.ok))
     assert.deepEqual(launched.browsers.map((browser) => browser.executablePath), ['/fake/stable', '/fake/stable', '/fake/beta'])
+  })
+})
+
+describe('browsers launched ahead of the first test', () => {
+  test('the browsers one target is spread over launch at the same time, each as its worker asks', async () => {
+    const fake = fakeLauncher()
+    let begun = 0
+    const both = Promise.withResolvers<void>()
+    // Each launch waits until both have begun, which a launch that waits for the other to finish never sees.
+    const { pool: browsers } = pool({
+      launch: async (options, timeoutMs) => {
+        begun += 1
+        if (begun === 2) both.resolve()
+        await both.promise
+        return fake.launch(options, timeoutMs)
+      },
+    })
+    const web = appOf('web', stable)
+    browsers.spread(web, stable, 2)
+    const [zero, one] = await Promise.all([browsers.ensure(web, stable, 0), browsers.ensure(web, stable, 1)])
+    assert.deepEqual([zero.ok, one.ok], [true, true], JSON.stringify([zero, one]))
+    assert.equal(fake.browsers.length, 2)
+  })
+
+  test('a warmed browser is told only once a test asks for it, and that test takes the launch the warm began', async () => {
+    const { pool: browsers, started, launched } = pool({ logFile: (app, target, instance) => `/logs/${app}-${target}-${instance}.log` })
+    const web = appOf('web', stable)
+    browsers.spread(web, stable, 2)
+    browsers.warm(web, stable)
+    const second = await browsers.ensure(web, stable, 1)
+    assert.ok(second.ok)
+    assert.deepEqual(launched.browsers.map((browser) => browser.launchOptions.logFile), ['/logs/web-stable-0.log', '/logs/web-stable-1.log'], 'the warm launched both')
+    assert.deepEqual(started.map(({ instance, instances }) => [instance, instances]), [[2, undefined]], 'only the browser a test asked for is told')
+    assert.equal(browsers.started.length, 0, 'the result lists the target once its first browser is asked for')
+    const first = await browsers.ensure(web, stable, 0)
+    assert.ok(first.ok)
+    assert.equal(first.value.browser, launched.browsers[0])
+    assert.deepEqual(started.map(({ instance, instances }) => [instance, instances]), [[2, undefined], [undefined, 2]])
+    assert.equal(launched.browsers.length, 2, 'nothing launches twice')
+  })
+
+  test('a warmed browser no test asks for closes with the pool, untold, and its log goes; a used one keeps its log', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'retest-pool-logs-'))
+    const fake = fakeLauncher()
+    const { pool: browsers, started } = pool({
+      logFile: (app, target, instance) => join(folder, `${app}-${target}-${instance}.log`),
+      launch: async (options, timeoutMs) => {
+        writeFileSync(options.logFile, 'the browser wrote this\n')
+        return fake.launch(options, timeoutMs)
+      },
+    })
+    const web = appOf('web', stable)
+    browsers.spread(web, stable, 2)
+    browsers.warm(web, stable)
+    assert.ok((await browsers.ensure(web, stable, 0)).ok)
+    await browsers.close()
+    assert.deepEqual(fake.browsers.map((browser) => browser.closed), [true, true])
+    assert.deepEqual(started.map(({ info }) => info.target?.name), ['stable'])
+    assert.deepEqual(readdirSync(folder), ['web-stable-0.log'])
+    rmSync(folder, { recursive: true, force: true })
+  })
+
+  test('a warmed launch that fails while no test asks for it leaves no log once the pool closes', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'retest-pool-logs-'))
+    const { pool: browsers, started } = pool({
+      logFile: (app, target, instance) => join(folder, `${app}-${target}-${instance}.log`),
+      launch: async (options) => {
+        writeFileSync(options.logFile, 'the browser said why it stopped\n')
+        throw new LaunchError('No browser at /fake/stable.')
+      },
+    })
+    const web = appOf('web', stable)
+    browsers.warm(web, stable)
+    await browsers.close()
+    assert.deepEqual(started, [])
+    assert.deepEqual(readdirSync(folder), [])
+    rmSync(folder, { recursive: true, force: true })
+  })
+
+  test('a warmed launch that fails reaches the test that asks for it with the same failure, and is not tried again', async () => {
+    let attempts = 0
+    const { pool: browsers, started } = pool({
+      launch: async () => {
+        attempts += 1
+        throw new LaunchError('No browser at /fake/stable.')
+      },
+    })
+    const web = appOf('web', stable)
+    browsers.warm(web, stable)
+    const opened = await browsers.ensure(web, stable)
+    assert.deepEqual(opened, { ok: false, failure: { class: 'setup_failed', message: 'No browser at /fake/stable.' } })
+    assert.equal(attempts, 1)
+    assert.deepEqual(started, [])
+  })
+
+  test("warming for a worker launches only the browser that worker will be given", async () => {
+    const { pool: browsers, launched } = pool({ logFile: (app, target, instance) => `/logs/${app}-${target}-${instance}.log` })
+    const web = appOf('web', stable)
+    browsers.spread(web, stable, 3)
+    browsers.warm(web, stable, 4)
+    assert.ok((await browsers.ensure(web, stable, 1)).ok)
+    assert.deepEqual(launched.browsers.map((browser) => browser.launchOptions.logFile), ['/logs/web-stable-1.log'])
+  })
+
+  test('a warmed browser lost before any test asked for it is told when one asks, and that test is told it was lost', async () => {
+    const { pool: browsers, started, launched } = pool()
+    const web = appOf('web', stable)
+    browsers.warm(web, stable)
+    // The warm's launch settles within a few turns of the event loop.
+    for (let turn = 0; turn < 100 && !(launched.browsers[0] !== undefined && browsers.connected(launched.browsers[0])); turn += 1) await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.ok(launched.browsers[0] !== undefined && browsers.connected(launched.browsers[0]), 'the warm launched the browser')
+    launched.browsers[0].disconnect('The browser process exited.')
+    const opened = await browsers.ensure(web, stable)
+    assert.deepEqual(opened, { ok: false, failure: { class: 'session_lost', message: 'Not run: the browser was lost earlier in this run. The browser process exited.' } })
+    assert.deepEqual(started.map(({ pid }) => pid), [launched.browsers[0].pid])
+    assert.equal(launched.browsers.length, 1, 'a lost browser is not launched again')
   })
 })

@@ -1,16 +1,20 @@
 import type { TestContext } from 'node:test'
+import type { Transport, TransportHandlers } from '../../src/browser/cdp/transport.ts'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { test } from 'node:test'
+import { isRecord } from '../../src/browser/cdp/message.ts'
+import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { LaunchError } from '../../src/browser/contract.ts'
 import { launchBrowser } from '../../src/browser/launch.ts'
 import { readStartAttempt } from '../../src/browser/sandbox-system.ts'
 import { commandLines, explainStartFailure } from '../../src/browser/start-failure.ts'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { windowsStandIn } from '../support/stand-in-program.ts'
-import { browserPath, closeMs, groupExists, scratchFolder, timed } from './browser-harness.ts'
+import { browserPath, closeMs, groupExists, scratchFolder, setupMs, timed, within } from './browser-harness.ts'
 
 const advice = 'Pass the path to a Chromium or Chrome executable.'
 
@@ -173,4 +177,55 @@ test('the browser log goes to the given file, in a folder created for it', async
   const browser = await launchBrowser({ executablePath: browserPath(), logFile: log, headless: true })
   await browser.close(closeMs)
   assert.equal(existsSync(log), true)
+})
+
+test('a browser starts with no page of its own, and keeps running once its last page closes', async (t) => {
+  const log = join(await scratchFolder(t), 'browser.log')
+  // The test's own `Target.getTargets` goes down the browser's pipe under ids Retest never uses, and its answer comes
+  // back to the test alone.
+  const waiting = new Map<number, (result: unknown) => void>()
+  let next = 1_000_000_000
+  let pipe: Transport | undefined
+  const browser = await launchBrowser({ executablePath: browserPath(), logFile: log, headless: true }, undefined, (streams) => {
+    const inner = new PipeTransport(streams)
+    pipe = inner
+    return {
+      listen(handlers: TransportHandlers) {
+        inner.listen({
+          ...handlers,
+          message(text) {
+            const message: unknown = JSON.parse(text)
+            const id = isRecord(message) ? message['id'] : undefined
+            const answer = typeof id === 'number' ? waiting.get(id) : undefined
+            if (answer === undefined || typeof id !== 'number' || !isRecord(message)) return handlers.message(text)
+            waiting.delete(id)
+            answer(message['result'])
+          },
+        })
+      },
+      send: (text) => inner.send(text),
+      close: () => inner.close(),
+    }
+  })
+  t.after(async () => {
+    await browser.close(closeMs)
+    assert.equal(groupExists(browser.pid), false, `process group ${browser.pid} should be gone`)
+  })
+  const pages = async (): Promise<number> => {
+    const id = next++
+    const { promise, resolve } = Promise.withResolvers<unknown>()
+    waiting.set(id, resolve)
+    pipe?.send(JSON.stringify({ id, method: 'Target.getTargets' }))
+    const result = await within(promise, defaultTimeouts.action, 'Target.getTargets did not answer')
+    const infos = isRecord(result) && Array.isArray(result['targetInfos']) ? result['targetInfos'] : []
+    return infos.filter((info: unknown) => isRecord(info) && info['type'] === 'page').length
+  }
+  assert.equal(await pages(), 0, 'no start page')
+  for (const round of [1, 2]) {
+    const page = await browser.newPage({}, setupMs)
+    assert.equal(await pages(), 1, `round ${round}: the test's page`)
+    await page.dispose(closeMs)
+    assert.equal(await pages(), 0, `round ${round}: no page is left`)
+    assert.equal(browser.connected, true, `round ${round}: the browser is still there`)
+  }
 })

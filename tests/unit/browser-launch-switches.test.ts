@@ -9,7 +9,7 @@ test("the browser runs Chrome's default features, without the experiments of Chr
   for (const headless of [true, false]) {
     const args = chromiumArguments('/tmp/retest-profile-3', headless)
     assert.ok(args.includes('--disable-field-trial-config'), `headless ${headless}`)
-    assert.equal(args.at(-1), 'about:blank', 'the start page still comes last')
+    assert.equal(args.at(-1), '--no-startup-window', 'no start page, still said last')
   }
 })
 

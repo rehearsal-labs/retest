@@ -6,16 +6,7 @@ import { interruptedExitCode } from '../../runner/outcome.ts'
 import { listWords } from '../../shared/list-words.ts'
 import { flag, value, parseArguments } from '../arguments.ts'
 import { CliError, UsageError } from '../errors.ts'
-import { installArchive } from '../install/install-archive.ts'
-import { installExecutor } from '../install/install-executor.ts'
 import { describeResult, installLicenceText, licenceLines, mirrorProblem, mirrorVariable, renderInspections } from '../install/report.ts'
-import { systemUnpackTools } from '../install/unpack.ts'
-import { installMedia } from '../install/media-install.ts'
-import { inspectMedia } from '../install/media-record.ts'
-import { renderMediaInstall, renderMediaListing } from '../install/media-report.ts'
-import { installSupervisor } from '../install/supervisor-install.ts'
-import { inspectSupervisor } from '../install/supervisor-record.ts'
-import { renderSupervisorInstall, renderSupervisorListing } from '../install/supervisor-report.ts'
 import { suggest } from '../suggest.ts'
 import { shouldUseColor, terminalMarks } from '../terminal.ts'
 
@@ -61,6 +52,18 @@ export const installCommand: Command = {
     const folders = cacheFolders(dependencies.env)
     if (folders === undefined) throw new CliError(`${cacheVariable()} is not set to an absolute folder, so Retest has no cache folder to install into or read.`)
     const style = createStyle(shouldUseColor(dependencies.stdout, dependencies.env), terminalMarks(dependencies.stdout, dependencies.env))
+    // The installers and their listings load only when install runs, not with every other command.
+    const [{ installArchive }, { installExecutor }, { systemUnpackTools }, { installMedia }, { inspectMedia }, { renderMediaInstall, renderMediaListing }, { installSupervisor }, { inspectSupervisor }, { renderSupervisorInstall, renderSupervisorListing }] = await Promise.all([
+      import('../install/install-archive.ts'),
+      import('../install/install-executor.ts'),
+      import('../install/unpack.ts'),
+      import('../install/media-install.ts'),
+      import('../install/media-record.ts'),
+      import('../install/media-report.ts'),
+      import('../install/supervisor-install.ts'),
+      import('../install/supervisor-record.ts'),
+      import('../install/supervisor-report.ts'),
+    ])
     if (listing) {
       const inspections = await inspectBuilds(platform, folders, { verify: parsed.flag('verify') })
       const media = await inspectMedia(dependencies.env, { verify: parsed.flag('verify') })

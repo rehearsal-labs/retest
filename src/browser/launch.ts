@@ -83,9 +83,9 @@ export async function launchBrowser(
 }
 
 /**
- * The command line Retest starts Chromium with, the start page last.
+ * The command line Retest starts Chromium with, with no start page last.
  *
- * @example chromiumArguments(profile, true).at(-1) // 'about:blank'
+ * @example chromiumArguments(profile, true).at(-1) // '--no-startup-window'
  */
 export function chromiumArguments(profile: string, headless: boolean): string[] {
   return [
@@ -114,7 +114,13 @@ export function chromiumArguments(profile: string, headless: boolean): string[] 
     '--disable-background-timer-throttling',
     // Keeps a fresh profile out of the login keychain that the person's own Chrome uses.
     ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
-    'about:blank',
+    // No start page: every test opens its own page in a browser context of its own, so an about:blank page in the
+    // default context only kept two renderer processes idle for the whole run. Without it, Chrome for Testing 153
+    // answered over the pipe about 50 ms sooner, with its sandbox on, and stayed running with no page open, headless
+    // and shown, until it was asked to close (Linux x64 headless and under Xvfb, macOS arm64 headless, 15 November
+    // 2026). Playwright passes the same for a browser it launches on a profile of its own (playwright-core 1.65.1,
+    // Apache-2.0).
+    '--no-startup-window',
   ]
 }
 

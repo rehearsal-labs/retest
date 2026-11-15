@@ -9,11 +9,7 @@ import { resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { defaultRunFolder } from '../../protocol/run-folder.ts'
 import { defaultTimeouts, formatTimeouts, mergeTimeouts, parseTimeouts, type Timeouts } from '../../protocol/timeouts.ts'
-import { createAgentReporter } from '../../reporters/agent.ts'
 import { retestCommand } from '../../reporters/commands.ts'
-import { createHtmlReporter } from '../../reporters/html/reporter.ts'
-import { createHumanReporter } from '../../reporters/human.ts'
-import { createJsonlReporter } from '../../reporters/jsonl.ts'
 import { createStyle } from '../../reporters/style.ts'
 import { interruptedExitCode } from '../../runner/outcome.ts'
 import { resolveSecrets } from '../../runner/secrets.ts'
@@ -88,7 +84,7 @@ export const runCommand: Command = {
     'Exit codes: 0 every test passed, 1 a test failed its checks, 2 the run could not check everything, 130 interrupted, 143 stopped by SIGTERM.',
   async run(args, dependencies) {
     const plan = await planRun(parseArguments(options, args), dependencies)
-    const { reporter, onOutput } = createReporter(plan.reporter, plan.runFolder, dependencies)
+    const { reporter, onOutput } = await createReporter(plan.reporter, plan.runFolder, dependencies)
     const watched = watchRunEnd(reporter)
     const runOptions = { ...plan.options, ...(onOutput === undefined ? {} : { onOutput }) }
     const result = await dependencies.runFiles(runOptions, [watched.reporter])
@@ -238,11 +234,13 @@ function checkRunFolder(runFolder: string, outputDir: string): void {
 
 type ChosenReporter = { reporter: Reporter; onOutput?: (output: ChildOutput) => void }
 
-function createReporter(name: ReporterName, runFolder: string, dependencies: CliDependencies): ChosenReporter {
+// Only the reporter the run prints with is loaded.
+async function createReporter(name: ReporterName, runFolder: string, dependencies: CliDependencies): Promise<ChosenReporter> {
   const { stdout, stderr } = dependencies
-  if (name === 'jsonl') return { reporter: createJsonlReporter({ stdout }) }
-  if (name === 'agent') return { reporter: createAgentReporter({ stdout, runFolder }) }
+  if (name === 'jsonl') return { reporter: (await import('../../reporters/jsonl.ts')).createJsonlReporter({ stdout }) }
+  if (name === 'agent') return { reporter: (await import('../../reporters/agent.ts')).createAgentReporter({ stdout, runFolder }) }
+  const { createHumanReporter } = await import('../../reporters/human.ts')
   const human = createHumanReporter({ stdout, stderr, color: shouldUseColor(stdout, dependencies.env), marks: terminalMarks(stdout, dependencies.env), runFolder })
-  const reporter = name === 'html' ? createHtmlReporter({ terminal: human, stdout, runFolder, directory: resolve(dependencies.cwd, runFolder) }) : human
+  const reporter = name === 'html' ? (await import('../../reporters/html/reporter.ts')).createHtmlReporter({ terminal: human, stdout, runFolder, directory: resolve(dependencies.cwd, runFolder) }) : human
   return { reporter, onOutput: (output) => human.onOutput(output) }
 }

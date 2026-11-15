@@ -11,7 +11,8 @@ test('a page keeps its renderer and its timers at full speed, headless or shown,
   for (const headless of [true, false]) {
     const args = chromiumArguments('/tmp/retest-profile-1', headless)
     assert.deepEqual(backgrounding.filter((flag) => !args.includes(flag)), [], `every backgrounding switch, headless ${headless}`)
-    assert.equal(args.at(-1), 'about:blank', 'the start page comes last')
+    assert.equal(args.at(-1), '--no-startup-window', 'no start page, said last')
+    assert.equal(args.includes('about:blank'), false, 'no page of its own')
     assert.equal(args.includes('--headless'), headless)
   }
 })

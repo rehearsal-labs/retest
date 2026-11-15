@@ -11,7 +11,6 @@ import { createStyle, type Style } from '../../reporters/style.ts'
 import { interruptedExitCode } from '../../runner/outcome.ts'
 import { parseArguments, value } from '../arguments.ts'
 import { defaultConfigFile, findConfig, missingConfig } from '../config-file.ts'
-import { runChecks } from '../doctor/checks.ts'
 import { UsageError } from '../errors.ts'
 import { shouldUseColor, terminalMarks } from '../terminal.ts'
 
@@ -41,6 +40,8 @@ export const doctorCommand: Command = {
     if (config === undefined) throw missingConfig('doctor checks the browsers and apps in a config.')
     const timeouts = mergeTimeouts(defaultTimeouts, config.timeouts)
     const logFolder = resolve(dependencies.cwd, doctorFolder(new Date()))
+    // The checks load only when doctor runs, not with every other command.
+    const { runChecks } = await import('../doctor/checks.ts')
     const checks = await runChecks(config, { dependencies, timeouts, logFolder })
     const problems = checks.filter((check) => !check.ok).length
     if (dependencies.signal.aborted || !pointsInto(checks, logFolder)) removeLogs(logFolder)

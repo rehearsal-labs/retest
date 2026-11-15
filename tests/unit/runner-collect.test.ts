@@ -225,12 +225,16 @@ describe('collection on workers', () => {
     assert.equal(record.result.exitCode, 0, JSON.stringify(record.result.counts))
   })
 
-  test('a run on one worker loads one file at a time to collect them', async () => {
+  test('a run on one worker still loads files at once to collect them, one for each core', { skip: availableParallelism() < 2 ? 'one core' : false }, async () => {
+    // The two files meet only when both load at once: one at a time, the first waits out its 5000 ms budget and fails.
     const record = await runProject(meetingProject(), { files: meetingFiles, workers: 1 })
-    const [one, two] = record.result.files
-    assert.equal(one?.collection, 'failed')
-    assert.match(one?.failure?.message ?? '', /^Loading tests\/one\.retest\.ts took longer than 5000 ms, so Retest stopped its process\./)
-    assert.equal(two?.collection, 'ok')
+    assert.deepEqual(record.result.files.map((file) => [file.file, file.collection]), [
+      ['tests/one.retest.ts', 'ok'],
+      ['tests/two.retest.ts', 'ok'],
+    ])
+    assert.deepEqual(eventsOfType(record.events, 'collection.completed').map((event) => event.file), meetingFiles)
+    assert.equal(record.result.exitCode, 0, JSON.stringify(record.result.counts))
+    assert.equal(eventsOfType(record.events, 'run.started')[0]?.options.workers, 1, 'the tests still run on the one worker asked for')
   })
 
   test('collectFiles loads files at once on a machine of two cores or more', { skip: availableParallelism() < 2 ? 'one core' : false }, async () => {

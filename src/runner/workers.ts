@@ -6,15 +6,17 @@ export function defaultWorkers(): number {
 }
 
 /**
- * How many test files load at once to collect their tests: the run's workers when it names them, and otherwise one
- * for each core. Collection starts no browser, so the default is not halved as the workers' is. Collecting 50 files
- * of 20 tests took 3.46 s one at a time, 0.98 s four at a time, 0.67 s eight at a time and 0.62 s twelve at a time
- * on eight cores (Linux arm64 in Docker).
+ * How many test files load at once to collect their tests: one for each core, or the run's workers when it names
+ * more. Workers bound how many files run their tests at once against the browsers; collecting runs no test body and
+ * starts no browser, so fewer workers never mean a slower collection. Collecting 50 files of 20 tests took 3.46 s one
+ * at a time, 0.98 s four at a time, 0.67 s eight at a time and 0.62 s twelve at a time on eight cores (Linux arm64 in
+ * Docker). On an 8-CPU Linux machine of four cores with two threads each, 50 files of two tests took 6.7 s one at a
+ * time and 1.7 s both four and eight at a time (15 November 2026).
  *
- * @example collectionWorkers(undefined) // availableParallelism()
+ * @example collectionWorkers(1) // availableParallelism()
  */
 export function collectionWorkers(workers: number | undefined): number {
-  return workers ?? Math.max(1, availableParallelism())
+  return Math.max(1, availableParallelism(), workers ?? 0)
 }
 
 /**

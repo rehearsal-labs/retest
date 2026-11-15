@@ -9,17 +9,13 @@ import type { Failure } from '../protocol/failures.ts'
 import type { BrowserInfo } from '../protocol/result.ts'
 import type { Timeouts } from '../protocol/timeouts.ts'
 import type { Bounded } from './bounded.ts'
+import { rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { ChromiumBrowser } from '../browser/browser.ts'
 import { closeGraceMs, LaunchError, webRuntimeIdentity } from '../browser/contract.ts'
 import { ElectronLaunchError, launchElectron } from '../browser/electron.ts'
 import { ProcessLaunchError } from '../browser/chromium-process.ts'
-import { findFirefoxExecutable } from '../browser/firefox/executable.ts'
-import { FirefoxBrowser } from '../browser/firefox/browser.ts'
-import { launchFirefox } from '../browser/firefox/launch.ts'
 import { firefoxRoute } from '../browser/firefox/route.ts'
-import { launchWebKit, WebKitBrowser } from '../browser/webkit/browser.ts'
-import { webKitBuildPath } from '../browser/webkit/build.ts'
 import { BrowserError } from '../browser/browser-error.ts'
 import { emulationFor } from '../config/devices.ts'
 import { errorMessage, failure } from '../protocol/failures.ts'
@@ -104,17 +100,29 @@ type AppTarget =
   | { ok: true; key: string; emulation?: Emulation; proxy?: LoadedProxy; engine?: WebEngine }
   | { ok: true; key: string; electron: LoadedElectronTarget }
   | { ok: false; failure: Failure }
+type WebTarget = LoadedChromiumTarget | LoadedFirefoxTarget | LoadedWebKitTarget
+/**
+ * What one of an app target's browsers takes to launch: the key every app target with the same browser shares, the
+ * options, the launcher, and how to read the build the driver found in the browser it launched. An Electron target has
+ * no browser of its own to plan.
+ */
+type LaunchPlan =
+  | { ok: true; kind: 'browser'; key: string; options: LaunchOptions; launch: LaunchBrowser; build: (browser: OwnedBrowser) => string | undefined; target: WebTarget; engine?: WebEngine }
+  | { ok: true; kind: 'electron'; target: LoadedElectronTarget }
+  | { ok: false; failure: Failure }
+type BrowserPlan = Extract<LaunchPlan, { kind: 'browser' }>
 
 /**
  * The run's browsers and Electron apps. A target runs on the driver it needs: Chromium's, which also drives Electron
  * apps, or Firefox's, or WebKit's. A run refuses the tests of any other target before it asks the pool; should one still reach it,
  * it fails setup by name and launches nothing. Each distinct target, its executable with its headless setting and emulation, launches
- * once, the first time a test needs it or when the run warms it, and app targets that are the same share it. A proxy
- * belongs to each page's browser context, so targets that differ only by proxy share a browser too. A browser that
- * fails to launch, or is lost, is not launched again: every later test that needs it does not run. App targets are set
- * up one after another, so two that share a browser never launch it twice. A target's tests can be spread over several
- * browsers, each worker keeping to one: one browser serves every context it is given from a single process, which a
- * run on many workers saturates.
+ * once, the first time a test needs it or when the run warms it, and app targets that are the same share that one
+ * launch. A proxy belongs to each page's browser context, so targets that differ only by proxy share a browser too. A
+ * browser that fails to launch, or is lost, is not launched again: every later test that needs it does not run. App
+ * targets take their turns at setup in the order they were first asked for, so the result lists them in that order. A
+ * target's tests can be spread over several browsers, each worker keeping to one: one browser serves every context it
+ * is given from a single process, which a run on many workers saturates. The browsers of one target are set up in the
+ * same turn, each launching as its worker asks, without waiting for the others.
  *
  * An Electron app is launched afresh for each test that asks for it, and quits when the test closes its page. Warming
  * launches none, since a launch takes what the test holding the app's lease holds; its first launch is the target's
@@ -124,7 +132,15 @@ type AppTarget =
 export class BrowserPool {
   readonly #options: BrowserPoolOptions
   readonly #launched = new Map<string, Launched>()
+  // Every browser launch by its key from the moment it begins, whether a warm or a target's setup began it, and each
+  // launch a warm began that no test has asked for yet, with the log it writes to.
+  readonly #starting = new Map<string, Promise<void>>()
+  readonly #unclaimed = new Map<string, string>()
+  // How each of an app target's browsers launches, read once for its warm and its setup alike.
+  readonly #plans = new Map<string, Promise<LaunchPlan>>()
   readonly #appTargets = new Map<string, Promise<AppTarget>>()
+  // When each app target's turn at setup begins: once every target asked for before it is set up.
+  readonly #turns = new Map<string, Promise<unknown>>()
   readonly #started: StartedTarget[] = []
   readonly #releases: Promise<unknown>[] = []
   readonly #outputSettlements = new Set<Promise<void>>()
@@ -201,17 +217,29 @@ export class BrowserPool {
   }
 
   /**
-   * Starts setting up an app target now, in every browser its tests are spread over, so they launch while the
-   * first test process boots, instead of when the first test asks. `ensure` later waits for the same setup. An Electron
-   * target is not warmed: its app runs for one test at a time, and launches only once that test holds what it needs.
+   * Starts launching an app target's browser now, the one `worker` will be given, or without a worker every browser
+   * the target's tests are spread over, so it launches while the test processes start instead of when the first test
+   * asks. Said after the target's spread. Nothing is told of the browser until a test asks for the target, and `ensure`
+   * then takes the launch this began, whose failure it reports to that test. A launch no test asks for is closed with
+   * the pool, untold, and its log goes once it closes cleanly. An Electron target is not warmed: its app runs for one
+   * test at a time, and launches only once that test holds what it needs.
    */
-  warm(app: LoadedApp, target: LoadedTarget): void {
-    if (isElectron(target)) return
-    for (let instance = 0; instance < this.#sizeOf(app, target); instance += 1) {
-      this.#appTarget(app, target, instance).catch(() => {
-        // ensure reports the problem to the test that needs the target; nothing waits here.
+  warm(app: LoadedApp, target: LoadedTarget, worker?: number): void {
+    if (isElectron(target) || this.#closing !== undefined) return
+    const size = this.#sizeOf(app, target)
+    const instances = worker === undefined ? Array.from({ length: size }, (_, instance) => instance) : [worker % size]
+    for (const instance of instances) {
+      this.#warmOne(app, target, instance).catch(() => {
+        // The target's setup reads the same plan, and reports its problem to the test that needs the target.
       })
     }
+  }
+
+  async #warmOne(app: LoadedApp, target: LoadedTarget, instance: number): Promise<void> {
+    const plan = await this.#planLaunch(app, target, instance)
+    if (!plan.ok || plan.kind !== 'browser' || this.#closing !== undefined || this.#starting.has(plan.key)) return
+    this.#unclaimed.set(plan.key, plan.options.logFile)
+    await this.#launchOnce(plan)
   }
 
   /**
@@ -245,6 +273,7 @@ export class BrowserPool {
   async #closeAll(): Promise<void> {
     const { cleanup } = this.#options.timeouts
     await this.#setups
+    await Promise.allSettled(this.#starting.values())
     await Promise.allSettled(this.#launchingApps)
     const browsers = [...this.#launched.values()].flatMap((entry) => (entry.browser === undefined ? [] : [entry.browser]))
     const closed = await Promise.all([...browsers, ...this.#apps].map((browser) => bounded(this.#closeBrowser(browser, cleanup), timerMs(cleanup + closeGraceMs + abortGraceMs))))
@@ -255,16 +284,27 @@ export class BrowserPool {
     const released = await bounded(Promise.all(this.#releases), cleanup)
     if (released.status === 'failed') this.#cleanupProblems.push(cleanupMessage(released.error))
     else if (released.status !== 'done') this.#cleanupProblems.push("An abandoned browser or Electron launch did not finish cleanup within the run's cleanup budget.")
+    // A launch a warm began for a test that never asked for it was never told, so once everything the pool started is
+    // gone without a problem, its log goes too and the run folder holds nothing of it. A problem keeps every log.
+    if (this.#cleanupProblems.length === 0) {
+      for (const logFile of this.#unclaimed.values()) {
+        await rm(logFile, { force: true }).catch((error: unknown) => this.#cleanupProblems.push(`Retest could not remove the log of a browser no test used: ${errorMessage(error)}`))
+      }
+    }
     if (this.#cleanupProblems.length > 0) throw new BrowserError({ class: 'cleanup_failed', message: [...new Set(this.#cleanupProblems)].join(' ') })
   }
 
-  // One setup at a time, in the order they were asked for, each remembered for every later ask.
+  // Each app target's setups take their turn in the order the target was first asked for, each remembered for every
+  // later ask. A browser of a target asked for during or after its turn is set up at once, beside the others.
   #appTarget(app: LoadedApp, target: LoadedTarget, instance: number): Promise<AppTarget> {
     const id = JSON.stringify([app.name, target.name, instance])
     let known = this.#appTargets.get(id)
     if (known === undefined) {
-      known = this.#setups.then(() => this.#first(app, target, instance))
-      this.#setups = known.catch(() => undefined)
+      const turnId = JSON.stringify([app.name, target.name])
+      const turn = this.#turns.get(turnId) ?? this.#setups
+      this.#turns.set(turnId, turn)
+      known = turn.then(() => this.#first(app, target, instance))
+      this.#setups = Promise.all([this.#setups, known.catch(() => undefined)])
       this.#appTargets.set(id, known)
     }
     return known
@@ -273,56 +313,84 @@ export class BrowserPool {
   async #first(app: LoadedApp, loaded: LoadedTarget, instance: number): Promise<AppTarget> {
     const closed = (): AppTarget => ({ ok: false, failure: this.#options.interruption() ?? failure('setup_failed', 'The browser was closed.') })
     if (this.#closing !== undefined) return closed()
+    const plan = await this.#planLaunch(app, loaded, instance)
+    if (!plan.ok) return plan
+    if (plan.kind === 'electron') return this.#firstApp(app, plan.target)
+    if (this.#closing !== undefined) return closed()
+    const { key, target, engine } = plan
+    await this.#launchOnce(plan)
+    const warmed = this.#unclaimed.delete(key)
+    const launched = this.#launched.get(key)
+    if (launched?.kind !== 'ready') {
+      // A browser a warm launched and lost before any test asked for it is still told, once, so the run names it.
+      if (warmed && launched?.browser !== undefined) this.#announce(app, plan, launched.browser, instance)
+      return { ok: false, failure: launched?.failure ?? failure('setup_failed', 'The browser was closed.') }
+    }
+    const { browser } = launched
+    const emulation = emulationOf(target, browser)
+    this.#announce(app, plan, browser, instance)
+    return { ok: true, key, ...(engine === undefined ? {} : { engine }), ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
+  }
+
+  #planLaunch(app: LoadedApp, loaded: LoadedTarget, instance: number): Promise<LaunchPlan> {
+    const id = JSON.stringify([app.name, loaded.name, instance])
+    let plan = this.#plans.get(id)
+    if (plan === undefined) {
+      plan = this.#plan(app, loaded, instance)
+      this.#plans.set(id, plan)
+    }
+    return plan
+  }
+
+  async #plan(app: LoadedApp, loaded: LoadedTarget, instance: number): Promise<LaunchPlan> {
     const driver = targetDriver(app.name, loaded)
     if (!driver.ok) return driver
-    if (driver.driver === 'electron') return this.#firstApp(app, driver.target)
-    if (driver.driver === 'firefox') return this.#firstFirefox(app, driver.target, instance)
-    if (driver.driver === 'webkit') return this.#firstWebKit(app, driver.target, instance)
+    if (driver.driver === 'electron') return { ok: true, kind: 'electron', target: driver.target }
+    if (driver.driver === 'firefox') return this.#planFirefox(app, driver.target, instance)
+    if (driver.driver === 'webkit') return this.#planWebKit(app, driver.target, instance)
     const { target } = driver
     const found = await this.#options.findExecutable(target)
     if (!found.ok) return found
-    if (this.#closing !== undefined) return closed()
     const executablePath = found.path
     const headless = this.#options.headless && target.headless
     const key = JSON.stringify([executablePath, headless, target.emulate ?? null, instance])
     const hidden = this.#options.hiddenVariables === undefined ? {} : { hiddenVariables: this.#options.hiddenVariables }
     const redacting = this.#options.redact === undefined ? {} : { redact: this.#options.redact }
     const streaming = this.#options.redactStream === undefined ? {} : { redactStream: this.#options.redactStream }
-    const launched = this.#launched.get(key) ?? (await this.#launch(key, { executablePath, headless, logFile: this.#options.logFile(app.name, target.name, instance), ...hidden, ...redacting, ...streaming }))
-    if (launched.kind !== 'ready') return { ok: false, failure: launched.failure }
-    const { browser } = launched
-    const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
-    this.#announce(app, target, browser, emulation, instance)
-    return { ok: true, key, ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
+    const options = { executablePath, headless, logFile: this.#options.logFile(app.name, target.name, instance), ...hidden, ...redacting, ...streaming }
+    // Chromium's source revision, from `Browser.getVersion`.
+    const build = (browser: OwnedBrowser): string | undefined => (browser instanceof ChromiumBrowser ? browser.revision : undefined)
+    return { ok: true, kind: 'browser', key, options, launch: this.#options.launch, build, target }
   }
 
   // A Firefox target launches the Firefox its path, the pinned build in Retest's cache or the system install names, by
-  // the route the machine's RETEST_FIREFOX_ROUTE chooses; every page it serves opens in a user context of its own.
-  async #firstFirefox(app: LoadedApp, target: LoadedFirefoxTarget, instance: number): Promise<AppTarget> {
+  // the route the machine's RETEST_FIREFOX_ROUTE chooses; every page it serves opens in a user context of its own. Its
+  // driver loads only for a run with a Firefox target.
+  async #planFirefox(app: LoadedApp, target: LoadedFirefoxTarget, instance: number): Promise<LaunchPlan> {
     const route = firefoxRoute(process.env)
     if (!route.ok) return { ok: false, failure: failure('setup_failed', route.message) }
-    const found = await (this.#options.findFirefox ?? findFirefoxExecutable)(target, app.name, process.env)
+    const findFirefox = this.#options.findFirefox ?? (await import('../browser/firefox/executable.ts')).findFirefoxExecutable
+    const found = await findFirefox(target, app.name, process.env)
     if (!found.ok) return found
-    if (this.#closing !== undefined) return { ok: false, failure: this.#options.interruption() ?? failure('setup_failed', 'The browser was closed.') }
     const executablePath = found.path
     const headless = this.#options.headless && target.headless
     const key = JSON.stringify(['firefox', executablePath, headless, instance])
     const hidden = this.#options.hiddenVariables === undefined ? {} : { hiddenVariables: this.#options.hiddenVariables }
     const redacting = this.#options.redact === undefined ? {} : { redact: this.#options.redact }
     const streaming = this.#options.redactStream === undefined ? {} : { redactStream: this.#options.redactStream }
-    const options = { executablePath, headless, route: route.route, logFile: this.#options.logFile(app.name, target.name, instance), ...hidden, ...redacting, ...streaming }
-    const launch = this.#options.launchFirefox ?? launchFirefox
-    const launched = this.#launched.get(key) ?? (await this.#launch(key, options, (given, timeoutMs) => launch({ ...given, route: route.route }, timeoutMs)))
-    if (launched.kind !== 'ready') return { ok: false, failure: launched.failure }
-    const { browser } = launched
-    const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
-    this.#announce(app, target, browser, emulation, instance)
-    return { ok: true, key, engine: 'firefox', ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
+    const options = { executablePath, headless, logFile: this.#options.logFile(app.name, target.name, instance), ...hidden, ...redacting, ...streaming }
+    const launch = this.#options.launchFirefox ?? (await import('../browser/firefox/launch.ts')).launchFirefox
+    const { FirefoxBrowser } = await import('../browser/firefox/browser.ts')
+    // Firefox's `moz:buildID`, from `session.new`.
+    const build = (browser: OwnedBrowser): string | undefined => (browser instanceof FirefoxBrowser ? browser.buildId : undefined)
+    return { ok: true, kind: 'browser', key, options, launch: (given, timeoutMs) => launch({ ...given, route: route.route }, timeoutMs), build, target, engine: 'firefox' }
   }
 
   // A WebKit target launches the build its path or RETEST_WEBKIT_BUILD names, and nothing else; every page it serves opens
-  // in a browser context of its own. The build gets an environment of its own, so no hidden variable can reach it.
-  async #firstWebKit(app: LoadedApp, target: LoadedWebKitTarget, instance: number): Promise<AppTarget> {
+  // in a browser context of its own. The build gets an environment of its own, so no hidden variable can reach it. Its
+  // driver loads only for a run with a WebKit target.
+  async #planWebKit(app: LoadedApp, target: LoadedWebKitTarget, instance: number): Promise<LaunchPlan> {
+    const [{ webKitBuildPath }, { launchWebKit, WebKitBrowser }] = await Promise.all([import('../browser/webkit/build.ts'), import('../browser/webkit/browser.ts')])
     const found = webKitBuildPath(target, process.env)
     if (!found.ok) return found
     const headless = this.#options.headless && target.headless
@@ -336,12 +404,20 @@ export class BrowserPool {
       const stream = given.redactStream === undefined ? {} : { redactStream: given.redactStream }
       return launch({ buildPath: given.executablePath, buildSource: found.source, logFile: given.logFile, headless: given.headless, ...redact, ...stream }, timeoutMs)
     }
-    const launched = this.#launched.get(key) ?? (await this.#launch(key, options, launchBuild))
-    if (launched.kind !== 'ready') return { ok: false, failure: launched.failure }
-    const { browser } = launched
-    const emulation = target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
-    this.#announce(app, target, browser, emulation, instance)
-    return { ok: true, key, engine: 'webkit', ...(emulation === undefined ? {} : { emulation }), ...(target.proxy === undefined ? {} : { proxy: target.proxy }) }
+    // WebKit's revision, from its build folder's name.
+    const build = (browser: OwnedBrowser): string | undefined => (browser instanceof WebKitBrowser ? browser.build.revision : undefined)
+    return { ok: true, kind: 'browser', key, options, launch: launchBuild, build, target, engine: 'webkit' }
+  }
+
+  // A browser's launch, begun once for its key by whichever asks first, a warm or a target's setup, and shared by every
+  // app target with that key. Once it settles, `#launched` says how it stands now, a loss since included.
+  #launchOnce({ key, options, launch }: BrowserPlan): Promise<void> {
+    let launching = this.#starting.get(key)
+    if (launching === undefined) {
+      launching = this.#launch(key, options, launch).then(() => undefined)
+      this.#starting.set(key, launching)
+    }
+    return launching
   }
 
   // The target's setup: its first launch, which the first test that asks for the target gets.
@@ -494,16 +570,18 @@ export class BrowserPool {
     this.#options.onLost(browser, reason)
   }
 
-  // The run's result lists each app target once, so only its first browser joins `started`; every browser is told.
-  #announce(app: LoadedApp, target: LoadedChromiumTarget | LoadedFirefoxTarget | LoadedWebKitTarget, browser: OwnedBrowser, emulation: Emulation | undefined, instance: number): void {
+  // The run's result lists each app target once, so only its first browser joins `started`; every browser is told, with
+  // the build its driver read about it, never one taken from a pin.
+  #announce(app: LoadedApp, { target, build: readBuild }: BrowserPlan, browser: OwnedBrowser, instance: number): void {
     const { product, version, userAgent, pid, executablePath } = browser
+    const emulation = emulationOf(target, browser)
     const device = typeof target.emulate === 'string' ? { device: target.emulate } : {}
     const proxy = target.proxy === undefined ? {} : { proxy: recordedProxy(target.proxy) }
     const described: TargetInfo = { name: target.name, ...(emulation === undefined ? {} : { emulation }), ...device, ...proxy }
     const named = this.#options.named ? { app: app.name, target: described } : {}
     const size = this.#sizeOf(app, target)
     const numbered = instance > 0 ? { instance: instance + 1 } : size > 1 ? { instances: size } : {}
-    const build = reportedBuild(browser)
+    const build = readBuild(browser)
     const started: StartedTarget = { info: { product, version, executablePath, ...named }, userAgent, pid, ...numbered, engine: engineOf(target), ...(build === undefined ? {} : { build }) }
     if (instance === 0) this.#started.push(started)
     this.#options.onStarted(started)
@@ -511,17 +589,13 @@ export class BrowserPool {
 }
 
 // The engine a browser target runs on, as the driver that launches it is.
-function engineOf(target: LoadedChromiumTarget | LoadedFirefoxTarget | LoadedWebKitTarget): WebEngine {
+function engineOf(target: WebTarget): WebEngine {
   return target.browser === 'firefox' || target.browser === 'webkit' ? target.browser : 'chromium'
 }
 
-// The build a driver read about the browser it launched: Chromium's source revision from `Browser.getVersion`, Firefox's
-// `moz:buildID` from `session.new`, WebKit's revision from its build folder's name. Nothing is taken from a pin.
-function reportedBuild(browser: OwnedBrowser): string | undefined {
-  if (browser instanceof ChromiumBrowser) return browser.revision
-  if (browser instanceof FirefoxBrowser) return browser.buildId
-  if (browser instanceof WebKitBrowser) return browser.build.revision
-  return undefined
+// What a target's pages emulate in the browser that serves them, for that browser's version.
+function emulationOf(target: WebTarget, browser: OwnedBrowser): Emulation | undefined {
+  return target.emulate === undefined ? undefined : emulationFor(target.emulate, browser.version)
 }
 
 // The proxy's address and bypass rules as events record them; a user name or password never is.
