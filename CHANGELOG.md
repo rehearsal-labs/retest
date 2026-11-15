@@ -2,7 +2,9 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
-## Unreleased
+## 0.5.0
+
+Headless Chromium runs on Chrome's headless shell, and a run is about two and a half times as fast. Each entry says where it was measured or checked.
 
 ### Changed
 
