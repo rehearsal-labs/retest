@@ -91,6 +91,8 @@ const ignore = (): void => {}
 
 const windowOpenSchema = s.object({ url: s.string(), userGesture: s.boolean(), windowFeatures: s.array(s.string()) })
 
+const pausedSchema = s.object({ requestId: s.string(), frameId: s.string(), resourceType: s.string() })
+
 /**
  * How the browser treats a window its page opens with no click or key press behind it, which Chrome's popup blocker
  * refuses: `chrome` blocks it itself, and Chrome's headless shell, which has no popup blocker, opens it, so `shell`
@@ -108,6 +110,10 @@ export function blockedWindowFailure(): Failure {
 
 // How long a page nobody waited for may take to set up; past it, the page is let run and let go.
 const unwaitedSetupMs = 10_000
+
+// How long a window Chrome would have blocked may take to ask for its first document once it runs; past it, the shell's
+// window is closed without waiting further, and the browser's log says so.
+const blockedDocumentMs = 10_000
 
 /**
  * The browser's watch for the pages its pages open. Once started, Chrome holds every new page target, and the watch
@@ -199,8 +205,8 @@ export class PagePopups implements PopupOpener {
   readonly #unwaited = new Set<WebSession>()
   // Each window the page opened that the browser has not attached yet, in the order the page opened them, with whether a
   // click was behind it and whether it asked for a size: Chrome tells a window to its opener before it attaches the
-  // window's target. Chrome holds only those it opens, and the shell all of them.
-  readonly #opening: { readonly allowed: boolean; readonly sized: boolean }[] = []
+  // window's target. Chrome holds only those it opens, and the shell all of them, each with the address it opens.
+  readonly #opening: { readonly allowed: boolean; readonly sized: boolean; readonly url: string }[] = []
   #waiter: Waiter | undefined
   #lostReason: string | undefined
 
@@ -255,7 +261,7 @@ export class PagePopups implements PopupOpener {
     // it. A window no opening was told of, as one a frame in another process opens, is taken as a tab.
     const opening = this.#options.gestures === undefined ? undefined : this.#opening.shift()
     if (this.#options.gestures === 'shell' && opening?.allowed === false) {
-      void this.#closeBlocked(sessionId, targetId)
+      void this.#closeBlocked(sessionId, targetId, opening.url)
       return true
     }
     const window: WindowKind = opening?.sized === true ? 'none' : 'tab'
@@ -271,25 +277,54 @@ export class PagePopups implements PopupOpener {
   }
 
   // A window that shares its opener's renderer holds the opener's call to window.open until it runs, so it is let run,
-  // with every request it would make held first, then closed: the opener's script goes on, and the window's first
-  // document is never asked for, as Chrome never asks for it.
-  async #closeBlocked(sessionId: string, targetId: string): Promise<void> {
+  // with every request it makes refused as it asks, and closed once its first document has been refused: the opener's
+  // script goes on, and nothing the window asks for reaches the network, as Chrome never asks for it. A held request is
+  // not enough: a window that closes takes its session with it, and Chrome sends on every request a session still holds
+  // as it ends (InterceptionJob::Detach in Chromium's content/browser/devtools/devtools_url_loader_interceptor.cc).
+  // Measured on Linux arm64 with the shell of Chrome for Testing 153.0.8010.12, windows closed as soon as they ran ended
+  // their session before their document request was held 6 times in 71, and one of those requests reached the server.
+  async #closeBlocked(sessionId: string, targetId: string, url: string): Promise<void> {
     const { connection } = this.#options
     const session = connection.adopt(sessionId)
-    await session.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }).catch(ignore)
-    await session.send('Runtime.runIfWaitingForDebugger').catch(ignore)
-    await connection.send('Target.closeTarget', { targetId }).catch(ignore)
+    const address = windowAddress(url)
+    const note = (line: string): void => this.#options.note?.(line)
+    const { promise: documentRefused, resolve: refused } = Promise.withResolvers<void>()
+    session.on('Fetch.requestPaused', (params) => {
+      const paused = readProtocol(pausedSchema, params, { method: 'Fetch.requestPaused', sessionId })
+      const document = paused.resourceType === 'Document' && paused.frameId === targetId
+      session.send('Fetch.failRequest', { requestId: paused.requestId, errorReason: 'BlockedByClient' }).then(() => {
+        if (document) refused()
+      }, (error: unknown) => {
+        if (session.detachReason === undefined) note(`Retest could not refuse a request of ${address}, a window the page opened without a click, so it may have reached the network: ${errorMessage(error)}`)
+        if (document) refused()
+      })
+    })
+    // A window that closed itself, or a browser that went, asks for nothing more.
+    session.onDetach(() => refused())
+    const holding = await failureOf(session.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }))
+    if (holding !== undefined && session.detachReason === undefined) note(`Retest could not hold the requests of ${address}, a window the page opened without a click, so it may have asked for its first document: ${holding}`)
+    const running = await failureOf(session.send('Runtime.runIfWaitingForDebugger'))
+    if (running !== undefined && session.detachReason === undefined) note(`Retest could not let ${address}, a window the page opened without a click, run before closing it, so the page's call to window.open may not return: ${running}`)
+    if (holding === undefined && running === undefined && asksNetwork(url) && !(await settlesWithin(documentRefused, blockedDocumentMs))) {
+      note(`${address}, a window the page opened without a click, asked for no document within ${blockedDocumentMs} ms, so Retest closed it without waiting further`)
+    }
+    if (session.detachReason !== undefined) return
+    try {
+      await connection.send('Target.closeTarget', { targetId })
+    } catch (error) {
+      // A window that closed itself between the check and the call is gone, as asked.
+      if (session.detachReason !== undefined || (error instanceof CdpProtocolError && /No target with given id/i.test(error.protocolMessage))) return
+      note(`Retest could not close ${address}, a window the page opened without a click: ${errorMessage(error)}`)
+    }
   }
 
   // Chrome blocks a window opened with no click behind it, and opens none, so a wait for one fails at once, on Chrome and
   // on the shell alike, and the browser's log records it.
   #windowOpened(params: unknown): void {
     const { userGesture, url, windowFeatures } = readProtocol(windowOpenSchema, params, { method: 'Page.windowOpen' })
-    if (userGesture || this.#options.gestures === 'shell') this.#opening.push({ allowed: userGesture, sized: sizedWindow(windowFeatures) })
+    if (userGesture || this.#options.gestures === 'shell') this.#opening.push({ allowed: userGesture, sized: sizedWindow(windowFeatures), url })
     if (userGesture) return
-    const opened = URL.parse(url)
-    const address = opened === null ? 'a window' : `${opened.origin}${opened.pathname}`
-    this.#options.note?.(`the page opened ${address} without a click or a key press behind it; Chrome blocks such a window${this.#options.gestures === 'shell' ? ', so Retest closed it in the headless shell before it ran' : ''}`)
+    this.#options.note?.(`the page opened ${windowAddress(url)} without a click or a key press behind it; Chrome blocks such a window${this.#options.gestures === 'shell' ? ', so Retest closed it in the headless shell before it ran' : ''}`)
     this.#waiter?.settle({ ok: false, failure: blockedWindowFailure() })
   }
 
@@ -456,6 +491,40 @@ export async function disposeTarget(connection: CdpConnection, session: CdpSessi
 
 function lost(reason: string): Failure {
   return { class: 'session_lost', message: `The page went away before it opened another page: ${reason}.` }
+}
+
+// A window's address as the browser's log names it: its origin and path, without a query or fragment, which can hold a
+// secret.
+function windowAddress(url: string): string {
+  const opened = URL.parse(url)
+  return opened === null || opened.origin === 'null' ? 'a window' : `${opened.origin}${opened.pathname}`
+}
+
+// Only a window opened at an http or https address asks the network for its first document.
+function asksNetwork(url: string): boolean {
+  const protocol = URL.parse(url)?.protocol
+  return protocol === 'http:' || protocol === 'https:'
+}
+
+// What a command's failure says, or undefined once it was answered.
+async function failureOf(sending: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await sending
+    return undefined
+  } catch (error) {
+    return errorMessage(error)
+  }
+}
+
+// Whether `settling` settles within `timeoutMs`.
+async function settlesWithin(settling: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), timeoutMs)))
+  try {
+    return await Promise.race([settling.then(() => true), late])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // A wait stopped by its test or its caller says why, with the class the reason gives.

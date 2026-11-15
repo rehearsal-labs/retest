@@ -1,7 +1,7 @@
 import type { OutgoingMessage, Transport, TransportHandlers } from '../../src/browser/cdp/transport.ts'
 import type { BrowserCommand, DispatchedCommand, OwnedPage } from '../../src/browser/contract.ts'
 import type { UnwaitedDialog } from '../../src/browser/dialogs.ts'
-import type { OpenedPopup, PopupArming, PopupEnd, PopupWait, PopupWaitOptions } from '../../src/browser/popups.ts'
+import type { OpenedPopup, PopupArming, PopupEnd, PopupSource, PopupWait, PopupWaitOptions } from '../../src/browser/popups.ts'
 import type { CommandResult } from '../../src/protocol/commands.ts'
 import type { EventBody } from '../../src/protocol/events.ts'
 import type { Failure } from '../../src/protocol/failures.ts'
@@ -16,7 +16,7 @@ import { isRecord } from '../../src/browser/cdp/message.ts'
 import { CdpSession } from '../../src/browser/cdp/session.ts'
 import { heldByDialog, keptByBeforeunload, PageDialogs, unwaitedDialogFailure, withKeptPage, withUnwaitedDialog } from '../../src/browser/dialogs.ts'
 import { ElectronWindowWatch } from '../../src/browser/electron-window-watch.ts'
-import { disposeTarget, endOf } from '../../src/browser/popups.ts'
+import { disposeTarget, endOf, PagePopups } from '../../src/browser/popups.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { isDialogType, unwaitedDialogMessage, withDialogWords } from '../../src/protocol/dialogs.ts'
 import { popupAppName } from '../../src/protocol/popups.ts'
@@ -243,11 +243,14 @@ describe("a page's dialogs, over a scripted session", () => {
   })
 })
 
-// A browser connection whose transport answers every command at once, and whose events and end the test tells.
+// A browser connection whose transport answers every command at once, refusing those the test names, and whose events
+// and end the test tells.
 class ScriptedTransport implements Transport {
   readonly sent: string[] = []
   /** Every command sent, with the session it went to and its parameters. */
   readonly calls: { method: string; sessionId?: string; params: unknown }[] = []
+  /** The methods answered with an error. */
+  readonly refused = new Set<string>()
   #handlers: TransportHandlers | undefined
 
   listen(handlers: TransportHandlers): void {
@@ -259,7 +262,8 @@ class ScriptedTransport implements Transport {
     if (isRecord(message) && typeof message['id'] === 'number' && typeof message['method'] === 'string') {
       this.sent.push(message['method'])
       this.calls.push({ method: message['method'], params: message['params'], ...(typeof message['sessionId'] === 'string' ? { sessionId: message['sessionId'] } : {}) })
-      const reply = JSON.stringify({ id: message['id'], result: {}, ...(typeof message['sessionId'] === 'string' ? { sessionId: message['sessionId'] } : {}) })
+      const answer = this.refused.has(message['method']) ? { error: { code: -32000, message: 'Not allowed' } } : { result: {} }
+      const reply = JSON.stringify({ id: message['id'], ...answer, ...(typeof message['sessionId'] === 'string' ? { sessionId: message['sessionId'] } : {}) })
       queueMicrotask(() => this.#handlers?.message(reply))
     }
     return { written: true, withdraw: () => undefined }
@@ -317,6 +321,105 @@ describe("how a popup's page ends, over a scripted connection", () => {
     transport.end('the browser closed')
     await disposeTarget(connection, staying, 'T2', new Deadline(50))
     assert.equal(transport.sent.length, 2)
+  })
+})
+
+// A page of Chrome's headless shell, S0 of target T0, whose popups the test opens: the test tells each window the page
+// opened, then hands the page the window's target as the browser's watch would.
+function shellPopups(connection: CdpConnection, lines: string[]): PagePopups {
+  const watch: PopupSource = { register: () => () => undefined, start: async () => undefined }
+  return new PagePopups({
+    connection,
+    home: { watch, targetId: 'T0' },
+    open: () => Promise.reject(new Error('a window Chrome would have blocked is never set up as a page')),
+    onListenerError: (error) => assert.fail(`a listener failed: ${String(error)}`),
+    forward: () => undefined,
+    session: connection.adopt('S0'),
+    gestures: 'shell',
+    note: (line) => lines.push(line),
+  })
+}
+
+function unasked(url: string): object {
+  return { url, windowName: '', windowFeatures: [], userGesture: false }
+}
+
+function sentTo(transport: ScriptedTransport): [string, string | undefined][] {
+  return transport.calls.map(({ method, sessionId }): [string, string | undefined] => [method, sessionId])
+}
+
+const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+
+describe('a window the page opens with no click, in the headless shell, over a scripted connection', () => {
+  const told = 'the page opened http://127.0.0.1:4000/opened without a click or a key press behind it; Chrome blocks such a window, so Retest closed it in the headless shell before it ran'
+
+  test('is held and let run, has every request refused as it asks, and closes only once its document was refused', async () => {
+    const { connection, transport } = scriptedConnection()
+    const lines: string[] = []
+    const popups = shellPopups(connection, lines)
+    transport.event('Page.windowOpen', unasked('http://127.0.0.1:4000/opened?code=1234'), 'S0')
+    assert.equal(popups.claim({ sessionId: 'S1', targetId: 'T1' }), true)
+    await turn()
+    assert.deepEqual(sentTo(transport), [['Fetch.enable', 'S1'], ['Runtime.runIfWaitingForDebugger', 'S1']], 'nothing closes the window before its document was asked for')
+    assert.deepEqual(transport.calls[0]?.params, { patterns: [{ urlPattern: '*' }] })
+    transport.event('Fetch.requestPaused', { requestId: 'R1', frameId: 'T1', resourceType: 'Document', request: { url: 'http://127.0.0.1:4000/opened?code=1234', method: 'GET', headers: {} } }, 'S1')
+    await turn()
+    assert.deepEqual(transport.calls.slice(2), [
+      { method: 'Fetch.failRequest', sessionId: 'S1', params: { requestId: 'R1', errorReason: 'BlockedByClient' } },
+      { method: 'Target.closeTarget', params: { targetId: 'T1' } },
+    ])
+    assert.deepEqual(lines, [told], 'the log names the window without its query')
+  })
+
+  test('opened at an address that asks the network for nothing, closes as soon as it runs', async () => {
+    const { connection, transport } = scriptedConnection()
+    const lines: string[] = []
+    const popups = shellPopups(connection, lines)
+    transport.event('Page.windowOpen', unasked('about:blank'), 'S0')
+    popups.claim({ sessionId: 'S1', targetId: 'T1' })
+    await turn()
+    assert.deepEqual(sentTo(transport), [['Fetch.enable', 'S1'], ['Runtime.runIfWaitingForDebugger', 'S1'], ['Target.closeTarget', undefined]])
+    assert.deepEqual(lines, ['the page opened a window without a click or a key press behind it; Chrome blocks such a window, so Retest closed it in the headless shell before it ran'])
+  })
+
+  test('that closed itself first is not closed again, and nothing is written of it', async () => {
+    const { connection, transport } = scriptedConnection()
+    const lines: string[] = []
+    const popups = shellPopups(connection, lines)
+    transport.event('Page.windowOpen', unasked('http://127.0.0.1:4000/opened'), 'S0')
+    popups.claim({ sessionId: 'S1', targetId: 'T1' })
+    await turn()
+    transport.detach('S1')
+    await turn()
+    assert.deepEqual(sentTo(transport), [['Fetch.enable', 'S1'], ['Runtime.runIfWaitingForDebugger', 'S1']])
+    assert.deepEqual(lines, [told])
+  })
+
+  test('that Retest could not hold, refuse or close is written to the browser\'s log', async () => {
+    const { connection, transport } = scriptedConnection()
+    const lines: string[] = []
+    const popups = shellPopups(connection, lines)
+    transport.refused.add('Fetch.enable')
+    transport.refused.add('Target.closeTarget')
+    transport.event('Page.windowOpen', unasked('http://127.0.0.1:4000/opened'), 'S0')
+    popups.claim({ sessionId: 'S1', targetId: 'T1' })
+    await turn()
+    assert.deepEqual(sentTo(transport), [['Fetch.enable', 'S1'], ['Runtime.runIfWaitingForDebugger', 'S1'], ['Target.closeTarget', undefined]], 'a window Retest could not hold is let run and closed at once')
+    transport.refused.clear()
+    transport.refused.add('Fetch.failRequest')
+    transport.event('Page.windowOpen', unasked('http://127.0.0.1:4000/opened'), 'S0')
+    popups.claim({ sessionId: 'S2', targetId: 'T2' })
+    await turn()
+    transport.event('Fetch.requestPaused', { requestId: 'R1', frameId: 'T2', resourceType: 'Document', request: { url: 'http://127.0.0.1:4000/opened', method: 'GET', headers: {} } }, 'S2')
+    await turn()
+    assert.deepEqual(sentTo(transport).slice(3), [['Fetch.enable', 'S2'], ['Runtime.runIfWaitingForDebugger', 'S2'], ['Fetch.failRequest', 'S2'], ['Target.closeTarget', undefined]])
+    assert.deepEqual(lines, [
+      told,
+      'Retest could not hold the requests of http://127.0.0.1:4000/opened, a window the page opened without a click, so it may have asked for its first document: Fetch.enable failed: Not allowed (-32000)',
+      'Retest could not close http://127.0.0.1:4000/opened, a window the page opened without a click: Target.closeTarget failed: Not allowed (-32000)',
+      told,
+      'Retest could not refuse a request of http://127.0.0.1:4000/opened, a window the page opened without a click, so it may have reached the network: Fetch.failRequest failed: Not allowed (-32000)',
+    ])
   })
 })
 

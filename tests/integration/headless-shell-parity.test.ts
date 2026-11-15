@@ -60,15 +60,35 @@ const textPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><ti
 </body></html>`
 
 // Windows a page opens: from a click, from a timer a click started, from a link with a target, and from a timer the
-// page started as it loaded, with no click behind it.
+// page started as it loaded, with no click behind it: `times` of them, one after another in one task, or with `apart`
+// each in a task of its own, the next as soon as the page is free. Each blocked window's address names the app, the
+// test and which window it is.
 const opener = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Opener</title><link rel="icon" href="data:,"></head><body>
 <button data-testid="now" onclick="window.open('/opened')">Open now</button>
 <button data-testid="soon" onclick="setTimeout(() => window.open('/opened'), 300)">Open soon</button>
 <a data-testid="link" href="/opened" target="_blank">Open by link</a>
 <p data-testid="unasked">waiting</p>
 <script>
-if (location.search === '?unasked') setTimeout(() => { document.querySelector('[data-testid="unasked"]').textContent = window.open('/opened-unasked') === null ? 'blocked' : 'opened' }, 300)
+const query = new URLSearchParams(location.search)
+const times = Number(query.get('times') ?? '1')
+const opened = []
+const open = () => {
+  opened.push(window.open('/opened-unasked?app=' + query.get('app') + '&test=' + query.get('test') + '&n=' + opened.length))
+  if (opened.length === times) document.querySelector('[data-testid="unasked"]').textContent = opened.length + ' windows'
+  else if (query.has('apart')) setTimeout(open)
+  else open()
+}
+if (query.has('unasked')) setTimeout(open, 300)
 </script></body></html>`
+
+// How many windows the tests that carry on open with no click. When Retest closed a blocked window as soon as it ran, on
+// Linux arm64 4 of 260 windows opened each in a task of its own asked the server for their document, 2 of them among the
+// 100 opened as soon as the page was free, and none of 50 opened one after another in one task. At 4 in 260, three
+// hundred apart miss it in about one run in a hundred: three rounds of a hundred, each on a page of its own, so each
+// round's check is done within the assertion's default time. The fifty together keep many blocked windows waiting at once.
+const together = 50
+const apart = 100
+const rounds = [1, 2, 3]
 
 const tests = `import { expect, test } from '@rehearsal-labs/retest'
 
@@ -110,14 +130,22 @@ for (const app of ['full', 'shell']) {
 
   test(\`\${app} waits for a window the page opens with no click\`, { apps: [app] }, async (apps) => {
     const page = apps[app]
-    await page.popup(() => page.goto('/opener?unasked'))
+    await page.popup(() => page.goto(\`/opener?unasked&app=\${app}&test=waits\`))
   })
 
-  test(\`\${app} carries on past a window the page opens with no click\`, { apps: [app] }, async (apps) => {
+  test(\`\${app} carries on past windows the page opens with no click, one after another\`, { apps: [app] }, async (apps) => {
     const page = apps[app]
-    await page.goto('/opener?unasked')
-    await expect(page.getByTestId('unasked')).not.toHaveText('waiting')
+    await page.goto(\`/opener?unasked&app=\${app}&test=together&times=${together}\`)
+    await expect(page.getByTestId('unasked')).toHaveText('${together} windows')
   })
+
+  for (const round of ${JSON.stringify(rounds)}) {
+    test(\`\${app} carries on past windows the page opens with no click, each in a task of its own, round \${round}\`, { apps: [app] }, async (apps) => {
+      const page = apps[app]
+      await page.goto(\`/opener?unasked&app=\${app}&test=apart-\${round}&times=${apart}&apart\`)
+      await expect(page.getByTestId('unasked')).toHaveText('${apart} windows')
+    })
+  }
 }
 `
 
@@ -142,7 +170,7 @@ async function serve(t: TestContext): Promise<Served> {
       return
     }
     if (address.pathname === '/probe') headers.set(address.searchParams.get('app') ?? '', request.headers)
-    asked.push(address.pathname)
+    asked.push(`${address.pathname}${address.search}`)
     const page = pages[address.pathname]
     response.writeHead(page === undefined ? 404 : 200, { 'content-type': 'text/html; charset=utf-8' })
     response.end(page ?? '')
@@ -162,6 +190,17 @@ async function project(t: TestContext, served: Served): Promise<string> {
   })
 }
 
+// Why a run did not pass, beyond what it printed: the run's own failure, and each test that did not pass or whose cleanup
+// failed, with why.
+function whyNotPassed(run: FinishedRun): string {
+  const tests = run.result?.files.flatMap((file) => file.tests) ?? []
+  const lines = [run.stderr, run.result?.failure?.message ?? '', ...tests.flatMap((each) => [
+    ...(each.status === 'passed' ? [] : [`${each.name}: ${each.status}: ${each.failure?.message ?? ''}`]),
+    ...(each.cleanupFailures ?? []).map((failure) => `${each.name}: cleanup: ${failure.message}`),
+  ])]
+  return lines.filter((line) => line !== '').join('\n')
+}
+
 function statusOf(run: FinishedRun, name: string): [string, string | undefined] {
   const found = testNamed(run, name)
   return [found.status, found.failure?.message]
@@ -176,7 +215,7 @@ test('a page reads the same languages, user agent, client hints, window, permiss
   const served = await serve(t)
   const root = await project(t, served)
   const run = await runProject(t, root, { timeouts: budgets(), args: ['--grep', '/reads the page/'] })
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyNotPassed(run))
   assert.deepEqual(resultOf(run).browsers?.map((browser) => browser.product).sort(), ['Chrome', 'HeadlessChrome'], 'the record names each program')
   assert.equal(new Set(resultOf(run).browsers?.map((browser) => browser.version)).size, 1, 'Chrome for Testing and the shell are of one release')
   const [full, shellReading] = [served.reports.get('full'), served.reports.get('shell')]
@@ -204,7 +243,7 @@ test('the shell draws text and form controls as Chrome does, so Chrome\'s baseli
   const served = await serve(t)
   const root = await project(t, served)
   const written = await runProject(t, root, { timeouts: budgets(), args: ['--grep', '/full draws/', '--update-screenshots'] })
-  assert.equal(written.exit.code, 0, written.stderr)
+  assert.equal(written.exit.code, 0, whyNotPassed(written))
   const compared = await runProject(t, root, { timeouts: budgets(), args: ['--grep', '/shell draws/'] })
   assert.deepEqual(statusOf(compared, 'shell draws text and controls'), ['passed', undefined])
 })
@@ -219,9 +258,11 @@ test('a window the page opens has the same fate on the shell as on Chrome, and o
     assert.deepEqual(statusOf(run, `${app} opens a window from a timer a click started`), ['passed', undefined], app)
     assert.deepEqual(statusOf(run, `${app} opens a window from a link with a target`), ['passed', undefined], app)
     assert.deepEqual(statusOf(run, `${app} waits for a window the page opens with no click`), ['failed', blocked], app)
-    assert.deepEqual(statusOf(run, `${app} carries on past a window the page opens with no click`), ['passed', undefined], app)
+    assert.deepEqual(statusOf(run, `${app} carries on past windows the page opens with no click, one after another`), ['passed', undefined], app)
+    for (const round of rounds) assert.deepEqual(statusOf(run, `${app} carries on past windows the page opens with no click, each in a task of its own, round ${round}`), ['passed', undefined], app)
     assert.match(browserLog(run, app), /the page opened http:\/\/127\.0\.0\.1:\d+\/opened-unasked without a click or a key press behind it; Chrome blocks such a window/, `${app}: the browser's log records the window`)
   }
   assert.match(browserLog(run, 'shell'), /so Retest closed it in the headless shell before it ran/)
-  assert.equal(served.asked.filter((path) => path === '/opened-unasked').length, 0, 'a blocked window asks for nothing, on Chrome and on the shell')
+  assert.deepEqual(served.asked.filter((path) => path.startsWith('/opened-unasked')), [], 'a blocked window asks for nothing, on Chrome and on the shell')
+  assert.doesNotMatch(browserLog(run, 'shell'), /Retest could not (hold|refuse|let|close)|asked for no document within/, 'Retest held, refused and closed every blocked window in time')
 })
