@@ -102,7 +102,7 @@ const known: Readonly<Record<string, number>> = {
   'playwright-compat.test.ts': 1,
   'popups.test.ts': 4,
   'record-identity.test.ts': 1,
-  'recording-pixels.test.ts': 3,
+  'recording-pixels.test.ts': 1,
   'reference-flow-engines.test.ts': 1,
   'reference-flow.test.ts': 1,
   'report-html.test.ts': 2,

@@ -20,7 +20,7 @@ import { commandOf, endProblem, endRecorded, killRecordedNow, listProcesses, Own
 import { makeOwnedFolder, sweepOwnedFolders } from '../../src/native/temporary-folders.ts'
 import { metadataComplete, metadataOutputLimit, metadataSuccess, processTableOutputLimit, readMetadataProcess } from '../../src/shared/metadata-process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
-import { endedPid, processStart, stubbornTool } from './native-fake-tools.ts'
+import { endedPid, processStart, silentTool, stubbornTool } from './native-fake-tools.ts'
 import { unixOnly } from '../support/platform-skip.ts'
 
 // The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
@@ -92,8 +92,8 @@ function stubbornChild(t: TestContext): { readonly pid: number; readonly signal:
 // A shell that starts a grandchild in its own process group, writes the grandchild's pid, and waits on it forever.
 const withGrandchild = (pidFile: string): string[] => ['-c', `sleep 600 & echo $! > '${pidFile}'; wait`]
 
-// This cancellation test exercises actual process exit, without sharing the metadata worker's startup and queue
-// with the parallel unit tree. Tables remain whole, and every signal still gets its immediate individual reading.
+// The timeout and cancellation tests exercise actual process exit, without sharing the metadata worker's startup and
+// queue with the parallel unit tree. Tables remain whole, and every signal still gets its immediate individual reading.
 function cancellationIdentities(pid?: number): OwnedProcessIdentity[] {
   const columns = 'pid=,ppid=,pgid=,stat=,lstart=,args='
   const args = pid === undefined ? ['-ww', '-axo', columns] : ['-ww', '-o', columns, '-p', `${pid},${process.pid}`]
@@ -126,15 +126,35 @@ test('successful malformed process listings are unreadable rather than empty', m
 })
 
 test('a timed out command ends only its launched and recorded processes', macDriver, async (t) => {
-  const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
-  t.after(() => rm(folder, { recursive: true, force: true }))
-  const pidFile = join(folder, 'grandchild')
-  const running = runCommand('/bin/sh', withGrandchild(pidFile), { timeoutMs: 400 })
-  const grandchild = await grandchildPid(pidFile)
+  // A descendant is recorded by a reading taken while its parent lives. One the shell started after the timeout's
+  // reading, and before the shell was ended, was left running and reported, as on a slow runner whose shell came late
+  // to its grandchild. So the grandchild is a silent tool that says through its pipe once it runs, and the launch's
+  // first reading waits for that word: it records the grandchild through the launch's ancestry, and the timeout runs
+  // from then.
+  const tool = await silentTool(t)
+  let said: boolean | undefined
+  let grandchild: OwnedProcessIdentity | undefined
+  const running = runCommand('/bin/sh', ['-c', `'${tool.path}' & wait`], {
+    timeoutMs: 400,
+    ownershipSystem: {
+      read: () => {
+        said ??= tool.readyNow()
+        const table = cancellationIdentities()
+        const launch = table.find(entry => entry.parentPid === process.pid && entry.command.includes(tool.path))
+        grandchild ??= table.find(entry => launch !== undefined && entry.parentPid === launch.pid)
+        return table
+      },
+      readProcess: pid => cancellationIdentities(pid).find(entry => entry.pid === pid),
+      signal: (pid, signal) => { process.kill(pid, signal) },
+    },
+  })
   const result = await running
+  assert.equal(said, true, 'the grandchild said it runs before the launch was first read')
+  assert.ok(grandchild !== undefined, 'the first reading held the grandchild under the launch')
   assert.equal(result.timedOut, true)
   assert.equal(result.started, true)
-  assert.equal(processExists(grandchild), false, 'the grandchild went with the group')
+  assert.deepEqual(result.cleanupProblems, [], 'every process of the launch was recorded and ended')
+  assert.equal(processExists(grandchild.pid), false, 'the grandchild went with the group')
 })
 
 test('a short command stopped by its signal is ended, and one stopped before it starts never runs', macDriver, async (t) => {

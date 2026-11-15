@@ -138,8 +138,11 @@ export async function fakeCheckout(root: string, options: { readonly name: strin
   return folder
 }
 
-/** A tool that never answers, and `ready`, which says whether a run of it got as far as saying so before its pipe closed. */
-export type WaitingTool = { readonly path: string; ready(): Promise<boolean> }
+/**
+ * A tool that never answers, and `ready`, which says whether a run of it got as far as saying so before its pipe closed.
+ * `readyNow` waits for the same word holding the thread, as a stand-in host's reading must, a minute at most.
+ */
+export type WaitingTool = { readonly path: string; ready(): Promise<boolean>; readyNow(): boolean }
 
 /**
  * Writes a tool that ignores SIGTERM, as do the processes it starts, so only SIGKILL ends it. Each run says through a
@@ -180,7 +183,12 @@ async function waitingTool(t: TestContext, name: string, script: (said: string, 
     }
     await rm(folder, { recursive: true, force: true })
   })
-  return { path, ready: async () => (await readFile(said, 'utf8')) === 'ready\n' }
+  return {
+    path,
+    ready: async () => (await readFile(said, 'utf8')) === 'ready\n',
+    // `cat` holds the pipe open for reading in a process of its own, so its bound ends a wait for a run that never says.
+    readyNow: () => spawnSync('/bin/cat', [said], { encoding: 'utf8', timeout: 60_000 }).stdout === 'ready\n',
+  }
 }
 
 /** Quotes one literal shell argument; fixture paths can contain spaces or apostrophes. */
