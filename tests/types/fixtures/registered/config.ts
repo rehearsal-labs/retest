@@ -7,6 +7,9 @@ export const misspelt = edge({ chanel: 'beta' }) // type-error TS2561 Did you me
 export const misspeltBeside = edge({ headless: true, chanel: 'beta' }) // type-error TS2322 Type 'string' is not assignable to type 'never'
 export const noTouch = chromium({ emulate: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3 } }) // type-error TS2322 Property 'touch' is missing
 export const envName = env(42) // type-error TS2345 Argument of type 'number' is not assignable to parameter of type 'string'
+export const shell = chromium({ headlessShell: true, executablePath: '/cache/chrome-headless-shell-linux64/chrome-headless-shell' })
+export const shellOnChrome = chrome({ headlessShell: true }) // type-error TS2353 Object literal may only specify known properties
+export const shellAsText = chromium({ headlessShell: 'yes' }) // type-error TS2322 Type 'string' is not assignable to type 'boolean | undefined'
 
 export const settingsInTarget = app({
   targets: { beta: chrome({ baseUrl: 'http://127.0.0.1:4173' }) }, // type-error TS2322 is not assignable to type 'undefined'

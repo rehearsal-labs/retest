@@ -2,6 +2,7 @@ import type { NewPageOptions } from '../../src/browser/contract.ts'
 import type { DiagnosticSink, Observation } from '../../src/diagnostics/observations.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { recordedWindow } from '../../src/browser/default-window.ts'
 import { assertOk, goto, launchGated, observe, openPage, servePages, setupMs, within } from './browser-harness.ts'
 
 // How a Chromium page opens on real Chrome, counted on the wire: which commands go out together, and how many times
@@ -60,11 +61,18 @@ test('a page opens in four rounds of commands, its whole set-up in the last, and
     },
   })
   const site = await servePages(t, { '/': '<!doctype html><p data-testid="text">Here</p><script>console.log("set up and heard")</script>' })
+  // Chrome's headless shell is also given Chrome's languages, user agent and fonts, after any emulation, and its context
+  // Chrome's default grants; Chrome for Testing and the shell of the pinned release, headless, give a page with no
+  // emulation Retest 0.4.2's window.
+  const shell = browser.product === 'HeadlessChrome'
+  const parity = shell ? ['Emulation.setUserAgentOverride', 'Page.setFontFamilies'] : []
+  const window = recordedWindow({ product: browser.product, version: browser.version, userAgent: browser.userAgent }) === undefined ? [] : ['Emulation.setDeviceMetricsOverride']
+  const grants = shell ? ['Browser.setPermission', 'Browser.setPermission', 'Browser.setPermission'] : []
   const cases = [
     // The first page of a browser starts the browser's popup watch, in the same round as its own set-up.
-    { options: {}, setUp: [...beforeWatch, 'Target.setAutoAttach', ...afterWatch] },
-    { options: {}, setUp: [...beforeWatch, ...afterWatch] },
-    { options: { emulation: touchPhone }, setUp: ['Emulation.setDeviceMetricsOverride', 'Emulation.setTouchEmulationEnabled', ...beforeWatch, ...afterWatch] },
+    { options: {}, setUp: [...parity, ...window, ...beforeWatch, 'Target.setAutoAttach', ...afterWatch] },
+    { options: {}, setUp: [...parity, ...window, ...beforeWatch, ...afterWatch] },
+    { options: { emulation: touchPhone }, setUp: ['Emulation.setDeviceMetricsOverride', 'Emulation.setTouchEmulationEnabled', ...parity, ...beforeWatch, ...afterWatch] },
   ]
   for (const { options, setUp } of cases) {
     const start = wire.length
@@ -72,7 +80,7 @@ test('a page opens in four rounds of commands, its whole set-up in the last, and
     const opened = wire.length
     assert.deepEqual(rounds(wire.slice(start, opened)), [
       ['Target.createBrowserContext'],
-      ['Browser.setDownloadBehavior', 'Target.createTarget'],
+      ['Browser.setDownloadBehavior', 'Target.createTarget', ...grants],
       ['Target.attachToTarget'],
       setUp,
     ])

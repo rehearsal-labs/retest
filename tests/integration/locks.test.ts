@@ -6,8 +6,9 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
+import { headlessShellPath } from '../support/test-browser.ts'
 import { openApp } from './browser-harness.ts'
-import { budgets, configSource, eventsOf, finishRun, repositoryRoot, resultOf, runCli, runProject, secondBrowserPath, showEndingAfterFinishing, startRun, testNamed, writeProject } from './cli-harness.ts'
+import { budgets, configSource, eventsOf, finishRun, repositoryRoot, resultOf, runCli, runProject, showEndingAfterFinishing, startRun, testNamed, writeProject } from './cli-harness.ts'
 
 // Shared-state locks on real Chrome, under workers. The task app counts how many visitors hold a named thing at
 // once (`/holders/hold`), so a run shows from the outside whether two holders of one lock ever overlapped.
@@ -192,7 +193,7 @@ test("the example's count of every save, which flaked under workers, passes run 
     // seconds the harness's short budgets give an action.
     const run = await runProject(t, root, {
       args: ['--workers', '4'],
-      env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD, RETEST_CHROMIUM: secondBrowserPath() },
+      env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD, RETEST_HEADLESS_SHELL: headlessShellPath() },
       timeouts: false,
     })
     assert.equal(run.exit.code, 0, `run ${attempt}: ${run.stderr}${unpassed(run)}`)

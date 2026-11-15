@@ -8,6 +8,7 @@ import { nativePins, pinKey } from '../../src/native/executors.ts'
 const hex = /^[0-9a-f]{64}$/
 const publishers: Readonly<Record<string, string>> = {
   chromium: 'storage.googleapis.com',
+  'headless-shell': 'storage.googleapis.com',
   firefox: 'archive.mozilla.org',
   webkit: 'cdn.playwright.dev',
   electron: 'github.com',
@@ -26,16 +27,16 @@ function sha256sOf(pin: BuildPin): string[] {
 }
 
 describe('the pinned builds', () => {
-  test('pin every engine on macOS arm64, and only Chromium on Linux x64', () => {
+  test('pin every engine on macOS arm64, and only Chromium and its headless shell on Linux x64', () => {
     for (const engine of buildEngines) assert.ok(findPin(engine, 'mac-arm64') !== undefined, `${engine} has a macOS arm64 pin`)
-    assert.deepEqual(pinnedBuilds.filter((pin) => pin.platform === 'linux-x64').map((pin) => pin.engine), ['chromium'])
+    assert.deepEqual(pinnedBuilds.filter((pin) => pin.platform === 'linux-x64').map((pin) => pin.engine), ['chromium', 'headless-shell'])
     for (const engine of ['firefox', 'webkit', 'electron', 'webdriveragent', 'mac2'] satisfies BuildEngine[]) assert.equal(findPin(engine, 'linux-x64'), undefined, `${engine} is not pinned for Linux`)
     const keys = pinnedBuilds.map((pin) => `${pin.engine} ${pin.platform}`)
     assert.equal(new Set(keys).size, keys.length, 'one pin per engine and platform')
   })
 
-  test('pin Chromium, Firefox and Electron on Windows x64, and no WebKit build or native executor', () => {
-    assert.deepEqual(pinnedBuilds.filter((pin) => pin.platform === 'win-x64').map((pin) => pin.engine), ['chromium', 'firefox', 'electron'])
+  test('pin Chromium, its headless shell, Firefox and Electron on Windows x64, and no WebKit build or native executor', () => {
+    assert.deepEqual(pinnedBuilds.filter((pin) => pin.platform === 'win-x64').map((pin) => pin.engine), ['chromium', 'headless-shell', 'firefox', 'electron'])
     for (const engine of ['webkit', 'webdriveragent', 'mac2'] satisfies BuildEngine[]) assert.equal(findPin(engine, 'win-x64'), undefined, `${engine} is not pinned for Windows`)
     assert.equal(unpinnedMessage('webkit', 'win-x64'), 'Retest does not run WebKit on Windows, so there is no WebKit build to install.')
     assert.equal(unpinnedMessage('mac2', 'win-x64'), 'Retest pins no mac2 build for Windows x64.')

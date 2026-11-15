@@ -9,8 +9,10 @@ import type { ActionIntent, PlannedKey, Pointer, SelectPlan, Selection } from '.
 import type { Guard, GuardedIntent, GuardVerdict } from './input-guard.ts'
 import type { PageWorld } from './isolated-world.ts'
 import type { NavigationContext, Traversal } from './navigation.ts'
-import type { PopupArming, PopupHome, PopupWaitOptions } from './popups.ts'
+import type { PopupArming, PopupGestures, PopupHome, PopupWaitOptions } from './popups.ts'
+import type { RecordedWindow, WindowKind } from './default-window.ts'
 import type { PictureRequest, TakenPicture } from './screenshot.ts'
+import type { ShellParity } from './shell-parity.ts'
 import type { DiagnosticCollection, DiagnosticSink } from '../diagnostics/observations.ts'
 import type { ObserveAfter, CommandResult, PageObservation } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
@@ -62,6 +64,8 @@ import { NavigationTitles } from './navigation-titles.ts'
 import { changeScript, guardScript, pageFactsFunction, pageLookFunction, readPageFunction } from './page-scripts.ts'
 import { originAndPath } from './page-url.ts'
 import { closePage, disposeTarget, keepFocus, PagePopups } from './popups.ts'
+import { windowRequests } from './default-window.ts'
+import { parityRequests } from './shell-parity.ts'
 import { PageRoutes, RouteTable, type RouteRefusal, type RouteRemoval } from './routes.ts'
 import { takeChromiumPicture } from './screenshot.ts'
 import { readCookies, readLocalStorage, readOriginStorage } from './storage-state.ts'
@@ -97,6 +101,16 @@ export type PageOptions = {
    * that answering: the page answers and tells every dialog from then on, those first.
    */
   answeredDialogs?: (() => readonly UnwaitedDialog[]) | undefined
+  /** What a page of Chrome's headless shell is given to read as Chrome for Testing does; absent on any other browser. */
+  parity?: ShellParity | undefined
+  /** The window Retest 0.4.2 gave a page with no viewport, which a headless page of the pinned Chromium is given. */
+  window?: RecordedWindow | undefined
+  /** Which of the recorded window's places the page takes: a page's, a tab's, or none for a window opened with a size. */
+  windowKind?: WindowKind | undefined
+  /** How the browser treats a window the page opens with no click behind it; absent where no popup blocker applies. */
+  popupGestures?: PopupGestures | undefined
+  /** Adds a line to the browser's log. */
+  note?: ((line: string) => void) | undefined
 }
 
 type PointerAction = Extract<BrowserCommand, { kind: 'click' | 'tap' }>
@@ -255,6 +269,11 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     // A commit told before the reads answer is at least as new as both, so the reads are kept only without one.
     const commits = page.#commits
     const emulating = emulation === undefined ? Promise.resolve() : applyEmulation(session, emulation, deadline)
+    // After the emulation, whose user agent a device gives must keep the languages the shell is given.
+    const matching = [
+      ...(options.parity === undefined ? [] : parityRequests(session, options.parity, emulation, deadline)),
+      ...(options.window === undefined || emulation !== undefined ? [] : windowRequests(session, options.window, options.windowKind ?? 'page', deadline)),
+    ]
     const before = request(session, 'Page.getFrameTree', undefined, frameTreeSchema, sent)
     const following = [
       request(session, 'Page.enable', undefined, s.object({}), sent),
@@ -272,7 +291,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
       page.#world.addScript(dragListenerScript, deadline),
       page.#choosers.intercept(deadline),
     ]
-    const [first, again] = await Promise.all([before, current, emulating, ...following, ...preparing])
+    const [first, again] = await Promise.all([before, current, emulating, ...matching, ...following, ...preparing])
     if (page.#commits === commits) {
       page.#startFrom(first.frameTree.frame)
       page.#holdFrame(again.frameTree.frame)
@@ -294,6 +313,9 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     const sent = sendOptions(deadline)
     const setUp = [
       emulation === undefined ? Promise.resolve() : applyEmulation(session, emulation, deadline),
+      ...(options.parity === undefined ? [] : parityRequests(session, options.parity, emulation, deadline)),
+      // A window the page opened as a tab gets the recorded tab's window; one it opened with a size keeps its own.
+      ...(options.window === undefined || emulation !== undefined ? [] : windowRequests(session, options.window, options.windowKind ?? 'tab', deadline)),
       request(session, 'Page.enable', undefined, s.object({}), sent),
       keepFocus(session, deadline),
       page.#choosers.intercept(deadline),
@@ -342,10 +364,13 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     this.#popups = popups === undefined ? undefined : new PagePopups({
       connection: options.connection,
       home: popups,
-      open: (session, home, deadline, ready) => ChromiumPage.openHeld({ ...options, session, restoredOrigins: [], popups: home, popup: true, routes: this.#routes.table, answeredDialogs: undefined }, home.targetId, deadline, ready),
+      open: (session, home, deadline, ready, window) => ChromiumPage.openHeld({ ...options, session, restoredOrigins: [], popups: home, popup: true, routes: this.#routes.table, answeredDialogs: undefined, windowKind: window }, home.targetId, deadline, ready),
       onListenerError: options.onListenerError,
       forward: (dialog) => this.#dialogs.forward(dialog),
       present: options.presentPopup,
+      session: this.#session,
+      gestures: options.popupGestures,
+      note: options.note,
     })
     this.#choosers = new FileChoosers(this.#session, () => this.#mainFrameId)
     this.#routes = new PageRoutes(this.#session, options.routes ?? new RouteTable(), options.onListenerError)

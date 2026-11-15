@@ -9,8 +9,14 @@ import { minimumRust } from '../../src/cli/install/media-pins.ts'
 // so a changed pin starts a new cache and never restores an old archive; no version is written a second time in the
 // workflow.
 
-/** The archive builds each macOS integration shard downloads and installs. */
-export const macosArchiveEngines: readonly ArchiveEngine[] = ['chromium', 'firefox', 'webkit', 'electron']
+/** An engine a macOS integration shard installs an archive build of. */
+export type MacosArchiveEngine = Extract<ArchiveEngine, 'chromium' | 'headless-shell' | 'firefox' | 'webkit' | 'electron'>
+
+/**
+ * The archive builds each macOS integration shard downloads and installs. A headless chromium() target runs the headless
+ * shell, which `retest install chromium` installs beside Chrome for Testing.
+ */
+export const macosArchiveEngines: readonly MacosArchiveEngine[] = ['chromium', 'headless-shell', 'firefox', 'webkit', 'electron']
 
 /**
  * The macOS arm64 archive pin of `engine`, refused when it is missing or its notices are incomplete.

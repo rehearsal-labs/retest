@@ -82,12 +82,12 @@ describe('Chromium', () => {
     assert.deepEqual(resolveExecutable({ product: 'chromium', executablePath: path }, found), { ok: true, path })
   })
 
-  test('without a path or RETEST_CHROMIUM, or with it empty, it fails and says how to give one', () => {
+  test('without a path, RETEST_CHROMIUM or a build in Retest\'s cache, or with the variable empty, it fails and says how to install one', () => {
     const expected = {
       ok: false,
       failure: {
         class: 'setup_failed',
-        message: "chromium() needs a browser. Pass its executablePath, or set RETEST_CHROMIUM to the executable's path.",
+        message: 'chromium() needs Chrome for Testing to run shown or with headlessShell: false, and it is not installed: run npx retest install chromium, or set RETEST_CHROMIUM to a browser.',
       },
       tried: [],
     }

@@ -62,9 +62,10 @@ ffmpeg's licence depends on its build. The Homebrew build exercised here reports
 
 ### Pinned browser builds
 
-Retest pins the builds it was tested with. Chrome for Testing 153.0.8010.12 is pinned for macOS arm64, Linux x64 and Windows x64. Firefox 158.0.1 and Electron 44.5.1 are pinned for macOS arm64 and Windows x64. macOS arm64 also has WebKit build 2359 (WebKit 26.6) and the two native executors, WebDriverAgent 16.13.6 and the macOS runner of appium-mac2-driver 4.3.6. `retest install` puts a pinned build into Retest's cache, and only the ones you name:
+Retest pins the builds it was tested with. Chrome for Testing 153.0.8010.12 and its headless shell are pinned for macOS arm64, Linux x64 and Windows x64. Firefox 158.0.1 and Electron 44.5.1 are pinned for macOS arm64 and Windows x64. macOS arm64 also has WebKit build 2359 (WebKit 26.6) and the two native executors, WebDriverAgent 16.13.6 and the macOS runner of appium-mac2-driver 4.3.6. `retest install` puts a pinned build into Retest's cache, and only the ones you name:
 
 ```sh
+retest install                    # Chrome for Testing and its headless shell, which a chromium() target runs
 retest install --list             # what is pinned for this machine and what the cache holds; downloads nothing
 retest install --list --verify    # also reads every file of each installed build again and holds the whole against the pin
 retest install electron           # downloads, checks and records the pinned Electron
@@ -77,7 +78,7 @@ retest install electron           # downloads, checks and records the pinned Ele
 - An install prints a short notice message, WebKit names the folder keeping its notices, and `install --list` gives one line of licence names per pin. `retest licences` lists the pins carrying notices, `retest licences webkit` prints locally available texts with source and patches pointers, `--list --json` retains every notice file, identifier and checksum, and `doctor` still verifies notices and names missing files.
 - `retest install` builds the native executors on this Mac from their pinned commits with the pinned Xcode, from the source checkouts a native run builds from. It clones nothing, and leaves a build already recorded as it is.
 - `retest run`, `retest doctor` and `retest install --list` never download or install anything.
-- A target's own `executablePath` always wins. `retest install` prints the installed binary's path, which stays the same while the build is installed: give it to `chromium({ executablePath })`, or set `RETEST_CHROMIUM` to it, or to `electron({ executablePath })`.
+- A target's own `executablePath` always wins. `retest install` prints the installed binary's path, which stays the same while the build is installed: give it to `chromium({ executablePath })` or `electron({ executablePath })`. A `chromium()` target that names no path runs the installed headless shell or Chrome for Testing by itself, as [Chrome's headless shell](#chromes-headless-shell) says.
 - `RETEST_DOWNLOAD_MIRROR` fetches from a mirror instead of each publisher. The pinned address's host becomes the first folder under the mirror, as in `https://mirror.example.com/github.com/electron/electron/releases/download/v44.5.1/electron-v44.5.1-darwin-arm64.zip`, and the checksums still apply. Downloads go over https, or over http only from this machine. Retest refuses a mirror address with a user name, password, query or fragment in it, and prints and records only the origin and path of any address.
 - `--list --json` prints one document with each pin, its state, where it is installed, and the install command or why it is refused.
 - Exit codes: 0 when every engine named is installed; 2 when one is not, or when `--list` finds a build that no longer matches its record or a folder for a build Retest does not install; 130 and 143 when stopped.
@@ -123,6 +124,7 @@ The core browser integration tests need two Chromium browsers. Platform, media a
 
 - The first is `RETEST_TEST_BROWSER`, or `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` when that exists. Config runs find Google Chrome by themselves, through `chrome()`.
 - The second is `RETEST_TEST_SECOND_BROWSER`, or Chrome for Testing where Playwright unpacks it on macOS: `~/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`. It is a plain browser build. No Playwright code runs.
+- A headless `chromium()` target runs Chrome's headless shell, so the tests of the example projects need one: `RETEST_TEST_HEADLESS_SHELL`, the shell `retest install chromium` installs. The checks that hold the shell against Chrome for Testing run only when `RETEST_TEST_CHROME_FOR_TESTING` names Chrome for Testing of the same release too.
 - The two must be different builds. The matrix checks read each one's version and tell them apart by it. They read it with `--version`, or on Windows from the executable file, since Chrome there prints nothing for `--version` and keeps running.
 - On Windows the integration files also need the supervisor: the one `retest install supervisor` built, or a developer build that `RETEST_SUPERVISOR_BINARY` names.
 
@@ -234,13 +236,52 @@ An invalid config is a usage error, exit 2, before anything runs. The message na
 
 A target is a browser to run in:
 
-- `chromium({ executablePath?, headless?, emulate? })` runs the Chromium at `executablePath`, or at the path in `RETEST_CHROMIUM`.
+- `chromium({ headlessShell?, executablePath?, headless?, emulate? })` runs Chrome's headless shell when it runs headless, and Chrome for Testing when it runs shown or says `headlessShell: false`: the builds `retest install chromium` installs, or those `RETEST_HEADLESS_SHELL` and `RETEST_CHROMIUM` name. With `executablePath`, it runs the browser there.
 - `chrome({ channel?, headless?, emulate? })` runs Google Chrome. `channel` is `stable`, the default, or `beta`, `dev` or `canary`.
 - `edge({ channel?, headless?, emulate? })` runs Microsoft Edge the same way.
 
 Each of them also takes `proxy`, described [below](#proxy).
 
+[The next section](#chromes-headless-shell) says what the headless shell is and how it differs from Chrome.
+
 The config accepts Firefox and WebKit targets with `{ browser: 'firefox' }` or `{ browser: 'webkit' }`. WebKit runs on Retest's WebKit driver, described [next](#webkit), and Firefox on Retest's Firefox driver, described [after it](#firefox). Native targets use the runner described below.
+
+### Chrome's headless shell
+
+Google builds a second program from each Chrome for Testing release: `chrome-headless-shell`, Chromium's web engine with no browser around it and no window. A headless `chromium()` target runs it. On a Linux machine with 8 CPUs it ran 1,000 tests on four workers in 50 s, where Chrome for Testing took 125 s, and the first test started about half a second later. The [changelog](../CHANGELOG.md) has the numbers.
+
+```sh
+npx retest install chromium   # Chrome for Testing 153.0.8010.12 and its headless shell, each checked against its SHA-256
+```
+
+- Which program runs: a headless `chromium()` target runs the shell; `headlessShell: false` runs Chrome for Testing instead; a shown run, with `--headed` or `headless: false`, runs Chrome for Testing, since the shell cannot show a window. `executablePath` runs the browser it names. `chrome()` and `edge()` run Google Chrome and Microsoft Edge as before.
+- Where each is found: the shell from `RETEST_HEADLESS_SHELL`, then the pinned build in Retest's cache; Chrome for Testing from `RETEST_CHROMIUM`, then the pinned build. A build in the cache runs only while it reads as its pin and record say, which a run checks once for each target by reading the executable whole: about half a second for the shell on Linux. A program named by `RETEST_HEADLESS_SHELL` or `executablePath` is not checked against a pin. When the shell is missing, the run fails at setup and says to run `npx retest install chromium`. Retest never starts Chrome for Testing in its place, so which program ran never depends on what a machine holds.
+- `headlessShell: true` with `executablePath` requires a file named `chrome-headless-shell`, or `chrome-headless-shell.exe` on Windows. `headlessShell: true` takes no `headless: false`.
+- The run says which program ran. `browser.started`, `result.json` and the reports name the product the browser gives for itself: `HeadlessChrome` for the shell, `Chrome` for Chrome for Testing, each with its version, source revision and executable.
+- `doctor` names the build each target runs in its `builds` rows, and `install --list` and `licences` list the shell beside Chromium.
+- Checked on Linux x64, on Ubuntu 24.04 with Chrome's sandbox on, and on macOS 27.2 arm64. The Windows x64 shell is pinned with its checksums and has not run.
+
+The shell lacks Chrome's browser layer, so Retest gives it what that layer gives a page. Measured against Chrome for Testing 153.0.8010.12 on Linux x64 and macOS arm64, a page then reads the same:
+
+- **Windows a page opens with no click.** Chrome blocks them, and the shell has no popup blocker. Chrome tells Retest of every window a page opens and whether a click or key press opened it. In the shell, Retest closes such a window before its first document runs. A test waiting for one with `page.popup()` fails at once, on Chrome and on the shell, saying the page opened a window without a click and Chrome blocks it. A test that does not wait carries on, and the browser's log records the window. The page's own script still sees the difference: on Chrome `window.open()` returns `null`, and in the shell a window that Retest then closes.
+- **Languages.** `Accept-Language` and `navigator.languages` are Chrome's: `en-US,en;q=0.9` in an American English locale. On Linux the locale comes from `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG`, as Chrome reads it; on macOS and Windows from the locale Node reads, which can differ from the one Chrome takes from the system's settings. Checked for `en_US` and `fr_FR` on Linux.
+- **User agent and client hints.** On Linux and macOS the user agent gives `HeadlessChrome/153.0.0.0` and the client hints name Chromium and the grease brand, as Chrome's do. On macOS the system's version comes from the system's own record of it, as Chrome reads it. On Windows the shell keeps its own: the full version in the user agent, and a `HeadlessChrome` brand in the client hints.
+- **The window when a test sets no viewport.** A headless page of Chrome for Testing 153.0.8010.12 or of its shell reads the viewport, window, screen and place Retest 0.4.2 gave it, so its layout checks and pictures are as they were. On Linux that is a 780 by 437 viewport in a 780 by 580 window at 20, 20 on an 800 by 600 screen; a window it opens as a tab is 780 by 493 at 20, 20. On macOS it is 756 by 413 in a 756 by 556 window at 44, 44, for a tab too. Windows, other browsers and other releases were not recorded, and keep the window their browser gives. A window a page opens with a size keeps what its browser gives it, which differs in the shell: for a 300 by 200 window, Chrome gives a 300 by 199 viewport, on macOS at 44, 44, and the shell 300 by 200, on macOS at 0, 0.
+- **Fonts.** The generic families are Chrome's defaults, so text draws and measures as in Chrome. On Linux a page of text and form controls drew the same pixels as Chrome for Testing.
+- **Permissions.** `clipboard-write`, `background-sync` and `screen-wake-lock` read as granted, as Chrome grants them without asking.
+- **Frames of another site** run in a process of their own, as Chrome's site isolation runs them.
+
+What still differs:
+
+- A page another page of its context covers stays visible in the shell. In Chrome, a page opened as a new tab hides the page that opened it, so that page reads `document.visibilityState` as `hidden`. Both read as focused, since Retest keeps every page focused.
+- `Notification.permission` reads `denied` in the shell and `default` in Chrome. Both answer `prompt` to `navigator.permissions.query()`.
+- `storage-access` reads `prompt` in the shell. Chrome reads it as granted on a page of its own site.
+- A page that answers with an empty 404 or 500 opens as an empty page in the shell. Chrome shows its own error page, so `goto()` fails there.
+- A site or a proxy that asks for a password: the shell shows the answer the server sent with the request for one, and `goto()` passes. Chrome gives up, so `goto()` fails.
+- The shell has no PDF viewer, so a PDF downloads; `navigator.pdfViewerEnabled` is false and `navigator.plugins` is empty. It has no Widevine for protected video, and no `window.chrome`. Run Chrome for Testing, with `headlessShell: false`, to get them.
+- A worker's own requests carry `en-US,en` with no weights, where Chrome sends `en-US,en;q=0.9`.
+- On macOS, form controls and a few text edges draw slightly differently: 215 of the 312,228 pixels of a page of text and controls. `toHaveScreenshot()` passes it at its default threshold of 0.2 and fails it with `threshold: 0`.
+- A page with a viewport of its own reads its window at 0, 0 in the shell, and in Chrome at the place Chrome gives each new window, such as 10, 10 then 20, 20 on Linux. On macOS the shell also reads the viewport's size as the window's, where Chrome reads its 756 by 556 window.
 
 ### WebKit
 

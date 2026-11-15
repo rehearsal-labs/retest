@@ -63,22 +63,23 @@ npx retest doctor
 
 ### Browsers
 
-`chrome()` runs the Google Chrome installed on your machine. `chromium()` runs the Chromium build you point it to.
+`chrome()` runs the Google Chrome installed on your machine. `chromium()` runs Chrome's headless shell when it runs headless, and Chrome for Testing when it runs shown or says `headlessShell: false`. [The guide](docs/guide.md#chromes-headless-shell) says how the two differ.
 
 Retest downloads nothing unless you ask. `retest install` fetches a pinned build and checks its SHA-256 before it unpacks anything:
 
 ```sh
+npx retest install            # Chrome for Testing and its headless shell, which chromium() runs
 npx retest install --list     # what is pinned for this machine; downloads nothing
-npx retest install firefox    # also chromium, webkit and electron
+npx retest install firefox    # also webkit and electron
 ```
 
-On macOS on Apple silicon, Retest pins Chrome for Testing, Firefox 158.0.1, WebKit build 2359 and Electron 44.5.1. On Windows x64 it pins Chrome for Testing, Firefox 158.0.1 and Electron 44.5.1. On Linux x64 it pins Chrome for Testing only. A Firefox target finds the installed build by itself. Give a Chromium, WebKit or Electron target the path that `retest install` prints.
+On macOS on Apple silicon, Retest pins Chrome for Testing and its headless shell, Firefox 158.0.1, WebKit build 2359 and Electron 44.5.1. On Windows x64 it pins Chrome for Testing and its headless shell, Firefox 158.0.1 and Electron 44.5.1. On Linux x64 it pins Chrome for Testing and its headless shell. A Chromium or Firefox target finds the installed build by itself. Give a WebKit or Electron target the path that `retest install` prints.
 
 ## What runs today
 
 | | |
 | --- | --- |
-| Browsers | Chrome and Chromium. Firefox 158.0.1 on macOS on Apple silicon and on Windows x64. WebKit build 2359 on macOS on Apple silicon |
+| Browsers | Chrome and Chromium. A headless `chromium()` target runs Chrome's headless shell, checked on Ubuntu 24.04 x64 and macOS arm64. Firefox 158.0.1 on macOS on Apple silicon and on Windows x64. WebKit build 2359 on macOS on Apple silicon |
 | iOS simulator apps | Find, tap, fill and check elements through WebDriverAgent, built on your Mac from a pinned commit, or through agent-device 0.21.36, an optional peer, with `driver: 'agent-device'`. agent-device was checked on the iOS 26.5 simulator |
 | macOS apps | Find, click, fill and check elements through the macOS runner of appium-mac2-driver |
 | Electron apps | The app's first window, driven like a Chrome page, its downloads, and the windows it opens through `page.popup()`. Checked with Electron 44.5.1 on macOS and Windows; downloads and second windows on macOS only |
@@ -91,7 +92,7 @@ On macOS on Apple silicon, Retest pins Chrome for Testing, Firefox 158.0.1, WebK
 | Dialogs and popups | Accept or dismiss alert, confirm, prompt and beforeunload; drive a page the app opens. Dialogs checked on Chrome and Electron on macOS; popups on Chrome, Firefox 158.0.1, WebKit build 2359 and Electron 44.5.1 on macOS |
 | Mocked responses and drag | Answer a request with your own response or refuse it; drag an element onto another. Checked on Chrome on macOS |
 | Playwright test files | `retest run --playwright` runs `.spec.ts` files unchanged, for the methods [the guide](docs/guide.md#run-playwright-test-files) lists |
-| Linux | Chrome and Chromium only, checked inside Docker |
+| Linux | Chrome and Chromium only, checked inside Docker. Chrome's headless shell checked on Ubuntu 24.04 x64 |
 | Windows x64 | Chrome, Chromium, Firefox and Electron, with recordings on Chrome. Nothing a run starts outlives Retest. Checked on Windows Server 2025 on GitHub's runner |
 
 Not yet: Android apps (built through agent-device, never run on an emulator or a device), Safari, and real phones or tablets. [The guide](docs/guide.md#windows) says what Windows does not run yet.

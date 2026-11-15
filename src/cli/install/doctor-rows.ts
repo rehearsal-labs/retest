@@ -11,10 +11,12 @@ import { isAbsolute, normalize, relative, sep } from 'node:path'
 import { agentDeviceTarget } from '../../config/native-targets.ts'
 import { agentDeviceVersion, loadAgentDevice } from '../../native/agent-device/package.ts'
 import { buildPlatform, cacheFolders, cacheVariable, describePin, describePlatform, findPin, inspectBuild, pinnedBuilds, pinRefusal, readBundledLicence } from '../../browser/builds.ts'
+import { headlessShellVariable } from '../../browser/executables.ts'
 import { screenRecordingAllowed, screenRecordingGrant, screenRecordingHolder } from '../../native/macos-app.ts'
 import { systemTools } from '../../native/processes.ts'
 import { retestCommand } from '../../reporters/commands.ts'
 import { targetDriver } from '../../runner/target-drivers.ts'
+import { runsHeadlessShell } from '../../runner/target-executable.ts'
 import { licenceLines } from './report.ts'
 
 /**
@@ -36,11 +38,20 @@ type BuildNeed = { readonly engine: ArchiveEngine; readonly configured?: string;
 const group = 'builds'
 
 // The variables a driver reads a binary's path from when its target names none.
-const pathVariables: Partial<Readonly<Record<ArchiveEngine, string>>> = { chromium: 'RETEST_CHROMIUM', webkit: 'RETEST_WEBKIT_BUILD' }
+const pathVariables: Partial<Readonly<Record<ArchiveEngine, string>>> = { chromium: 'RETEST_CHROMIUM', 'headless-shell': headlessShellVariable, webkit: 'RETEST_WEBKIT_BUILD' }
+
+// The engines whose target has no binary at all when it names none and none is installed, so the row says how to get one.
+const needPath: ReadonlySet<ArchiveEngine> = new Set(['chromium', 'headless-shell', 'webkit'])
 
 // The engines whose driver runs the installed pinned build when a target names no path (Firefox, in
-// src/browser/firefox/executable.ts); the others run it only once a path names it.
-const runWithoutPath: ReadonlySet<ArchiveEngine> = new Set(['firefox'])
+// src/browser/firefox/executable.ts, and Chromium's two programs, in src/browser/executables.ts); the others run it
+// only once a path names it.
+const runWithoutPath: ReadonlySet<ArchiveEngine> = new Set(['firefox', 'chromium', 'headless-shell'])
+
+// The command that installs an engine's pinned build: Chromium's two programs install together.
+function installCommand(engine: ArchiveEngine): string {
+  return `${retestCommand} install ${engine === 'headless-shell' ? 'chromium' : engine}`
+}
 
 /**
  * The `builds` rows of `doctor`, one per pinned engine a checked target uses, read from the cache alone: nothing is
@@ -196,7 +207,7 @@ export async function checkScreenRecording(config: LoadedConfig, options: Screen
 function buildNeed(target: LoadedTarget, env: Environment): BuildNeed | undefined {
   if ('platform' in target) return undefined
   if (target.browser === 'chrome' || target.browser === 'edge') return undefined
-  const engine = target.browser
+  const engine = runsHeadlessShell(target) ? 'headless-shell' : target.browser
   const variable = pathVariables[engine]
   const fromVariable = variable === undefined ? undefined : env[variable]
   const own = 'executablePath' in target ? target.executablePath : undefined
@@ -216,8 +227,8 @@ async function buildRow(need: BuildNeed, pin: ArchivePin, inspection: BuildInspe
     return { group, subject: engine, ok: false, text: `${describePin(pin)} is not installed: ${inspection.folder} holds a build Retest did not install or check, and no run launches it`, fix: `Remove ${inspection.folder}.${refused === '' ? '' : ` ${refused}`}` }
   }
   // A Firefox target with no path is left to its driver, which then looks where Firefox installs on the machine.
-  if (engine !== 'chromium' && engine !== 'webkit') return undefined
-  const fix = refusal === undefined ? `Run ${retestCommand} install ${engine}, then give the target its executablePath${variable === undefined ? '' : ` or set ${variable}`}.` : refused
+  if (!needPath.has(engine)) return undefined
+  const fix = refusal !== undefined ? refused : runWithoutPath.has(engine) ? `Run ${installCommand(engine)}.` : `Run ${installCommand(engine)}, then give the target its executablePath${variable === undefined ? '' : ` or set ${variable}`}.`
   return { group, subject: engine, ok: false, text: `${describePin(pin)} is not installed, and the target names no build`, fix }
 }
 

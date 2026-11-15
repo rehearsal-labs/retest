@@ -23,9 +23,12 @@ export type LoadedProxy = { readonly server: string; readonly bypass: readonly s
 
 type LoadedWebSettings = { readonly name: string; readonly headless: boolean; readonly emulate?: LoadedEmulation; readonly proxy?: LoadedProxy }
 
-/** A target the Chromium driver runs. `executablePath` is absolute; a chromium target without one uses RETEST_CHROMIUM. */
+/**
+ * A target the Chromium driver runs. `executablePath` is absolute. `headlessShell` is there only when the config says it;
+ * `runsHeadlessShell` in src/runner/target-executable.ts reads what a run then starts.
+ */
 export type LoadedChromiumTarget = LoadedWebSettings &
-  ({ readonly browser: 'chromium'; readonly executablePath?: string } | { readonly browser: 'chrome' | 'edge'; readonly channel: Channel })
+  ({ readonly browser: 'chromium'; readonly executablePath?: string; readonly headlessShell?: boolean } | { readonly browser: 'chrome' | 'edge'; readonly channel: Channel })
 
 /** A Firefox or WebKit target, which no driver runs yet. `executablePath` is absolute. */
 export type LoadedEngineTarget = LoadedWebSettings &

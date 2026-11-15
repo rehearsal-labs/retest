@@ -1,30 +1,44 @@
 import type { Failure } from '../protocol/failures.ts'
 import { existsSync } from 'node:fs'
-import { posix, win32 } from 'node:path'
+import { join, posix, win32 } from 'node:path'
+import { retestCommand } from '../reporters/commands.ts'
 import { listWords } from '../shared/list-words.ts'
-import { environmentVariable } from './builds.ts'
+import { buildFolder, buildPlatform, cacheFolders, environmentVariable, findPin, installedExecutablePath, recordFile } from './builds.ts'
 
-export type BrowserProduct = 'chromium' | 'chrome' | 'edge'
+/** `headless-shell` is Chrome's headless shell, a separate program built from the same Chromium release. */
+export type BrowserProduct = 'chromium' | 'headless-shell' | 'chrome' | 'edge'
 
 export type BrowserChannel = 'stable' | 'beta' | 'dev' | 'canary'
 
 /** Which browser a target wants. `executablePath` names the binary itself; `channel` applies to Chrome and Edge. */
 export type ExecutableRequest = { product: BrowserProduct; channel?: BrowserChannel; executablePath?: string }
 
-/** What resolution reads of the machine it runs on. */
+/** The two Chromium programs `retest install chromium` puts in Retest's cache. */
+export type CachedChromium = 'chromium' | 'headless-shell'
+
+/**
+ * What resolution reads of the machine it runs on. `installed` names the binary of a pinned build in Retest's cache
+ * when its folder holds one with its record, without reading its files, which a run checks before it launches it.
+ */
 export type ExecutableHost = {
   platform: NodeJS.Platform
   env: Readonly<Record<string, string | undefined>>
   exists(path: string): boolean
+  installed?(engine: CachedChromium): string | undefined
 }
 
-/** The executable to launch, or why there is none and every path that was looked at. */
-export type ResolvedExecutable = { ok: true; path: string } | { ok: false; failure: Failure; tried: string[] }
+/**
+ * The executable to launch, or why there is none and every path that was looked at. `cached` names the engine whose
+ * build in Retest's cache the path is, when it came from there.
+ */
+export type ResolvedExecutable = { ok: true; path: string; cached?: CachedChromium } | { ok: false; failure: Failure; tried: string[] }
 
 /** Where one channel installs: its app's name on macOS, its paths on Linux, and its path under each Windows root. */
 type Install = { name: string; mac: string; linux: readonly string[]; windows: string }
 
 const chromiumVariable = 'RETEST_CHROMIUM'
+/** The variable a headless `chromium()` target with no executablePath reads the headless shell's path from. */
+export const headlessShellVariable = 'RETEST_HEADLESS_SHELL'
 
 const installs: Readonly<Record<'chrome' | 'edge', Readonly<Record<BrowserChannel, Install>>>> = {
   chrome: {
@@ -48,8 +62,9 @@ const installs: Readonly<Record<'chrome' | 'edge', Readonly<Record<BrowserChanne
 const windowsRoots = ['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'] as const
 
 /**
- * Finds the browser a target launches: the path it names, `RETEST_CHROMIUM` for `chromium`, or the standard
- * install locations of Chrome and Edge on macOS, Linux and Windows. Reads the machine only through `host`.
+ * Finds the browser a target launches: the path it names, `RETEST_CHROMIUM` for `chromium`, `RETEST_HEADLESS_SHELL`
+ * for the headless shell, or the standard install locations of Chrome and Edge on macOS, Linux and Windows. A path
+ * given for the headless shell must name a file called chrome-headless-shell. Reads the machine only through `host`.
  *
  * @example resolveExecutable({ product: 'chrome', channel: 'beta' }, systemHost())
  */
@@ -57,6 +72,7 @@ export function resolveExecutable(request: ExecutableRequest, host: ExecutableHo
   if (host.platform !== 'darwin' && host.platform !== 'linux' && host.platform !== 'win32') {
     return notFound('unsupported', `Retest runs browsers on macOS, Linux and Windows, not on ${host.platform}.`, [])
   }
+  if (request.product === 'headless-shell') return headlessShell(request, host)
   if (request.executablePath !== undefined) return atPath(request.executablePath, 'executablePath', host)
   if (request.product === 'chromium') return chromium(request, host)
   const install = installs[request.product][request.channel ?? 'stable']
@@ -87,18 +103,71 @@ export function systemFirefoxPaths(host: ExecutableHost): string[] {
  * @example resolveExecutable({ product: 'chromium' }, systemHost())
  */
 export function systemHost(): ExecutableHost {
-  return { platform: process.platform, env: process.env, exists: existsSync }
+  return { platform: process.platform, env: process.env, exists: existsSync, installed: (engine) => cachedBinary(engine, process.env) }
 }
 
+/**
+ * The binary of the pinned build of `engine` in this user's Retest cache, when its folder holds the binary and the record
+ * `retest install` writes beside it. Nothing is read beyond their being there.
+ *
+ * @example cachedBinary('headless-shell', process.env) // '/home/ada/.cache/retest/browsers/headless-shell-153.0.8010.12-linux-x64/build/chrome-headless-shell-linux64/chrome-headless-shell'
+ */
+export function cachedBinary(engine: CachedChromium, env: Readonly<Record<string, string | undefined>>): string | undefined {
+  const folders = cacheFolders(env)
+  const platform = buildPlatform()
+  const pin = platform === undefined ? undefined : findPin(engine, platform)
+  if (folders === undefined || pin?.kind !== 'archive') return undefined
+  const folder = buildFolder(folders, pin)
+  const binary = installedExecutablePath(folder, pin)
+  return existsSync(binary) && existsSync(join(folder, recordFile)) ? binary : undefined
+}
+
+// Chrome for Testing, which a shown run of chromium() and one with headlessShell: false start: RETEST_CHROMIUM, else
+// the pinned build in Retest's cache.
 function chromium(request: ExecutableRequest, host: ExecutableHost): ResolvedExecutable {
   if (request.channel !== undefined) {
     return notFound('setup_failed', `chromium() has no channels. Pass its executablePath, or set ${chromiumVariable}.`, [])
   }
   const fromEnvironment = host.env[chromiumVariable]
-  if (fromEnvironment === undefined || fromEnvironment === '') {
-    return notFound('setup_failed', `chromium() needs a browser. Pass its executablePath, or set ${chromiumVariable} to the executable's path.`, [])
+  if (fromEnvironment !== undefined && fromEnvironment !== '') return atPath(fromEnvironment, chromiumVariable, host)
+  const cached = host.installed?.('chromium')
+  if (cached !== undefined) return { ok: true, path: cached, cached: 'chromium' }
+  return notFound('setup_failed', `chromium() needs Chrome for Testing to run shown or with headlessShell: false, and it is not installed: run ${retestCommand} install chromium, or set ${chromiumVariable} to a browser.`, [])
+}
+
+// The shell is its own program, so a path to any other browser would run that browser under the shell's name. Google
+// names the file chrome-headless-shell on every platform, as Playwright's and Puppeteer's caches keep it. With no path,
+// the pinned shell in Retest's cache runs, and Chrome for Testing never stands in for a missing shell: which program ran
+// must not depend on what a machine happens to hold.
+function headlessShell(request: ExecutableRequest, host: ExecutableHost): ResolvedExecutable {
+  if (request.channel !== undefined) return notFound('setup_failed', `The headless shell has no channels. Pass its executablePath, or set ${headlessShellVariable}.`, [])
+  const fromEnvironment = host.env[headlessShellVariable]
+  const given = request.executablePath ?? (fromEnvironment === '' ? undefined : fromEnvironment)
+  const source = request.executablePath === undefined ? headlessShellVariable : 'executablePath'
+  if (given === undefined) {
+    const cached = host.installed?.('headless-shell')
+    if (cached !== undefined) return { ok: true, path: cached, cached: 'headless-shell' }
+    return notFound('setup_failed', `A headless chromium() target runs Chrome's headless shell, which is not installed: run ${retestCommand} install chromium.`, [])
   }
-  return atPath(fromEnvironment, chromiumVariable, host)
+  if (!isHeadlessShell(given, host.platform)) {
+    return notFound('setup_failed', `headlessShell runs Chrome's headless shell, and ${given}, the path ${source} gives, is not one: the shell's file is named ${shellFileName(host.platform)}. Pass the path ${retestCommand} install chromium prints for it, or remove headlessShell to run that browser.`, [given])
+  }
+  return atPath(given, source, host)
+}
+
+/**
+ * Whether a path names Chrome's headless shell by the file name Google gives it: chrome-headless-shell, with .exe on
+ * Windows, in any case there, where file names ignore it.
+ *
+ * @example isHeadlessShell('/cache/chrome-headless-shell-linux64/chrome-headless-shell', 'linux') // true
+ */
+export function isHeadlessShell(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  const name = platform === 'win32' ? win32.basename(path).toLowerCase() : posix.basename(path)
+  return name === shellFileName(platform)
+}
+
+function shellFileName(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell'
 }
 
 function atPath(path: string, source: string, host: ExecutableHost): ResolvedExecutable {

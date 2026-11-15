@@ -138,6 +138,9 @@ export class BrowserPool {
   readonly #unclaimed = new Map<string, string>()
   // How each of an app target's browsers launches, read once for its warm and its setup alike.
   readonly #plans = new Map<string, Promise<LaunchPlan>>()
+  // Each Chromium target's program, found once for all its browsers: finding a pinned build in Retest's cache reads its
+  // whole executable for its checksum, about half a second for the headless shell on Linux.
+  readonly #executables = new Map<string, ReturnType<FindExecutable>>()
   readonly #appTargets = new Map<string, Promise<AppTarget>>()
   // When each app target's turn at setup begins: once every target asked for before it is set up.
   readonly #turns = new Map<string, Promise<unknown>>()
@@ -348,11 +351,19 @@ export class BrowserPool {
     if (driver.driver === 'electron') return { ok: true, kind: 'electron', target: driver.target }
     if (driver.driver === 'firefox') return this.#planFirefox(app, driver.target, instance)
     if (driver.driver === 'webkit') return this.#planWebKit(app, driver.target, instance)
-    const { target } = driver
-    const found = await this.#options.findExecutable(target)
+    const headless = this.#options.headless && driver.target.headless
+    // A shown run finds its program as shown, since a headless chromium() target runs Chrome's headless shell, which
+    // cannot show a window.
+    const target = headless ? driver.target : { ...driver.target, headless }
+    const lookup = JSON.stringify(target)
+    let finding = this.#executables.get(lookup)
+    if (finding === undefined) {
+      finding = this.#options.findExecutable(target)
+      this.#executables.set(lookup, finding)
+    }
+    const found = await finding
     if (!found.ok) return found
     const executablePath = found.path
-    const headless = this.#options.headless && target.headless
     const key = JSON.stringify([executablePath, headless, target.emulate ?? null, instance])
     const hidden = this.#options.hiddenVariables === undefined ? {} : { hiddenVariables: this.#options.hiddenVariables }
     const redacting = this.#options.redact === undefined ? {} : { redact: this.#options.redact }

@@ -11,6 +11,7 @@ import { after, before, describe, test } from 'node:test'
 import { PROXY_HEADER, startProxy } from '../../fixtures/proxy/server.ts'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
 import { tempFolder } from '../support/temp-folder.ts'
+import { headlessShellPath } from '../support/test-browser.ts'
 import { openApp } from './browser-harness.ts'
 import {
   childLog,
@@ -22,7 +23,6 @@ import {
   packRetest,
   repositoryRoot,
   runCli,
-  secondBrowserPath,
   startHost,
   textHolds,
   writeFiles,
@@ -73,7 +73,7 @@ describe('a host-style run', () => {
     const started = await startHost(t, {
       cwd: project,
       command: [process.execPath, 'host.ts', opened.url, proxy.url, outbox],
-      env: { HOST_PASSWORD: TASK_APP_PASSWORD, HOST_TOKEN: hostToken, RETEST_CHROMIUM: secondBrowserPath() },
+      env: { HOST_PASSWORD: TASK_APP_PASSWORD, HOST_TOKEN: hostToken, RETEST_HEADLESS_SHELL: headlessShellPath() },
     })
     return { app: opened, proxy, project, started }
   }
@@ -116,11 +116,12 @@ describe('a host-style run', () => {
     assert.deepEqual(runStarted.files, [file])
     assertFolderReadBack(run)
 
-    // One app on Chrome for Testing, through the fixture proxy, which the app requires for every request.
+    // One app on the headless shell a headless chromium() target runs, through the fixture proxy, which the app
+    // requires for every request.
     const browsers = eventsOf(run.events, 'browser.started')
     assert.deepEqual(
       browsers.map((event) => [event.executablePath, event.target?.proxy]),
-      [[secondBrowserPath(), { server: proxy.url, bypass: ['<-loopback>'] }]],
+      [[headlessShellPath(), { server: proxy.url, bypass: ['<-loopback>'] }]],
     )
     assert.equal(app.refused(), 0, 'the app refused no request, so every one came through the proxy')
     const carried = proxy.requests().map(({ method, target }) => `${method} ${target}`)

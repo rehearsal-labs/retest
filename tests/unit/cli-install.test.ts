@@ -12,7 +12,7 @@ import { describeResult } from '../../src/cli/install/report.ts'
 import { createStyle } from '../../src/reporters/style.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 import { unpinnedBuilds } from '../support/unpinned-host.ts'
-import { homeEnvironment, listeningPort } from './builds-fixtures.ts'
+import { homeEnvironment, listeningPort, temporaryCache } from './builds-fixtures.ts'
 import { fakeCli } from './cli-fixtures.ts'
 
 // `retest install` through the command line with a home folder of its own. Real downloads never happen here: the
@@ -69,24 +69,35 @@ describe('retest install', () => {
     const fake = fakeCli({ cwd })
     assert.equal(await fake.cli(['help', 'install']), 0)
     const help = fake.stdout.text
-    assert.match(help, /^Usage\n {2}retest install <engine\.\.\.> \| --list \[options\]\n/)
-    assert.match(help, /Engines: chromium, firefox, webkit, electron, webdriveragent, mac2, media, supervisor\./)
+    assert.match(help, /^Usage\n {2}retest install \[engine\.\.\.\] \| --list \[options\]\n/)
+    assert.match(help, /With no engine named, installs chromium\. chromium installs Chrome for Testing and its headless shell, which a\nheadless chromium\(\) target runs\./)
+    assert.match(help, /Engines: chromium, headless-shell, firefox, webkit, electron, webdriveragent, mac2, media, supervisor\./)
     assert.match(help, /RETEST_DOWNLOAD_MIRROR names a mirror/)
     assert.match(help, /run, doctor and --list never download/)
     const general = fakeCli({ cwd })
     await general.cli(['--help'])
-    assert.match(general.stdout.text, /\n {2}install <engine\.\.\.> +Install pinned browser builds, or list what this machine holds\n/)
+    assert.match(general.stdout.text, /\n {2}install \[engine\.\.\.\] +Install pinned browser builds, or list what this machine holds\n/)
   })
 
-  test('asks for engines, names the ones it knows, and keeps --verify and --json to --list', async () => {
-    const none = await install([])
-    assert.equal(none.code, 2)
-    assert.match(none.stderr, /^error: Name the engines to install: chromium, firefox, webkit, electron, webdriveragent, mac2, media or supervisor\. Or list them with --list\.\nSee retest help install\.\n$/)
+  test('installs Chromium and its headless shell when it names nothing or chromium, names the engines it knows, and keeps --verify and --json to --list', { skip: unpinnedBuilds }, async () => {
+    // A folder of each build that install finds not as recorded stops it before anything is fetched.
+    const { home, folders } = temporaryCache()
+    const platform = buildPlatform()
+    for (const engine of ['chromium', 'headless-shell'] as const) {
+      const pin = platform === undefined ? undefined : findPin(engine, platform)
+      assert.ok(pin !== undefined)
+      await mkdir(buildFolder(folders, pin), { recursive: true })
+    }
+    for (const args of [[], ['chromium'], ['chromium', 'headless-shell']]) {
+      const named = await install(args, homeEnvironment(home))
+      assert.equal(named.code, 2, named.stdout)
+      assert.deepEqual(named.stdout.split('\n').flatMap((line) => /^ {2}\S+ (chromium|headless-shell) /.exec(line)?.[1] ?? []), ['chromium', 'headless-shell'], `install ${args.join(' ')} takes both, once each, in order`)
+    }
     const typo = await install(['firefx'])
     assert.equal(typo.code, 2)
     assert.match(typo.stderr, /Unknown engine firefx\. Did you mean firefox\?/)
     const unknown = await install(['safari'])
-    assert.match(unknown.stderr, /Unknown engine safari\. The engines are chromium, firefox, webkit, electron, webdriveragent, mac2, media and supervisor\./)
+    assert.match(unknown.stderr, /Unknown engine safari\. The engines are chromium, headless-shell, firefox, webkit, electron, webdriveragent, mac2, media and supervisor\./)
     assert.match((await install(['electron', '--json'])).stderr, /--verify and --json go with --list\./)
     assert.match((await install(['--list', 'electron'])).stderr, /--list takes no engines, received electron\./)
     assert.equal(fetches, 0)
@@ -129,7 +140,7 @@ describe('retest install', () => {
     const document = JSON.parse(listed.stdout) as { schemaVersion: number; platform: string; builds: { engine: string; state: string; pinnedSha256: string | null; licences?: PinnedLicences; sourceCode?: BuildSourceCode; install: { command?: string; refused?: string; missingNotices?: string[] } }[] }
     assert.equal(document.schemaVersion, 1)
     assert.equal(document.platform, 'mac-arm64')
-    assert.deepEqual(document.builds.map((build) => [build.engine, build.state]), [['chromium', 'missing'], ['firefox', 'missing'], ['webkit', 'missing'], ['electron', 'missing'], ['webdriveragent', 'missing'], ['mac2', 'missing'], ['media', 'missing']])
+    assert.deepEqual(document.builds.map((build) => [build.engine, build.state]), [['chromium', 'missing'], ['headless-shell', 'missing'], ['firefox', 'missing'], ['webkit', 'missing'], ['electron', 'missing'], ['webdriveragent', 'missing'], ['mac2', 'missing'], ['media', 'missing']])
     const byEngine = new Map(document.builds.map((build) => [build.engine, build]))
     assert.deepEqual(byEngine.get('electron')?.install, { command: 'npx retest install electron' })
     assert.equal(byEngine.get('electron')?.pinnedSha256, '1d75703019bb16461ae65f3081d7e6f5c0b11e901d0ccb5c343bcf7bcdd6435c')
@@ -254,7 +265,7 @@ describe('retest install', () => {
     }
     assert.equal(installed('firefox'), 'A Firefox target that names no executablePath runs it.')
     assert.equal(installed('electron'), 'An electron() target runs it once its executablePath names this path.')
-    assert.equal(installed('chromium'), 'A chromium() target runs it once its executablePath, or RETEST_CHROMIUM, names this path.')
+    assert.equal(installed('chromium'), 'A chromium() target runs it shown, or with headlessShell: false, unless its executablePath or RETEST_CHROMIUM names another browser.')
   })
 
   test('exits as interrupted when stopped before it starts', { skip: unpinnedBuilds }, async () => {

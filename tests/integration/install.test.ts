@@ -285,8 +285,8 @@ ${doctor.stderr}`)
 })
 
 describe('what retest install refuses, and what run and doctor never do', { skip: unverified }, () => {
-  // A chromium() target that names no browser, with Chrome for Testing pinned: run and doctor say what is missing,
-  // and neither installs it.
+  // A headless chromium() target that names no browser, with Chrome for Testing and its headless shell pinned: run and
+  // doctor say what is missing, and neither installs it.
   test('a run and doctor name the usable install command and fetch and install nothing', async (t) => {
     const home = tempFolder('retest-install-home-')
     const env = { HOME: home, NO_COLOR: '1', RETEST_DOWNLOAD_MIRROR: mirror, RETEST_CHROMIUM: '' }
@@ -297,8 +297,8 @@ describe('what retest install refuses, and what run and doctor never do', { skip
     })
     const doctor = await runCli(t, ['doctor'], { cwd: root, env })
     assert.equal(doctor.exit.code, 2, 'chromium() names no browser here')
-    assert.match(doctor.stdout, /chromium\(\) +✗ chromium\(\) needs a browser\./)
-    assert.match(doctor.stdout, /builds +chromium +✗ Chrome for Testing 153\.0\.8010\.12 is not installed, and the target names no build\n +Run npx retest install chromium, then give the target its executablePath or set RETEST_CHROMIUM\./)
+    assert.match(doctor.stdout, /chromium\(\) +✗ A headless chromium\(\) target runs Chrome's headless shell, which is not installed: run npx retest install chromium\./)
+    assert.match(doctor.stdout, /builds +headless-shell +✗ Chrome Headless Shell 153\.0\.8010\.12 is not installed, and the target names no build\n +Run npx retest install chromium\./)
     const run = await runCli(t, ['run', '--reporter', 'agent'], { cwd: root, env })
     assert.equal(run.exit.code, 2, `${run.stdout}\n${run.stderr}`)
     assert.deepEqual(requestsSince(start), [], 'not one request reached the mirror')

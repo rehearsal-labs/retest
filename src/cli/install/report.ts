@@ -3,6 +3,7 @@ import type { Style } from '../../reporters/style.ts'
 import type { InstallResult } from './install-archive.ts'
 import { dirname, join } from 'node:path'
 import { buildFolder, describePin, describePlatform, pinRefusal, treeFolder } from '../../browser/builds.ts'
+import { headlessShellVariable } from '../../browser/executables.ts'
 import { retestCommand } from '../../reporters/commands.ts'
 import { addressProblem } from './download.ts'
 
@@ -23,6 +24,7 @@ export function licenceLines(pin: BuildPin): string[] {
 
 const licenceNames: Readonly<Record<BuildEngine, string>> = {
   chromium: 'BSD and Widevine',
+  'headless-shell': 'BSD',
   firefox: 'MPL 2.0',
   webkit: 'LGPL 2.1 and BSD',
   electron: 'MIT and BSD',
@@ -205,11 +207,13 @@ function inspectionsDocument(report: InspectionReport): { readonly schemaVersion
   }
 }
 
-// How a target comes to run what was installed, as each engine's driver looks for a binary: a Firefox target with no
-// path runs the installed pinned build (src/browser/firefox/executable.ts), the others run it once a path names it.
+// How a target comes to run what was installed, as each engine's driver looks for a binary: a Firefox or Chromium target
+// with no path runs the installed pinned build (src/browser/firefox/executable.ts, src/browser/executables.ts), the
+// others run it once a path names it.
 function usageHint(engine: BuildEngine, inspection: BuildInspection): string | undefined {
   if (inspection.executablePath === undefined) return undefined
-  if (engine === 'chromium') return `A chromium() target runs it once its executablePath, or RETEST_CHROMIUM, names this path.`
+  if (engine === 'chromium') return `A chromium() target runs it shown, or with headlessShell: false, unless its executablePath or RETEST_CHROMIUM names another browser.`
+  if (engine === 'headless-shell') return `A headless chromium() target runs it, unless its executablePath or ${headlessShellVariable} names another browser.`
   if (engine === 'electron') return `An electron() target runs it once its executablePath names this path.`
   if (engine === 'webkit') return `A WebKit target runs it once its executablePath, or RETEST_WEBKIT_BUILD, names this path.`
   if (engine === 'firefox') return `A Firefox target that names no executablePath runs it.`

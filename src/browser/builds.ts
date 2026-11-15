@@ -16,8 +16,11 @@ import { entryKind, readFileSha256 as readRegularFileSha256, readRecordText } fr
 // into. Nothing here touches the network: `retest install` downloads a pinned archive only when it is asked to, and
 // every reading of the cache below is of files already on disk.
 
-/** An engine Retest pins a build of: three browsers, Electron, and the two native executors. */
-export type BuildEngine = 'chromium' | 'firefox' | 'webkit' | 'electron' | 'webdriveragent' | 'mac2'
+/**
+ * An engine Retest pins a build of: three browsers, Chrome's headless shell of the pinned Chromium, Electron, and the
+ * two native executors.
+ */
+export type BuildEngine = 'chromium' | 'headless-shell' | 'firefox' | 'webkit' | 'electron' | 'webdriveragent' | 'mac2'
 
 /** The engines whose build is a published archive Retest downloads; the native executors are built from source. */
 export type ArchiveEngine = Exclude<BuildEngine, ExecutorName>
@@ -26,7 +29,7 @@ export type ArchiveEngine = Exclude<BuildEngine, ExecutorName>
 export type BuildPlatform = 'mac-arm64' | 'linux-x64' | 'win-x64'
 
 /** Every engine, in the order lists show them. */
-export const buildEngines: readonly BuildEngine[] = ['chromium', 'firefox', 'webkit', 'electron', 'webdriveragent', 'mac2']
+export const buildEngines: readonly BuildEngine[] = ['chromium', 'headless-shell', 'firefox', 'webkit', 'electron', 'webdriveragent', 'mac2']
 
 /**
  * A licence text or notice a build must carry before Retest installs it. `path` is where it sits in the installed
@@ -109,6 +112,9 @@ export type BuildPin = ArchivePin | SourcePin
 const chromiumVersion = '153.0.8010.12'
 const chromeForTesting = 'https://storage.googleapis.com/chrome-for-testing-public'
 const macChrome = 'chrome-mac-arm64/Google Chrome for Testing.app'
+const headlessShell = 'Chrome Headless Shell'
+const headlessShellNotice = { title: 'the licences of Chromium and of the libraries compiled into the headless shell', licence: 'BSD-3-Clause and the licences it lists', published: true }
+const headlessShellAbout = { title: "the build's notice, which names chrome://credits, where the licences compiled into the browser are listed", licence: 'BSD-3-Clause and the licences at chrome://credits', published: true }
 const firefoxReleases = 'https://archive.mozilla.org/pub/firefox/releases'
 const electronReleases = 'https://github.com/electron/electron/releases/download'
 
@@ -181,7 +187,8 @@ function executorPin(engine: ExecutorName): SourcePin {
  * The tested set. Chromium is Chrome for Testing, from Google; Firefox is Mozilla's release; WebKit is Playwright's
  * automation build, the only WebKit build with the inspector pipe Retest drives; Electron is the release its fixture app
  * runs on; the two native executors are built from their pinned commits. Only Chromium is pinned for Linux x64; its archive has been inspected, without a Linux browser execution claim.
- * Windows x64 has Chromium, Firefox and Electron, from the same releases, and no WebKit build.
+ * Windows x64 has Chromium, Firefox and Electron, from the same releases, and no WebKit build. Chrome's headless shell
+ * of the same Chromium release is pinned on all three platforms.
  */
 export const pinnedBuilds: readonly BuildPin[] = [
   {
@@ -236,6 +243,63 @@ export const pinnedBuilds: readonly BuildPin[] = [
       ],
     },
     provenance: 'Archive size and checksum, executable and notice read from the Google publisher download of 21 October 2026, here and on a Windows Server 2025 machine, whose own tar.exe unpacks the same files as unzip and libarchive bsdtar do on macOS. The Windows build carries no Widevine module, so there is no Widevine licence to pin. Installed by retest install and run on Windows Server 2025 x64, on a GitHub windows-2025 runner, in the 0.3.0 CI matrix.',
+  },
+  // Chrome's headless shell of the same Chrome for Testing release: Chromium's content layer with no browser
+  // interface, which a chromium({ headlessShell: true }) target runs. Google lists it beside Chrome for Testing in
+  // known-good-versions-with-downloads.json and publishes no checksum of it.
+  {
+    kind: 'archive',
+    engine: 'headless-shell',
+    title: headlessShell,
+    version: chromiumVersion,
+    platform: 'mac-arm64',
+    archive: { format: 'zip', url: `${chromeForTesting}/${chromiumVersion}/mac-arm64/chrome-headless-shell-mac-arm64.zip`, size: 98_831_293, sha256: '89d80a6d26ccd0ccfd51e22d9e1297283862af2b0cd91dce07459b35ca0059f2' },
+    executable: { path: 'chrome-headless-shell-mac-arm64/chrome-headless-shell', sha256: 'a0bfe7b4da4787b66058477d696cd1d09065d25f06a548947722b9af77ee8282' },
+    files: [],
+    licences: {
+      inspected: true,
+      files: [
+        { path: 'chrome-headless-shell-mac-arm64/ABOUT', ...headlessShellAbout, sha256: '34d078ce3003087a8374e7c6156fda374769b8047d6ddaf419d66414aa48edfb' },
+        { path: 'chrome-headless-shell-mac-arm64/LICENSE.headless_shell', ...headlessShellNotice, sha256: '14561bfc58f207af7ade768e8b95e99f9cf8af6d9aa46b4c0d9ae0b3a97585cc' },
+      ],
+    },
+    provenance: 'Archive size and checksum, executable and both licence files read from the Google publisher download of 15 November 2026, unpacked with unzip on a Linux x64 machine. Installed by Retest from the same address on macOS 27.2 arm64 on 15 November 2026, where the archive, executable and licence files matched, and run there headless.',
+  },
+  {
+    kind: 'archive',
+    engine: 'headless-shell',
+    title: headlessShell,
+    version: chromiumVersion,
+    platform: 'linux-x64',
+    archive: { format: 'zip', url: `${chromeForTesting}/${chromiumVersion}/linux64/chrome-headless-shell-linux64.zip`, size: 119_809_080, sha256: 'a9da028861a0cf789ff25c2fed45f5f1aaf969ed9247835b6a7821a4f7af9d1d' },
+    executable: { path: 'chrome-headless-shell-linux64/chrome-headless-shell', sha256: 'ded93a9c9a53a1ae040f08124badcca95c938e9d5015ff340c3b5538c41bf39e' },
+    files: [],
+    licences: {
+      inspected: true,
+      files: [
+        { path: 'chrome-headless-shell-linux64/ABOUT', ...headlessShellAbout, sha256: '34d078ce3003087a8374e7c6156fda374769b8047d6ddaf419d66414aa48edfb' },
+        { path: 'chrome-headless-shell-linux64/LICENSE.headless_shell', ...headlessShellNotice, sha256: 'b92247f7a44c14627ef5cbbe0aa6dcca4e4422b7c05e6f2c660054061a5e3da7' },
+      ],
+    },
+    provenance: "Archive size and checksum, executable and both licence files read from the Google publisher download of 15 November 2026 on Ubuntu 24.04 x64. There retest install installed it and ran tests on it, and the same files, unpacked with unzip, ran Retest's integration files, all with Chrome's sandbox on.",
+  },
+  {
+    kind: 'archive',
+    engine: 'headless-shell',
+    title: headlessShell,
+    version: chromiumVersion,
+    platform: 'win-x64',
+    archive: { format: 'zip', url: `${chromeForTesting}/${chromiumVersion}/win64/chrome-headless-shell-win64.zip`, size: 120_200_717, sha256: '7aec872f3090e639c4237467624ea863c20fe2878914c93a6556bdbb52aa6c4c' },
+    executable: { path: 'chrome-headless-shell-win64/chrome-headless-shell.exe', sha256: 'addfa79abb060e1e514e155ed745d4bf96140bca402735958bb4e223aea0b98c' },
+    files: [],
+    licences: {
+      inspected: true,
+      files: [
+        { path: 'chrome-headless-shell-win64/ABOUT', ...headlessShellAbout, sha256: '122b32f3ee3f1e8d65c774f5257fc6cc2127b666148ced0ce2efa3ea57e1d93c' },
+        { path: 'chrome-headless-shell-win64/LICENSE.headless_shell', ...headlessShellNotice, sha256: '477eecded4058f14bee802ac3a97b439e89ca2a8b4e8aed2ce70485d84c9b5b5' },
+      ],
+    },
+    provenance: 'Archive size and checksum, executable and both licence files read from the Google publisher download of 15 November 2026, unpacked with unzip on a Linux x64 machine. Not yet installed or run on Windows.',
   },
   {
     kind: 'archive',
@@ -544,7 +608,7 @@ export type InstalledBuildRecord = {
 
 const installedRecordSchema: Schema<InstalledBuildRecord> = s.object({
   schemaVersion: s.literal(1),
-  engine: s.enum(['chromium', 'firefox', 'webkit', 'electron']),
+  engine: s.enum(['chromium', 'headless-shell', 'firefox', 'webkit', 'electron']),
   version: s.string(),
   platform: s.enum(['mac-arm64', 'linux-x64', 'win-x64']),
   source: s.string(),

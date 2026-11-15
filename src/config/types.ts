@@ -69,8 +69,14 @@ export type TargetSettings = {
   readonly proxy?: ProxySettings | undefined
 }
 
-/** `executablePath` is relative to the config's folder, and falls back to the RETEST_CHROMIUM environment variable. */
-export type ChromiumOptions = TargetSettings & { readonly executablePath?: string | undefined }
+/**
+ * Without `executablePath`, a headless run of the target starts Chrome's headless shell, the headless program Google
+ * builds from the same Chromium release, from RETEST_HEADLESS_SHELL or Retest's cache; a shown run starts Chrome for
+ * Testing, from RETEST_CHROMIUM or Retest's cache. `headlessShell: false` runs Chrome for Testing headless too.
+ * `executablePath`, relative to the config's folder, runs what it names; with `headlessShell: true` it must name the
+ * shell. The shell cannot show a window, so `headlessShell: true` takes no `headless: false`.
+ */
+export type ChromiumOptions = TargetSettings & { readonly executablePath?: string | undefined; readonly headlessShell?: boolean | undefined }
 /** `channel` defaults to stable. */
 export type BrandedOptions = TargetSettings & { readonly channel?: Channel | undefined }
 /** `executablePath` is relative to the config's folder. */

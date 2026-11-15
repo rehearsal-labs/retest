@@ -19,8 +19,10 @@ import { request, sendOptions } from './cdp-results.ts'
 import { ChromiumProcess, ProcessLaunchError } from './chromium-process.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
 import { checkExecutable } from './executable.ts'
+import { isHeadlessShell } from './executables.ts'
 import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
 import { readStartAttempt } from './sandbox-system.ts'
+import { shellSwitches } from './shell-parity.ts'
 import { commandLines, explainStartFailure } from './start-failure.ts'
 
 const launchTimeoutMs = 30_000
@@ -44,11 +46,15 @@ export async function launchBrowser(
 ): Promise<WebRuntime> {
   const deadline = new Deadline(timeoutMs)
   const executable = await checkExecutable(options.executablePath)
+  // The shell has no window to show and ignores a missing --headless, so a shown run of it would quietly run hidden.
+  if (!options.headless && isHeadlessShell(executable)) {
+    throw new LaunchError(`${executable} is Chrome's headless shell, which cannot show a window. Run it headless, or show Chrome or Chromium instead.`)
+  }
   const staleProfileProblems = await removeStaleProfiles(tmpdir())
   const profile = await createTemporaryProfile(tmpdir()).catch((error: unknown) => {
     throw new LaunchError(`Cannot create a temporary browser profile: ${errorMessage(error)}`, { cause: error })
   })
-  const args = chromiumArguments(profile, options.headless)
+  const args = chromiumArguments(profile, options.headless, isHeadlessShell(executable) ? shellSwitches() : [])
   const outputStart = await logLength(options.logFile)
   const hidden = options.hiddenVariables === undefined ? {} : { hiddenVariables: options.hiddenVariables }
   const redacting = options.redact === undefined ? {} : { redact: options.redact }
@@ -66,7 +72,7 @@ export async function launchBrowser(
     })
     const version = await handshake(connection, deadline)
     const onListenerError = (error: unknown) => log(`a listener failed: ${errorMessage(error)}`)
-    return new ChromiumBrowser({ process: chromium, executablePath: executable, connection, version, onListenerError })
+    return new ChromiumBrowser({ process: chromium, executablePath: executable, connection, version, onListenerError, note: log, headless: options.headless })
   } catch (error) {
     const ended = error instanceof CdpDisconnectedError || error instanceof CdpClosedError
     // A program that closed its pipe is usually exiting; how it exits is the best explanation there is.
@@ -87,7 +93,7 @@ export async function launchBrowser(
  *
  * @example chromiumArguments(profile, true).at(-1) // '--no-startup-window'
  */
-export function chromiumArguments(profile: string, headless: boolean): string[] {
+export function chromiumArguments(profile: string, headless: boolean, shell: readonly string[] = []): string[] {
   return [
     '--remote-debugging-pipe',
     `--user-data-dir=${profile}`,
@@ -114,6 +120,8 @@ export function chromiumArguments(profile: string, headless: boolean): string[] 
     '--disable-background-timer-throttling',
     // Keeps a fresh profile out of the login keychain that the person's own Chrome uses.
     ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
+    // Chrome's headless shell starts with what makes it act as Chrome for Testing does (src/browser/shell-parity.ts).
+    ...shell,
     // No start page: every test opens its own page in a browser context of its own, so an about:blank page in the
     // default context only kept two renderer processes idle for the whole run. Without it, Chrome for Testing 153
     // answered over the pipe about 50 ms sooner, with its sandbox on, and stayed running with no page open, headless

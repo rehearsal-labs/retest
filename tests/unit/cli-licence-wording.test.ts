@@ -15,6 +15,7 @@ import { fakeCli } from './cli-fixtures.ts'
 const style = createStyle(false)
 const summaries = [
   'BSD and Widevine, notices kept with the build',
+  'BSD, notices kept with the build',
   'MPL 2.0, notices kept with the build',
   'LGPL 2.1 and BSD, notices kept with the build',
   'MIT and BSD, notices kept with the build',
@@ -29,6 +30,7 @@ test('install notice wording is exact, with only WebKit naming the notice folder
   assert.equal(installLicenceText(webkit, folders), `WebKit is open source. Its licence notices are kept with the build in ${join('/cache/browsers', 'webkit-26.6-mac-arm64', 'build', 'licenses')}; \`retest licences webkit\` prints them.`)
   const expected = [
     ['electron', 'Electron is open source; its licence notices are kept with the build, and `retest licences electron` prints them.'],
+    ['headless-shell', 'Chrome Headless Shell is open source; its licence notices are kept with the build, and `retest licences headless-shell` prints them.'],
     ['webdriveragent', 'WebDriverAgent is open source; its licence notices are kept with the build, and `retest licences webdriveragent` prints them.'],
     ['mac2', 'The macOS executor is open source; its licence notices are kept with the build, and `retest licences mac2` prints them.'],
   ] as const
@@ -76,7 +78,7 @@ test('the Windows list names the licences each Windows build carries, and no Wid
   const inspections: BuildInspection[] = pins.map(pin => ({ pin, folder: buildFolder(folders, pin), state: 'missing', problems: [] }))
   const text = renderInspections({ platform: 'win-x64', folders, inspections, json: false, style })
   assert.match(text, /^ {2}Pinned builds for Windows x64, in /m)
-  assert.deepEqual(text.split('\n').filter(line => line.includes('notices kept')).map(line => line.trim()), ['BSD, notices kept with the build', 'MPL 2.0, notices kept with the build', 'MIT and BSD, notices kept with the build'])
+  assert.deepEqual(text.split('\n').filter(line => line.includes('notices kept')).map(line => line.trim()), ['BSD, notices kept with the build', 'BSD, notices kept with the build', 'MPL 2.0, notices kept with the build', 'MIT and BSD, notices kept with the build'])
 })
 
 test('the JSON list retains every notice fact and source pointer when media is appended', () => {

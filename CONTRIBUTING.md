@@ -32,6 +32,7 @@ The integration tests launch real browsers and never skip a missing one:
 
 - `RETEST_TEST_BROWSER` is the first browser, or Google Chrome where macOS installs it.
 - `RETEST_TEST_SECOND_BROWSER` is a second, different Chromium build, such as Chrome for Testing.
+- `RETEST_TEST_HEADLESS_SHELL` is Chrome's headless shell of the pinned release, which a headless `chromium()` target runs. `node dist/cli/main.js install chromium` fetches it beside Chrome for Testing and prints its path. The example projects need it. The shell's own comparison with Chrome runs only when `RETEST_TEST_CHROME_FOR_TESTING` is set too, to Chrome for Testing of the same release, which `install chromium` also prints. The Linux image and the macOS and Windows CI set both.
 - The Firefox files need Firefox 158.0.1, on macOS or Windows x64, and the WebKit files WebKit build 2359, on macOS. They read `RETEST_TEST_FIREFOX` and `RETEST_TEST_WEBKIT`, or look where each browser installs. On macOS, `node dist/cli/main.js install firefox webkit` fetches both and prints their paths. On Windows, `node dist/cli/main.js install supervisor firefox` builds the supervisor, then fetches Firefox and prints its path.
 - On Windows, the integration files also need the supervisor: run `node dist/cli/main.js install supervisor`, or set `RETEST_SUPERVISOR_BINARY` to a build of `supervisor/`.
 - The iOS simulator and macOS files need Xcode, the simulator runtime, Automation Mode and Screen Recording. They put windows on your screen, so leave the desktop alone while they run.

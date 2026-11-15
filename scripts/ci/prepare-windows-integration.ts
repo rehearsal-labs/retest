@@ -43,6 +43,7 @@ async function prepare(folder: string, environmentFile: string, cache: string | 
   }
   const executableVariables = {
     chromium: 'RETEST_TEST_SECOND_BROWSER',
+    'headless-shell': 'RETEST_TEST_HEADLESS_SHELL',
     firefox: 'RETEST_TEST_FIREFOX',
     electron: 'RETEST_TEST_ELECTRON',
   } as const
@@ -96,7 +97,10 @@ async function prepare(folder: string, environmentFile: string, cache: string | 
     const cachedArchive = archivePath(folders, pin)
     await mkdir(dirname(cachedArchive), { recursive: true })
     await copyFile(fixture, cachedArchive, constants.COPYFILE_EXCL)
-    environment[executableVariables[engine]] = installedExecutablePath(buildFolder(folders, pin), pin)
+    const executable = installedExecutablePath(buildFolder(folders, pin), pin)
+    environment[executableVariables[engine]] = executable
+    // The shell's comparison with Chrome needs Chrome for Testing of the shell's release, which the test browser is not.
+    if (engine === 'chromium') environment['RETEST_TEST_CHROME_FOR_TESTING'] = executable
     if (engine === 'electron') environment['RETEST_TEST_ELECTRON_ARCHIVE'] = fixture
   }
   const lines = Object.entries(environment).map(([name, value]) => {

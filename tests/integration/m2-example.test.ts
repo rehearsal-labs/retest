@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
+import { headlessShellPath } from '../support/test-browser.ts'
 import { openApp } from './browser-harness.ts'
 import {
   assertSucceeded,
@@ -12,7 +13,6 @@ import {
   repositoryRoot,
   resultOf,
   runProject,
-  secondBrowserPath,
   typecheck,
   writeProject,
 } from './cli-harness.ts'
@@ -39,7 +39,7 @@ test('the example project passes against the task app, on two browsers and two e
   const root = await writeProject(t, exampleFiles())
   const run = await runProject(t, root, {
     timeouts: false,
-    env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD, RETEST_CHROMIUM: secondBrowserPath() },
+    env: { TASK_APP_URL: app.url, TASK_APP_PASSWORD, RETEST_HEADLESS_SHELL: headlessShellPath() },
   })
 
   const options = onlyEvent(run.events, 'run.started').options

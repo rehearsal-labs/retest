@@ -45,9 +45,13 @@ export function app<const App extends AppConfig>(options: App & NoExtraKeys<App,
 }
 
 /**
- * Chromium, or Chrome for Testing, from `executablePath` or the RETEST_CHROMIUM environment variable.
+ * Chromium: Chrome's headless shell for a headless run, Chrome for Testing for a shown one or with
+ * `headlessShell: false`, each the pinned build `retest install chromium` puts in Retest's cache unless
+ * RETEST_HEADLESS_SHELL or RETEST_CHROMIUM names another; or the browser at `executablePath`.
  *
- * @example chromium({ executablePath: '/opt/chromium/chrome', emulate: 'Pixel 9' })
+ * @example chromium({ emulate: 'Pixel 9' })
+ * @example chromium({ headlessShell: false })
+ * @example chromium({ executablePath: '/opt/chromium/chrome' })
  */
 export function chromium<const Options extends ChromiumOptions & AppSettings = {}>(
   options?: Options & NoExtraKeys<Options, ChromiumOptions & AppSettings>,

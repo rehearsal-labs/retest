@@ -8,10 +8,10 @@ import { findPin, pinRefusal } from '../../src/browser/builds.ts'
 // archive may be used is the macOS rule, `archiveMatchesPin` in macos-pins.ts.
 
 /** An engine Windows has an archive build of. */
-export type WindowsArchiveEngine = Extract<ArchiveEngine, 'chromium' | 'firefox' | 'electron'>
+export type WindowsArchiveEngine = Extract<ArchiveEngine, 'chromium' | 'headless-shell' | 'firefox' | 'electron'>
 
 /** The archive builds each Windows integration shard downloads and installs. WebKit does not run on Windows. */
-export const windowsArchiveEngines: readonly WindowsArchiveEngine[] = ['chromium', 'firefox', 'electron']
+export const windowsArchiveEngines: readonly WindowsArchiveEngine[] = ['chromium', 'headless-shell', 'firefox', 'electron']
 
 /**
  * The Windows x64 archive pin of `engine`, refused when it is missing or its notices are incomplete.

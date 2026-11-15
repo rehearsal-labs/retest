@@ -25,7 +25,7 @@ describe('help', () => {
       assert.equal(code, 0)
       assert.equal(stderr, '')
       assert.match(stdout, /^retest 0\.0\.0\n/)
-      for (const name of ['init [options]', 'doctor [options]', 'install <engine...>', 'licences [engine]', 'list [files...]', 'run [files...]', 'inspect <run-folder>', 'report <run-folder>', 'help [command]']) {
+      for (const name of ['init [options]', 'doctor [options]', 'install [engine...]', 'licences [engine]', 'list [files...]', 'run [files...]', 'inspect <run-folder>', 'report <run-folder>', 'help [command]']) {
         assert.ok(stdout.includes(`  ${name}`), `${name} is missing from:\n${stdout}`)
       }
       assert.deepEqual(listedOptions(stdout), ['help', 'version'])

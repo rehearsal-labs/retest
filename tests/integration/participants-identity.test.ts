@@ -40,9 +40,9 @@ test('${name}', async ({ page }) => {
 })
 `
 
-function config(url: string, target: string, options: string): string {
+function config(url: string, target: string, options: string, settings = ''): string {
   return configSource(`{
-  apps: { web: ${target}({ baseUrl: ${JSON.stringify(url)} }) },
+  apps: { web: ${target}({ baseUrl: ${JSON.stringify(url)}${settings} }) },
   evaluation: { judges: { fake: { adapter: ${JSON.stringify(fakeJudge)}, options: ${options}, accepts: ['text', 'images'] } } },
 }`)
 }
@@ -94,7 +94,8 @@ test('the bundle and configuration fingerprints change with a helper, a budget o
   const option = executionOf(await cliRun(t, root))
   assert.equal(option.configuration.sha256, helper.configuration.sha256, 'a judge this test never uses is not part of its configuration')
 
-  writeFileSync(join(root, 'retest.config.ts'), config(app.url, 'chromium', `{ tag: 'second' }`))
+  // headlessShell: false runs the browser RETEST_CHROMIUM names, where a headless chromium() target runs the shell.
+  writeFileSync(join(root, 'retest.config.ts'), config(app.url, 'chromium', `{ tag: 'second' }`, ', headlessShell: false'))
   const target = executionOf(await cliRun(t, root, budgets(), { RETEST_CHROMIUM: secondBrowserPath() }))
   assert.notEqual(target.configuration.sha256, option.configuration.sha256, 'a changed target changes the configuration')
   assert.equal(target.sessions[0]?.version, browserVersion(secondBrowserPath()))

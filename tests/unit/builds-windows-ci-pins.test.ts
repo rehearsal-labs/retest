@@ -6,8 +6,8 @@ import { findPin } from '../../src/browser/builds.ts'
 
 // The pins a Windows integration shard prepares, and the key of the cache that keeps their archives.
 
-test('a Windows shard prepares Chromium, Firefox and Electron, and the archive key names every pinned archive build', () => {
-  assert.deepEqual(windowsArchiveEngines, ['chromium', 'firefox', 'electron'])
+test('a Windows shard prepares Chromium, its headless shell, Firefox and Electron, and the archive key names every pinned archive build', () => {
+  assert.deepEqual(windowsArchiveEngines, ['chromium', 'headless-shell', 'firefox', 'electron'])
   const { archivesKey } = windowsSetupPins()
   for (const engine of windowsArchiveEngines) {
     const pin = findPin(engine, 'win-x64')

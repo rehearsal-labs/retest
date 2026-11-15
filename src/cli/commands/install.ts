@@ -23,13 +23,14 @@ const options = {
 
 export const installCommand: Command = {
   name: 'install',
-  usage: '<engine...> | --list [options]',
+  usage: '[engine...] | --list [options]',
   summary: 'Install pinned browser builds, or list what this machine holds',
   description: [
     'Downloads the pinned build of each engine named, checks its size and SHA-256 against the pin before it unpacks',
     'anything, checks that the build carries every licence notice the pin names, and records it in the cache:',
     '~/Library/Caches/retest on macOS, $XDG_CACHE_HOME/retest or ~/.cache/retest on Linux, %LOCALAPPDATA%\\retest on Windows.',
-    'Nothing is downloaded unless an engine is named here: run, doctor and --list never download.',
+    'With no engine named, installs chromium. chromium installs Chrome for Testing and its headless shell, which a',
+    'headless chromium() target runs. Nothing is downloaded unless install runs: run, doctor and --list never download.',
     'A pin with no checksum, or a build published without the notices it must carry, is refused before anything is',
     'fetched. The native executors are built on this Mac from their pinned commits, from the checkouts a native run',
     'builds from; nothing is cloned. install media builds the shipped Rust crate with cargo --locked.',
@@ -113,16 +114,17 @@ export const installCommand: Command = {
   },
 }
 
+// A headless chromium() target runs the headless shell and a shown one Chrome for Testing, so installing Chromium
+// installs both, and an install that names nothing installs what a run with no executablePath needs.
 function readEngines(names: readonly string[]): (BuildEngine | 'media' | 'supervisor')[] {
-  if (names.length === 0) throw new UsageError(`Name the engines to install: ${listWords(installEngines, 'or')}. Or list them with --list.`)
   const engines: (BuildEngine | 'media' | 'supervisor')[] = []
-  for (const name of names) {
+  for (const name of names.length === 0 ? ['chromium'] : names) {
     const engine = installEngines.find((candidate) => candidate === name)
     if (engine === undefined) {
       const guess = suggest(name, installEngines)
       throw new UsageError(`Unknown engine ${name}.${guess === undefined ? ` The engines are ${listWords(installEngines, 'and')}.` : ` Did you mean ${guess}?`}`)
     }
-    if (!engines.includes(engine)) engines.push(engine)
+    for (const each of engine === 'chromium' ? (['chromium', 'headless-shell'] as const) : [engine]) if (!engines.includes(each)) engines.push(each)
   }
   // On Windows every other install runs its tools in a job the supervisor makes, so the supervisor is built first.
   return engines.includes('supervisor') ? ['supervisor', ...engines.filter((engine) => engine !== 'supervisor')] : engines

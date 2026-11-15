@@ -61,7 +61,7 @@ describe("doctor's builds rows", () => {
       { group: 'builds', subject: 'chromium', ok: true, text: `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}`, detail: executablePath },
     ])
     assert.deepEqual(await rows(config, { ...homeEnvironment(home), RETEST_CHROMIUM: '/elsewhere' }, pins), await rows(config, homeEnvironment(home), pins), "the target's own path wins over RETEST_CHROMIUM")
-    const fromVariable = loadedConfig(project, { apps: { web: chromium() } })
+    const fromVariable = loadedConfig(project, { apps: { web: chromium({ headlessShell: false }) } })
     assert.equal((await rows(fromVariable, { ...homeEnvironment(home), RETEST_CHROMIUM: executablePath }, pins))[0]?.text, `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}`)
   })
 
@@ -80,22 +80,22 @@ describe("doctor's builds rows", () => {
     assert.deepEqual(await rows(missingPath, homeEnvironment(home), pins), [], "a path with nothing at it is left to the target's own row")
   })
 
-  test('point a chromium() target with no path at the installed build, or say it is not installed and how to install it', async () => {
+  test('point a chromium() target that runs Chrome for Testing with no path at the installed build, or say it is not installed and how to install it', async () => {
     const { home, folders } = temporaryCache()
-    const config = loadedConfig(project, { apps: { web: chromium() } })
+    const config = loadedConfig(project, { apps: { web: chromium({ headlessShell: false }) } })
     assert.deepEqual(await rows(config, homeEnvironment(home)), [
-      { group: 'builds', subject: 'chromium', ok: false, text: 'Chrome for Testing 1.0.0 is not installed, and the target names no build', fix: 'Run npx retest install chromium, then give the target its executablePath or set RETEST_CHROMIUM.' },
+      { group: 'builds', subject: 'chromium', ok: false, text: 'Chrome for Testing 1.0.0 is not installed, and the target names no build', fix: 'Run npx retest install chromium.' },
     ])
     const real = await checkBuilds(config, homeEnvironment(home), { platform: 'mac-arm64' })
     assert.deepEqual(real, [
-      { group: 'builds', subject: 'chromium', ok: false, text: 'Chrome for Testing 153.0.8010.12 is not installed, and the target names no build', fix: 'Run npx retest install chromium, then give the target its executablePath or set RETEST_CHROMIUM.' },
+      { group: 'builds', subject: 'chromium', ok: false, text: 'Chrome for Testing 153.0.8010.12 is not installed, and the target names no build', fix: 'Run npx retest install chromium.' },
     ], 'with the real pin, the row names the usable install command')
     const pins = pinsFor()
     const [chromiumPin] = pins
     assert.ok(chromiumPin?.kind === 'archive')
     const { folder } = await installStandIn(folders, chromiumPin, archive)
     assert.deepEqual(await rows(config, homeEnvironment(home), pins), [
-      { group: 'builds', subject: 'chromium', ok: true, text: `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}; the target runs it once its executablePath, or RETEST_CHROMIUM, names this path`, detail: installedExecutablePath(folder, chromiumPin) },
+      { group: 'builds', subject: 'chromium', ok: true, text: `Chrome for Testing 1.0.0, installed by Retest · sha256 ${archive.sha256.slice(0, 12)}; the target runs it, since it names no executablePath`, detail: installedExecutablePath(folder, chromiumPin) },
     ])
     assert.deepEqual(await rows(config, {}, pins), [], 'without a home folder there is no cache to read')
   })
@@ -148,7 +148,7 @@ describe("doctor's builds rows", () => {
     const chromiumFolder = (await installStandIn(folders, chromiumPin, archive)).folder
     const webkitFolder = (await installStandIn(folders, webkitPin, archive)).folder
     const webkitPath = installedExecutablePath(webkitFolder, webkitPin)
-    const config = loadedConfig(project, { apps: { web: app({ targets: { chromium: chromium(), webkit: { browser: 'webkit', executablePath: webkitPath } } }) } })
+    const config = loadedConfig(project, { apps: { web: app({ targets: { chromium: chromium({ headlessShell: false }), webkit: { browser: 'webkit', executablePath: webkitPath } } }) } })
     const checks = await rows(config, homeEnvironment(home), pins, () => true)
     assert.deepEqual(checks, [
       { group: 'builds', subject: 'chromium', ok: false, text: `Chrome for Testing 1.0.0 is not installed: ${chromiumFolder} holds a build Retest did not install or check, and no run launches it`, fix: `Remove ${chromiumFolder}. npx retest install chromium refuses it: No checksum is pinned for the archive of Chrome for Testing 1.0.0 for macOS arm64, so Retest has nothing to check a download against and downloads nothing. Give the target an executablePath instead.` },

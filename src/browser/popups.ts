@@ -1,5 +1,6 @@
 import type { CdpConnection } from './cdp/connection.ts'
 import type { CdpSession } from './cdp/session.ts'
+import type { WindowKind } from './default-window.ts'
 import type { PageDialogs, UnwaitedDialog } from './dialogs.ts'
 import type { Dispatch } from './dispatch.ts'
 import type { PageNavigation, WebSession } from './contract.ts'
@@ -11,6 +12,7 @@ import { parse, s } from '../protocol/schema.ts'
 import { BrowserError } from './browser-error.ts'
 import { readProtocol, request, sendOptions } from './cdp-results.ts'
 import { CdpClosedError, CdpDisconnectedError, CdpProtocolError } from './cdp/errors.ts'
+import { sizedWindow } from './default-window.ts'
 import { keptByBeforeunload } from './dialogs.ts'
 import { Listeners } from './listeners.ts'
 
@@ -87,6 +89,23 @@ const attachedSchema = s.object({
 
 const ignore = (): void => {}
 
+const windowOpenSchema = s.object({ url: s.string(), userGesture: s.boolean(), windowFeatures: s.array(s.string()) })
+
+/**
+ * How the browser treats a window its page opens with no click or key press behind it, which Chrome's popup blocker
+ * refuses: `chrome` blocks it itself, and Chrome's headless shell, which has no popup blocker, opens it, so `shell`
+ * has Retest close it before it runs, as Chrome would never have opened it.
+ */
+export type PopupGestures = 'chrome' | 'shell'
+
+/**
+ * The failure of a wait for a page that the page tried to open with no click behind it, which Chrome blocks for the
+ * people who use it, so no page opens.
+ */
+export function blockedWindowFailure(): Failure {
+  return { class: 'not_actionable', message: 'The page opened a window without a click or a key press behind it, and Chrome blocks such a window for the people who use it, so no page opened.' }
+}
+
 // How long a page nobody waited for may take to set up; past it, the page is let run and let go.
 const unwaitedSetupMs = 10_000
 
@@ -143,9 +162,10 @@ export type PagePopupsOptions = {
   readonly home: PopupHome
   /**
    * Opens the page of a popup from the session the browser attached it with, held, as its opener was opened, and lets
-   * it run. `ready` is given the page before anything is sent to it.
+   * it run. `ready` is given the page before anything is sent to it. `window` says which recorded window it is given: a
+   * tab's, or none for a window the page opened with a size.
    */
-  readonly open: (session: CdpSession, home: PopupHome, deadline: Deadline, ready: (page: WebSession) => void) => Promise<WebSession>
+  readonly open: (session: CdpSession, home: PopupHome, deadline: Deadline, ready: (page: WebSession) => void, window: WindowKind) => Promise<WebSession>
   /** Receives errors thrown by listeners of a popup's navigations. */
   readonly onListenerError: (error: unknown) => void
   /** Tells the opener's dialogs of a dialog Retest answered in a popup nothing waited for. */
@@ -155,6 +175,12 @@ export type PagePopupsOptions = {
    * it, the popup is its page as Retest set it up.
    */
   readonly present?: ((page: WebSession, targetId: string) => WebSession) | undefined
+  /** The opening page's session, which tells each window it opens, with whether a click or key press opened it. */
+  readonly session?: CdpSession | undefined
+  /** How the browser treats a window opened with no click: Chrome's, which blocks it, or the shell's, which does not. */
+  readonly gestures?: PopupGestures | undefined
+  /** Adds a line to the browser's log, where a window Chrome would have blocked is recorded. */
+  readonly note?: ((line: string) => void) | undefined
 }
 
 /** A wait armed for a popup: how it settles, how it is taken once a popup came, and how long the popup's setup may take. */
@@ -171,12 +197,17 @@ export class PagePopups implements PopupOpener {
   readonly #unregister: () => void
   // The pages this page opened while nothing waited, kept until this page is disposed.
   readonly #unwaited = new Set<WebSession>()
+  // Each window the page opened that the browser has not attached yet, in the order the page opened them, with whether a
+  // click was behind it and whether it asked for a size: Chrome tells a window to its opener before it attaches the
+  // window's target. Chrome holds only those it opens, and the shell all of them.
+  readonly #opening: { readonly allowed: boolean; readonly sized: boolean }[] = []
   #waiter: Waiter | undefined
   #lostReason: string | undefined
 
   constructor(options: PagePopupsOptions) {
     this.#options = options
     this.#unregister = options.home.watch.register(options.home.targetId, this)
+    if (options.gestures !== undefined) options.session?.on('Page.windowOpen', (params) => this.#windowOpened(params))
   }
 
   /**
@@ -220,15 +251,46 @@ export class PagePopups implements PopupOpener {
    */
   claim({ sessionId, targetId }: HeldTarget): boolean {
     if (this.#lostReason !== undefined) return false
+    // A window the shell opened that Chrome would have blocked is closed before it loads anything, as Chrome never opens
+    // it. A window no opening was told of, as one a frame in another process opens, is taken as a tab.
+    const opening = this.#options.gestures === undefined ? undefined : this.#opening.shift()
+    if (this.#options.gestures === 'shell' && opening?.allowed === false) {
+      void this.#closeBlocked(sessionId, targetId)
+      return true
+    }
+    const window: WindowKind = opening?.sized === true ? 'none' : 'tab'
     const session = this.#options.connection.adopt(sessionId)
     const waiter = this.#waiter
     if (waiter === undefined) {
-      void this.#keepUnwaited(session, targetId)
+      void this.#keepUnwaited(session, targetId, window)
       return true
     }
     waiter.take()
-    void this.#setUp(session, targetId, waiter)
+    void this.#setUp(session, targetId, waiter, window)
     return true
+  }
+
+  // A window that shares its opener's renderer holds the opener's call to window.open until it runs, so it is let run,
+  // with every request it would make held first, then closed: the opener's script goes on, and the window's first
+  // document is never asked for, as Chrome never asks for it.
+  async #closeBlocked(sessionId: string, targetId: string): Promise<void> {
+    const { connection } = this.#options
+    const session = connection.adopt(sessionId)
+    await session.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }).catch(ignore)
+    await session.send('Runtime.runIfWaitingForDebugger').catch(ignore)
+    await connection.send('Target.closeTarget', { targetId }).catch(ignore)
+  }
+
+  // Chrome blocks a window opened with no click behind it, and opens none, so a wait for one fails at once, on Chrome and
+  // on the shell alike, and the browser's log records it.
+  #windowOpened(params: unknown): void {
+    const { userGesture, url, windowFeatures } = readProtocol(windowOpenSchema, params, { method: 'Page.windowOpen' })
+    if (userGesture || this.#options.gestures === 'shell') this.#opening.push({ allowed: userGesture, sized: sizedWindow(windowFeatures) })
+    if (userGesture) return
+    const opened = URL.parse(url)
+    const address = opened === null ? 'a window' : `${opened.origin}${opened.pathname}`
+    this.#options.note?.(`the page opened ${address} without a click or a key press behind it; Chrome blocks such a window${this.#options.gestures === 'shell' ? ', so Retest closed it in the headless shell before it ran' : ''}`)
+    this.#waiter?.settle({ ok: false, failure: blockedWindowFailure() })
   }
 
   /** Takes a new page the browser names no opener for, only for the wait armed: without one, it is left to run on. */
@@ -253,14 +315,14 @@ export class PagePopups implements PopupOpener {
 
   // A page nothing waited for is set up as a waited one is, so its dialogs are answered, and each is told as this
   // page's. One Retest could not set up is let run and let go, as before the watch.
-  async #keepUnwaited(session: CdpSession, targetId: string): Promise<void> {
+  async #keepUnwaited(session: CdpSession, targetId: string, window: WindowKind): Promise<void> {
     const home = { watch: this.#options.home.watch, targetId }
     const ready = (page: WebSession): void => {
       this.#unwaited.add(page)
       page.onUnwaitedDialog?.((dialog) => this.#options.forward({ ...dialog, popup: true }))
     }
     try {
-      const page = await this.#options.open(session, home, new Deadline(unwaitedSetupMs), ready)
+      const page = await this.#options.open(session, home, new Deadline(unwaitedSetupMs), ready, window)
       void endOf(this.#options.connection, session).then(() => this.#unwaited.delete(page))
     } catch {
       session.send('Runtime.runIfWaitingForDebugger').catch(ignore)
@@ -270,7 +332,7 @@ export class PagePopups implements PopupOpener {
 
   // A popup Retest could not set up is let go, so the app's own flow goes on, and the wait fails with why. Its navigations
   // are kept from the first, since it runs before whoever waits for it can listen.
-  async #setUp(session: CdpSession, targetId: string, waiter: Waiter): Promise<void> {
+  async #setUp(session: CdpSession, targetId: string, waiter: Waiter, window: WindowKind): Promise<void> {
     const { connection } = this.#options
     const gone = endOf(connection, session)
     const home = { watch: this.#options.home.watch, targetId }
@@ -287,7 +349,7 @@ export class PagePopups implements PopupOpener {
       return heard.add(listener)
     }
     try {
-      const opened = await this.#options.open(session, home, new Deadline(waiter.setupMs), ready)
+      const opened = await this.#options.open(session, home, new Deadline(waiter.setupMs), ready, window)
       const page = this.#options.present?.(opened, targetId) ?? opened
       const closed = (): boolean => session.detachReason !== undefined && connection.closeReason === undefined
       waiter.settle({ ok: true, popup: { page, follow, first: (timeoutMs) => firstNavigation(follow, gone, timeoutMs), gone, closed } })

@@ -2,6 +2,8 @@ import type { CdpConnection } from './cdp/connection.ts'
 import type { CdpSession } from './cdp/session.ts'
 import type { ChromiumProcess } from './chromium-process.ts'
 import type { NewPageOptions, ProxyOptions, WebRuntime, WebRuntimeIdentity, WebSession } from './contract.ts'
+import type { RecordedWindow } from './default-window.ts'
+import type { ShellParity } from './shell-parity.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -16,6 +18,8 @@ import { BrowserDownloads } from './downloads.ts'
 import { Listeners } from './listeners.ts'
 import { ChromiumPage } from './page.ts'
 import { PopupWatch } from './popups.ts'
+import { recordedWindow } from './default-window.ts'
+import { grantChromeDefaults, shellParity } from './shell-parity.ts'
 import { restoreState } from './storage-state.ts'
 
 /** What `Browser.getVersion` said, split into a product name and its version, with the source revision when it gave one. */
@@ -28,6 +32,10 @@ export type BrowserOptions = {
   version: BrowserVersion
   /** Receives errors thrown by listeners, which must not reach the connection or the process. */
   onListenerError: (error: unknown) => void
+  /** Adds a line to the browser's log. */
+  note?: ((line: string) => void) | undefined
+  /** Whether the browser was started headless: only a headless page is given the window Retest 0.4.2 gave it. */
+  headless?: boolean | undefined
 }
 
 const contextSchema = s.object({ browserContextId: s.string() })
@@ -53,6 +61,10 @@ export class ChromiumBrowser implements WebRuntime {
   readonly #disconnects: Listeners<string>
   readonly #popups: PopupWatch
   readonly #downloads: BrowserDownloads
+  // Present for Chrome's headless shell alone, as the product it names itself says.
+  readonly #parity: ShellParity | undefined
+  readonly #window: RecordedWindow | undefined
+  readonly #note: ((line: string) => void) | undefined
   readonly #cleanupProblems: string[] = []
   #disconnectReason: string | undefined
   #closeRequested = false
@@ -73,6 +85,9 @@ export class ChromiumBrowser implements WebRuntime {
     this.#disconnects = new Listeners(options.onListenerError)
     this.#popups = new PopupWatch(options.connection)
     this.#downloads = new BrowserDownloads(options.connection, options.onListenerError)
+    this.#parity = shellParity(options.version)
+    this.#window = options.headless === true ? recordedWindow(options.version) : undefined
+    this.#note = options.note
     this.#connection.onDisconnect((reason) => {
       // A pipe that closes is often a browser beginning to exit; its helpers are recorded while it may still be their parent.
       // The reading does not hold the thread: on a loaded host one held to a second failed the close of a browser that ended cleanly.
@@ -119,6 +134,7 @@ export class ChromiumBrowser implements WebRuntime {
       const [, { restoredOrigins, target, session }] = await Promise.all([
         this.#downloads.configure(browserContextId, options.downloads, deadline),
         this.#openTarget(context, storageState, deadline),
+        ...(this.#parity === undefined ? [] : grantChromeDefaults(this.#connection, browserContextId, this.#parity, deadline)),
       ])
       const pageOptions = {
         connection: this.#connection,
@@ -132,6 +148,11 @@ export class ChromiumBrowser implements WebRuntime {
         onListenerError: this.#onListenerError,
         popups: { watch: this.#popups, targetId: target.targetId },
         downloads: options.downloads === undefined ? undefined : this.#downloads,
+        parity: this.#parity,
+        window: this.#window,
+        // Chrome blocks a window opened with no click itself; the shell opens it, and Retest closes it.
+        popupGestures: this.#parity === undefined ? 'chrome' as const : 'shell' as const,
+        note: this.#note,
       }
       return await ChromiumPage.open(pageOptions, deadline)
     } catch (error) {

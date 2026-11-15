@@ -55,6 +55,7 @@ const appSettings = { baseUrl: s.optional(s.string()), start: s.optional(startSc
 const appSettingsSchema = s.object(appSettings)
 
 const executablePath = s.optional(s.string())
+const headlessShell = s.optional(s.boolean())
 // An Electron app has no screen to emulate and no proxy of Retest's: its windows are its own.
 const electronShape = {
   browser: s.literal('electron'),
@@ -64,7 +65,7 @@ const electronShape = {
   userDataDir: s.optional(s.string()),
 }
 const targetSchema = s.discriminatedUnion('browser', [
-  s.object({ browser: s.literal('chromium'), executablePath, ...targetSettings }),
+  s.object({ browser: s.literal('chromium'), executablePath, headlessShell, ...targetSettings }),
   s.object({ browser: s.literal('chrome'), channel, ...targetSettings }),
   s.object({ browser: s.literal('edge'), channel, ...targetSettings }),
   s.object({ browser: s.literal('firefox'), executablePath, ...targetSettings }),
@@ -72,7 +73,7 @@ const targetSchema = s.discriminatedUnion('browser', [
   s.object(electronShape),
 ])
 const standaloneTargetSchema = s.discriminatedUnion('browser', [
-  s.object({ browser: s.literal('chromium'), executablePath, ...targetSettings, ...appSettings }),
+  s.object({ browser: s.literal('chromium'), executablePath, headlessShell, ...targetSettings, ...appSettings }),
   s.object({ browser: s.literal('chrome'), channel, ...targetSettings, ...appSettings }),
   s.object({ browser: s.literal('edge'), channel, ...targetSettings, ...appSettings }),
   s.object({ browser: s.literal('firefox'), executablePath, ...targetSettings, ...appSettings }),
@@ -271,9 +272,11 @@ function loadBrowserTarget(name: string, target: ParsedBrowserTarget, path: Path
   const proxy = target.proxy === undefined ? undefined : loadProxy(target.proxy, [...path, 'proxy'], problems)
   const base = { name, headless: target.headless ?? true, ...emulate, ...(proxy === undefined ? {} : { proxy }) }
   if (target.browser === 'chrome' || target.browser === 'edge') return { ...base, browser: target.browser, channel: target.channel ?? 'stable' }
-  if (target.executablePath === undefined) return { ...base, browser: target.browser }
-  problems.checkFilled([...path, 'executablePath'], target.executablePath, 'a path')
-  return { ...base, browser: target.browser, executablePath: resolve(folder, target.executablePath) }
+  if (target.executablePath !== undefined) problems.checkFilled([...path, 'executablePath'], target.executablePath, 'a path')
+  const executable = target.executablePath === undefined ? {} : { executablePath: resolve(folder, target.executablePath) }
+  if (target.browser !== 'chromium' || target.headlessShell === undefined) return { ...base, browser: target.browser, ...executable }
+  if (target.headlessShell && target.headless === false) problems.add([...path, 'headless'], "Chrome's headless shell cannot show a window, so a target with headlessShell: true takes no headless: false")
+  return { ...base, browser: 'chromium', headlessShell: target.headlessShell, ...executable }
 }
 
 // Retest gives the app its debugging pipe and its data folder. Chromium reads the switches after the app's path too,
