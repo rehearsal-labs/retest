@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import fs, { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { retestEventSchema } from '../../src/protocol/events.ts'
@@ -39,7 +39,8 @@ function fileAccess(t: TestContext, folder: string): { take(): { reads: string[]
   })
   const within = (calls: readonly { arguments: readonly unknown[] }[]): string[] => calls
     .map((call) => call.arguments[0])
-    .flatMap((path) => (typeof path === 'string' && path.startsWith(`${folder}/`) ? [path.slice(folder.length + 1)] : []))
+    // The path in the folder with forward slashes, as the assertions name it on every system.
+    .flatMap((path) => (typeof path === 'string' && path.startsWith(`${folder}${sep}`) ? [path.slice(folder.length + 1).split(sep).join('/')] : []))
     .sort()
   return {
     take: () => {

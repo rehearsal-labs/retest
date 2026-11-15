@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { describe, test } from 'node:test'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { tempProject } from '../support/project.ts'
 import { rootDir } from '../support/run-harness.ts'
@@ -19,7 +19,8 @@ registerHooks({ load(url, context, next) { loaded.push(url); return next(url, co
 process.on('exit', () => writeFileSync(process.env.LOADED_MODULES, loaded.join('\\n')))
 `
 
-// The modules of Retest's own source the CLI loaded for one command line, relative to the repository.
+// The modules of Retest's own source the CLI loaded for one command line, relative to the repository, with forward
+// slashes on every system.
 async function loadedFor(cwd: string, args: readonly string[]): Promise<string[]> {
   const folder = tempFolder('cli-start-up-')
   const hookFile = join(folder, 'hook.mjs')
@@ -31,7 +32,7 @@ async function loadedFor(cwd: string, args: readonly string[]): Promise<string[]
     if (!(error instanceof Error && 'code' in error && typeof error.code === 'number')) throw error
   })
   const source = pathToFileURL(join(rootDir, 'src')).href
-  return readFileSync(list, 'utf8').split('\n').filter((url) => url.startsWith(source)).map((url) => relative(rootDir, new URL(url).pathname))
+  return readFileSync(list, 'utf8').split('\n').filter((url) => url.startsWith(source)).map((url) => relative(rootDir, fileURLToPath(url)).split(sep).join('/'))
 }
 
 const runner = ['src/runner/run.ts', 'src/runner/run-session.ts', 'src/browser/launch.ts', 'src/config/load.ts', 'src/runner/app-server.ts']
