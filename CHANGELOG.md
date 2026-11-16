@@ -23,6 +23,7 @@ Headless Chromium runs on Chrome's headless shell, and a run is about two and a 
 
 - **A run's memory no longer grows with every test.** Every wait that ends when the run is stopped stayed attached to the run's stop, which never comes in a run nobody stops, and kept each finished test's page alive: about 33 KB a test. The reporters also kept every event of every test. After 5,000 tests the runner's heap was 44 MB against 203 MB, and a full collection paused it for 30 ms against 245 ms. Every reporter's output is the same; the HTML report now reads a run's events back from `events.jsonl` as it ends.
 - **A wait for a window the page opened with no click behind it fails at once and says why**, on Chrome for Testing too, where it used to run out of its time.
+- **A test stopped while a check was looking fails with the stop.** A run stopped with Ctrl+C, or a test that ran out of its time, while a check waited for the page could report the check as failed on its look before, and the test as a failed check. The check and the test now fail as interrupted, or as timed out, and what the check last saw is kept beside it.
 
 ## 0.4.2
 
