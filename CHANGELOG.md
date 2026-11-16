@@ -2,6 +2,20 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## 0.5.1
+
+Fixes found while releasing 0.5.0, on GitHub's Linux, macOS and Windows machines.
+
+### Fixed
+
+- **A second Ctrl+C no longer leaves a browser's profile folder behind.** The exit sent its kill and waited one second, in all, for the browser's processes to be gone; when the reading of the process table had not finished by then, the whole profile stayed in the temporary folder, as it did in 2 of 30 hard quits of a run on Linux x64. The wait for the processes to be gone now has five seconds of its own, so a quit can take that long for a browser that is slow to end. A profile made a moment before its browser starts is removed too. With the fix, 40 of 40 hard quits left nothing, 20 of them beside two busy processes per CPU.
+- **A command that runs out of its test's time fails with the test's timeout.** A `goto` cut to the time its test had left could fail a moment before the test's own timer, and the test then failed with the command's words, "did not finish loading within 486 ms". It now fails as every timed out test does: "The test ran longer than its 500 ms budget. It was waiting for ...". The action's event keeps what the page answered.
+
+### Known
+
+- **On Windows, with every CPU busy, a killed Chrome can hold its profile folder for tens of seconds.** Retest ends the browser's job within a fifth of a second, but the folder refuses removal until Windows has finished ending the processes: from 20 ms to more than 30 s in the probe. The run says so, as a cleanup failure with exit code 2, and the folder stays in the temporary folder. With half the CPUs busy every run cleaned up.
+- **On WebKit, a popup whose `beforeunload` handler answers slowly is closed without its dialog.** The compatibility guide's dialog section has the numbers.
+
 ## 0.5.0
 
 Headless Chromium runs on Chrome's headless shell, and a run is about two and a half times as fast. Each entry says where it was measured or checked.

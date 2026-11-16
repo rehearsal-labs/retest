@@ -460,7 +460,7 @@ export type EventBody =
             owner: string
             /** How many sessions the attempt holds, one for each of its apps. */
             sessions: number
-            /** How long it waited for them, which no budget of the test counts. 0 when they were free. */
+            /** How long it waited for them, which no budget of the test counts. When they were free it is the time the request itself took: 0, or a millisecond or two on a busy machine. */
             waitedMs: number
             /** The sessions active once these were granted, for the owner and on the whole host, these included. */
             active: { owner: number; host: number }
