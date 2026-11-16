@@ -87,7 +87,7 @@ const known: Readonly<Record<string, number>> = {
   'matrix-outcomes.test.ts': 2,
   'matrix-reporting.test.ts': 1,
   'matrix-selection.test.ts': 1,
-  'matrix-targets.test.ts': 2,
+  'matrix-targets.test.ts': 1,
   'native-capture-deadline-fixture.ts': 4,
   'native-diagnostics-wired.test.ts': 1,
   'native-diagnostics.test.ts': 2,

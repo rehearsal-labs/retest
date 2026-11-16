@@ -37,9 +37,12 @@ for (const [mode, reason] of [
   ['disabled', /it is disabled/],
   ['readonly', /it is read-only/],
 ] as const) {
+  // The fill is the first look at a page in a browser just launched. On GitHub's macOS runner no look answered within a
+  // 500 ms budget, and a fill that never saw the field can only say its time ran out. Saying why the field cannot be
+  // filled is the proof, so the fill has the budget a run gives every action.
   test(`${mode} field: fill fails clearly and the field keeps its value`, async (t) => {
     const app = await openApp(t, { mode })
-    const run = await runRetest(t, { files: [scenario('locked-field')], baseUrl: app.url, timeouts: budgets({ action: 500 }) })
+    const run = await runRetest(t, { files: [scenario('locked-field')], baseUrl: app.url, timeouts: budgets() })
 
     assert.equal(run.exit.code, 1)
     const failed = onlyTest(run)
