@@ -181,6 +181,8 @@ type InFlight = {
   startedAt: number
   /** The time the parent gave the command: the smallest of the action's budget, the call's own and the test's time left. */
   timeoutMs: number
+  /** Whether the test's time left was that smallest: then the command's time running out is the test's. */
+  testBound: boolean
   /** Settles once the page has answered. It exists before the page is called, which may lose its browser at once. */
   done: PromiseWithResolvers<void>
   /** Stops the page's work on the command when the test is revoked, with the revocation as its reason. */
@@ -493,6 +495,7 @@ export class RunningTest {
     // by the call's own timeout and by what the test has left, never lengthened by either.
     const own = message.callTimeoutMs === undefined ? [] : [message.callTimeoutMs]
     const asked = smallestBudget(message.timeoutMs, this.#budgetOf(message.command), ...own)
+    const testBound = deadline !== undefined && deadline.remainingMs <= asked
     const timeoutMs = deadline === undefined ? asked : smallestBudget(asked, deadline.remainingMs)
     this.#stepId = message.stepId
     const commandToken = this.#sent.size + 1
@@ -505,6 +508,7 @@ export class RunningTest {
       navigations: this.#navigations.waiting(message.app),
       startedAt: monotonicClock(),
       timeoutMs,
+      testBound,
       done: Promise.withResolvers(),
       stop: new AbortController(),
       pageAnswer: undefined,
@@ -552,6 +556,10 @@ export class RunningTest {
     } catch (error) {
       result = thrownResult(command, error)
     }
+    // A command given only the time its test had left, whose time ran out, ran out of the test's: the test stops with
+    // its own timeout, as its timer stops it, before the page's answer goes anywhere. The two clocks end together, and
+    // the page's can answer first; the failure must not depend on which.
+    if (entry.testBound && !result.ok && result.failure.class === 'timeout') await this.#testTimeUp()
     // A picker nobody waited for is answered by what this test file can call.
     result = withPickerAdvice(result, this.#options.playwright === true ? playwrightPickerAdvice : testPickerAdvice)
     // A dialog the page answered while the command ran is named in the failure, its text hidden as page text is.
@@ -1060,6 +1068,17 @@ export class RunningTest {
     if (deadline === undefined || this.#report !== undefined || this.#revocation !== undefined) return
     if (deadline.reached) return this.#runOutOfTime()
     this.#testTimer = setTimeout(() => this.#armTestTimer(), deadline.waitToEndMs)
+  }
+
+  // Waits for the test's own deadline, which can come up to a millisecond after that of a command cut to the time left,
+  // whose budget is whole milliseconds rounded down, and runs the test out of time, unless it ended or stopped meanwhile.
+  async #testTimeUp(): Promise<void> {
+    const deadline = this.#deadline
+    if (deadline === undefined) return
+    while (!deadline.reached && this.#report === undefined && this.#revocation === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, deadline.waitToEndMs)))
+    }
+    this.#runOutOfTime()
   }
 
   #runOutOfTime(): void {
