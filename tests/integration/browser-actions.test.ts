@@ -985,7 +985,10 @@ test('the wheel turned at the centre of the viewport scrolls the page, which loa
   const { app, page, facts } = await scrollPage(t)
   assert.equal((await observe(page, 'items-count')).text, '20')
   assert.deepEqual(await scroll(page, undefined, { y: 5000 }), { ok: true, kind: 'scroll', page: facts })
-  await observeUntil(page, 'items-count', (seen) => seen.text === '30')
+  const items = (await lastLook(page, 'items-count', (seen) => seen.text === '30', defaultTimeouts.assertion)).text
+  // A feed that did not grow says what the page heard and what the server counted, so a wheel the page never heard is
+  // told apart from a load it never asked for.
+  assert.equal(items, '30', `the page heard the wheels "${(await observe(page, 'wheels-heard')).text ?? ''}" and the server counted ${app.loads()} loads`)
   assert.equal(app.loads(), 1)
   assert.match((await observe(page, 'wheels-heard')).text ?? '', /^[^ ]+$/, 'the page heard one wheel')
 })

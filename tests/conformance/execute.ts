@@ -774,8 +774,22 @@ function checkFact(fact: Fact, context: FactContext): string[] {
   }
 }
 
+/**
+ * How late past its time a check whose looks the parent served may give up, in all. A check's own lateness is two
+ * parts. The test process's loop sends its last look at the deadline and cuts every pause and wait to it, which
+ * tests/unit/assertions-looks.test.ts holds exactly on a clock of its own. The engine's part is how long the parent
+ * takes to serve a look, its wait for a change cut to the time left, and every look it served is held to the late
+ * bound. What is left between the last look and the give-up is the answer's trip back and the test process's own
+ * timers, which a stalled macOS runner once stretched by 450 ms on Firefox, while in nine runs of the workflow group,
+ * on an idle and on a loaded machine, each of their 18 checks gave up within 16 ms of its deadline. An uncut 500 ms
+ * poll, the regression the late bound is for, is the same size as that stall, so no single bound tells them apart: the
+ * give-up is held to a second past its time, as the test budget's own (T7) is, and the served looks to the late bound.
+ */
+const checkGiveUpLateMs = 1000
+
 // A failed operation, or the test's own budget, waited its time in full, never less, gave up within the late bound,
-// recorded the time it was given, and, for a check, looked again.
+// recorded the time it was given, and, for a check, looked again. A check whose looks the parent served is held to
+// the late bound by those looks, and its give-up to `checkGiveUpLateMs`.
 function deadlineProblems(fact: Extract<Fact, { kind: 'deadline' }>, context: FactContext): string[] {
   const { failing, result } = context
   const lateMs = fact.lateMs ?? lateBoundMs(fact.ms)
@@ -785,12 +799,44 @@ function deadlineProblems(fact: Extract<Fact, { kind: 'deadline' }>, context: Fa
   const durationMs = failing?.durationMs ?? result.failure.details?.['durationMs']
   if (typeof durationMs !== 'number' || !Number.isFinite(durationMs)) return ['The timeout did not record when the test body was stopped.']
   const timed = { durationMs, timeoutMs: failing?.timeoutMs ?? result.failure.details?.['timeoutMs'] }
+  const looks = failing?.type === 'assertion.failed' ? servedLooks(failing, context.attempt) : undefined
   const problems: string[] = []
   if (timed.durationMs < fact.ms) problems.push(`It gave up after ${timed.durationMs} ms, before its ${fact.ms} ms had passed.`)
-  if (timed.durationMs > fact.ms + lateMs) problems.push(`It gave up after ${Math.round(timed.durationMs)} ms, more than ${lateMs} ms past its ${fact.ms} ms.`)
+  if (looks === undefined) {
+    if (timed.durationMs > fact.ms + lateMs) problems.push(`It gave up after ${Math.round(timed.durationMs)} ms, more than ${lateMs} ms past its ${fact.ms} ms.`)
+  } else {
+    const giveUpLateMs = Math.max(lateMs, checkGiveUpLateMs)
+    const lastServed = Math.max(...looks.times.map(([, served]) => served))
+    if (lastServed > fact.ms + lateMs) problems.push(`The parent served its last look ${lastServed} ms after it was asked for the first, more than ${lateMs} ms past its ${fact.ms} ms.${looks.described}`)
+    if (timed.durationMs > fact.ms + giveUpLateMs) problems.push(`It gave up after ${Math.round(timed.durationMs)} ms, more than ${giveUpLateMs} ms past its ${fact.ms} ms.${looks.described}`)
+  }
   if (timed.timeoutMs !== undefined && timed.timeoutMs !== fact.ms) problems.push(`It recorded a time of ${JSON.stringify(timed.timeoutMs)} ms, declared ${fact.ms} ms.`)
   if (failing?.type === 'assertion.failed' && failing.attempts < (fact.looks ?? 2)) problems.push(`It looked ${failing.attempts} times, declared at least ${fact.looks ?? 2}.`)
   return problems
+}
+
+type ServedLooks = {
+  /** Each look as [asked, served, waited] ms, on the run's clock from when the parent was asked for the first look. */
+  readonly times: readonly (readonly [number, number, number])[]
+  /** The looks and when the check's failure came, in words, for a problem to end with. */
+  readonly described: string
+}
+
+/**
+ * The looks the parent served a failed check, the ones at its locator since the attempt's previous action or check,
+ * with when each was asked for and served and how long of that it waited for the page to change; undefined for a
+ * check the parent served no look at its locator, as a check of the page itself. The gaps tell a late timer or a slow
+ * message in the test process from a slow look in the parent.
+ */
+function servedLooks(failing: Extract<FailingEvent, { type: 'assertion.failed' }>, attempt: readonly RetestEvent[]): ServedLooks | undefined {
+  const before = attempt.slice(0, attempt.indexOf(failing))
+  const since = before.findLastIndex((event) => event.type.startsWith('action.') || event.type.startsWith('assertion.'))
+  const looks = eventsOf(before.slice(since + 1), 'observation').filter((event) => isDeepStrictEqual(event.locator, failing.locator))
+  const first = looks[0]
+  if (first === undefined) return undefined
+  const origin = first.elapsedMs - first.durationMs
+  const times = looks.map((look) => [look.elapsedMs - look.durationMs - origin, look.elapsedMs - origin, look.waitedMs ?? 0] as const)
+  return { times, described: ` Its looks, as [asked, served, waited] ms from when the first was asked for: ${JSON.stringify(times)}; its failure came at ${failing.elapsedMs - origin} ms.` }
 }
 
 /** How a whole run differs from a run fact, in words, or nothing when it holds. */

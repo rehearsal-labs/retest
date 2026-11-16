@@ -234,5 +234,11 @@ process.stdout.write(JSON.stringify({ stopped: stopped.exitCode, stoppedMs, wait
   // Each run has a lock table of its own, so the next run says nothing about the stopped run's locks; the session budget
   // is the one they share.
   const quick = resultNamed(next.result, 'takes a session at once')
-  assert.deepEqual(ofAttempt(next.events, 'session.reserved', quick.attemptId).map((event) => event.waitedMs), [0], 'the next run on the same budget took a session at once')
+  // It took its session at once, and nothing else was active when it did. A free session is granted inside the
+  // request, so waitedMs measures only that bookkeeping on the real clock, which a stalled macOS runner stretched to
+  // 2 ms; runner-sessions.test.ts holds it to exactly 0 on a clock of its own. A request that had to wait here would
+  // wait for a session nothing in this host gives back, for its whole 60 s, so a second tells a wait from a stall.
+  const reserved = ofAttempt(next.events, 'session.reserved', quick.attemptId)
+  assert.deepEqual(reserved.map((event) => [event.active.owner, event.active.host]), [[1, 1]], 'the next run on the same budget found every session free')
+  assert.ok(reserved.every((event) => event.waitedMs < 1000), `the next run on the same budget took a session at once, not after ${JSON.stringify(reserved.map((event) => event.waitedMs))} ms`)
 })

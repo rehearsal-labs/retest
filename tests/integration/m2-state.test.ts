@@ -6,7 +6,6 @@ import { SESSION_COOKIE, TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-
 import { openApp } from './browser-harness.ts'
 import { engineUnderTest } from './engines.ts'
 import {
-  budgets,
   configSource,
   eventsOf,
   filesHolding,
@@ -81,28 +80,48 @@ const environment = { RETEST_E2E_PASSWORD: TASK_APP_PASSWORD }
 test('a setup signs in once per target, its dependents start signed in, a failed one keeps them from running, and no state is left', async (t) => {
   const app = await openApp(t)
   const root = await stateProject(t, app, { 'tests/setup.retest.ts': setups, 'tests/account.retest.ts': accountTests })
-  const run = await runProject(t, root, { env: environment, timeouts: budgets({ assertion: 1000 }) })
+  // The budgets a user gets: the sign-in setup's check of the account line also waits for the page the sign-in opens,
+  // which a loaded Windows runner took longer than a shorter check budget to open on Firefox.
+  const run = await runProject(t, root, { env: environment })
 
   assert.equal(run.exit.code, 1, run.stderr)
   const outcomes = (name: string) => resultsNamed(run, name).map((each) => [each.variantKey, each.status, each.failure?.class])
-  assert.deepEqual(outcomes('signed-in'), [
-    ['web=chrome', 'passed', undefined],
-    ['web=testing', 'passed', undefined],
-  ])
+  // Each result's failure in its own words, so an outcome that differs says why.
+  const said = (name: string) => JSON.stringify(resultsNamed(run, name).map((each) => [each.variantKey, each.failure?.message]))
+  assert.deepEqual(
+    outcomes('signed-in'),
+    [
+      ['web=chrome', 'passed', undefined],
+      ['web=testing', 'passed', undefined],
+    ],
+    said('signed-in'),
+  )
   // The site refused the password, so the account line the setup waits for never appears.
-  assert.deepEqual(outcomes('wrong-password'), [
-    ['web=chrome', 'failed', 'not_found'],
-    ['web=testing', 'failed', 'not_found'],
-  ])
+  assert.deepEqual(
+    outcomes('wrong-password'),
+    [
+      ['web=chrome', 'failed', 'not_found'],
+      ['web=testing', 'failed', 'not_found'],
+    ],
+    said('wrong-password'),
+  )
   assert.ok(resultsNamed(run, 'signed-in').every((each) => each.setup === true))
-  assert.deepEqual(outcomes('starts signed in'), [
-    ['web=chrome', 'passed', undefined],
-    ['web=testing', 'passed', undefined],
-  ])
-  assert.deepEqual(outcomes('starts signed out without state'), [
-    ['web=chrome', 'passed', undefined],
-    ['web=testing', 'passed', undefined],
-  ])
+  assert.deepEqual(
+    outcomes('starts signed in'),
+    [
+      ['web=chrome', 'passed', undefined],
+      ['web=testing', 'passed', undefined],
+    ],
+    said('starts signed in'),
+  )
+  assert.deepEqual(
+    outcomes('starts signed out without state'),
+    [
+      ['web=chrome', 'passed', undefined],
+      ['web=testing', 'passed', undefined],
+    ],
+    said('starts signed out without state'),
+  )
   for (const skipped of resultsNamed(run, 'needs the setup that fails')) {
     assert.equal(skipped.status, 'not_run')
     assert.match(skipped.failure?.message ?? '', /wrong-password/)

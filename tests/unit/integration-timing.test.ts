@@ -75,7 +75,6 @@ const known: Readonly<Record<string, number>> = {
   'm2-locators.test.ts': 1,
   'm2-matchers.test.ts': 1,
   'm2-servers.test.ts': 1,
-  'm2-state.test.ts': 1,
   'm3-host-checks.test.ts': 4,
   'm3-observations.test.ts': 1,
   'm3-press.test.ts': 2,

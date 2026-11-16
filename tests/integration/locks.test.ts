@@ -57,13 +57,17 @@ function holds(run: FinishedRun, lock: string): { name: string; from: number; to
     .sort((one, other) => one.from - other.from)
 }
 
-// Every test of the run that neither passed nor was skipped, with its failure, so a run that failed says why.
+// Every test of the run that neither passed nor was skipped, with its failure, the failures of its cleanup and what
+// ended it, so a run that failed says why: a test whose body passed and whose cleanup failed is an error with no
+// failure of its own. The run's own failure and each file's follow.
 function unpassed(run: FinishedRun): string {
   const tests = run.result?.files.flatMap((file) => file.tests) ?? []
-  return tests
+  const lines = tests
     .filter((each) => each.status !== 'passed' && each.status !== 'skipped')
-    .map((each) => `\n${each.name}${each.variantKey === undefined ? '' : ` (${each.variantKey})`}: ${each.status} ${JSON.stringify(each.failure)}`)
-    .join('')
+    .map((each) => `\n${each.name}${each.variantKey === undefined ? '' : ` (${each.variantKey})`}: ${each.status} ${JSON.stringify({ failure: each.failure, cleanupFailures: each.cleanupFailures, ending: each.ending })}`)
+  const files = (run.result?.files ?? []).flatMap((file) => (file.failure === undefined ? [] : [`\n${file.file}: ${JSON.stringify(file.failure)}`]))
+  const own = run.result?.failure === undefined ? [] : [`\nthe run: ${JSON.stringify(run.result.failure)}`]
+  return [...lines, ...files, ...own].join('')
 }
 
 function assertNoOverlap(spans: readonly { name: string; from: number; to: number }[]): void {

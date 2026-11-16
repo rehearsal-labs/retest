@@ -60,6 +60,23 @@ function lifecycle(lines: readonly DiagnosticLine[], requestId: string): string[
   return records(lines).flatMap((line) => ('requestId' in line && line.type !== 'console' && line.requestId === requestId ? [line.type] : []))
 }
 
+/**
+ * Why a run did not exit as expected: each test that did not pass with its failure, its cleanup's failures and what
+ * ended it, each file's and the run's own failure, and the last of what the run printed. The run prints its events
+ * on stdout, so its stderr is empty when a test failed.
+ */
+function whyFailed(run: FinishedRun): string {
+  const result = run.result
+  const tests = (result?.files ?? []).flatMap((file) => file.tests).filter((each) => each.status !== 'passed' && each.status !== 'skipped')
+  return JSON.stringify({
+    tests: tests.map((each) => ({ name: each.name, status: each.status, failure: each.failure, cleanupFailures: each.cleanupFailures, ending: each.ending })),
+    files: (result?.files ?? []).flatMap((file) => (file.failure === undefined ? [] : [{ file: file.file, failure: file.failure }])),
+    run: result?.failure,
+    stderr: run.stderr,
+    stdout: run.stdout.slice(-4000),
+  })
+}
+
 function onlySummary(result: TestResult): DiagnosticsSummary {
   assert.equal(result.diagnostics?.length, 1, 'the test has one session')
   const [summary] = result.diagnostics ?? []
@@ -70,7 +87,7 @@ function onlySummary(result: TestResult): DiagnosticsSummary {
 test('a page with every kind of record leaves one artifact whose records say what happened, and the test passes', async (t) => {
   const { root, url } = await project(t, { 'tests/main.retest.ts': mainTest })
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   const result = testNamed(run, 'emits every record')
   const summary = onlySummary(result)
   assert.equal(summary.app, 'web')
@@ -196,7 +213,7 @@ test('a page with every kind of record leaves one artifact whose records say wha
 test('the reports say how much was captured and where, never what a message said, and inspect shows the records', async (t) => {
   const { root } = await project(t, { 'tests/main.retest.ts': mainTest })
   const human = await runProject(t, root, { reporter: 'human' })
-  assert.equal(human.exit.code, 0, human.stderr)
+  assert.equal(human.exit.code, 0, whyFailed(human))
   assert.match(human.stdout, /Diagnostics +2 runtime errors · 2 console errors · 2 HTTP errors · 1 failed request · .*diagnostics\n/)
   for (const word of Object.values(DIAGNOSTICS_WORDS)) assert.equal(human.stdout.includes(word), false, `the human report never prints ${word}`)
   const agent = await runProject(t, root, { reporter: 'agent' })
@@ -247,7 +264,7 @@ test('a secret the page puts in messages, errors, queries, paths, headers, cooki
   const secured = await writeProject(t, { 'retest.config.ts': config, 'tests/secrets.retest.ts': secretsTest })
   const env = { RETEST_DIAGNOSTICS_SECRET: secretValue, RETEST_DIAGNOSTICS_TOKEN: longSecret }
   const run = await runProject(t, secured, { env })
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   const result = testNamed(run, 'leaks a secret everywhere a page can')
   const lines = artifactLines(run, result)
   assert.deepEqual(filesHolding(run.output, secretValue), [], 'no file in the run folder holds the secret, in any form a URL gives it')
@@ -281,7 +298,7 @@ test('a secret the page puts in messages, errors, queries, paths, headers, cooki
 test('a declared strict policy fails a test that otherwise passed, in the parent, and names what matched', async (t) => {
   const runtime = await project(t, { 'tests/main.retest.ts': mainTest }, "{ strict: { runtimeErrors: true } }")
   const failed = await runProject(t, runtime.root)
-  assert.equal(failed.exit.code, 1, failed.stderr)
+  assert.equal(failed.exit.code, 1, whyFailed(failed))
   const result = testNamed(failed, 'emits every record')
   assert.equal(result.status, 'failed')
   assert.equal(result.failure?.class, 'host_check_failed')
@@ -295,7 +312,7 @@ test('a declared strict policy fails a test that otherwise passed, in the parent
   // Only what the allow list leaves counts: the 404 is allowed, the 500 is not.
   const http = await project(t, { 'tests/main.retest.ts': mainTest }, "{ strict: { httpErrors: true, allow: ['/diagnostics/missing'] } }")
   const httpRun = await runProject(t, http.root)
-  assert.equal(httpRun.exit.code, 1, httpRun.stderr)
+  assert.equal(httpRun.exit.code, 1, whyFailed(httpRun))
   const httpFailure = testNamed(httpRun, 'emits every record').failure
   const named = /Records: \S+:web (n\d+) in /.exec(httpFailure?.message ?? '')?.[1]
   assert.match(httpFailure?.message ?? '', /1 HTTP error response, and the policy allows none\./)
@@ -312,14 +329,14 @@ test('a declared strict policy fails a test that otherwise passed, in the parent
   // With every match allowed, the test passes.
   const allowed = await project(t, { 'tests/main.retest.ts': mainTest }, "{ strict: { runtimeErrors: true, transportFailures: true, allow: ['thrown from the script', 'rejected with nobody', '/diagnostics/refused'] } }")
   const allowedRun = await runProject(t, allowed.root)
-  assert.equal(allowedRun.exit.code, 0, allowedRun.stderr)
+  assert.equal(allowedRun.exit.code, 0, whyFailed(allowedRun))
 })
 
 test('a strict policy never replaces the failure a test already had', async (t) => {
   const failing = mainTest.replace("toHaveText('Done')", "toHaveText('Never')").replace("('emits every record'", "('fails its own check'")
   const { root } = await project(t, { 'tests/failing.retest.ts': failing }, "{ strict: { runtimeErrors: true } }")
   const run = await runProject(t, root, { timeouts: budgets({ assertion: 1500 }) })
-  assert.equal(run.exit.code, 1, run.stderr)
+  assert.equal(run.exit.code, 1, whyFailed(run))
   const result = testNamed(run, 'fails its own check')
   assert.equal(result.failure?.class, 'check_failed', 'the test keeps its own failure')
   assert.match(String(result.failure?.details?.['also'] ?? ''), /^host_check_failed: The diagnostics policy failed the test/)
@@ -328,7 +345,7 @@ test('a strict policy never replaces the failure a test already had', async (t) 
 test('without a policy, expected console errors and HTTP error responses fail nothing', async (t) => {
   const { root } = await project(t, { 'tests/main.retest.ts': mainTest })
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   assert.equal(resultOf(run).status, 'passed')
 })
 
@@ -344,7 +361,7 @@ test('records over the limits are dropped and counted, the capture is partial, a
   const limits = '{ consoleEntries: 10, requests: 5 }'
   const lenient = await project(t, { 'tests/flood.retest.ts': floodTest(50, 20, 30) }, `{ limits: ${limits} }`)
   const passing = await runProject(t, lenient.root)
-  assert.equal(passing.exit.code, 0, passing.stderr)
+  assert.equal(passing.exit.code, 0, whyFailed(passing))
   const kept = testNamed(passing, 'floods the console')
   const summary = onlySummary(kept)
   assert.ok(summary.console.state === 'partial', JSON.stringify(summary.console))
@@ -363,7 +380,7 @@ test('records over the limits are dropped and counted, the capture is partial, a
 
   const strict = await project(t, { 'tests/flood.retest.ts': floodTest(50, 20, 30) }, `{ requireComplete: true, limits: ${limits} }`)
   const refused = await runProject(t, strict.root)
-  assert.equal(refused.exit.code, 2, refused.stderr)
+  assert.equal(refused.exit.code, 2, whyFailed(refused))
   const result = testNamed(refused, 'floods the console')
   assert.equal(result.status, 'error')
   assert.equal(result.failure?.class, 'reporting_failed')
@@ -374,7 +391,7 @@ test('a strict policy whose console capture overflowed before the error says it 
   const flood = floodTest(30, 20, 0).replace('fetches=0', 'fetches=0&throws=1')
   const { root } = await project(t, { 'tests/flood.retest.ts': flood }, '{ strict: { runtimeErrors: true }, limits: { consoleEntries: 10 } }')
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 2, run.stderr)
+  assert.equal(run.exit.code, 2, whyFailed(run))
   const result = testNamed(run, 'floods the console')
   assert.deepEqual([result.status, result.failure?.class], ['error', 'reporting_failed'])
   assert.match(result.failure?.message ?? '', /^The diagnostics policy could not judge the test: .*:web console was partial: \d+ messages over the attempt's limits were dropped\.$/)
@@ -384,7 +401,7 @@ test('a strict policy whose console capture overflowed before the error says it 
 test('an oversized message is cut, with its length kept, and counted as cut; the byte limit drops what does not fit', async (t) => {
   const { root } = await project(t, { 'tests/flood.retest.ts': floodTest(1, 20_000, 0) })
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   const result = testNamed(run, 'floods the console')
   const message = records(artifactLines(run, result)).find((line): line is ConsoleRecord => line.type === 'console')
   assert.deepEqual([message?.text.truncated, message?.text.length, message?.text.text.length], [true, 20_000, 4096])
@@ -418,7 +435,7 @@ test('two files at once in one browser, each test after another in its pool, kee
   const { root } = await project(t, { 'tests/a.retest.ts': markerTest(['alpha', 'bravo', 'charlie']), 'tests/b.retest.ts': markerTest(['delta', 'echo', 'foxtrot']) })
   for (let round = 0; round < 2; round += 1) {
     const run = await runProject(t, root, { args: ['--workers', '2', '--browsers', '1'] })
-    assert.equal(run.exit.code, 0, run.stderr)
+    assert.equal(run.exit.code, 0, whyFailed(run))
     assert.equal(eventsOf(run.events, 'browser.started').length, 1, 'one browser served both files')
     for (const marker of ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot']) assertOwnMarker(run, testNamed(run, `marks ${marker}`), marker)
   }
@@ -440,7 +457,7 @@ test('two apps at once', { apps: ['owner', 'member'] }, async ({ owner, member }
 `,
   })
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   const result = testNamed(run, 'two apps at once')
   assert.deepEqual(result.diagnostics?.map((summary) => [summary.app, summary.sessionId]), [['owner', `${result.attemptId}:owner`], ['member', `${result.attemptId}:member`]])
   for (const [app, marker] of [['owner', 'alpha'], ['member', 'bravo']] as const) {
@@ -468,7 +485,7 @@ test('waits on a request that never ends', async ({ page }) => {
   await started.retest.waitForEvent('observation')
   started.retest.signal('SIGINT')
   const run = await finishRun(started)
-  assert.equal(run.exit.code, 130, run.stderr)
+  assert.equal(run.exit.code, 130, whyFailed(run))
   const result = testNamed(run, 'waits on a request that never ends')
   assert.equal(result.failure?.class, 'interrupted')
   const summary = onlySummary(result)
@@ -484,7 +501,7 @@ test('waits on a request that never ends', async ({ page }) => {
 test('capture turned off records nothing, writes no artifact, and every result says it was disabled', async (t) => {
   const { root } = await project(t, { 'tests/main.retest.ts': mainTest }, '{ capture: false }')
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   const summary = onlySummary(testNamed(run, 'emits every record'))
   assert.deepEqual([summary.console, summary.network, summary.path], [{ state: 'disabled' }, { state: 'disabled' }, undefined])
   assert.equal(existsSync(join(run.output, 'diagnostics')), false)
@@ -502,7 +519,7 @@ test('stays quiet', async ({ page }) => {
 `,
   })
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   const summary = onlySummary(testNamed(run, 'stays quiet'))
   assert.deepEqual(summary.console, { state: 'complete', entries: 0, errors: 0, warnings: 0, runtimeErrors: 0, handledLater: 0, dropped: 0, truncated: 0, bytes: 0 })
   assert.ok(summary.network.state === 'complete' && summary.network.requests === 1, 'only the document')
@@ -522,7 +539,7 @@ test('reads a page the worker answered', async ({ page }) => {
 `,
   })
   const run = await runProject(t, root)
-  assert.equal(run.exit.code, 0, run.stderr)
+  assert.equal(run.exit.code, 0, whyFailed(run))
   const result = testNamed(run, 'reads a page the worker answered')
   const lines = artifactLines(run, result)
   const document = requestTo(lines, '/diagnostics/worker-scope/page')

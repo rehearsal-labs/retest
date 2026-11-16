@@ -3,9 +3,11 @@ import type { OwnedBrowser, OwnedPage, PageNavigation, WebSession } from '../../
 import type { OpenedPopup } from '../../src/browser/popups.ts'
 import type { TaskApp } from '../../fixtures/task-app/server.ts'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { isDeepStrictEqual } from 'node:util'
 import { isRecord } from '../../src/browser/cdp/message.ts'
 import { PipeTransport } from '../../src/browser/cdp/transport.ts'
 import { launchWebKit } from '../../src/browser/webkit/browser.ts'
@@ -51,6 +53,20 @@ async function popupFrom(page: OwnedPage, target: string, timeoutMs: number = de
 
 function pathOf(url: string | undefined): string {
   return url === undefined || url === '' ? '' : new URL(url).pathname
+}
+
+// WebKit closes a page whose process has not answered its close in time, without the page's beforeunload dialog, and
+// says so in the system log as `tryCloseTimedOut` (probe on build 2359: a handler busy for 400 ms was closed 5 times of
+// 5, one busy for 100 ms 2 of 5, one busy for 25 ms or not at all never). The dialogs page answers at once, but a
+// stalled machine can still hold its process past that wait, so a close that did not fail says whether WebKit gave up.
+function webKitStoppedWaiting(): string {
+  try {
+    const args = ['show', '--last', '5m', '--style', 'compact', '--predicate', 'eventMessage CONTAINS "tryCloseTimedOut"']
+    const lines = execFileSync('log', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).split('\n').filter((line) => line.includes('tryCloseTimedOut'))
+    return ` WebKit logged ${lines.length} closes it stopped waiting for in the last 5 minutes${lines.length === 0 ? '' : `, the last: ${lines.at(-1) ?? ''}`}.`
+  } catch (error) {
+    return ` WebKit's log could not be read: ${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>, what: string, timeoutMs: number = defaultTimeouts.assertion): Promise<void> {
@@ -131,6 +147,7 @@ test("close runs the popup's beforeunload, whose dialog holds the popup and fail
   assertOk(await check(popup.page, 'guard'))
   assert.deepEqual(popup.page.armDialog?.(1000), { ok: false, failure: { class: 'unsupported', message: 'Retest hands dialogs to a test on Chrome and Chromium only, and not on WebKit yet.' } })
   const { value: closing, ms } = await timed(popup.page.execute({ kind: 'close' }, 3000))
+  if (closing.ok) assert.fail(`The close passed, as no beforeunload dialog held the popup.${webKitStoppedWaiting()}`)
   assert.deepEqual(failureOf(closing), {
     class: 'unsupported',
     message: 'The page opened a beforeunload dialog while Retest tried to close the page. Retest does not answer dialogs yet, and the dialog blocks the page.',
@@ -378,7 +395,12 @@ test('a run on WebKit drives popups, writes their opening and closing, pictures 
 
   // WebKit difference 11: the beforeunload dialog the close opens holds the popup, and the close fails by name.
   const guarded = testNamed(run, "a popup's beforeunload on close")
-  assert.deepEqual([guarded.failure?.class, guarded.failure?.message], ['unsupported', 'The page opened a beforeunload dialog while Retest tried to close the page. Retest does not answer dialogs yet, and the dialog blocks the page.'])
+  // A close that ended otherwise says when each of the test's commands, its popup's opening and closing and its
+  // dialogs came, on the run's clock.
+  const told = run.events.filter((event) => 'testId' in event && event.testId === guarded.testId).map((event) => [event.elapsedMs, event.type, 'command' in event ? event.command : undefined, 'session' in event ? event.session : undefined])
+  const guardedEnd = [guarded.failure?.class, guarded.failure?.message]
+  const heldEnd = ['unsupported', 'The page opened a beforeunload dialog while Retest tried to close the page. Retest does not answer dialogs yet, and the dialog blocks the page.']
+  assert.deepEqual(guardedEnd, heldEnd, isDeepStrictEqual(guardedEnd, heldEnd) ? undefined : `${JSON.stringify(told)}${webKitStoppedWaiting()}`)
   assert.deepEqual(scoped(eventsOf(run.events, 'popup.closed'), guarded.name), [])
   assert.deepEqual(guarded.cleanupFailures ?? [], [])
 })

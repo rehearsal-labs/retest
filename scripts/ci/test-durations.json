@@ -405,10 +405,10 @@
     "windows-x64": 34
   },
   "tests/integration/firefox-m2-state.test.ts": {
-    "macos-arm64": 28,
+    "macos-arm64": 45,
     "linux-x64": 1,
     "linux-arm64": 1,
-    "windows-x64": 32
+    "windows-x64": 50
   },
   "tests/integration/firefox-native-tables.test.ts": {
     "macos-arm64": 5,
