@@ -2,6 +2,7 @@ import type { TestContext } from 'node:test'
 import type { FinishedRun, StartedRun } from './cli-harness.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { openApp } from './browser-harness.ts'
 import {
   budgets,
@@ -22,10 +23,13 @@ import {
 } from './cli-harness.ts'
 import { killBrowserFromOutside } from './outside-kill.ts'
 
-// From the timed-out test's start to the run's end: its budget, the second its stopped process has to answer, then
-// closing the browser. Starting the browser comes before the test starts and is not counted: on a busy machine that
-// alone can take seconds.
-const timeoutBoundMs = 10_000
+// From the timed-out test's start to the run's end: opening its page, its budget, the second its stopped process has
+// to answer, the failure screenshot, then closing the page and the browser. Starting the browser comes before the test
+// starts and is not counted: on a busy machine that alone can take seconds. The screenshot waits for the page's next
+// frame within the run's cleanup budget: on a fresh macOS machine in CI, where the stop lands while the machine's first
+// page opens its document, that wait took from 1.5 s to the whole budget, so the bound allows that budget beside the ten
+// seconds the rest was given (16 November 2026).
+const timeoutBoundMs = defaultTimeouts.cleanup + 10_000
 
 async function runTimeout(t: TestContext, name: string): Promise<FinishedRun> {
   const app = await openApp(t)
@@ -38,7 +42,9 @@ async function runTimeout(t: TestContext, name: string): Promise<FinishedRun> {
   const finished = run.events.find((event) => event.type === 'run.finished')
   assert.ok(started !== undefined && finished !== undefined, 'the run told of its test starting and of its end')
   const tookMs = finished.elapsedMs - started.elapsedMs
-  assert.ok(tookMs < timeoutBoundMs, `took ${tookMs} ms from the test's start to the run's end`)
+  // What the run did in that time, each event with its moment, so a run that took too long says where the time went.
+  const since = run.events.filter((event) => event.elapsedMs >= started.elapsedMs).map((event) => `${Math.round(event.elapsedMs - started.elapsedMs)} ${event.type}`)
+  assert.ok(tookMs < timeoutBoundMs, `took ${tookMs} ms from the test's start to the run's end: ${since.join(', ')}`)
   return run
 }
 
