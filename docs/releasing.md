@@ -16,12 +16,28 @@ From a terminal:
 gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=0.2.0
 ```
 
+### Publish a commit the gates already passed
+
+A full run takes hours when GitHub is short of machines, and a test that fails on a slow machine has to be read and its job run again. Do that once, before the promotion, and hand the promotion the run:
+
+1. Run every gate on the commit, from `main`: `gh workflow run ci.yml --ref main -f ref=<full SHA>`. Read each failure, run the failed jobs again, and go on until the run is green.
+2. Promote with that run's number: `gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=0.2.0 -f gates_run=<run number>`.
+
+The promotion then publishes without running the gates a second time. It accepts the run only when all of this holds, and says which part does not:
+
+- it is a run of `ci.yml`, started by hand from `main`, and GitHub says it ended in success;
+- `ci.yml` and the actions under `.github/actions` on `main` are the same now as when it ran;
+- it left a receipt, which only a run of every suite on every platform writes, in its last job, once every job has succeeded;
+- the receipt names the commit being promoted.
+
+GitHub keeps a receipt for 30 days. Leave `gates_run` empty and the promotion runs the gates itself, as before.
+
 ## What a promotion does
 
 It runs four jobs in order. Each starts only when the one before it passed.
 
 1. **Check the commit and the version.** The run stops here if it was started from a branch other than `main`, or if the commit is not a full SHA on `main`. It also stops if `package.json` at that commit is marked private or names another package. The version must be `X.Y.Z` and above every version npm has, and a package npm has never published counts as 0.0.0. The tag `vX.Y.Z` must not exist yet.
-2. **Gates.** It calls `ci.yml` on the commit, and every Linux, macOS and Windows gate must pass. The gates are `ci.yml` as it is on `main`, and the code they check is the commit's.
+2. **Gates.** It calls `ci.yml` on the commit, and every Linux, macOS and Windows gate must pass. The gates are `ci.yml` as it is on `main`, and the code they check is the commit's. When the first job accepted a `gates_run`, this job is left out: that run was the same gates on the same commit.
 3. **Publish to npm.** It checks out the commit and writes the version into `package.json` with `npm version X.Y.Z --no-git-tag-version`. It runs `npm ci` and `npm run build`, checks that `retest --version` prints the version, and runs `npm publish --provenance --access public`. npm publishes as the run's OIDC identity and signs a provenance statement that links the package to the commit. The job then writes a receipt with the name, version, tag and commit. The receipt is in the run summary and in the `release-receipt-<attempt>` artifact, kept for 90 days.
 4. **Tag and release.** It waits up to five minutes for npm to serve the version. Then it tags the commit `vX.Y.Z` and makes a GitHub release for the tag. This is the only job that can write to the repository. A tag the workflow makes starts no workflow.
 

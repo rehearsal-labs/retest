@@ -2,9 +2,10 @@ name: Promote
 run-name: Promote ${{ inputs.commit }} as ${{ inputs.version }}
 
 # The one way to publish Retest. A person chooses a commit on main and a version and runs this by hand. It checks
-# both, runs every gate in ci.yml on that commit, publishes the commit to npm with that version through trusted
-# publishing, then tags the commit and makes a GitHub release. No push, tag or schedule starts this or any other
-# workflow here. docs/releasing.md says how to run it and what to do when a run fails.
+# both, runs every gate in ci.yml on that commit, or accepts a run of ci.yml that already passed every gate on it,
+# publishes the commit to npm with that version through trusted publishing, then tags the commit and makes a GitHub
+# release. No push, tag or schedule starts this or any other workflow here. docs/releasing.md says how to run it and
+# what to do when a run fails.
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +17,11 @@ on:
         description: The version to publish, such as 0.2.0. It must be above every version on npm.
         required: true
         type: string
+      gates_run:
+        description: Optional. The number of a ci.yml run from main that passed every gate on this commit. Empty runs the gates now.
+        required: false
+        type: string
+        default: ''
 
 # Reading the code is all most jobs do. The publish job adds the OIDC token npm trusts, and the record job adds
 # writing the tag and the release.
@@ -41,10 +47,15 @@ jobs:
     name: Check the commit and the version
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Reading another run and its receipt is all the second permission is for.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       commit: ${{ steps.commit.outputs.commit }}
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      gates: ${{ steps.gates.outputs.passed }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -127,11 +138,63 @@ jobs:
             printf '%s\n\n' "$(git log -1 --format=%s "$COMMIT")"
             printf 'Commit `%s`, started by %s.\n' "$COMMIT" "$GITHUB_ACTOR"
           } >> "$GITHUB_STEP_SUMMARY"
+      # A full run of ci.yml that passed on this commit is the same proof as the gates below, so it is not run twice.
+      # It counts only when the gates it ran are the ones this promotion would run, and GitHub says every job passed.
+      - name: Check the gates run
+        id: gates
+        if: ${{ inputs.gates_run != '' }}
+        env:
+          COMMIT: ${{ steps.commit.outputs.commit }}
+          GATES_RUN: ${{ inputs.gates_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          id="$(printf '%s' "$GATES_RUN" | tr -d '[:space:]')"
+          if ! printf '%s' "$id" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "::error::Give the gates run as its number, such as 43925787052. This run got \"${GATES_RUN}\"."
+            exit 1
+          fi
+          if ! run="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" 2> /dev/null)"; then
+            echo "::error::GitHub did not give run ${id} of this repository. Check the number, or run the promotion again."
+            exit 1
+          fi
+          refuse() {
+            echo "::error::Run ${id} cannot stand in for the gates: $1 Leave gates_run empty to run the gates now."
+            exit 1
+          }
+          field() { printf '%s' "$run" | jq -r "$1 // empty"; }
+          [ "$(field .path)" = .github/workflows/ci.yml ] || refuse 'it is not a run of ci.yml.'
+          [ "$(field .event)" = workflow_dispatch ] || refuse 'it was not started by hand.'
+          [ "$(field .head_branch)" = main ] || refuse 'it was not started from main, so its gates may not be the ones on main.'
+          [ "$(field .status)" = completed ] || refuse 'it has not ended yet.'
+          [ "$(field .conclusion)" = success ] || refuse "it ended as $(field .conclusion), not success."
+          # The gates that ran are ci.yml and the actions beside it as main had them when the run started.
+          gates="$(field .head_sha)"
+          if ! git cat-file -e "${gates}^{commit}" 2> /dev/null || ! git merge-base --is-ancestor "$gates" origin/main; then
+            refuse "its gates came from ${gates}, which is not on main."
+          fi
+          if ! git diff --quiet "$gates" "$GITHUB_SHA" -- .github/workflows/ci.yml .github/actions; then
+            refuse 'the gates on main have changed since it ran.'
+          fi
+          # Only the last job of a full run that passed writes the receipt, under the number of that attempt.
+          attempt="$(field .run_attempt)"
+          rm -rf gates-receipt
+          if ! gh run download "$id" --repo "$GITHUB_REPOSITORY" --name "gates-receipt-${attempt}" --dir gates-receipt 2> /dev/null; then
+            refuse 'it left no receipt. Only a run of every suite on every platform leaves one, and GitHub keeps it for 30 days.'
+          fi
+          checked="$(jq -r '.commit // empty' gates-receipt/gates.json)"
+          [ "$(jq -r '.full // false' gates-receipt/gates.json)" = true ] || refuse 'its receipt does not say the full matrix ran.'
+          [ "$checked" = "$COMMIT" ] || refuse "it checked ${checked}, not ${COMMIT}."
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+          printf '\nGates: run [%s](%s/%s/actions/runs/%s) passed every gate on this commit, so they are not run again.\n' \
+            "$id" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$id" >> "$GITHUB_STEP_SUMMARY"
 
   # Every gate, on Linux, macOS and Windows, against the commit. The gates are ci.yml as it is on main; the code is the commit.
+  # Left out only when the first job accepted a run that already passed them on this commit.
   gates:
     name: Gates
     needs: verify
+    if: ${{ inputs.gates_run == '' }}
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
@@ -143,6 +206,9 @@ jobs:
     needs:
       - verify
       - gates
+    # A skipped job would skip this one too, so the condition is spelt out: the gates passed here, or they were left
+    # out because the first job accepted a run that had passed them.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.gates.result == 'success' || (needs.gates.result == 'skipped' && needs.verify.outputs.gates == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # The environment admits only main and waits for a maintainer's approval, and npm's trusted publisher names it,
@@ -257,6 +323,8 @@ jobs:
     needs:
       - verify
       - publish
+    # Spelt out for the same reason as above: gates left out must not leave this job out.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.publish.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

@@ -326,3 +326,21 @@ jobs:
           const full = process.env.RETEST_CI_FULL === 'true'
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, full ? 'Every job in the full release matrix succeeded.\n' : 'The requested focused checks succeeded. Full release coverage was not run.\n')
           JS
+      # A promotion can publish the commit a full run passed without running the gates a second time. The receipt
+      # names that commit. Only a run of the full matrix writes one, and only here, once every job in it has succeeded.
+      - name: Write the gates receipt
+        if: ${{ needs.commit.outputs.full == 'true' }}
+        env:
+          COMMIT: ${{ needs.commit.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p receipt
+          jq -nc --arg commit "$COMMIT" '{commit: $commit, full: true}' > receipt/gates.json
+      - name: Keep the gates receipt
+        if: ${{ needs.commit.outputs.full == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: gates-receipt-${{ github.run_attempt }}
+          path: receipt/gates.json
+          if-no-files-found: error
+          retention-days: 30
