@@ -2,6 +2,7 @@ import type { TestContext } from 'node:test'
 import type { MetadataProcessRequest } from '../../src/shared/metadata-process.ts'
 import type { ListedProcess, NativeTools } from '../../src/native/processes.ts'
 import type { OwnedProcessIdentity } from '../../src/shared/process-ownership.ts'
+import type { GrandchildTool } from './native-fake-tools.ts'
 import assert from 'node:assert/strict'
 import childProcess, { ChildProcess, execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -10,7 +11,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'n
 import { createServer } from 'node:net'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -20,7 +21,7 @@ import { commandOf, endProblem, endRecorded, killRecordedNow, listProcesses, Own
 import { makeOwnedFolder, sweepOwnedFolders } from '../../src/native/temporary-folders.ts'
 import { metadataComplete, metadataOutputLimit, metadataSuccess, processTableOutputLimit, readMetadataProcess } from '../../src/shared/metadata-process.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
-import { endedPid, processStart, silentTool, stubbornTool } from './native-fake-tools.ts'
+import { endedPid, grandchildTool, processStart, silentTool, stubbornTool } from './native-fake-tools.ts'
 import { unixOnly } from '../support/platform-skip.ts'
 
 // The macOS and iOS driver's own machinery: fake tools written as shell scripts, and POSIX processes and signals,
@@ -89,8 +90,11 @@ function stubbornChild(t: TestContext): { readonly pid: number; readonly signal:
   return { pid: child.pid ?? 0, signal: new Promise((resolve) => child.once('exit', (_code, signal) => resolve(signal))) }
 }
 
-// A shell that starts a grandchild in its own process group, writes the grandchild's pid, and waits on it forever.
-const withGrandchild = (pidFile: string): string[] => ['-c', `sleep 600 & echo $! > '${pidFile}'; wait`]
+// What came first: the tool saying it started its grandchild, or `ended`. A stop or a reading that comes once the tool
+// has said so finds the grandchild under the launch.
+function startedBefore(tool: GrandchildTool, ended: Promise<unknown>): Promise<string> {
+  return Promise.race([tool.ready().then((said) => (said ? 'started' : 'silent')), ended.then(() => 'ended', () => 'ended')])
+}
 
 // The timeout and cancellation tests exercise actual process exit, without sharing the metadata worker's startup and
 // queue with the parallel unit tree. Tables remain whole, and every signal still gets its immediate individual reading.
@@ -107,15 +111,6 @@ function cancellationIdentities(pid?: number): OwnedProcessIdentity[] {
     assert.ok(pid !== undefined && parentPid !== undefined && groupId !== undefined && state !== undefined && startedAt !== undefined && command !== undefined)
     return { pid: Number(pid), parentPid: Number(parentPid), groupId: Number(groupId), state, startedAt, command }
   })
-}
-
-async function grandchildPid(pidFile: string): Promise<number> {
-  for (let tries = 0; tries < 100; tries += 1) {
-    const text = await readFile(pidFile, 'utf8').catch(() => '')
-    if (/^\d+/.test(text)) return Number.parseInt(text, 10)
-    await sleep(20)
-  }
-  throw new Error('the grandchild never started')
 }
 
 test('successful malformed process listings are unreadable rather than empty', macDriver, async (t) => {
@@ -158,11 +153,10 @@ test('a timed out command ends only its launched and recorded processes', macDri
 })
 
 test('a short command stopped by its signal is ended, and one stopped before it starts never runs', macDriver, async (t) => {
-  const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
-  t.after(() => rm(folder, { recursive: true, force: true }))
-  const pidFile = join(folder, 'grandchild')
+  const tool = await grandchildTool(t)
+  const folder = dirname(tool.path)
   const stop = new AbortController()
-  const running = runCommand('/bin/sh', withGrandchild(pidFile), {
+  const running = runCommand(tool.path, [], {
     timeoutMs: 30_000, signal: stop.signal,
     ownershipSystem: {
       read: () => cancellationIdentities(),
@@ -170,7 +164,8 @@ test('a short command stopped by its signal is ended, and one stopped before it 
       signal: (pid, signal) => { process.kill(pid, signal) },
     },
   })
-  const grandchild = await grandchildPid(pidFile)
+  assert.equal(await startedBefore(tool, running), 'started', 'the tool started its grandchild before anything stopped it')
+  const grandchild = await tool.grandchild()
   const recorded = cancellationIdentities(grandchild).find(entry => entry.pid === grandchild)
   assert.ok(recorded !== undefined)
   t.after(async () => {
@@ -205,13 +200,12 @@ test('a synchronous process-start failure answers exit 127 without claiming owne
 })
 
 test('a long-running process stops its recorded descendants, and its exit hook goes with them', macDriver, async (t) => {
-  const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
-  t.after(() => rm(folder, { recursive: true, force: true }))
-  const pidFile = join(folder, 'grandchild')
+  const tool = await grandchildTool(t)
   const before = process.listenerCount('exit')
-  const owned = await OwnedProcess.start({ command: '/bin/sh', args: withGrandchild(pidFile), logFile: join(folder, 'log', 'process.log') })
+  const owned = await OwnedProcess.start({ command: tool.path, args: [], logFile: join(dirname(tool.path), 'log', 'process.log') })
   assert.equal(process.listenerCount('exit'), before + 1)
-  const grandchild = await grandchildPid(pidFile)
+  assert.equal(await startedBefore(tool, owned.exited), 'started', 'the tool started its grandchild before it ended')
+  const grandchild = await tool.grandchild()
   assert.deepEqual(await owned.stop(0), [])
   assert.notEqual(owned.exit, undefined)
   assert.equal(processExists(grandchild), false)
@@ -804,11 +798,14 @@ test('a long-running process takes no blocking ownership reading while it runs',
 })
 
 test('a child the executor starts after its own start is still found and ended at the stop', macDriver, async (t) => {
-  const folder = await mkdtemp(join(tmpdir(), 'retest-native-processes-'))
-  t.after(() => rm(folder, { recursive: true, force: true }))
-  const pidFile = join(folder, 'grandchild')
-  const owned = await OwnedProcess.start({ command: '/bin/sh', args: ['-c', `sleep 0.3; sleep 600 & echo $! > '${pidFile}'; wait`], logFile: join(folder, 'process.log') })
-  const grandchild = await grandchildPid(pidFile)
+  const tool = await grandchildTool(t, { gated: true })
+  const owned = await OwnedProcess.start({ command: tool.path, args: [], logFile: join(dirname(tool.path), 'process.log') })
+  // A fresh reading waits for the start's own first, so the tool, held at its gate until then, starts its grandchild
+  // after the start was read.
+  assert.equal(await owned.processesRemain(), true, 'the start was read while the tool waited at its gate')
+  await tool.open()
+  assert.equal(await startedBefore(tool, owned.exited), 'started', 'the tool started its grandchild before it ended')
+  const grandchild = await tool.grandchild()
   assert.equal(processExists(grandchild), true)
   assert.deepEqual(await owned.stop(0), [])
   assert.equal(processExists(grandchild), false, 'the child started later was recorded through its ancestry and ended')

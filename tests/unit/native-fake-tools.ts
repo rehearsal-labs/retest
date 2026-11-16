@@ -5,7 +5,7 @@ import { once } from 'node:events'
 import { closeSync, constants, openSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isPlainObject, parse, s } from '../../src/protocol/schema.ts'
 import { alive, readApps, readJsonFile } from './native-fake-executor.ts'
@@ -145,12 +145,14 @@ export async function fakeCheckout(root: string, options: { readonly name: strin
 export type WaitingTool = { readonly path: string; ready(): Promise<boolean>; readyNow(): boolean }
 
 /**
- * Writes a tool that ignores SIGTERM, as do the processes it starts, so only SIGKILL ends it. Each run says through a
- * named pipe once it has set its trap, since a signal that comes first ends it at once, and a loaded machine can make
- * the shell late to set it.
+ * Writes a tool that ignores SIGTERM, one shell and no process of its own, so only SIGKILL ends it. Each run says
+ * through a named pipe once it has set its trap, since a signal that comes first ends it at once, and a loaded machine
+ * can make the shell late to set it. It then waits on a second pipe nothing writes to, not in a program it starts: a
+ * shell's child shows the shell's command line until its program starts, and Retest leaves a process read then alone
+ * once its command line changes, so the child outlived every signal.
  */
 export function stubbornTool(t: TestContext): Promise<WaitingTool> {
-  return waitingTool(t, 'stubborn', (said) => `#!/bin/sh\ntrap '' TERM\necho ready > ${said}\nsleep 30\n`)
+  return waitingTool(t, 'stubborn', (said, folder) => `#!/bin/sh\ntrap '' TERM\necho ready > ${said}\nread line < ${quoteShellArgument(join(folder, 'never'))}\n`)
 }
 
 /**
@@ -162,12 +164,46 @@ export function silentTool(t: TestContext): Promise<WaitingTool> {
   return waitingTool(t, 'silent', (said, folder) => `#!/bin/sh\necho ready > ${said}\nread line < ${quoteShellArgument(join(folder, 'never'))}\n`)
 }
 
-// A tool whose script says `ready` through the pipe `said` names, in a folder of its own with a pipe `never` beside it.
-// A reader still waiting on `said` after the test, for a run that never said, is let go.
-async function waitingTool(t: TestContext, name: string, script: (said: string, folder: string) => string): Promise<WaitingTool> {
+/** A tool that starts a grandchild and waits on it, the grandchild's pid, and, for a gated tool, its gate. */
+export type GrandchildTool = WaitingTool & { grandchild(): Promise<number>; open(): Promise<void> }
+
+/**
+ * Writes a tool that starts a grandchild and waits on it forever. The grandchild is a subshell that runs no program, so
+ * from the moment it is forked its command line is the tool's and stays so: a reading taken at any time records the
+ * process that stays. A shell's child that runs a program shows the shell's command line until the program starts,
+ * and Retest leaves a process read then alone once its command line changes. Each run says through a named pipe once
+ * the grandchild is started and its pid written. A `gated` tool starts its grandchild only once `open` is called.
+ */
+export async function grandchildTool(t: TestContext, options: { readonly gated?: boolean } = {}): Promise<GrandchildTool> {
+  const gated = options.gated === true
+  const tool = await waitingTool(t, 'grandchild', (said, folder) => [
+    '#!/bin/sh',
+    ...(gated ? [`read line < ${quoteShellArgument(join(folder, 'gate'))}`] : []),
+    `(read line < ${quoteShellArgument(join(folder, 'never'))}) &`,
+    `echo $! > ${quoteShellArgument(join(folder, 'grandchild'))}`,
+    `echo ready > ${said}`,
+    'wait',
+    '',
+  ].join('\n'), gated ? ['gate'] : [])
+  const folder = dirname(tool.path)
+  return {
+    ...tool,
+    grandchild: async () => Number.parseInt(await readFile(join(folder, 'grandchild'), 'utf8'), 10),
+    open: async () => {
+      if (!gated) throw new Error('The grandchild tool has no gate to open.')
+      await writeFile(join(folder, 'gate'), 'open\n')
+    },
+  }
+}
+
+// A tool whose script says `ready` through the pipe `said` names, in a folder of its own with a pipe `never` beside it
+// and the pipes `pipes` names. A reader still waiting on any of them after the test, as a run that never said or a
+// process that outlived its test is, is let go.
+async function waitingTool(t: TestContext, name: string, script: (said: string, folder: string) => string, pipes: readonly string[] = []): Promise<WaitingTool> {
   const folder = await mkdtemp(join(tmpdir(), `retest-native-${name}-`))
   const said = join(folder, 'said')
-  for (const pipe of [said, join(folder, 'never')]) {
+  const named = [said, ...['never', ...pipes].map((pipe) => join(folder, pipe))]
+  for (const pipe of named) {
     const made = spawnSync('mkfifo', [pipe])
     if (made.status !== 0) throw new Error(`mkfifo could not make ${pipe}: ${made.stderr.toString()}`)
   }
@@ -175,11 +211,13 @@ async function waitingTool(t: TestContext, name: string, script: (said: string, 
   await writeFile(path, script(quoteShellArgument(said), folder))
   await chmod(path, 0o755)
   t.after(async () => {
-    try {
-      closeSync(openSync(said, constants.O_WRONLY | constants.O_NONBLOCK))
-    } catch (error) {
-      // No reader is waiting on the pipe.
-      if (!(error instanceof Error && 'code' in error && error.code === 'ENXIO')) throw error
+    for (const pipe of named) {
+      try {
+        closeSync(openSync(pipe, constants.O_WRONLY | constants.O_NONBLOCK))
+      } catch (error) {
+        // No reader is waiting on the pipe.
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENXIO')) throw error
+      }
     }
     await rm(folder, { recursive: true, force: true })
   })
