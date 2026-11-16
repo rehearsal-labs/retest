@@ -1,20 +1,56 @@
+import { rmSync } from 'node:fs'
 import { mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { errorMessage } from '../protocol/failures.ts'
 
 const ownershipFile = '.retest-profile-owner.json'
+// The profiles this process made that no process has been started on yet. Nothing runs in them, so the process removes
+// them as it exits, however it exits, as when a second Ctrl+C lands while a launch opens its log; the process started
+// on one takes it over with an exit hook of its own, which removes it once that process is shown gone.
+const unstarted = new Set<string>()
+let removedAtExit = false
 
-/** Creates an exclusive temporary profile and records its owner before any app can use it. */
+/**
+ * Creates an exclusive temporary profile and records its owner before any app can use it. Until `profileStarted` hands
+ * it to the process started on it, this process removes it as it exits.
+ */
 export async function createTemporaryProfile(folder: string, pid: number = process.pid): Promise<string> {
   const root = await realpath(folder)
   const path = await mkdtemp(join(root, profilePrefix(pid)))
+  removeAtExit(path)
   try {
     await writeFile(join(path, ownershipFile), JSON.stringify({ version: 1, pid, path }), { flag: 'wx', mode: 0o600 })
     return path
   } catch (error) {
-    await rm(path, { recursive: true, force: true })
+    await discardProfile(path)
     throw error
   }
+}
+
+/** Hands a temporary profile to the process just started on it, whose own exit hook removes it from now on. */
+export function profileStarted(path: string): void {
+  unstarted.delete(path)
+}
+
+/** Removes a temporary profile no process was started on. */
+export async function discardProfile(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true, maxRetries: 3 })
+  unstarted.delete(path)
+}
+
+function removeAtExit(path: string): void {
+  unstarted.add(path)
+  if (removedAtExit) return
+  removedAtExit = true
+  process.on('exit', () => {
+    for (const unused of unstarted) {
+      try {
+        rmSync(unused, { recursive: true, force: true, maxRetries: 3 })
+      } catch {
+        // Throwing here would replace the exit code Retest chose, and skip the profiles after this one.
+      }
+    }
+  })
 }
 
 /**

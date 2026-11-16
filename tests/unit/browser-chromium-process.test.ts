@@ -13,7 +13,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { ChromiumBrowser } from '../../src/browser/browser.ts'
 import { BrowserError } from '../../src/browser/browser-error.ts'
 import { CdpConnection } from '../../src/browser/cdp/connection.ts'
-import { ChromiumProcess } from '../../src/browser/chromium-process.ts'
+import { ChromiumProcess, exitConfirmationMs } from '../../src/browser/chromium-process.ts'
 import { closeGraceMs } from '../../src/browser/contract.ts'
 import { Deadline } from '../../src/protocol/deadline.ts'
 import { OwnedProcessGroup } from '../../src/shared/process-ownership.ts'
@@ -490,17 +490,23 @@ test('a stopped browser keeps its profile cleanup hook until its pending output 
 
 /**
  * A browser recorded through a host that reports its process as still exiting, `?Es` with its arguments unreadable as
- * macOS `ps` shows it, for `exitingReadings` readings after SIGKILL, and as gone after that.
+ * macOS `ps` shows it, for `exitingReadings` readings after SIGKILL, and as gone after that. With `firstReadingMs`, the
+ * first reading after SIGKILL takes that long, as one on Linux can while the kernel ends what was killed.
  */
-function killedBrowser(pid: number, profile: string, exitingReadings: number): { hook: (code: number) => void; signals: string[] } {
+function killedBrowser(pid: number, profile: string, exitingReadings: number, firstReadingMs = 0): { hook: (code: number) => void; signals: string[] } {
   const child = new ChildProcess()
   Object.defineProperty(child, 'pid', { value: pid })
   const record = { pid, parentPid: 5001, groupId: pid, startedAt: 'today', command: '/owned/browser --remote-debugging-pipe', state: 'Ss' }
   const signals: string[] = []
   let left: number | undefined
+  let slowReading = firstReadingMs
   const ownership = new OwnedProcessGroup(pid, 5001, {
     read: () => {
       if (left === undefined) return [record]
+      if (slowReading > 0) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, slowReading)
+        slowReading = 0
+      }
       if (left === 0) return []
       left -= 1
       return [{ ...record, state: '?Es', command: '(browser)' }]
@@ -528,7 +534,16 @@ test('the exit hook removes the profile once the processes it killed have finish
   assert.equal(existsSync(profile), false, 'the killed browser was still exiting at the first reading, and gone at a later one')
 })
 
-test('the exit hook keeps the profile of a browser still exiting when the close grace runs out', async (t) => {
+test('the exit hook removes the profile when its first reading after SIGKILL outlasts the close grace', async (t) => {
+  const profile = await mkdtemp(join(tmpdir(), 'retest-exit-hook-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  const { hook, signals } = killedBrowser(6103, profile, 0, closeGraceMs + 200)
+  hook(0)
+  assert.deepEqual(signals, ['6103 SIGKILL'])
+  assert.equal(existsSync(profile), false, 'the reading that outlasted the close grace found the browser gone, and the profile went')
+})
+
+test('the exit hook keeps the profile of a browser still exiting when its wait for the browser to be gone runs out', async (t) => {
   const profile = await mkdtemp(join(tmpdir(), 'retest-exit-hook-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
   const { hook, signals } = killedBrowser(6102, profile, Number.MAX_SAFE_INTEGER)
@@ -536,7 +551,7 @@ test('the exit hook keeps the profile of a browser still exiting when the close 
   hook(0)
   assert.deepEqual(signals, ['6102 SIGKILL'])
   assert.equal(existsSync(profile), true, 'a profile is removed only once its browser is gone')
-  assert.ok(performance.now() - started < closeGraceMs + 500, 'the exit hook waits no longer than the close grace')
+  assert.ok(performance.now() - started < closeGraceMs + exitConfirmationMs + 500, 'the exit hook waits no longer than the close grace for its signals and its wait for the browser to be gone')
 })
 
 /** A host for a browser whose main process dies first, leaving a helper whose parent becomes launchd. */

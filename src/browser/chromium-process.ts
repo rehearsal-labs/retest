@@ -18,6 +18,7 @@ import { onlyUnreaped, procStats } from '../shared/unreaped-group.ts'
 import { OwnedProcessGroup, unverifiedMembersProblem } from '../shared/process-ownership.ts'
 import { holdLaunch, launchesHeldByJob, prepareOwnedLaunch } from '../shared/process-system.ts'
 import { closeGraceMs, LaunchError } from './contract.ts'
+import { discardProfile, profileStarted } from './profiles.ts'
 import { writeRedactedLog } from './redacted-log.ts'
 
 export type StartOptions = {
@@ -105,7 +106,7 @@ export class ChromiumProcess {
     } catch (error) {
       const { profile } = options
       if (profile === undefined || error instanceof ProcessLaunchError) throw error
-      await rm(profile, { recursive: true, force: true, maxRetries: 3 }).catch((cleanupError: unknown) => {
+      await discardProfile(profile).catch((cleanupError: unknown) => {
         const message = `${errorMessage(error)} Removing the browser profile ${profile} also failed: ${errorMessage(cleanupError)}`
         throw new LaunchError(message, { cause: error })
       })
@@ -134,6 +135,8 @@ export class ChromiumProcess {
     if (!this.#ownership.captured) this.recordDescendants()
     this.#lastResort = () => killAtExit(this.#ownership, profile)
     process.on('exit', this.#lastResort)
+    // The hook just installed removes the profile from now on, once it has shown this process gone.
+    if (profile !== undefined) profileStarted(profile)
   }
 
   /**
@@ -370,6 +373,7 @@ async function spawnInGroup(options: StartOptions): Promise<ChromiumProcess> {
       const problems = [...ownershipProblems, ...ownership.signal('SIGKILL')]
       const lastResort = (): void => killAtExit(ownership, options.profile)
       process.on('exit', lastResort)
+      if (options.profile !== undefined) profileStarted(options.profile)
       logHandedOn = true
       await log.close().catch((error: unknown) => problems.push(`Could not close the browser log: ${errorMessage(error)}`))
       const gone = waitForOwnedExit(child, ownership).then(async () => {
@@ -485,16 +489,23 @@ async function groupEnds(ownership: OwnedProcessGroup, grace: Deadline, { ref = 
 /** How long an exit hook on Windows asks again to remove a folder whose processes it confirmed gone. */
 export const exitRemovalMs: number = 2 * closeGraceMs
 
+/**
+ * How long an exit hook waits, once its signals are sent, for the browser's processes to be gone before it removes the
+ * profile: as long as a group may hold processes after its main process exited. Killed processes are still there while
+ * the kernel ends them, and the main process, killed after its helpers, can start new ones first, which nobody recorded
+ * and which end only once they find it gone. Sharing the close grace with the signals, 2 of 30 hard quits of a run on
+ * Linux x64 in CI ran out of it with a reading of the process table unfinished, and left the whole profile
+ * (16 November 2026).
+ */
+export const exitConfirmationMs: number = exitedGroupLimitMs
+
 // Runs while the Retest process exits, when a failure can neither be awaited nor reported.
 function killAtExit(ownership: OwnedProcessGroup, profile: string | undefined): void {
   try {
-    const deadline = new Deadline(closeGraceMs)
-    ownership.signalNow('SIGKILL', deadline)
-    if (profile === undefined || !groupEndsNow(ownership, deadline)) return
-    // On Windows the end and its confirmation are runs of retest-supervisor, which a slow host can spend most of the
-    // bound on, and the folder refuses removal for up to a second after its processes left their job, as a scanner
-    // holds what they wrote; the removal gets a bound of its own, so a profile whose processes are confirmed gone is
-    // removed.
+    ownership.signalNow('SIGKILL', new Deadline(closeGraceMs))
+    if (profile === undefined || !groupEndsNow(ownership, new Deadline(exitConfirmationMs))) return
+    // On Windows the folder refuses removal for up to a second after its processes left their job, as a scanner holds
+    // what they wrote; the removal gets a bound of its own, so a profile whose processes are confirmed gone is removed.
     if (launchesHeldByJob) removeOnceFree(profile, new Deadline(exitRemovalMs))
     else rmSync(profile, { recursive: true, force: true, maxRetries: 3 })
   } catch {
