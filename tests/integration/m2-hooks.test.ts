@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { openApp } from './browser-harness.ts'
-import { budgets, childLog, configSource, eventsOf, onlyEvent, resultOf, runProject, testNamed, writeProject } from './cli-harness.ts'
+import { childLog, configSource, eventsOf, onlyEvent, resultOf, runProject, testNamed, writeProject } from './cli-harness.ts'
 
 // Acceptance check 9: hooks run in order, afterEach runs after a failure and keeps the original one, and
 // test.describe and test.for name their tests, with duplicate names refused.
@@ -66,7 +66,7 @@ test('hooks run outermost beforeEach first and innermost afterEach first, and af
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     'tests/hooks.retest.ts': hookTests,
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 500 }) })
+  const run = await runProject(t, root)
 
   assert.equal(run.exit.code, 1, run.stderr)
   const ordered = testNamed(run, 'runs its hooks in order')

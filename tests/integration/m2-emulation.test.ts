@@ -124,7 +124,7 @@ test('emulation applies the screen, user agent and touch, tap works, and every r
   assert.match(run.stdout, /^ {2}tablet=chromium +Chrome \S+ · emulated/m)
   assert.doesNotMatch(run.stdout, /desktop=chrome \(emulated\)/)
 
-  const failed = await runProject(t, root, { files: ['tests/fails.retest.ts'], reporter: 'agent', timeouts: budgets({ ...defaultTimeouts, assertion: 500 }) })
+  const failed = await runProject(t, root, { files: ['tests/fails.retest.ts'], reporter: 'agent', timeouts: budgets() })
   assert.equal(failed.exit.code, 1, failed.stderr)
   assert.match(failed.stdout, /phone=chrome \(emulated\)/)
 

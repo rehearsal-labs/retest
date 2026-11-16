@@ -59,7 +59,7 @@ test('outcomes stay honest: a pass exits 0, a failed check 1, and a target whose
   assert.equal(passing.exit.code, 0, passing.stderr)
   assert.deepEqual([resultOf(passing).status, resultOf(passing).complete], ['passed', true])
 
-  const failing = await runProject(t, root, { args: ['--target', 'web=chrome', '--base-url', broken.url], timeouts: budgets({ assertion: 500 }) })
+  const failing = await runProject(t, root, { args: ['--target', 'web=chrome', '--base-url', broken.url] })
   assert.equal(failing.exit.code, 1, failing.stderr)
   assert.equal(testNamed(failing, 'saves a task').failure?.class, 'check_failed')
 

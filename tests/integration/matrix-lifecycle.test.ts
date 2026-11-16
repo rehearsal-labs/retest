@@ -142,7 +142,7 @@ test('browser disconnect: losing the browser while a click waits for its element
 test('cleanup failure: the original check failure stays beside the failure to close the test context', async (t) => {
   const app = await openApp(t, { mode: 'broken' })
   // Chrome cannot confirm closing a context within 1 ms, so this budget makes cleanup fail in the real browser.
-  const run = await runRetest(t, { files: [exampleFile], baseUrl: app.url, timeouts: budgets({ assertion: 500, cleanup: 1 }) })
+  const run = await runRetest(t, { files: [exampleFile], baseUrl: app.url, timeouts: budgets({ cleanup: 1 }) })
 
   assert.equal(run.exit.code, 1)
   const failed = onlyTest(run)

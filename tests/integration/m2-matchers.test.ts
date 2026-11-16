@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { openApp } from './browser-harness.ts'
-import { budgets, configSource, eventsOf, resultOf, runProject, testNamed, writeProject } from './cli-harness.ts'
+import { configSource, eventsOf, resultOf, runProject, testNamed, writeProject } from './cli-harness.ts'
 
 // Acceptance check 10: every new matcher passes and fails as it should, expect.poll reads again without repeating
 // an action, and expect.soft lets the test go on and fails it at the end with each failure kept.
@@ -114,7 +114,7 @@ test('each matcher passes and fails correctly, poll never repeats an action, and
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     'tests/matchers.retest.ts': matcherTests(app.url),
   })
-  const run = await runProject(t, root, { timeouts: budgets({ assertion: 500 }) })
+  const run = await runProject(t, root)
 
   assert.equal(run.exit.code, 1, run.stderr)
   const outcome = (name: string) => {

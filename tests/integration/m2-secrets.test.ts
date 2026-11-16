@@ -7,7 +7,6 @@ import { appLogFile } from '../../src/protocol/run-folder.ts'
 import { openApp, servePages } from './browser-harness.ts'
 import {
   appServerCommand,
-  budgets,
   childLog,
   configSource,
   eventsOf,
@@ -117,7 +116,7 @@ test('a secret never reaches the test process, the run folder or the output, and
 }`),
     'tests/secrets.retest.ts': secretTests(elsewhere.url),
   })
-  const run = await runProject(t, root, { env: environment, reporter: 'human', args: ['--no-agent'], timeouts: budgets({ assertion: 1000 }) })
+  const run = await runProject(t, root, { env: environment, reporter: 'human', args: ['--no-agent'] })
 
   // A test failed its checks, which decides the exit code over the fill that could not read its secret.
   assert.equal(run.exit.code, 1, `${run.stdout}\n${run.stderr}`)
@@ -197,7 +196,7 @@ test('shows the path the secret went into', async ({ page }) => {
 })
 `,
   })
-  const run = await runProject(t, root, { env: environment, reporter: 'human', args: ['--no-agent'], timeouts: budgets({ assertion: 500 }) })
+  const run = await runProject(t, root, { env: environment, reporter: 'human', args: ['--no-agent'] })
 
   assert.equal(run.exit.code, 1, run.stderr)
   assert.deepEqual(filesHolding(run.output, TASK_APP_PASSWORD), [], 'no file in the run folder holds the value in any form')

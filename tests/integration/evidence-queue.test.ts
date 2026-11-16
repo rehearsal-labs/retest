@@ -53,6 +53,19 @@ function stall(pid: number): void {
   else process.kill(pid, 'SIGSTOP')
 }
 
+// Stalls a process if it is still there. One the encoder started for a moment can end between the reading that found it
+// and the stall, and a process that has ended holds no frame back. A stall that fails on a process still there is the
+// failure it was.
+function stalledWhileThere(owner: OwnedProcessGroup, pid: number): boolean {
+  try {
+    stall(pid)
+    return true
+  } catch (error) {
+    if (owner.verifiedIdentity(pid) !== undefined) throw error
+    return false
+  }
+}
+
 function resume(pid: number): void {
   if (process.platform === 'win32') resumeProcess(pid)
   else process.kill(pid, 'SIGCONT')
@@ -79,9 +92,9 @@ test('a real Chrome recording with a stalled encoder names queue drops and prese
  const owner=runOwnership(started),encoder=encoderPid(media.media.pid)
  const identity=owner.verifiedIdentity(encoder)
  assert.ok(identity)
- const stalled=encoderProcesses(owner,encoder)
  writeFileSync(join(proofRoot,'stalled-encoder.json'),JSON.stringify(identity,null,2))
- for(const each of stalled)stall(each.pid)
+ const stalled=encoderProcesses(owner,encoder).filter(each=>stalledWhileThere(owner,each.pid))
+ assert.ok(stalled.some(each=>each.pid===encoder),'the encoder itself was stalled')
  try{await delay(2500)}finally{
   for(const each of stalled){
    const current=owner.verifiedIdentity(each.pid)
