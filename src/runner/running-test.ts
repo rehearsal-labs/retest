@@ -156,6 +156,8 @@ type CommandMessage = Extract<ChildMessage, { type: 'command' }>
 type AssertionRecord = Extract<EventBody, { type: 'assertion.passed' | 'assertion.failed' }>
 /** A look the browser was lost during, or while its check waited for the next: its app and the loss it fails with. */
 type LostLook = { app: string; failure: Failure }
+/** A check's look the parent's stop answered or refused: the app it looked at and the check's place in the test. */
+type StoppedLook = { app: string; location: SourceLocation | undefined }
 /** Work running on an app that another command may not overlap: as the test writes it, and where. */
 type Busy = { label: string; location: SourceLocation | undefined }
 /** An AI check the parent is running, and the apps whose pages it captures. */
@@ -214,7 +216,8 @@ type SentCommand = { app: string; stamp: NavigationStamp }
  * refused is refused here, with a failure the parent records.
  * Stopping a test revokes it: later commands are refused,
  * commands in flight are answered and stopped in the page, the child is asked to abort, and a child that
- * does not answer within the grace period is killed. A test that runs out of time also ends its process,
+ * does not answer within the grace period is killed. A check the stop cut short, and a test whose child answers with
+ * such a check, fail with the stop, wherever in the check it landed. A test that runs out of time also ends its process,
  * whether it answered or not, because code from it may still be running there.
  */
 export class RunningTest {
@@ -263,6 +266,10 @@ export class RunningTest {
   #lostLook: LostLook | undefined
   /** Settles once the check that was looking when the browser was lost has reported, or the test is over. */
   #checkReported: PromiseWithResolvers<void> | undefined
+  /** The looks of checks the stop cut short, until each check has reported. */
+  readonly #stoppedLooks: StoppedLook[] = []
+  /** What the process said of each check the stop cut short, which its verdict may lead with. */
+  readonly #stoppedChecks: Failure[] = []
   readonly #observed: Failure[] = []
   #report: BodyReport | undefined
   #assertionsSeen = 0
@@ -342,9 +349,15 @@ export class RunningTest {
     for (const page of this.#options.pages.values()) if (page instanceof NativePageAdapter) page.cancel(reason)
     this.#completeAnswered()
     for (const entry of this.#inFlight.values()) {
+      this.#noteStoppedLook(entry.message)
       this.#answer(entry, { ok: false, failure: withLocation(reason, entry.message.location) })
       entry.stop.abort(reason)
     }
+  }
+
+  // A check whose look the stop answers or refuses is cut short by the stop, whatever its process then says of it.
+  #noteStoppedLook({ app, command, location }: CommandMessage): void {
+    if (isLook(command) && command.check === true) this.#stoppedLooks.push({ app, location })
   }
 
   #abort(reason: Failure, graceMs: number): void {
@@ -461,7 +474,10 @@ export class RunningTest {
     if (!this.#isOwn(message)) return this.#violation('sent a command for an inactive test attempt')
     if (this.#deadline?.reached === true) this.#runOutOfTime()
     const refusal = this.#report === undefined ? this.#revocation : failure('usage', 'No test is running, so Retest sent nothing to the page.')
-    if (refusal !== undefined) return this.#send(message.id, { ok: false, failure: withLocation(refusal, message.location) })
+    if (refusal !== undefined) {
+      if (this.#report === undefined) this.#noteStoppedLook(message)
+      return this.#send(message.id, { ok: false, failure: withLocation(refusal, message.location) })
+    }
     const page = this.#options.pages.get(message.app) ?? this.#popupPages.get(message.app)
     if (page === undefined) return this.#violation(`sent a command for the app ${JSON.stringify(message.app)}, which this test does not use`)
     if (this.#inFlight.has(message.id) || this.#evaluating.has(message.id) || this.#inboxReads.has(message.id)) return this.#violation(`sent command ${message.id} again while the first was still running`)
@@ -809,16 +825,18 @@ export class RunningTest {
   }
 
   // Whose failure leads a failed check, and whether the parent saw it for itself. A loss the parent saw while the check
-  // looked leads, since it cut the check short. Otherwise the parent's own rule on the look the check names decides: where
-  // it fails, the parent's failure leads and the process's follows in `also`, so a process can never turn a failure the
-  // parent saw into a loss, a setup failure, a timeout or any other class. A web check whose process sent one of the classes
-  // a poller gives a check its time ran out on keeps the process's words, which say how long it looked: each of them fails
-  // the test on the app, with the same status and exit code. A native check's failure is always the parent's,
-  // since only the parent's tree read names the element. With no look, or a look the check passes on, the process's
-  // failure stands as its claim.
+  // looked leads, since it cut the check short, and so does the parent's own stop of a check it cut short. Otherwise the
+  // parent's own rule on the look the check names decides: where it fails, the parent's failure leads and the process's
+  // follows in `also`, so a process can never turn a failure the parent saw into a loss, a setup failure, a timeout or any
+  // other class. A web check whose process sent one of the classes a poller gives a check its time ran out on keeps the
+  // process's words, which say how long it looked: each of them fails the test on the app, with the same status and exit
+  // code. A native check's failure is always the parent's, since only the parent's tree read names the element. With no
+  // look, or a look the check passes on, the process's failure stands as its claim.
   #parentVerdict(event: AssertionRecord, { app, check, nativeFailure }: { app: string | undefined; check: CheckRecord | undefined; nativeFailure: Failure | undefined }): { event: AssertionRecord; origin: EventOrigin; seen: boolean } {
     const lost = this.#lostCheck(event, app)
     if (lost.origin === 'parent') return { ...lost, seen: true }
+    const stopped = this.#stoppedCheck(event, app)
+    if (stopped !== undefined) return { event: stopped, origin: 'parent', seen: true }
     if (event.type !== 'assertion.failed') return { event, origin: 'child', seen: false }
     const own = nativeFailure ?? (event.observationId === undefined || check === undefined ? undefined : this.#observations.lookFailure(event.observationId, check))
     if (own === undefined) return { event, origin: 'child', seen: false }
@@ -852,6 +870,23 @@ export class RunningTest {
     if (lost === undefined || event.type !== 'assertion.failed' || app !== lost.app || !lossClasses.has(event.failure.class)) return { event, origin: 'child' }
     this.#lostLook = undefined
     return { event: { ...event, failure: withAlso(withLocation(lost.failure, event.location), [event.failure]) }, origin: 'parent' }
+  }
+
+  // A check the parent's stop cut short failed because of the stop, which the parent saw: the stop leads, at the check's
+  // place, and what the process says of it follows, as for a loss. The earlier look it names is not judged, since a
+  // check that misses a look looks again and this one was stopped before it could. A check was cut short when the stop
+  // answered or refused one of its looks, whatever class its process then gives it: a check whose time was cut to the
+  // test's sees its own time run out with the test's, and reports the look before as a failed check. A check that failed
+  // as interrupted was cut short too: that is how the process ends a check whose look it refused itself once it was told
+  // to stop. A check that ended on its own before the stop reached it keeps its process's failure.
+  #stoppedCheck(event: AssertionRecord, app: string | undefined): AssertionRecord | undefined {
+    const reason = this.#revocation
+    if (reason === undefined || event.type !== 'assertion.failed') return undefined
+    const index = this.#stoppedLooks.findIndex((look) => look.app === app && sameLocation(look.location, event.location))
+    if (index === -1 && event.failure.class !== 'interrupted') return undefined
+    if (index !== -1) this.#stoppedLooks.splice(index, 1)
+    this.#stoppedChecks.push(event.failure)
+    return { ...event, failure: withAlso(withLocation(reason, event.location), [event.failure]) }
   }
 
   // The parent captures the evidence and asks the judge itself; the test file's process only says what to judge, and
@@ -1007,11 +1042,15 @@ export class RunningTest {
 
   // A test the parent stopped has failed for that reason, unless the child recorded an earlier failure. A child whose
   // first failure is the stop itself, as the answer to a command the stop cut short, only repeats the reason at that
-  // command's place; the reason stands as the parent gave it, as it does when the process ends before it answers.
+  // command's place, and one whose first failure is a check the stop cut short only says how that check ended; the
+  // reason stands as the parent gave it, as it does when the process ends before it answers.
   #verdict(message: Extract<TestFileMessage, { type: 'test-finished' }>): { failure?: Failure } {
     const reason = this.#revocation
     const own = message.failure
-    if (reason !== undefined) return { failure: own === undefined || repeats(own, reason) ? reason : withAlso(own, [reason]) }
+    if (reason !== undefined) {
+      if (own === undefined || repeats(own, reason) || this.#stoppedChecks.some((check) => sameReport(own, check))) return { failure: reason }
+      return { failure: withAlso(own, [reason]) }
+    }
     if (message.status === 'passed') return {}
     return { failure: own ?? failure('test_error', 'The test process reported a failure without a reason.') }
   }
@@ -1111,6 +1150,15 @@ function documentFields(document: PageDocument | undefined): PageFields {
 // The same failure, as `withAlso` counts a repeat: its class and its words, wherever it was placed.
 function repeats(own: Failure, reason: Failure): boolean {
   return own.class === reason.class && own.message === reason.message
+}
+
+// The failure a process reported for a check, as its verdict leads with it: the same class, words and place.
+function sameReport(own: Failure, reported: Failure): boolean {
+  return repeats(own, reported) && sameLocation(own.location, reported.location)
+}
+
+function sameLocation(first: SourceLocation | undefined, second: SourceLocation | undefined): boolean {
+  return first?.file === second?.file && first?.line === second?.line && first?.column === second?.column
 }
 
 function stampOf(stepId: string | undefined, location: SourceLocation | undefined): NavigationStamp {

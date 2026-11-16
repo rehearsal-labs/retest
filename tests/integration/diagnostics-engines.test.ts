@@ -676,6 +676,9 @@ test('waits on a request that never ends', async ({ page }) => {
   assert.equal(finished.exit.code, 130, finished.stderr)
   const result = testNamed(finished, 'waits on a request that never ends')
   assert.equal(result.failure?.class, 'interrupted')
+  // The stop comes as the check looks again: mostly while the page holds its second look, else between two later looks
+  // or during one. Wherever it lands, a check that reported before its process was ended reports the stop.
+  for (const check of eventsOf(finished.events, 'assertion.failed')) assert.equal(check.failure.class, 'interrupted', JSON.stringify(check.failure))
   const summary = onlySummary(result)
   assert.ok(summary.network.state === 'complete' && summary.network.pending === 1, `the stop leaves the capture complete, with the hanging request its one pending hop: ${JSON.stringify(summary.network)}`)
   const lines = artifactLines(finished, result)
