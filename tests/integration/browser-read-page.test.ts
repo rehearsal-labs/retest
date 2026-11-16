@@ -7,6 +7,10 @@ import { assertOk, click, goto, observe, openPage, servePages, sharedBrowser, ty
 
 const browser = sharedBrowser()
 
+// No read's own time is the subject here, so each has the time a run gives an action: on GitHub's macOS runner a read of
+// a page that had just moved did not answer within 1000 ms.
+const readMs = 5000
+
 async function sitePage(t: TestContext, pages: Record<string, string>, options?: ServeOptions): Promise<{ url: string; page: OwnedPage }> {
   const site = await servePages(t, pages, options)
   const page = await openPage(t, browser(), site.url)
@@ -22,7 +26,7 @@ function query(text: string, ignoreCase = false): TextQuery {
 async function readUntil(page: OwnedPage, queries: readonly TextQuery[], until: (reading: PageReading) => boolean): Promise<PageReading> {
   const end = performance.now() + 5000
   for (;;) {
-    const reading = await page.readPage(queries, 1000)
+    const reading = await page.readPage(queries, readMs)
     if (until(reading)) return reading
     if (performance.now() > end) assert.fail(`the page still reads ${JSON.stringify(reading)}`)
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -55,7 +59,7 @@ test('the visible text of the top-level document is read as a person reads it, w
     query('around the slot'),
     query('light child'),
   ]
-  assert.deepEqual(await page.readPage(queries, 2000), {
+  assert.deepEqual(await page.readPage(queries, readMs), {
     url: `${url}/`,
     navigating: false,
     found: [true, true, true, false, false, false, false, false, false, false, true],
@@ -66,7 +70,7 @@ test('the address is the main frame origin and path as of its latest commit, wit
   const moving = `<!doctype html><button data-testid="move" onclick="history.pushState(null, '', '/moved?token=1#top')">Move</button>`
   const { url, page } = await sitePage(t, { '/': moving, '/?code=1234': moving })
   assertOk(await goto(page, '/?code=1234#part'))
-  assert.equal((await page.readPage([], 1000)).url, `${url}/`)
+  assert.equal((await page.readPage([], readMs)).url, `${url}/`)
   assertOk(await click(page, 'move'))
   await readUntil(page, [], (reading) => reading.url === `${url}/moved`)
 })
@@ -94,7 +98,7 @@ test('reading sends no input, and moves nothing', async (t) => {
       }
     </script>`,
   })
-  assert.deepEqual((await page.readPage([query('anything')], 1000)).found, [false])
+  assert.deepEqual((await page.readPage([query('anything')], readMs)).found, [false])
   assert.equal((await observe(page, 'heard')).text, '')
 })
 
@@ -123,7 +127,7 @@ test('a document with no body says so, and finds nothing', async (t) => {
   const { url, page } = await sitePage(t, {
     '/': '<!doctype html><title>Feed</title><body><p>Release checklist</p><script>document.body.remove()</script></body>',
   })
-  assert.deepEqual(await page.readPage([query('Release checklist'), query('anything', true)], 2000), {
+  assert.deepEqual(await page.readPage([query('Release checklist'), query('anything', true)], readMs), {
     url: `${url}/`,
     title: 'Feed',
     navigating: false,
