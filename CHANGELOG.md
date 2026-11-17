@@ -2,11 +2,15 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
-## 0.6.0
+## 0.5.2
 
 ### Changed
 
 - **`init` sets a project up from nothing, the install included.** `npx @rehearsal-labs/retest init` adds `@rehearsal-labs/retest`, `typescript` and `@types/node` to `devDependencies`, each one only when neither dependency list has it, and writes `package.json` when there is none. Retest is added at the caret of the version that runs, TypeScript at `^7.0.2` and `@types/node` at `^24.12.0`; a package that is listed keeps its version. When it adds a package, `init` runs the project's install, which prints its own output, with the package manager that `packageManager` names, else the one of the lock file, else the one that started `init`, else npm. It asks first, and Enter means yes. `--install` and `--no-install` answer without asking, and `--yes` installs. Where `init` asks nothing, it installs only with `--yes` or `--install`. A failed install exits 2 and names the command to run yourself, and the files stay. The other files, questions and flags are as they were, and browsers still come from `retest install` alone. Checked with stand-in package managers on Linux, macOS and Windows; no check installs from the registry.
+
+### Fixed
+
+- **A scroll on a phone page zoomed out to fit moves by the CSS pixels asked on Chrome 158 too.** Chrome 158 scales a wheel's delta by the page's zoom itself, which Chrome before it left to Retest, so the zoom was applied twice: on a 412-pixel phone page laid out 980 wide, `scroll({ y: 60 })` moved the page 25 pixels, in the page and in its frames alike. A `chrome()` target on a machine whose Chrome had updated to 158 was affected; `chromium()` runs the pinned 153 and was not. Retest now sends the delta as it is to Chrome and its headless shell from build 158.0.8111.0, the first with Chromium's change, and to Microsoft Edge from 158, and multiplies it by the page's zoom for the builds before. With the fix, one wheel of 60 CSS pixels on that page moved it 60 on Chrome 158.0.8127.36 and the headless shell 158.0.8111.0, as it did on the headless shells 158.0.8110.0 and 157.0.8103.78, Chrome 156.0.8078.80, Chromium 156.0.8078.79, Microsoft Edge 156.0.4314.58, Chrome for Testing 153.0.8010.12 and its headless shell, and Electron 44.5.1 with Chromium 152, on Linux, macOS and Windows. Clicks, taps, hovers and drags on such a page land on the same points on every one of them, so they needed no change.
 
 ## 0.5.1
 

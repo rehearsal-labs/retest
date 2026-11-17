@@ -151,7 +151,7 @@ The first line names the package in full, since npx runs a package the project d
 
 It never overwrites a file, and a package that is listed keeps its version. A file that is already there is reported as "left as is", so running `init` twice changes nothing.
 
-Retest is added at the caret of the version that runs `init`, such as `^0.6.0`; a checkout, whose version is 0.0.0, adds `latest`. TypeScript is added at `^7.0.2`, one of the two lines Retest's types are checked on, and `@types/node` at `^24.12.0`, for the oldest Node Retest runs on.
+Retest is added at the caret of the version that runs `init`, such as `^0.5.2`; a checkout, whose version is 0.0.0, adds `latest`. TypeScript is added at `^7.0.2`, one of the two lines Retest's types are checked on, and `@types/node` at `^24.12.0`, for the oldest Node Retest runs on.
 
 When it adds a package, `init` then runs the project's install with its package manager, which prints its own output: `npm install`, `pnpm install`, `yarn install` or `bun install`. The package manager is the one `packageManager` in `package.json` names, else the one whose lock file is in the folder, else the one that started `init`, such as `pnpm dlx`, else npm. If the install fails, `init` exits with code 2 and says which command to run yourself; the files it wrote stay. `--install` runs the install even when no package was added.
 
@@ -977,7 +977,8 @@ Action events record the key in `key`, as the test wrote it. Reports write a pre
 - `x` and `y` are CSS pixels, positive right and down. Both missing or 0, or either not a finite number, fails `usage`.
 - `locator.scroll` needs the checks a click does, and its `wheel` event must reach the element or something inside it. A `wheel` another element takes is stopped before it reaches that element, and the scroll fails `not_actionable`, naming that element. A wheel listener the page puts on the window in the capture phase hears it first, since Retest listens for the wheel only while a scroll is on its way. `page.scroll` has no checks.
 - One wheel event carries the whole distance. The scroll passes once that event reached its element. It says nothing about how far the page moved, since smooth scrolling may still be going. The next action waits for its element to stand still.
-- The distance is the CSS pixels the page scrolls, also on an emulated phone whose page is zoomed out to fit. What the page's own `WheelEvent.deltaY` reads on a page with an emulated device pixel ratio was not checked.
+- The distance is the CSS pixels the page scrolls, also on an emulated phone whose page is zoomed out to fit, and in a frame on such a page. Chrome reads a wheel's delta in CSS pixels from build 158.0.8111.0, and in the viewport's own pixels before it, so Retest sends an older build the distance times the page's zoom. It goes by the version the browser reports: Chrome's build, the Chromium build of an Electron app, and Microsoft Edge's major version.
+- The page's own `WheelEvent.deltaY` is not the distance on such a page. For 60 pixels on a 412-pixel phone page zoomed out to 0.42, at a pixel ratio of 2.625, it read 22.9 in the page and in a frame of the page's own origin. In a frame of another site it read 60 on Chrome 158 and 25.2 on the builds before.
 - On a touch screen, `scroll` still turns the wheel. It does not swipe.
 - Retest listens for `wheel` only while a scroll is on its way, so the page scrolls as it always does.
 - Every action already brings its element into view. Scroll only for what the page does on scroll, such as loading more items, or enabling a button once a text has been read to its end.

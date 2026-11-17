@@ -23,7 +23,7 @@ export const packageScripts: Readonly<Record<string, string>> = {
  * which `erasableSyntaxOnly` needs 5.8 or later. @types/node follows Node 24.12, the oldest Node Retest runs on and the
  * line the workflow `init` writes installs; a later line would describe APIs that Node 24 does not have.
  *
- * @example projectPackages('0.6.0') // { '@rehearsal-labs/retest': '^0.6.0', typescript: '^7.0.2', '@types/node': '^24.12.0' }
+ * @example projectPackages('0.5.2') // { '@rehearsal-labs/retest': '^0.5.2', typescript: '^7.0.2', '@types/node': '^24.12.0' }
  */
 export function projectPackages(version: string): Readonly<Record<string, string>> {
   return { [packageName]: version === '0.0.0' ? 'latest' : `^${version}`, typescript: '^7.0.2', '@types/node': '^24.12.0' }
