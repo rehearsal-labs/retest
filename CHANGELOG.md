@@ -2,6 +2,12 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## 0.6.0
+
+### Changed
+
+- **`init` sets a project up from nothing, the install included.** `npx @rehearsal-labs/retest init` adds `@rehearsal-labs/retest`, `typescript` and `@types/node` to `devDependencies`, each one only when neither dependency list has it, and writes `package.json` when there is none. Retest is added at the caret of the version that runs, TypeScript at `^7.0.2` and `@types/node` at `^24.12.0`; a package that is listed keeps its version. When it adds a package, `init` runs the project's install, which prints its own output, with the package manager that `packageManager` names, else the one of the lock file, else the one that started `init`, else npm. It asks first, and Enter means yes. `--install` and `--no-install` answer without asking, and `--yes` installs. Where `init` asks nothing, it installs only with `--yes` or `--install`. A failed install exits 2 and names the command to run yourself, and the files stay. The other files, questions and flags are as they were, and browsers still come from `retest install` alone. Checked with stand-in package managers on Linux, macOS and Windows; no check installs from the registry.
+
 ## 0.5.1
 
 Fixes found while releasing 0.5.0, on GitHub's Linux, macOS and Windows machines.

@@ -133,11 +133,12 @@ The tests start their own fixture servers and browsers with temporary profiles, 
 ## Start a project
 
 ```sh
-npm install -D /tmp/rehearsal-labs-retest-0.0.0.tgz typescript @types/node
-npx retest init
+npx @rehearsal-labs/retest init
 npx retest doctor
 npx retest run
 ```
+
+The first line names the package in full, since npx runs a package the project does not have yet, and on npm `retest` alone is another package. Once `init` has installed Retest, `npx retest` runs the project's own.
 
 `retest init` writes four things and changes two:
 
@@ -145,12 +146,16 @@ npx retest run
 - `tests/example.retest.ts`;
 - `tests/tsconfig.json`, which extends the project's own `tsconfig.json` when there is one and lets `tsc` pass what Retest loads and refuse what it does not; see [TypeScript and imports](#typescript-and-imports);
 - `.github/workflows/retest.yml`, only with `--ci github`;
-- the `test:e2e` and `typecheck:e2e` scripts in `package.json`, which it creates when there is none;
+- `package.json`, which it creates for ES modules when there is none: the `test:e2e` and `typecheck:e2e` scripts, and `@rehearsal-labs/retest`, `typescript` and `@types/node` in `devDependencies`, each one only when neither `dependencies` nor `devDependencies` lists it;
 - `.retest/` in `.gitignore`.
 
-It never overwrites a file. A file that is already there is reported as "left as is", so running `init` twice changes nothing. It installs nothing; it prints the install command.
+It never overwrites a file, and a package that is listed keeps its version. A file that is already there is reported as "left as is", so running `init` twice changes nothing.
 
-It asks questions only at a terminal where no coding agent is detected. Each question has a flag: `--app name=url`, `--start "command"` and `--browser chromium|chrome|edge`. `--yes` takes the default for every question without a flag. The default browser is the first one installed where Retest looks: Chrome, then Edge, then Chromium from `RETEST_CHROMIUM`.
+Retest is added at the caret of the version that runs `init`, such as `^0.6.0`; a checkout, whose version is 0.0.0, adds `latest`. TypeScript is added at `^7.0.2`, one of the two lines Retest's types are checked on, and `@types/node` at `^24.12.0`, for the oldest Node Retest runs on.
+
+When it adds a package, `init` then runs the project's install with its package manager, which prints its own output: `npm install`, `pnpm install`, `yarn install` or `bun install`. The package manager is the one `packageManager` in `package.json` names, else the one whose lock file is in the folder, else the one that started `init`, such as `pnpm dlx`, else npm. If the install fails, `init` exits with code 2 and says which command to run yourself; the files it wrote stay. `--install` runs the install even when no package was added.
+
+It asks questions only at a terminal where no coding agent is detected. Each question has a flag: `--app name=url`, `--start "command"`, `--browser chromium|chrome|edge`, and `--install` or `--no-install` for the install, which is asked last and is yes unless you say no. `--yes` takes the default for every question without a flag, so it installs. Where `init` asks nothing and `--yes` is not given, a question without a flag gets no answer: the install does not run, and the next steps start with its command. The default browser is the first one installed where Retest looks: Chrome, then Edge, then Chromium from `RETEST_CHROMIUM`.
 
 A project that does not say `"type": "module"` in `package.json` gets a note: add it, or Node guesses each test file's module format and warns that it did.
 

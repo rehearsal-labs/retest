@@ -28,13 +28,14 @@ There is no Playwright, Puppeteer or Selenium underneath. Retest is early, and t
 You need Node.js 24.12 or later, on macOS, Linux or Windows x64. Windows also needs Retest's process supervisor, which [the guide](docs/guide.md#windows) says how to install.
 
 ```sh
-npm install --save-dev @rehearsal-labs/retest typescript @types/node
-npx retest init
+npx @rehearsal-labs/retest init
 ```
+
+`init` writes `retest.config.ts`, an example test and a `tsconfig.json` for your tests. It adds Retest, TypeScript and `@types/node` to `package.json` and installs them with your package manager. It asks for your app's address and browser and whether to install, or takes them as flags: `npx @rehearsal-labs/retest init --app web=http://localhost:3000 --browser chrome --install`. It never overwrites a file.
 
 TypeScript is only for type checks. Retest runs `.ts` test files without it.
 
-`retest init` writes `retest.config.ts`, an example test and a `tsconfig.json` for your tests. It asks for your app's address and browser, or takes them as flags: `npx retest init --app web=http://localhost:3000 --browser chrome`. It never overwrites a file.
+Once Retest is installed, `npx retest` runs it, as below. Before that, give npx the full name: on npm, `retest` alone is another package.
 
 Write your first test in `tests/task.retest.ts`:
 
