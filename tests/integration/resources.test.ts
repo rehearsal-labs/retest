@@ -45,6 +45,13 @@ function testsOf(run: HostedRun | undefined): TestResult[] {
   return run?.result?.files.flatMap((file) => file.tests) ?? []
 }
 
+// Each event of a run at its moment on the run's clock, with the test it is about, so a run that took too long says
+// where its time went.
+function timelineOf(run: HostedRun | undefined): string {
+  const named = (event: RetestEvent): string => ('testId' in event && typeof event.testId === 'string' ? ` (${event.testId.split(' > ').at(-1) ?? ''})` : '')
+  return (run?.events ?? []).map((event) => `${Math.round(event.elapsedMs)} ${event.type}${named(event)}`).join(', ')
+}
+
 function ofAttempt<Type extends RetestEvent['type']>(events: readonly RetestEvent[], type: Type, attemptId: string): Extract<RetestEvent, { type: Type }>[] {
   return eventsOf(events, type).filter((event) => 'attemptId' in event && event.attemptId === attemptId)
 }
@@ -172,17 +179,28 @@ process.stdout.write(JSON.stringify({ exitCode: result.exitCode, after: { host: 
   assert.match(card, new RegExp(`\\n {4}Held by {10}"${ran.testId.replaceAll('.', '\\.')}"\\n`))
 })
 
+// The stopped run is timed from the moment the stop was sent. Timed from the run's start, it also counted the machine's
+// start-up: collecting the files, starting their processes, waiting for the inbox and launching the browser, which took
+// it past the hold on a macOS machine with every CPU busy while nothing waited for the hold (17 November 2026). The hold
+// begins only after the inbox is granted, so a run that ends sooner after the stop than the hold had left when the stop
+// was sent ended before the hold could finish.
+const holdMs = 8000
+
 test('a run stopped while tests wait for the inbox withdraws them, and leaves nothing held or waiting', async (t) => {
   const app = await openApp(t)
   const body = `const budget = new SessionBudget({ perOwner: 3, host: 3 })
 const stop = new AbortController()
 let waitingWhenStopped = -1
+let grantedAt = -1
+let stoppedAt = -1
 const stopper = {
   name: 'stopper',
   onEvent: (event) => {
     if (event.type !== 'lock.acquired' || stop.signal.aborted) return
+    grantedAt = performance.now()
     setTimeout(() => {
       waitingWhenStopped = budget.snapshot().waiting
+      stoppedAt = performance.now()
       stop.abort({ class: 'interrupted', message: 'The host stopped the run while tests waited for the inbox.' })
     }, 400)
   },
@@ -190,21 +208,27 @@ const stopper = {
 }
 const startedAt = performance.now()
 const stopped = await run('stopped', ['tests/a.retest.ts', 'tests/b.retest.ts', 'tests/c.retest.ts'], { workers: 3, signal: stop.signal, reporters: [stopper], sessions: { owner: 'agent-1', budget, waitMs: 60000 } })
-const stoppedMs = Math.round(performance.now() - startedAt)
+const endedAt = performance.now()
+const timing = { runMs: Math.round(endedAt - startedAt), grantToStopMs: Math.round(stoppedAt - grantedAt), sinceStopMs: Math.round(endedAt - stoppedAt) }
 const after = budget.snapshot()
 const next = await run('next', ['tests/next.retest.ts'], { sessions: { owner: 'agent-1', budget, waitMs: 60000 } })
-process.stdout.write(JSON.stringify({ stopped: stopped.exitCode, stoppedMs, waitingWhenStopped, after: { host: after.host, waiting: after.waiting }, next: next.exitCode }) + '\\n')`
+process.stdout.write(JSON.stringify({ stopped: stopped.exitCode, timing, waitingWhenStopped, after: { host: after.host, waiting: after.waiting }, next: next.exitCode }) + '\\n')`
   const files: Record<string, string> = { 'package.json': '{ "type": "module" }\n', 'host.ts': hostProgram(app.url, body) }
-  for (const letter of ['a', 'b', 'c']) files[`tests/${letter}.retest.ts`] = file(holdingTest(`${letter} holds the inbox`, "{ locks: ['inbox'] }", 'stopped', 8000))
+  for (const letter of ['a', 'b', 'c']) files[`tests/${letter}.retest.ts`] = file(holdingTest(`${letter} holds the inbox`, "{ locks: ['inbox'] }", 'stopped', holdMs))
   files['tests/next.retest.ts'] = file(holdingTest('takes a session at once', '{}', 'next', 0))
   const root = await writeProject(t, files)
   const hosted = await runHostProgram(t, root, 'host.ts', ['stopped', 'next'])
   assert.equal(hosted.code, 0, hosted.stderr)
   const printed = printedOf(hosted.stdout)
-  assert.ok(typeof printed['stoppedMs'] === 'number' && printed['stoppedMs'] < 8000, `the stopped run ended in ${String(printed['stoppedMs'])} ms, before the hold could finish`)
-  assert.deepEqual({ ...printed, stoppedMs: 0 }, { stopped: 130, stoppedMs: 0, waitingWhenStopped: 0, after: { host: 0, waiting: 0 }, next: 0 }, 'the waiters waited for the inbox, not for sessions; afterwards nothing is held or waiting')
-
   const stopped = hosted.runs['stopped']
+  const timing = printed['timing']
+  assert.ok(typeof timing === 'object' && timing !== null && 'runMs' in timing && 'grantToStopMs' in timing && 'sinceStopMs' in timing, JSON.stringify(printed))
+  const { runMs, grantToStopMs, sinceStopMs } = timing
+  assert.ok(typeof runMs === 'number' && typeof grantToStopMs === 'number' && typeof sinceStopMs === 'number' && grantToStopMs >= 0, JSON.stringify(timing))
+  t.diagnostic(`The stopped run took ${runMs} ms, ${sinceStopMs} ms of them after the stop, sent ${grantToStopMs} ms after the inbox was granted: ${timelineOf(stopped)}`)
+  assert.ok(sinceStopMs < holdMs - grantToStopMs, `the stopped run ended ${sinceStopMs} ms after the stop, sent ${grantToStopMs} ms after the inbox was granted, so before the hold could finish: ${timelineOf(stopped)}`)
+  assert.deepEqual({ ...printed, timing: 0 }, { stopped: 130, timing: 0, waitingWhenStopped: 0, after: { host: 0, waiting: 0 }, next: 0 }, 'the waiters waited for the inbox, not for sessions; afterwards nothing is held or waiting')
+
   assert.ok(stopped?.result !== undefined)
   assert.equal(stopped.result.status, 'interrupted')
   const acquired = eventsOf(stopped.events, 'lock.acquired')
