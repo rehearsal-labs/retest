@@ -509,6 +509,10 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     }
   }
 
+  openingDocument(): boolean {
+    return this.#opening() !== undefined
+  }
+
   async screenshot(timeoutMs: number): Promise<Uint8Array> {
     const deadline = new Deadline(timeoutMs)
     for (;;) {

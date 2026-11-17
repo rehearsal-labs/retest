@@ -53,6 +53,8 @@ export type FakeOptions = {
   /** A page waits for this before it closes. */
   holdClosing?: (index: number) => Promise<void>
   screenshotFails?: boolean
+  /** A screenshot never answers, as a capture Chromium is asked for while its page is between documents can. */
+  screenshotHangs?: boolean
   launchFails?: string
   /** A launch waits for this before its browser is up, as a browser slow to start does. */
   holdLaunch?: () => Promise<void>
@@ -310,7 +312,12 @@ export class FakePage implements OwnedPage {
 
   async screenshot(): Promise<Uint8Array> {
     if (this.#browser.options.screenshotFails === true) throw new Error('The page could not be captured.')
+    if (this.#browser.options.screenshotHangs === true) return new Promise<Uint8Array>(() => {})
     return new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+  }
+
+  openingDocument(): boolean {
+    return this.navigating
   }
 
   async readPage(queries: readonly TextQuery[]): Promise<PageReading> {

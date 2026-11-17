@@ -72,12 +72,19 @@ export async function openPage(context: PagesContext, browser: OwnedBrowser, opt
 }
 
 /**
+ * How the test a failure screenshot is for ended: it ran out of its time, or it failed otherwise. A test out of time
+ * waits for the picture of a page still opening another document only as long as its stopped process gets to answer;
+ * every other failure waits for its picture within the cleanup budget.
+ */
+export type FailureEnding = 'timed_out' | 'failed'
+
+/**
  * Takes a screenshot of each page still reachable. Evidence never replaces the failure it illustrates; when it
  * cannot be taken, the reason is recorded.
  */
-export async function captureFailure(context: PagesContext, pages: readonly AppPage[]): Promise<Evidence[]> {
+export async function captureFailure(context: PagesContext, pages: readonly AppPage[], ending: FailureEnding): Promise<Evidence[]> {
   const evidence: Evidence[] = []
-  for (const page of pages) evidence.push(...(await screenshot(context, page)))
+  for (const page of pages) evidence.push(...(await screenshot(context, page, ending)))
   return evidence
 }
 
@@ -138,7 +145,7 @@ export async function disposePages(context: PagesContext, pages: readonly AppPag
 
 // The screenshot's event and its entry in the result name the session that took it, what took it, and when it came
 // back, as an ISO time and on the run's clock.
-async function screenshot(context: PagesContext, { app, page, browser, session, popup }: AppPage): Promise<Evidence[]> {
+async function screenshot(context: PagesContext, { app, page, browser, session, popup }: AppPage, ending: FailureEnding): Promise<Evidence[]> {
   if (context.interruption() !== undefined) return []
   const { testId, attemptId, named } = context
   const { sessionId } = session
@@ -157,10 +164,18 @@ async function screenshot(context: PagesContext, { app, page, browser, session, 
   const askedUs = context.pixels?.clock()
   const before = withheldBy(context, { testId, attemptId, app, sessionId }, source)
   if (before !== undefined) return withheld(before)
+  // A page on its way to another document may have no picture to give: on a fresh macOS machine in CI, a capture asked
+  // for then went unanswered for 9999 ms, though the next document had painted a second in (17 November 2026). A test
+  // out of time waits for that picture only the second its stopped process gets to answer, and keeps it when it comes.
+  const opening = ending === 'timed_out' && page.openingDocument?.() === true
+  const captureMs = opening ? abortGraceMs : cleanup
   let nativeCapture: Awaited<ReturnType<NativePageAdapter['capture']>> | undefined
-  const capturing = page instanceof NativePageAdapter ? page.capture(cleanup).then((captured) => { nativeCapture = captured; if (!captured.ok) throw new NativeError(captured.failure); return captured.capture.png }) : page.screenshot(cleanup)
-  const shot = await bounded(capturing, timerMs(cleanup + abortGraceMs), context.stopped)
+  const capturing = page instanceof NativePageAdapter ? page.capture(captureMs).then((captured) => { nativeCapture = captured; if (!captured.ok) throw new NativeError(captured.failure); return captured.capture.png }) : page.screenshot(captureMs)
+  const shot = await bounded(capturing, timerMs(opening ? abortGraceMs : cleanup + abortGraceMs), context.stopped)
   if (shot.status === 'stopped') return []
+  if (opening && shot.status !== 'done' && context.connected(browser)) {
+    return unavailable(`The page was still opening another document when the test ran out of time, and gave no picture within ${abortGraceMs} ms.`)
+  }
   if (shot.status === 'timed_out') return unavailable(`Taking a screenshot took longer than ${cleanup} ms.`)
   if (shot.status === 'failed') return unavailable(`Retest could not take a screenshot: ${errorMessage(shot.error)}`)
   // A screenshot asked for before a stretch began and back after it may show the secret, so it is asked about again.

@@ -340,6 +340,12 @@ export interface OwnedPage extends NavigationCapability, StorageStateCapability 
   execute(command: BrowserCommand, timeoutMs: number, signal?: AbortSignal, commandToken?: number): Promise<CommandResult>
   screenshot(timeoutMs: number): Promise<Uint8Array>
   /**
+   * Whether the main frame is on its way to another document, as `readPage` reports `navigating`: from the moment the
+   * page asks for one, or the browser begins one, until it commits or the browser gives it up. A capability of Chromium
+   * pages, answered at once from what the page has been told, with no call to the browser.
+   */
+  openingDocument?(): boolean
+  /**
    * A picture for a screenshot comparison, a capability of Chromium pages: the viewport, or the one shown element
    * `request.locator` finds, clipped to its box, with the device scale factor it was taken at, within `timeoutMs`. Sends
    * no input. Absent on a driver that has only `screenshot`, whose comparisons take the viewport alone.

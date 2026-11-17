@@ -1268,7 +1268,7 @@ export class RunSession {
     const recordings = recorder === undefined ? {} : { recordings: await recorder.finish() }
     const verdict = withDiagnosticsFailure(withEvaluationFailures({ reported: report.failure ?? checked?.failure, recorded: await evaluations.failures(), observed }), diagnosed.failure)
     // The popups still open are pictured and closed with the pages, each before the page that opened it.
-    const evidence = verdict === undefined ? [] : await captureFailure(context, [...pages, ...popups.open()])
+    const evidence = verdict === undefined ? [] : await captureFailure(context, [...pages, ...popups.open()], report.timedOut ? 'timed_out' : 'failed')
     const unsaved = verdict === undefined ? await this.#saveSetupState(context, described, pages) : undefined
     const browserLost = pages.some((page) => !this.#connected(page.browser))
     const { cleanupFailures, leftOpen } = await this.#closePages(context, [...popups.open(), ...pages])

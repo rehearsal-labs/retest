@@ -3,6 +3,7 @@ import type { FinishedRun, StartedRun } from './cli-harness.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
+import { abortGraceMs } from '../../src/runner/running-test.ts'
 import { openApp } from './browser-harness.ts'
 import {
   budgets,
@@ -25,11 +26,11 @@ import { killBrowserFromOutside } from './outside-kill.ts'
 
 // From the timed-out test's start to the run's end: opening its page, its budget, the second its stopped process has
 // to answer, the failure screenshot, then closing the page and the browser. Starting the browser comes before the test
-// starts and is not counted: on a busy machine that alone can take seconds. The screenshot waits for the page's next
-// frame within the run's cleanup budget: on a fresh macOS machine in CI, where the stop lands while the machine's first
-// page opens its document, that wait took from 1.5 s to the whole budget, so the bound allows that budget beside the ten
-// seconds the rest was given (16 November 2026).
-const timeoutBoundMs = defaultTimeouts.cleanup + 10_000
+// starts and is not counted: on a busy machine that alone can take seconds. A test out of time whose page is still
+// opening another document waits a second for its screenshot, not the cleanup budget: on a fresh macOS machine in CI,
+// where the stop lands while the machine's first page opens its document, a capture asked for then went unanswered for
+// the whole budget.
+const timeoutBoundMs = 10_000
 
 async function runTimeout(t: TestContext, name: string): Promise<FinishedRun> {
   const app = await openApp(t)
@@ -44,6 +45,7 @@ async function runTimeout(t: TestContext, name: string): Promise<FinishedRun> {
   const tookMs = finished.elapsedMs - started.elapsedMs
   // What the run did in that time, each event with its moment, so a run that took too long says where the time went.
   const since = run.events.filter((event) => event.elapsedMs >= started.elapsedMs).map((event) => `${Math.round(event.elapsedMs - started.elapsedMs)} ${event.type}`)
+  t.diagnostic(`From the test's start: ${since.join(', ')}`)
   assert.ok(tookMs < timeoutBoundMs, `took ${tookMs} ms from the test's start to the run's end: ${since.join(', ')}`)
   return run
 }
@@ -68,6 +70,26 @@ test('timeout: a test waiting for something that never comes is stopped, and the
 test('timeout: a test stuck in an endless loop is ended with its process, and the rest of its file does not run', async (t) => {
   const run = await runTimeout(t, 'loop-timeout')
   assertTimedOut(run, 'loops forever', 'runs after the loop')
+})
+
+// Chrome gives the picture of the page it still shows at once on Linux, and on a fresh macOS machine can give none, so
+// either is right; what is never right is no word at all, or a wait of the cleanup budget for it.
+test('timeout: a test out of time while its page opens a document the app holds waits a second for its screenshot, and keeps it or says why not', async (t) => {
+  const run = await runTimeout(t, 'held-navigation-timeout')
+  assert.equal(run.exit.code, 1)
+  const timedOut = testNamed(run, 'opens a document the app holds')
+  assert.deepEqual([timedOut.status, timedOut.failure?.class], ['failed', 'timeout'])
+  assert.match(timedOut.failure?.message ?? '', /longer than its 2000 ms budget/)
+  const captured = eventsOf(run.events, 'evidence.captured').filter((event) => event.attemptId === timedOut.attemptId)
+  const gaps = eventsOf(run.events, 'evidence.failed').filter((event) => event.attemptId === timedOut.attemptId)
+  const pictured = [...captured, ...gaps]
+  assert.equal(pictured.length, 1, 'the screenshot was taken or its absence said, once')
+  if (captured.length === 1) assert.equal(timedOut.evidence.length, 1, 'the picture the page gave is kept')
+  else assert.deepEqual([gaps[0]?.message, timedOut.evidence], [`The page was still opening another document when the test ran out of time, and gave no picture within ${abortGraceMs} ms.`, []])
+  t.diagnostic(captured.length === 1 ? 'The page gave its picture.' : 'The page gave no picture within the second.')
+  const stoppedAt = onlyEvent(run.events, 'action.failed').elapsedMs
+  const answeredAt = pictured[0]?.elapsedMs ?? Number.POSITIVE_INFINITY
+  assert.ok(answeredAt - stoppedAt < defaultTimeouts.cleanup, `the screenshot was settled ${answeredAt - stoppedAt} ms after the test ran out of time, within less than the cleanup budget`)
 })
 
 test('timeout: the next file still runs, in a new process, after a test in the previous file timed out', async (t) => {
