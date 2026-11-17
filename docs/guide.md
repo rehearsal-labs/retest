@@ -1345,7 +1345,7 @@ Each test file runs in a process of its own, and each test gets new browser cont
 
 A file is loaded once to collect its tests, and again each time the run visits it: usually twice, and more when its setups run in a visit of their own before its tests. Code at the top level of a file runs on every load.
 
-Because tests in one process share it, code one test leaves behind can fail another. An error from a timer or callback an earlier test started fails whichever test is running when it throws. Its message says an earlier test may be the cause, and gives the `file:line` that threw. An error thrown while no test runs fails the file itself. The tests left in the file do not run, and the run is incomplete. A process that ends badly while no test runs, as on a `process.exit(3)` in a timer, fails the file too. Once Retest has asked the process to close and it has said that its work is done, how it ends fails nothing, and `logs/<file>.log` says how it ended.
+Because tests in one process share it, code one test leaves behind can fail another. An error from a timer or callback an earlier test started fails whichever test is running when it throws. Its message says an earlier test may be the cause, and gives the `file:line` that threw. An error thrown while no test runs fails the file itself. The tests left in the file do not run, and the run is incomplete. A process that ends badly while no test runs, as on a `process.exit(3)` in a timer, fails the file too. Once Retest has asked the process to close and it has said that its work is done, how it ends fails nothing, even when it has not exited a second later and Retest ends it, and `logs/<file>.log` says how it ended.
 
 A test that runs out of time ends its file's process, because its code may still be running there. The command it was waiting on is stopped in the page: input not yet sent is never sent, and input already sent is not taken back. The file's remaining tests do not run. The next file runs in a new process. Retest never reruns a test.
 
@@ -1806,7 +1806,7 @@ Every wait answers to one of these budgets. The defaults are collection 10000, s
 - `setup`: launching a browser, opening each test's pages, and starting an app server without its own `timeoutMs`.
 - `action`, `navigation` and `assertion`: one command each, and never more than the test has left. `goto` and every action take `{ timeout }` in milliseconds, as in `click({ timeout: 2000 })`, which shortens that call's budget and never lengthens it: a longer one is cut to the budget. The parent keeps that time, whatever the test file's process claims. The call's `action.completed` or `action.failed` records what it asked for in `callTimeoutMs`, and in `timeoutMs` the time it was given, which is shorter when the budget or the test's time left was. A failure card names the call as the limit only when its timeout was the one applied.
 - `test`: one test.
-- `cleanup`: commands a test left running, the failure screenshots, closing each test's pages, and closing the browsers at the end.
+- `cleanup`: commands a test left running, the failure screenshots, closing each test's pages, and closing the browsers at the end. A test that ran out of its time while its Chromium page was still opening another document waits one second for that page's failure screenshot, not the cleanup budget. A picture that comes within the second is kept; when none comes, its `evidence.failed` event says so.
 
 Two fixed graces of one second sit on top:
 
