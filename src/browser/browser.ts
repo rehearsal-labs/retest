@@ -4,6 +4,7 @@ import type { ChromiumProcess } from './chromium-process.ts'
 import type { NewPageOptions, ProxyOptions, WebRuntime, WebRuntimeIdentity, WebSession } from './contract.ts'
 import type { RecordedWindow } from './default-window.ts'
 import type { ShellHost, ShellParity } from './shell-parity.ts'
+import type { WheelUnits } from './wheel-delta.ts'
 import type { Schema } from '../protocol/schema.ts'
 import { Deadline } from '../protocol/deadline.ts'
 import { errorMessage } from '../protocol/failures.ts'
@@ -21,6 +22,7 @@ import { PopupWatch } from './popups.ts'
 import { recordedWindow } from './default-window.ts'
 import { grantChromeDefaults, shellParity } from './shell-parity.ts'
 import { restoreState } from './storage-state.ts'
+import { wheelUnits } from './wheel-delta.ts'
 
 /** What `Browser.getVersion` said, split into a product name and its version, with the source revision when it gave one. */
 export type BrowserVersion = { product: string; version: string; userAgent: string; revision?: string }
@@ -66,6 +68,7 @@ export class ChromiumBrowser implements WebRuntime {
   // Present for Chrome's headless shell alone, as the product it names itself says.
   readonly #parity: ShellParity | undefined
   readonly #window: RecordedWindow | undefined
+  readonly #wheelUnits: WheelUnits
   readonly #note: ((line: string) => void) | undefined
   readonly #cleanupProblems: string[] = []
   #disconnectReason: string | undefined
@@ -89,6 +92,7 @@ export class ChromiumBrowser implements WebRuntime {
     this.#downloads = new BrowserDownloads(options.connection, options.onListenerError)
     this.#parity = shellParity(options.version, options.host)
     this.#window = options.headless === true ? recordedWindow(options.version) : undefined
+    this.#wheelUnits = wheelUnits(options.version)
     this.#note = options.note
     this.#connection.onDisconnect((reason) => {
       // A pipe that closes is often a browser beginning to exit; its helpers are recorded while it may still be their parent.
@@ -155,6 +159,7 @@ export class ChromiumBrowser implements WebRuntime {
         // Chrome blocks a window opened with no click itself; the shell opens it, and Retest closes it.
         popupGestures: this.#parity === undefined ? 'chrome' as const : 'shell' as const,
         note: this.#note,
+        wheelUnits: this.#wheelUnits,
       }
       return await ChromiumPage.open(pageOptions, deadline)
     } catch (error) {

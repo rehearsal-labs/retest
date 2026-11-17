@@ -1,4 +1,5 @@
 import type { Transport } from '../../src/browser/cdp/transport.ts'
+import type { WheelUnits } from '../../src/browser/wheel-delta.ts'
 import type { Emulation } from '../../src/protocol/emulation.ts'
 import { Channel } from '../../src/browser/cdp/channel.ts'
 import { CdpConnection } from '../../src/browser/cdp/connection.ts'
@@ -88,6 +89,8 @@ export type PageScript = {
   /** Answers commands other than calls, the world's creation and input. */
   other?: (method: string, params: unknown) => Promise<unknown>
   emulation?: Emulation
+  /** How the browser reads a wheel's delta; in the viewport's own pixels, as the pinned Chrome for Testing does, when absent. */
+  wheelUnits?: WheelUnits
 }
 
 export type ScriptedPage = ScriptedSession & {
@@ -101,7 +104,7 @@ export const mainFrame = 'F1'
 const silent: Transport = { listen: () => {}, send: () => ({ written: true, withdraw: () => {} }), close: () => {} }
 
 /** A page over a scripted session, on `http://app.test/start?token=1#top`. */
-export function scriptedPage({ call, input, other, emulation }: PageScript): ScriptedPage {
+export function scriptedPage({ call, input, other, emulation, wheelUnits = 'viewport' }: PageScript): ScriptedPage {
   const scripted = scriptedSession((method, params) => {
     if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 5 })
     if (method.startsWith('Input.')) return input?.(method, params) ?? Promise.resolve({})
@@ -120,6 +123,7 @@ export function scriptedPage({ call, input, other, emulation }: PageScript): Scr
     onListenerError: (error: unknown) => {
       throw error
     },
+    wheelUnits,
   }
   const page = new ChromiumPage(options, { id: mainFrame, url: 'http://app.test/start?token=1#top' })
   const startNavigating = (navigationType = 'differentDocument', loaderId = 'L2') =>

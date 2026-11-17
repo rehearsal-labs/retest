@@ -46,6 +46,7 @@ async function opened(frames: Frames): Promise<{ page: ChromiumPage; methods: st
       throw error
     },
     popups: { watch: { register: () => () => {}, start: async () => {} }, targetId: mainFrame },
+    wheelUnits: 'viewport' as const,
   }
   const page = await ChromiumPage.open(options, new Deadline(2000))
   return { page, methods: scripted.sent.map(({ method }) => method) }

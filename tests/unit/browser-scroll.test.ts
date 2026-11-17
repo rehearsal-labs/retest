@@ -1,4 +1,5 @@
 import type { GuardVerdict } from '../../src/browser/input-guard.ts'
+import type { WheelUnits } from '../../src/browser/wheel-delta.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { wheelFailure } from '../../src/browser/input-guard.ts'
@@ -8,8 +9,11 @@ import { functionsCalled, scriptedPage, value } from './browser-fixtures.ts'
 const page = { href: 'http://app.test/feed', title: 'Feed' }
 const terms = { by: 'testId', value: 'terms' } as const
 
-// A page whose look is ready at `point` with the visual viewport at `scale`, and whose guard saw `verdict`.
-function wheelPage(point: { x: number; y: number }, scale: number, verdict: unknown = { reached: ['wheel'], intercepted: null, landed: '<div>', leaving: null }) {
+const reachedWheel = { reached: ['wheel'], intercepted: null, landed: '<div>', leaving: null }
+
+// A page whose look is ready at `point` with the visual viewport at `scale`, whose guard saw `verdict`, in a browser
+// that reads a wheel's delta in `wheelUnits`.
+function wheelPage(point: { x: number; y: number }, scale: number, verdict: unknown = reachedWheel, wheelUnits: WheelUnits = 'viewport') {
   const ready = { status: 'ready', point, token: 2, via: null, scale, page, plan: null }
   return scriptedPage({
     call: (source) => {
@@ -19,6 +23,7 @@ function wheelPage(point: { x: number; y: number }, scale: number, verdict: unkn
       if (source === disarmFunction) return value(true)
       return Promise.reject(new Error('unexpected call'))
     },
+    wheelUnits,
   })
 }
 
@@ -31,6 +36,12 @@ test('an element is scrolled by one wheel event at its centre, whose delta is in
   assert.deepEqual(await owned.execute({ kind: 'scroll', locator: terms, x: 0, y: 600 }, 1000), { ok: true, kind: 'scroll', page: { url: 'http://app.test/feed', title: 'Feed' } })
   assert.deepEqual(wheels(sent), [{ type: 'mouseWheel', x: 120, y: 340, deltaX: 0, deltaY: 300 }])
   assert.deepEqual(functionsCalled(sent), [prepareFunction, verdictFunction, registrationFunction, disarmFunction])
+})
+
+test('a browser that scales the delta by the page scale itself is sent the CSS pixels as they are', async () => {
+  const { page: owned, sent } = wheelPage({ x: 120, y: 340 }, 0.5, reachedWheel, 'css')
+  assert.deepEqual(await owned.execute({ kind: 'scroll', locator: terms, x: -40, y: 600 }, 1000), { ok: true, kind: 'scroll', page: { url: 'http://app.test/feed', title: 'Feed' } })
+  assert.deepEqual(wheels(sent), [{ type: 'mouseWheel', x: 120, y: 340, deltaX: -40, deltaY: 600 }])
 })
 
 test('the page is scrolled at the centre of the viewport, which the document arms for any of its elements', async () => {

@@ -49,8 +49,8 @@ export async function moveTo(session: CdpSession, point: Point, deadline: Deadli
 }
 
 /**
- * Turns the mouse wheel once at the point, by `delta` in the viewport's own pixels. The browser scrolls whatever
- * scrolls under the point, as it does for a person's wheel, and on a touch screen too.
+ * Turns the mouse wheel once at the point, by `delta` in the units the browser reads it in (`WheelUnits`). The browser
+ * scrolls whatever scrolls under the point, as it does for a person's wheel, and on a touch screen too.
  */
 export async function wheelAt(session: CdpSession, point: Point, delta: Point, deadline: Deadline, dispatch: Dispatch): Promise<void> {
   await dispatch.send(session, 'Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: delta.x, deltaY: delta.y }, deadline)

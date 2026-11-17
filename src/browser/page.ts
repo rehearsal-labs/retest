@@ -13,6 +13,7 @@ import type { PopupArming, PopupGestures, PopupHome, PopupWaitOptions } from './
 import type { RecordedWindow, WindowKind } from './default-window.ts'
 import type { PictureRequest, TakenPicture } from './screenshot.ts'
 import type { ShellParity } from './shell-parity.ts'
+import type { WheelUnits } from './wheel-delta.ts'
 import type { DiagnosticCollection, DiagnosticSink } from '../diagnostics/observations.ts'
 import type { ObserveAfter, CommandResult, PageObservation } from '../protocol/commands.ts'
 import type { Emulation } from '../protocol/emulation.ts'
@@ -69,6 +70,7 @@ import { parityRequests } from './shell-parity.ts'
 import { PageRoutes, RouteTable, type RouteRefusal, type RouteRemoval } from './routes.ts'
 import { takeChromiumPicture } from './screenshot.ts'
 import { readCookies, readLocalStorage, readOriginStorage } from './storage-state.ts'
+import { wheelDelta } from './wheel-delta.ts'
 
 export type PageOptions = {
   connection: CdpConnection
@@ -111,6 +113,8 @@ export type PageOptions = {
   popupGestures?: PopupGestures | undefined
   /** Adds a line to the browser's log. */
   note?: ((line: string) => void) | undefined
+  /** How the browser reads a wheel's delta, by the version it reported. */
+  wheelUnits: WheelUnits
 }
 
 type PointerAction = Extract<BrowserCommand, { kind: 'click' | 'tap' }>
@@ -210,6 +214,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
   // Told each time the main frame sets off for another document: when the page asks for it, and when the browser begins it.
   readonly #navigationStarts: Listeners<string>
   readonly #touch: boolean
+  readonly #wheelUnits: WheelUnits
   readonly #proxyServer: string | undefined
   readonly #causes = new NavigationCauses()
   readonly #choosers: FileChoosers
@@ -339,6 +344,7 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     this.#browserContextId = options.browserContextId
     this.#baseUrl = options.baseUrl
     this.#touch = options.emulation?.touch === true
+    this.#wheelUnits = options.wheelUnits
     this.#proxyServer = options.proxyServer
     this.#origins = new Set(options.restoredOrigins)
     this.#mainFrameId = mainFrame.id
@@ -943,13 +949,14 @@ export class ChromiumPage implements WebSession, ElementIdentity {
     return { ok: true, kind, changed: true, ...(acted.via === undefined ? {} : { via: acted.via }), page: acted.page }
   }
 
-  // The one delta a test gives is in CSS pixels. The browser scrolls a wheel's delta divided by the visual
-  // viewport's scale, as a zoomed-out mobile page shows (fact F6), so the delta sent is multiplied by it.
+  // The one delta a test gives is in CSS pixels. A browser that reads a wheel's delta in the viewport's own pixels
+  // scrolls it divided by the visual viewport's scale, as a zoomed-out mobile page shows, so that browser is sent the
+  // delta multiplied by it; one that reads CSS pixels is sent the delta as it is (wheel-delta.ts).
   async #scroll(command: Extract<BrowserCommand, { kind: 'scroll' }>, deadline: Deadline, dispatch: Dispatch, commandToken: number | undefined): Promise<CommandResult> {
     const problem = scrollProblem(command)
     if (problem !== undefined) return { ok: false, failure: problem }
     const input = ({ point, scale }: ReadyTarget) =>
-      wheelAt(this.#session, pointOf(point), { x: command.x * scale, y: command.y * scale }, deadline, dispatch)
+      wheelAt(this.#session, pointOf(point), wheelDelta(command, scale, this.#wheelUnits), deadline, dispatch)
     const acted = await this.#act({ locator: command.locator, intent: { action: 'scroll', multiline: false }, input, commandToken }, deadline)
     return passed('scroll', acted)
   }

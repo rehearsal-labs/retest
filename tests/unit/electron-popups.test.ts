@@ -414,7 +414,7 @@ describe('the scripts of a page held before its first document', () => {
       return {}
     })
     const { connection } = scriptedConnection()
-    const options = { connection, session: scripted.session, browserContextId: 'C1', baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, onListenerError: (error: unknown) => assert.fail(String(error)) }
+    const options = { connection, session: scripted.session, browserContextId: 'C1', baseUrl: undefined, emulation: undefined, restoredOrigins: [], proxyServer: undefined, onListenerError: (error: unknown) => assert.fail(String(error)), wheelUnits: 'viewport' as const }
     await ChromiumPage.openHeld(options, 'T2', new Deadline(1000), () => undefined)
     const scripts = scripted.sent.filter(({ method }) => method === 'Page.addScriptToEvaluateOnNewDocument').map(({ params }) => (isRecord(params) ? params['source'] : undefined))
     assert.equal(scripts.at(-1), 'globalThis.retestScriptsDocument = document', 'the mark comes after every script it vouches for')

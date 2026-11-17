@@ -59,6 +59,7 @@ import { changeScript } from './page-scripts.ts'
 import { createTemporaryProfile, removeStaleProfiles } from './profiles.ts'
 import { readStartAttempt } from './sandbox-system.ts'
 import { commandLines, explainStartFailure } from './start-failure.ts'
+import { wheelUnits } from './wheel-delta.ts'
 
 // An Electron app driven by the Chromium driver over the debugging pipe of the app's own binary. Electron refuses
 // `Target.createBrowserContext` and `Target.createTarget`, so Retest opens no page of its own: each window the app
@@ -230,7 +231,8 @@ export async function launchElectron(
     const attached = await watch.first(deadline)
     if (attached === undefined) throw new NoWindowError(deadline.budgetMs)
     const { session } = attached
-    const pageOptions = { connection, session, browserContextId: attached.browserContextId === '' ? first.browserContextId : attached.browserContextId, onListenerError }
+    // A wheel's delta is read as the Chromium the app embeds reads it, whose version the handshake gave, not Electron's.
+    const pageOptions = { connection, session, browserContextId: attached.browserContextId === '' ? first.browserContextId : attached.browserContextId, onListenerError, wheelUnits: wheelUnits(version) }
     downloads.window(pageOptions.browserContextId)
     const answeredDialogs = () => watch.handOver()
     // The windows the app opens later are held by the watch, and handed to the window that waits for one.
