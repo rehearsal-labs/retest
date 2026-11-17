@@ -1,8 +1,8 @@
 /**
  * The CLI, started by `main.ts` once the compile cache is on: wires the commands to the runner, the browser and the
  * terminal, runs the one the arguments name, and exits with its code once every write has settled. The runner, the
- * browser launch, the config loader and the app server load only when a command first calls them, so `retest
- * --version` and the commands that need none of them never load that code.
+ * browser launch, the config loader, the app server and init's package install load only when a command first calls
+ * them, so `retest --version` and the commands that need none of them never load that code.
  */
 import type { CliDependencies } from './command.ts'
 import process from 'node:process'
@@ -17,13 +17,18 @@ import { exitCodeAfterOutput, messageTerminal, reportTerminal } from './terminal
 const stdout = reportTerminal(process.stdout)
 const stderr = messageTerminal(process.stderr)
 
-const loadedWhenCalled: Pick<CliDependencies, 'runFiles' | 'collectFiles' | 'loadConfig' | 'launchBrowser' | 'probeReady' | 'startAppServer'> = {
+const loadedWhenCalled: Pick<CliDependencies, 'runFiles' | 'collectFiles' | 'loadConfig' | 'launchBrowser' | 'probeReady' | 'startAppServer' | 'runInstall'> = {
   runFiles: async (options, reporters) => (await import('../runner/run.ts')).runFiles(options, reporters),
   collectFiles: async (options) => (await import('../runner/run.ts')).collectFiles(options),
   loadConfig: async (path) => (await import('../config/load.ts')).loadConfig(path),
   launchBrowser: async (options, timeoutMs) => (await import('../browser/launch.ts')).launchBrowser(options, timeoutMs),
   probeReady: async (url, timeoutMs) => (await import('../runner/app-server.ts')).probeReady(url, timeoutMs),
   startAppServer: async (options, timeoutMs) => (await import('../runner/app-server.ts')).startAppServer(options, timeoutMs),
+  runInstall: async (request) => {
+    // The package manager writes to the same terminal, after what init has already printed.
+    await Promise.all([drain(process.stdout), drain(process.stderr)])
+    return (await import('./init/package-install.ts')).runInstall(request)
+  },
 }
 
 const cli = createCli({

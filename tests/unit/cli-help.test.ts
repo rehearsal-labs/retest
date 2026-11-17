@@ -84,10 +84,10 @@ describe('help', () => {
 
   test('the init and doctor help list every question flag and the config', async () => {
     const init = (await call(['help', 'init'])).stdout
-    for (const option of ['--app <name=url>', '--start <command>', '--browser <name>', '--ci <name>', '--yes']) {
+    for (const option of ['--app <name=url>', '--start <command>', '--browser <name>', '--ci <name>', '--install', '--no-install', '--yes']) {
       assert.ok(init.includes(option), option)
     }
-    assert.match(init, /It installs nothing, and prints the install command\./)
+    assert.match(init, /It adds @rehearsal-labs\/retest, typescript and @types\/node to devDependencies when package\.json does not list them,\ncreating package\.json when there is none, and then runs the package manager's install, such as npm install\./)
     assert.deepEqual(listedOptions((await call(['help', 'doctor'])).stdout), ['config', 'help'])
     assert.match((await call(['help', 'inspect'])).stdout, /--target <app=name> {7}With --test, the target it ran on/)
   })

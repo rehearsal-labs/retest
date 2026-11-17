@@ -8,6 +8,7 @@ import type { Reporter } from '../reporters/reporter.ts'
 import type { AppServerHandle, AppServerOptions } from '../runner/app-server.ts'
 import type { CollectOptions, CollectResult, RunOptions } from '../runner/contract.ts'
 import type { OptionSpecs } from './arguments.ts'
+import type { InstallEnd, InstallRequest } from './init/package-install.ts'
 import type { Prompt } from './prompt.ts'
 import type { Environment, Terminal } from './terminal.ts'
 
@@ -24,6 +25,8 @@ export type CliDependencies = {
   probeReady: (url: string, timeoutMs: number) => Promise<boolean>
   /** Reuses the server that answers at `ready`, or runs the command and waits for it. Throws when it never answers. */
   startAppServer: (options: AppServerOptions, timeoutMs: number) => Promise<AppServerHandle>
+  /** Runs a package manager's install in a project, on this process's terminal, once what was printed is out. */
+  runInstall: (request: InstallRequest) => Promise<InstallEnd>
   version: string
   stdout: Terminal
   stderr: Terminal

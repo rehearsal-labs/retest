@@ -16,6 +16,19 @@ export const packageScripts: Readonly<Record<string, string>> = {
   'typecheck:e2e': `tsc -p ${testTsconfigFile}`,
 }
 
+/**
+ * The packages a project needs, with the range `init` adds each at, in the order they are named to a person. Retest's
+ * range is the caret of the version that runs, or `latest` for a checkout's 0.0.0, which npm has never had. TypeScript
+ * 7 is the newer of the two lines Retest's types are checked on, and has every option the tests' tsconfig sets, of
+ * which `erasableSyntaxOnly` needs 5.8 or later. @types/node follows Node 24.12, the oldest Node Retest runs on and the
+ * line the workflow `init` writes installs; a later line would describe APIs that Node 24 does not have.
+ *
+ * @example projectPackages('0.6.0') // { '@rehearsal-labs/retest': '^0.6.0', typescript: '^7.0.2', '@types/node': '^24.12.0' }
+ */
+export function projectPackages(version: string): Readonly<Record<string, string>> {
+  return { [packageName]: version === '0.0.0' ? 'latest' : `^${version}`, typescript: '^7.0.2', '@types/node': '^24.12.0' }
+}
+
 const identifier = /^[A-Za-z_$][\w$]*$/
 
 /**

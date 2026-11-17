@@ -19,6 +19,12 @@ export type AnswerDefaults = { url: string; start?: string; browser: BrowserName
 
 export type AnswerContext = { flags: AnswerFlags; defaults: AnswerDefaults; prompt: Prompt; interactive: boolean }
 
+/**
+ * What the install question needs: the answer `--install` (true) or `--no-install` (false) gave, if either, `--yes`,
+ * the install command and the packages it installs.
+ */
+export type InstallContext = { flag: boolean | undefined; yes: boolean; command: string; packages: readonly string[]; prompt: Prompt; interactive: boolean }
+
 const defaultAppName = 'web'
 const noStart = 'none'
 const urlExample = 'http://localhost:3000'
@@ -36,7 +42,7 @@ export async function gatherAnswers(context: AnswerContext): Promise<InitAnswers
   if (!context.interactive) {
     if (given === undefined && !flags.yes) {
       throw new UsageError(
-        `init asks questions only at a terminal. Pass --app web=${urlExample}, with --start and --browser if you need them, or --yes to take the defaults.`,
+        `init asks questions only at a terminal. Pass --app web=${urlExample}, with --start, --browser and --install if you need them, or --yes to take the defaults.`,
       )
     }
     const start = flags.start ?? (flags.yes ? defaults.start : undefined)
@@ -49,6 +55,24 @@ export async function gatherAnswers(context: AnswerContext): Promise<InitAnswers
   const browser = flags.browser ?? (await askBrowser(context))
   if (browser === undefined) return undefined
   return answers(app, start === noStart ? undefined : start, browser)
+}
+
+/**
+ * Whether to run the install: as `--install` or `--no-install` says, else as the person answers at a terminal, yes by
+ * default, else yes only with `--yes`, as every question without a flag takes its default only with `--yes`. Undefined
+ * when the person stops answering.
+ *
+ * @example await chooseInstall({ flag: undefined, yes: true, command: 'npm install', packages, prompt, interactive: false }) // true
+ */
+export async function chooseInstall(context: InstallContext): Promise<boolean | undefined> {
+  if (context.flag !== undefined) return context.flag
+  if (!context.interactive) return context.yes
+  return ask<boolean>(context.prompt, `Install ${listWords(context.packages, 'and')} with ${context.command}? (yes)`, (answer) => {
+    const word = answer.toLowerCase()
+    if (word === '' || word === 'y' || word === 'yes') return accept(true)
+    if (word === 'n' || word === 'no') return accept(false)
+    return reject('Answer yes or no.')
+  })
 }
 
 /**
@@ -73,7 +97,7 @@ function answers(app: AppAddress, start: string | undefined, browser: BrowserNam
 }
 
 async function askApp(context: AnswerContext): Promise<AppAddress | undefined> {
-  return ask(context, `What should the tests open? (${context.defaults.url})`, (answer) => {
+  return ask(context.prompt, `What should the tests open? (${context.defaults.url})`, (answer) => {
     const app = appAddress(answer === '' ? context.defaults.url : answer)
     return app === undefined ? reject(`Write a full http or https address, such as ${urlExample}.`) : accept(app)
   })
@@ -81,13 +105,13 @@ async function askApp(context: AnswerContext): Promise<AppAddress | undefined> {
 
 async function askStart(context: AnswerContext): Promise<string | undefined> {
   const offered = context.defaults.start === undefined ? noStart : `${context.defaults.start}, or ${noStart}`
-  return ask(context, `How do you start the app? (${offered})`, (answer) => accept(answer === '' ? (context.defaults.start ?? noStart) : answer))
+  return ask(context.prompt, `How do you start the app? (${offered})`, (answer) => accept(answer === '' ? (context.defaults.start ?? noStart) : answer))
 }
 
 async function askBrowser(context: AnswerContext): Promise<BrowserName | undefined> {
   const { browser, browserPath } = context.defaults
   const found = browserPath === undefined ? browser : `${browser}, found at ${browserPath}`
-  return ask(context, `Which browser: ${listWords(browserNames)}? (${found})`, (answer) => {
+  return ask(context.prompt, `Which browser: ${listWords(browserNames)}? (${found})`, (answer) => {
     const name = answer === '' ? browser : answer.toLowerCase()
     const known = browserNames.find((candidate) => candidate === name)
     if (known !== undefined) return accept(known)
@@ -107,10 +131,10 @@ function reject<T>(problem: string): Reading<T> {
 }
 
 // An answer that does not fit is explained, and the question is asked again.
-async function ask<T>(context: AnswerContext, question: string, read: (answer: string) => Reading<T>): Promise<T | undefined> {
+async function ask<T>(prompt: Prompt, question: string, read: (answer: string) => Reading<T>): Promise<T | undefined> {
   let problem = ''
   for (;;) {
-    const answer = await context.prompt.ask(`${problem}  ${question} › `)
+    const answer = await prompt.ask(`${problem}  ${question} › `)
     if (answer === undefined) return undefined
     const reading = read(answer.trim())
     if (reading.ok) return reading.value

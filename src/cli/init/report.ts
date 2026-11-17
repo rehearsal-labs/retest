@@ -1,39 +1,57 @@
 import type { Style } from '../../reporters/style.ts'
-import type { PackageManager } from './package-manager.ts'
+import type { InstallCommand, PackageManager } from './package-manager.ts'
 import type { FileChange, PackageJson } from './project-files.ts'
 import type { InitAnswers } from './templates.ts'
 import { defaultConfigFile } from '../../reporters/commands.ts'
 import { visibleLength } from '../../reporters/style.ts'
 import { listWords } from '../../shared/list-words.ts'
-import { exampleTestFile, packageName } from './templates.ts'
+import { exampleTestFile } from './templates.ts'
 
-/** What `init` did and found, for the lines it prints. `unused` are flags a config already there made pointless. */
+/**
+ * Where the install stands once `init` is done: run and finished; to do, because packages were added and the
+ * install did not run or failed; or not needed, because no package was added and none was asked for.
+ */
+export type InstallState = 'installed' | 'to do' | 'not needed'
+
+/**
+ * What `init` did and found, for the lines it prints after the files. `unused` are flags a config already there made
+ * pointless, and `packageJson` is package.json as it was before `init`.
+ */
 export type InitReport = {
   changes: readonly FileChange[]
   unused: readonly string[]
   answers: InitAnswers | undefined
   packageJson: PackageJson | undefined
   manager: PackageManager
+  install: { state: InstallState; command: InstallCommand }
   style: Style
 }
 
-const installed = [packageName, 'typescript', '@types/node']
 const nextColumn = 25
 
 /**
- * One line per file, then what the person must do first, then the next commands: the install line when a
- * package is missing, `doctor` and `run`.
+ * One line for each change to a file, package.json's scripts and dev dependencies each on a line of their own.
  *
- * @example stdout.write(renderInitReport({ changes, unused: [], answers, packageJson, manager, style }))
+ * @example stdout.write(renderChanges(changes, style)) // '  created  retest.config.ts\n...'
+ */
+export function renderChanges(changes: readonly FileChange[], style: Style): string {
+  return `${changeLines(changes, style).join('\n')}\n`
+}
+
+/**
+ * What follows the files: whether the packages are installed, what the person must do first, then the next commands:
+ * the install when it is still to do, `doctor` and `run`.
+ *
+ * @example stdout.write(renderInitReport({ changes, unused: [], answers, packageJson, manager, install, style }))
  */
 export function renderInitReport(report: InitReport): string {
   const { style } = report
-  const lines = changeLines(report.changes, style)
+  const lines: string[] = report.install.state === 'installed' ? ['', '  The packages are installed.'] : []
   const notes = reportNotes(report)
   if (notes.length > 0) lines.push('', ...notes.map((note) => `  ${note}`))
   const steps = nextSteps(report)
-  const width = Math.max(nextColumn, ...steps.flatMap(([command, why]) => (why === undefined ? [] : [command.length + 3])))
-  const rows = steps.map(([command, why]) => (why === undefined ? `    ${command}` : `    ${command.padEnd(width)}${style.dim(why)}`))
+  const width = Math.max(nextColumn, ...steps.map(([command]) => command.length + 3))
+  const rows = steps.map(([command, why]) => `    ${command.padEnd(width)}${style.dim(why)}`)
   lines.push('', `  ${style.bold('Next')}`, ...rows)
   return `${lines.join('\n')}\n`
 }
@@ -69,19 +87,11 @@ function reportNotes(report: InitReport): string[] {
   return notes
 }
 
-function nextSteps(report: InitReport): [string, string?][] {
-  const { manager, packageJson } = report
-  const missing = installed.filter((name) => !hasDependency(packageJson, name))
+function nextSteps(report: InitReport): [string, string][] {
+  const { manager, install } = report
   const example = report.changes.some((change) => change.path === exampleTestFile && change.change === 'created')
-  const steps: [string, string?][] = missing.length === 0 ? [] : [[`${manager.addDev} ${missing.join(' ')}`]]
+  const steps: [string, string][] = install.state === 'to do' ? [[install.command.text, 'install the packages in package.json']] : []
   steps.push([`${manager.exec} retest doctor`, 'check the browser and the app'])
   steps.push([`${manager.exec} retest run`, example ? `run ${exampleTestFile}` : 'run the tests'])
   return steps
-}
-
-function hasDependency(packageJson: PackageJson | undefined, name: string): boolean {
-  return ['dependencies', 'devDependencies'].some((field) => {
-    const dependencies = packageJson?.data[field]
-    return typeof dependencies === 'object' && dependencies !== null && Object.hasOwn(dependencies, name)
-  })
 }

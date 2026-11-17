@@ -213,19 +213,22 @@ describe('milestone 2 package: init and a registered consumer', () => {
     }
   })
 
-  test('init --yes in an empty folder writes the config, an example, a tsconfig, package.json and .gitignore', async () => {
+  // --no-install keeps these two off the registry; tests/integration/init-install.test.ts runs the install.
+  test('init --yes --no-install in an empty folder writes the config, an example, a tsconfig, package.json and .gitignore', async () => {
     const tools = await project('tools', {})
     const empty = join(root, 'empty')
     await mkdir(empty)
     const [retest, ...before] = installedRetest(tools)
-    const init = await runProgram(retest, [...before, 'init', '--yes'], empty, { ...process.env, NO_COLOR: '1' })
-    assertSucceeded(init, 'retest init --yes')
+    const init = await runProgram(retest, [...before, 'init', '--yes', '--no-install'], empty, { ...process.env, NO_COLOR: '1' })
+    assertSucceeded(init, 'retest init --yes --no-install')
     assert.deepEqual(Object.keys(snapshot(empty)), ['.gitignore', 'package.json', 'retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json'])
     const written: unknown = JSON.parse(readFileSync(join(empty, 'package.json'), 'utf8'))
+    // The packed checkout is 0.0.0, a version npm never had, so Retest is asked for at its latest.
     assert.deepEqual(written, {
       private: true,
       type: 'module',
       scripts: { 'test:e2e': 'retest run', 'typecheck:e2e': 'tsc -p tests/tsconfig.json' },
+      devDependencies: { '@rehearsal-labs/retest': 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' },
     })
     // The options that let tsc pass what Retest loads and refuse what it does not; with no tsconfig of the project's own,
     // there is nothing to extend.
@@ -247,24 +250,27 @@ describe('milestone 2 package: init and a registered consumer', () => {
     })
     assert.equal(readFileSync(join(empty, '.gitignore'), 'utf8'), '.retest/\n')
     assert.match(readFileSync(join(empty, 'retest.config.ts'), 'utf8'), /declare module '@rehearsal-labs\/retest' \{\n {2}interface Register \{\n {4}config: typeof config/)
-    assert.match(init.stdout, /npm i -D @rehearsal-labs\/retest typescript @types\/node/)
+    assert.match(init.stdout, /\n {4}npm install +install the packages in package\.json\n/)
   })
 
   test('init --yes --ci github writes a project that type-checks on TypeScript 6 and 7 and runs its example, and a second init changes nothing', async (t) => {
     const app = await openApp(t)
     const initialized = await project('initialized', {})
     const [bin, ...before] = installedRetest(initialized)
-    const first = await runProgram(bin, [...before, 'init', '--yes', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
-    assertSucceeded(first, 'retest init --yes --ci github')
+    const first = await runProgram(bin, [...before, 'init', '--yes', '--no-install', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
+    assertSucceeded(first, 'retest init --yes --no-install --ci github')
     for (const path of ['retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json', '.github/workflows/retest.yml', '.gitignore']) {
       assert.match(first.stdout, new RegExp(`created +${path.replaceAll('.', '\\.')}`), `init created ${path}:\n${first.stdout}`)
     }
     assert.match(first.stdout, /updated +package\.json +scripts: "test:e2e", "typecheck:e2e"/)
+    // Retest is installed from the tarball already, so only the other two are added.
+    assert.match(first.stdout, /updated +package\.json +devDependencies: typescript@\^7\.0\.2, @types\/node@\^24\.12\.0\n/)
     const workflow = readFileSync(join(initialized, '.github/workflows/retest.yml'), 'utf8')
     assert.match(workflow, /run: npm run typecheck:e2e\n.*run: npm run test:e2e/s)
     const config = readFileSync(join(initialized, 'retest.config.ts'), 'utf8')
     assert.match(config, /web: chrome\(\{\n {6}baseUrl: 'http:\/\/localhost:3000',/, 'the default browser is the Chrome installed here')
 
+    // With every package listed, --yes installs nothing: an install here would reach the registry and write a lock file.
     const written = snapshot(initialized)
     const second = await runProgram(bin, [...before, 'init', '--yes', '--ci', 'github'], initialized, { ...process.env, NO_COLOR: '1' })
     assertSucceeded(second, 'a second retest init')

@@ -38,10 +38,13 @@ export type FakeOptions = {
   launchBrowser?: CliDependencies['launchBrowser']
   probeReady?: CliDependencies['probeReady']
   startAppServer?: CliDependencies['startAppServer']
+  runInstall?: CliDependencies['runInstall']
   prompt?: Prompt
+  /** The version Retest reports, 0.0.0 unless given. */
+  version?: string
 }
 
-/** The CLI with fakes for the runner, the browser, app servers, the streams and the environment. It records calls. */
+/** The CLI with fakes for the runner, the browser, app servers, the install, the streams and the environment. It records calls. */
 export function fakeCli(options: FakeOptions): FakeCli {
   const stdout = capture(options.isTTY ?? false)
   const stderr = capture(options.isTTY ?? false)
@@ -70,7 +73,8 @@ export function fakeCli(options: FakeOptions): FakeCli {
     launchBrowser: options.launchBrowser ?? unexpected('a browser launch'),
     probeReady: options.probeReady ?? unexpected('a probe'),
     startAppServer: options.startAppServer ?? unexpected('an app server'),
-    version: '0.0.0',
+    runInstall: options.runInstall ?? unexpected('an install'),
+    version: options.version ?? '0.0.0',
     stdout,
     stderr,
     prompt: options.prompt ?? { isTTY: options.isTTY ?? false, ask: unexpected('a question') },
