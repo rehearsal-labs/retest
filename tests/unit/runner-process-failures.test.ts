@@ -42,9 +42,12 @@ describe('fileProcessFailure', () => {
     )
   })
 
-  test('a process that did not close when asked fails the file', () => {
+  test('a process that did not close when asked, and had not said it had finished, fails the file', () => {
     const forced: FileProcessEnd = { ...clean, closed: { ...killedExit, forced: true }, killed: true }
-    assert.match(fileProcessFailure(forced)?.message ?? '', /^The process for a\.retest\.ts did not close within 1000 ms of being asked/)
+    assert.deepEqual(fileProcessFailure(forced), {
+      class: 'test_error',
+      message: 'The process for a.retest.ts did not close within 1000 ms of being asked to, so Retest ended it.',
+    })
   })
 
   test('an ending Retest caused, or a test already records, adds nothing', () => {
@@ -70,9 +73,14 @@ describe('fileProcessFailure', () => {
     assert.deepEqual(problem, { class: 'test_error', message: 'a.retest.ts threw an error while no test was running: Error: late', location: late.location })
   })
 
-  test('a process that said it had finished and then did not close when asked still fails the file', () => {
+  test('a process that said it had finished and then had not exited when Retest ended it leaves the file without a failure', () => {
     const forced: FileProcessEnd = { ...clean, closed: { ...killedExit, forced: true, finished: true }, killed: true }
-    assert.match(fileProcessFailure(forced)?.message ?? '', /^The process for a\.retest\.ts did not close within 1000 ms of being asked/)
+    assert.equal(fileProcessFailure(forced), undefined)
+  })
+
+  test('errors the process reported still fail the file when Retest ended it after it said it had finished', () => {
+    const forced: FileProcessEnd = { ...clean, closed: { ...killedExit, forced: true, finished: true }, killed: true, errors: [late] }
+    assert.deepEqual(fileProcessFailure(forced), { class: 'test_error', message: 'a.retest.ts threw an error while no test was running: Error: late', location: late.location })
   })
 })
 
@@ -88,11 +96,19 @@ describe('endedAfterFinishing', () => {
     )
   })
 
+  test('names a process that had finished and had not exited when Retest ended it', () => {
+    assert.equal(
+      endedAfterFinishing({ ...clean, closed: { ...killedExit, forced: true, finished: true }, killed: true }),
+      'The process had finished its work but had not exited within 1000 ms of being asked to close, so Retest ended it. No test was running, so nothing fails.',
+    )
+  })
+
   test('says nothing of a clean ending, an ending before the process said it had finished, or one that fails the file or Retest caused', () => {
     assert.equal(endedAfterFinishing(clean), undefined)
     assert.equal(endedAfterFinishing({ ...clean, closed: { ...crashedAfterFinishing, finished: false } }), undefined)
     assert.equal(endedAfterFinishing({ ...clean, closed: crashedAfterFinishing, errors: [late] }), undefined)
-    assert.equal(endedAfterFinishing({ ...clean, closed: { ...killedExit, forced: true, finished: true }, killed: true }), undefined)
+    assert.equal(endedAfterFinishing({ ...clean, closed: { ...killedExit, forced: true, finished: false }, killed: true }), undefined)
+    assert.equal(endedAfterFinishing({ ...clean, closed: { ...killedExit, forced: true, finished: true }, killed: true, errors: [late] }), undefined)
     assert.equal(endedAfterFinishing({ ...clean, closed: { ...killedExit, finished: true }, killed: true }), undefined)
     assert.equal(endedAfterFinishing({ ...clean, closed: crashedAfterFinishing, exitRecorded: true }), undefined)
   })

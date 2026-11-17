@@ -578,6 +578,7 @@ describe('a file process that fails outside its tests', () => {
       message: `The process for ${file(name)} did not close within 1000 ms of being asked to, so Retest ended it.`,
     })
     assert.equal(record.result.exitCode, 2)
+    assert.ok(!record.output.some((chunk) => chunk.text.includes('had finished its work')), 'nothing says the process had finished')
   })
 
   test('closes cleanly after its tests: the file has no failure of its own', async () => {
@@ -604,6 +605,22 @@ describe('a file process that fails outside its tests', () => {
     assert.match(readFileSync(join(record.folder, childLogFile(file(name))), 'utf8'), note)
   })
 
+  // The test file's exit blocks for good once its process has said it finished, so the process is still there when the
+  // grace runs out, whatever the machine's speed.
+  test('is held from exiting after it said it had finished: Retest ends it, the file has no failure, and its log says so', async () => {
+    const name = 'held-after-finishing.retest.ts'
+    const record = await runSupportFiles([name])
+    assert.equal(testNamed(record.result, 'passes before its process is held from exiting').status, 'passed')
+    assert.equal(record.result.files[0]?.failure, undefined, JSON.stringify(record.result.files[0]?.failure))
+    assert.deepEqual(eventsOfType(record.events, 'file.failed'), [])
+    assert.deepEqual([record.result.exitCode, record.result.complete], [0, true])
+    const note = /^The process had finished its work but had not exited within 1000 ms of being asked to close, so Retest ended it\. No test was running, so nothing fails\.\n/m
+    assert.match(readFileSync(join(record.folder, childLogFile(file(name))), 'utf8'), note)
+    const [pid] = printedPids(record.output)
+    assert.ok(pid !== undefined, 'the test file printed its process id')
+    assert.equal(isRunning(pid), false, 'Retest ended the held process')
+  })
+
   test('dies on the request to close, before it could say it had finished: the file fails with the way its process ended', async () => {
     const name = 'dies-on-close.retest.ts'
     const record = await runSupportFiles([name])
@@ -613,7 +630,7 @@ describe('a file process that fails outside its tests', () => {
     assert.match(failed?.message ?? '', new RegExp(`^The process for ${file(name).replaceAll('.', '\\.')} ended with ${endedBadly} while no test was running\\.$`))
     assert.deepEqual(eventsOfType(record.events, 'file.failed').map((event) => event.failure), [failed])
     assert.equal(record.result.exitCode, 2)
-    assert.ok(!record.output.some((chunk) => chunk.text.includes('after it had finished its work')), 'nothing says the process had finished')
+    assert.ok(!record.output.some((chunk) => chunk.text.includes('had finished its work')), 'nothing says the process had finished')
   })
 
   test('says the file has finished while a test runs: that test fails as for a message Retest could not read, and the process is ended', async () => {

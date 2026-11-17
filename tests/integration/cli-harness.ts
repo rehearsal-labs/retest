@@ -735,13 +735,13 @@ export function childLogIfAny(run: Pick<FinishedRun, 'output'>, file: string): s
 }
 
 /**
- * Prints a test file's process log as a diagnostic when it says the process ended badly after it had finished, which
- * fails nothing, so a run's output shows that it happened and what the process wrote as it ended. Nothing is asserted:
- * Node has ended such a process so on Windows only now and then.
+ * Prints a test file's process log as a diagnostic when it says the process, after it had finished, ended badly or was
+ * ended by Retest for not exiting in time, which fails nothing, so a run's output shows that it happened and what the
+ * process wrote as it ended. Nothing is asserted: both happen on Windows only now and then.
  */
 export function showEndingAfterFinishing(t: TestContext, run: Pick<FinishedRun, 'output'>, file: string): void {
   const log = childLogIfAny(run, file)
-  if (log.includes('after it had finished its work')) t.diagnostic(`The process log of ${file}:\n${log}`)
+  if (log.includes('had finished its work')) t.diagnostic(`The process log of ${file}:\n${log}`)
 }
 
 /** The process ids a test file printed as `pid <n>`. */
