@@ -5,7 +5,9 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { TASK_APP_PASSWORD } from '../../fixtures/task-app/sign-in.ts'
+import { parse, s } from '../../src/protocol/schema.ts'
 import { defaultTimeouts } from '../../src/protocol/timeouts.ts'
 import { relativePosixPath } from '../../src/shared/posix-path.ts'
 import { openApp } from './browser-harness.ts'
@@ -172,6 +174,40 @@ const consumerTsconfig = {
 
 const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`
 
+// Each specifier the exports map gives, with the file of the package Node must reach for it.
+const exportedFiles: Readonly<Record<string, string>> = {
+  retest: 'dist/index.js',
+  'retest/runner': 'dist/runner/index.js',
+  'retest/protocol': 'dist/protocol/index.js',
+  'retest/playwright': 'dist/playwright/index.js',
+  'retest/agent': 'dist/agent/index.js',
+  'retest/evaluation/ai-sdk': 'dist/evaluation/ai-sdk.js',
+  'retest/package.json': 'package.json',
+}
+
+// Resolves each specifier it is given as Node resolves it from the project, and loads each module.
+const resolveExports = `const found = []
+for (const specifier of process.argv.slice(2)) {
+  const url = import.meta.resolve(specifier)
+  const exported = url.endsWith('.js') ? Object.keys(await import(specifier)).length : 0
+  found.push({ specifier, url, exported })
+}
+process.stdout.write(JSON.stringify(found))
+`
+
+const resolvedSchema = s.array(s.object({ specifier: s.string(), url: s.string(), exported: s.number({ integer: true }) }))
+
+// A type from each entry, which TypeScript can name only by resolving that entry's declarations.
+const exportedTypes = `import type { Page } from 'retest'
+import type { AgentHostOptions } from 'retest/agent'
+import type { AiSdkProvider } from 'retest/evaluation/ai-sdk'
+import type { PlaywrightTest } from 'retest/playwright'
+import type { RetestEvent } from 'retest/protocol'
+import type { RunOptions } from 'retest/runner'
+
+export type Exported = [Page, AgentHostOptions, AiSdkProvider, PlaywrightTest, RetestEvent, RunOptions]
+`
+
 describe('milestone 2 package: init and a registered consumer', () => {
   let root = ''
   let packed: Packed | undefined
@@ -213,6 +249,28 @@ describe('milestone 2 package: init and a registered consumer', () => {
     }
   })
 
+  test('every export resolves by its name: in Node to the file of the installed package, which loads, and in TypeScript 6 and 7', async () => {
+    const consumer = await project('specifiers', {
+      'resolve-exports.mjs': resolveExports,
+      'exported-types.ts': exportedTypes,
+      'tsconfig.json': json({ ...consumerTsconfig, include: ['exported-types.ts'] }),
+    })
+    const resolved = await runProgram(process.execPath, ['resolve-exports.mjs', ...Object.keys(exportedFiles)], consumer)
+    assertSucceeded(resolved, 'node resolve-exports.mjs')
+    const found = parse(resolvedSchema, JSON.parse(resolved.stdout))
+    assert.ok(found.ok, resolved.stdout)
+    assert.deepEqual(found.value.map((entry) => entry.specifier), Object.keys(exportedFiles))
+    for (const { specifier, url, exported } of found.value) {
+      const file = fileURLToPath(url)
+      assert.ok(url.endsWith(`/node_modules/retest/${exportedFiles[specifier] ?? ''}`) && existsSync(file), `${specifier} resolves to ${url}`)
+      assert.ok(!file.startsWith(repositoryRoot), `${specifier} resolves outside the source tree`)
+      if (file.endsWith('.js')) assert.ok(exported > 0, `${specifier} loads and exports something`)
+    }
+    for (const [name, compiler] of Object.entries(compilers)) {
+      assertSucceeded(await typecheck(compiler, consumer), `${name} on a type from each entry`)
+    }
+  })
+
   // --no-install keeps these two off the registry; tests/integration/init-install.test.ts runs the install.
   test('init --yes --no-install in an empty folder writes the config, an example, a tsconfig, package.json and .gitignore', async () => {
     const tools = await project('tools', {})
@@ -249,7 +307,10 @@ describe('milestone 2 package: init and a registered consumer', () => {
       include: ['../retest.config.ts', '**/*'],
     })
     assert.equal(readFileSync(join(empty, '.gitignore'), 'utf8'), '.retest/\n')
+    // The config and the example import Retest by the name init added it under.
+    assert.match(readFileSync(join(empty, 'retest.config.ts'), 'utf8'), /^import \{ [\w, ]+ \} from 'retest'\n/)
     assert.match(readFileSync(join(empty, 'retest.config.ts'), 'utf8'), /declare module 'retest' \{\n {2}interface Register \{\n {4}config: typeof config/)
+    assert.match(readFileSync(join(empty, 'tests/example.retest.ts'), 'utf8'), /^import \{ expect, test \} from 'retest'\n/)
     assert.match(init.stdout, /\n {4}npm install +install the packages in package\.json\n/)
   })
 

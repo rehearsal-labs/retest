@@ -1,9 +1,12 @@
+import type { Packed } from './cli-harness.ts'
 import assert from 'node:assert/strict'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { after, before, describe, test } from 'node:test'
+import { retestVersion } from '../../src/version.ts'
+import { npmCommand } from '../support/npm-command.ts'
 import { openApp } from './browser-harness.ts'
 import {
   assertSucceeded,
@@ -21,6 +24,9 @@ import {
 } from './cli-harness.ts'
 
 const packageName = 'retest'
+
+// The name Retest was published under up to 0.5.2, as a registry address writes it, and as npm named its tarball.
+const formerNames = ['@rehearsal-labs/retest', '@rehearsal-labs%2Fretest', 'rehearsal-labs-retest']
 
 const consumerConfig = {
   compilerOptions: {
@@ -43,20 +49,30 @@ test('checks a locator like a value', async ({ page }) => {
 })
 `
 
-// The tar that lists the tarball. On Windows it is the system's own, which ends its lines with CRLF: a Git shell, as a CI
+// The tar that reads the tarball. On Windows it is the system's own, which ends its lines with CRLF: a Git shell, as a CI
 // step is, puts GNU tar first on PATH, and GNU tar reads the drive in a path such as D:\a as a remote host's name.
 const tar = process.platform === 'win32' ? join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
+
+/**
+ * How npx starts: from PATH on macOS and Linux. On Windows npx is a batch file, as npm is, so npx's own script runs, the
+ * one beside npm's.
+ */
+function npxCommand(env: NodeJS.ProcessEnv): [string, ...string[]] {
+  const [npm, script] = npmCommand(env)
+  return script === undefined ? ['npx'] : [npm, join(dirname(script), 'npx-cli.js')]
+}
 
 describe('package smoke test', () => {
   let root = ''
   let consumer = ''
   let published: string[] = []
+  let packed: Packed | undefined
 
   before(async () => {
     root = await mkdtemp(join(tmpdir(), 'retest-package-'))
     consumer = join(root, 'consumer')
     await mkdir(join(consumer, 'tests'), { recursive: true })
-    const packed = await packRetest(root)
+    packed = await packRetest(root)
     const listing = await runProgram(tar, ['-tzf', packed.tarball], root)
     assertSucceeded(listing, 'tar -tzf')
     published = listing.stdout.split(/\r?\n/).filter((line) => line !== '').map((line) => line.replace(/^package\//, ''))
@@ -129,6 +145,39 @@ describe('package smoke test', () => {
       const source = join(repositoryRoot, 'src', path.slice('dist/'.length).replace(/\.js$/, '.ts'))
       assert.ok(existsSync(source), `${path} is built from a source file that still exists`)
     }
+  })
+
+  test('npm pack names the tarball retest with its version, and the manifest in it names retest', async () => {
+    assert.ok(packed !== undefined, 'the package was packed')
+    assert.equal(basename(packed.tarball), `retest-${retestVersion}.tgz`)
+    const manifest = await runProgram(tar, ['-xzOf', packed.tarball, 'package/package.json'], root)
+    assertSucceeded(manifest, 'tar -xzOf package/package.json')
+    const read: unknown = JSON.parse(manifest.stdout)
+    assert.ok(typeof read === 'object' && read !== null && 'name' in read, manifest.stdout)
+    assert.equal(read.name, 'retest')
+  })
+
+  test('no file of the package holds the name it had before', () => {
+    const installed = join(consumer, 'node_modules', packageName)
+    assert.ok(published.includes('dist/index.js') && published.includes('package.json'), 'the listing names the files to read')
+    const holding = published.filter((path) => {
+      const bytes = readFileSync(join(installed, path))
+      return formerNames.some((name) => bytes.includes(name))
+    })
+    assert.deepEqual(holding, [])
+  })
+
+  test('in an empty project, npx retest --version answers with the packed version', async () => {
+    assert.ok(packed !== undefined, 'the package was packed')
+    const empty = join(root, 'empty')
+    await mkdir(empty)
+    await writeFile(join(empty, 'package.json'), `${JSON.stringify({ name: 'retest-empty', private: true })}\n`)
+    await installPacked(empty, packed)
+    const [npx, ...before] = npxCommand(packed.npmEnv)
+    // Offline, so npx runs the copy the project installed and could never fetch a package of the same name instead.
+    const version = await runProgram(npx, [...before, 'retest', '--version'], empty, { ...packed.npmEnv, npm_config_offline: 'true' })
+    assertSucceeded(version, 'npx retest --version')
+    assert.equal(version.stdout, `${retestVersion}\n`)
   })
 
   test('installing it adds no other package', async () => {
