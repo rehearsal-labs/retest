@@ -1,8 +1,8 @@
 import type { CommandResult } from '../../src/native/processes.ts'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { compilerErrorLines } from '../../src/cli/install/compiler-errors.ts'
 import { installMedia } from '../../src/cli/install/media-install.ts'
@@ -164,9 +164,12 @@ test("retest install supervisor prints the compiler's errors above the line that
   for (const name of ['cargo.exe', 'rustc.exe']) await writeFile(join(tools, name), '')
   const env = { LOCALAPPDATA: home, PATH: tools }
   const reported: string[] = []
+  let build = ''
   const result = await installSupervisor({ env, signal: new AbortController().signal, version: '2.0.0', target: 'x86_64-pc-windows-msvc', report: (line) => reported.push(line), run: async (_command, args) => {
     if (args[0] === '--version') return { ...succeeded, stdout: 'cargo 1.100.0 (abc 2026-11-09)' }
     if (args[0] === '-vV') return { ...succeeded, stdout: 'rustc 1.100.0 (0ef1bc386 2026-11-09)\r\nhost: x86_64-pc-windows-msvc\r\n' }
+    build = args[args.indexOf('--target-dir') + 1] ?? assert.fail('a target folder')
+    await mkdir(join(build, 'x86_64-pc-windows-msvc', 'release'), { recursive: true })
     return failedBuild(linkerError)
   } })
   assert.equal(result.ok, false)
@@ -175,4 +178,8 @@ test("retest install supervisor prints the compiler's errors above the line that
   assert.deepEqual(reported.slice(1), compilerErrorLines(linkerError))
   assert.ok(reported.some((line) => line.includes('LNK1104: cannot open file')))
   assert.equal((await inspectSupervisor(env, { target: 'x86_64-pc-windows-msvc' }))?.state, 'missing')
+  // Cargo builds in a short folder of the system's own, outside the cache, and the folder goes with the failed install.
+  assert.equal(dirname(build), tmpdir())
+  assert.ok(!build.startsWith(home))
+  await assert.rejects(stat(build), { code: 'ENOENT' })
 })

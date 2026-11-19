@@ -1,8 +1,9 @@
 import type { SupervisorInspection, SupervisorEnvironment, SupervisorRecord } from './supervisor-record.ts'
 import type { SupervisorTarget } from './supervisor-pins.ts'
 import type { SupervisorToolRunner } from './supervisor-tools.ts'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describeCommand } from '../../native/processes.ts'
 import { errorMessage } from '../../protocol/failures.ts'
@@ -22,6 +23,18 @@ export type SupervisorInstallResult = { readonly ok: true; readonly action: 'ins
 
 /** The sentence `retest install supervisor` gives where no supervisor is needed. */
 export const supervisorNotNeeded: string = 'retest-supervisor is for Windows. On macOS and Linux Retest needs nothing installed to end what it starts.'
+
+/**
+ * Where cargo puts its output for a supervisor build: a short folder of its own in the system's temporary folder. The
+ * MSVC linker cannot open a path of 260 characters or more. Rust 1.100 hands it libraries 125 characters deep in
+ * cargo's output folder, and the cache's staging folder is about 140 characters long itself, so beneath it the link
+ * fails.
+ *
+ * @example supervisorBuildFolder() // 'C:\\Users\\ada\\AppData\\Local\\Temp\\retest-supervisor-4120-9f2c41aa'
+ */
+export function supervisorBuildFolder(): string {
+  return join(tmpdir(), `retest-supervisor-${process.pid}-${randomBytes(4).toString('hex')}`)
+}
 
 /**
  * Builds the shipped supervisor crate with `cargo build --release --locked` into the cache, under the install lock, and
@@ -44,13 +57,20 @@ export async function installSupervisor(options: SupervisorInstallOptions): Prom
   let result: SupervisorInstallResult
   let cleanupProblem: string | undefined
   const staging = `${folder}.staging-${process.pid}-${randomUUID()}`
+  const build = supervisorBuildFolder()
   try {
-    result = await installLocked(options, target, folder, root, staging)
+    result = await installLocked(options, target, folder, root, staging, build)
   } catch (error) { result = refuse(`The supervisor install failed: ${errorMessage(error)} Nothing was installed.`) }
   finally {
-    try { await rm(staging, { recursive: true, force: true, maxRetries: 3 }) }
-    catch (error) { cleanupProblem = `Supervisor staging cleanup failed at ${staging}: ${errorMessage(error)}.` }
-    finally {
+    try {
+      // Each folder is removed on its own, so the staging folder goes even when the build folder could not.
+      const problems: string[] = []
+      for (const path of [build, staging]) {
+        try { await rm(path, { recursive: true, force: true, maxRetries: 3 }) }
+        catch (error) { problems.push(`Supervisor staging cleanup failed at ${path}: ${errorMessage(error)}.`) }
+      }
+      if (problems.length > 0) cleanupProblem = problems.join(' ')
+    } finally {
       const problem = await lock.release()
       if (problem !== undefined) options.report(problem)
     }
@@ -61,7 +81,7 @@ export async function installSupervisor(options: SupervisorInstallOptions): Prom
   return result
 }
 
-async function installLocked(options: SupervisorInstallOptions, target: SupervisorTarget, folder: string, root: string, staging: string): Promise<SupervisorInstallResult> {
+async function installLocked(options: SupervisorInstallOptions, target: SupervisorTarget, folder: string, root: string, staging: string, build: string): Promise<SupervisorInstallResult> {
   const refuse = (message: string): SupervisorInstallResult => ({ ok: false, message, stopped: options.signal.aborted })
   const before = await inspectSupervisor(options.env, { target, verify: true, signal: options.signal })
   if (before?.state === 'installed') return { ok: true, action: 'already_installed', inspection: before }
@@ -83,10 +103,9 @@ async function installLocked(options: SupervisorInstallOptions, target: Supervis
   }
   const copiedProblem = await checkSupervisorSource(source, { signal: options.signal })
   if (copiedProblem !== undefined) return refuse(copiedProblem)
-  const targetDir = join(staging, 'target')
-  const args = ['build', '--release', '--locked', ...(options.offline === true ? ['--offline'] : []), '--manifest-path', join(source, 'supervisor', 'Cargo.toml'), '--target', target, '--target-dir', targetDir]
+  const args = ['build', '--release', '--locked', ...(options.offline === true ? ['--offline'] : []), '--manifest-path', join(source, 'supervisor', 'Cargo.toml'), '--target', target, '--target-dir', build]
   options.report(`Building retest-supervisor ${supervisorVersion} with ${tools.rustcVersion}; Cargo.lock is pinned.`)
-  const built = await run(tools.cargo, args, { env: options.env, signal: options.signal, cwd: source, timeoutMs: 30 * 60_000, environment: { RUSTC: tools.rustc, CARGO_TARGET_DIR: targetDir } })
+  const built = await run(tools.cargo, args, { env: options.env, signal: options.signal, cwd: source, timeoutMs: 30 * 60_000, environment: { RUSTC: tools.rustc, CARGO_TARGET_DIR: build } })
   const afterProblem = await checkSupervisorSource(source, { signal: options.signal })
   if (afterProblem !== undefined) return refuse(`The build changed the pinned source or Cargo.lock. ${afterProblem}`)
   if (built.code !== 0 || built.stopped || built.timedOut || built.cleanupProblems.length > 0) {
@@ -95,10 +114,10 @@ async function installLocked(options: SupervisorInstallOptions, target: Supervis
     return refuse(`${describeCommand('cargo build --release --locked', built)}. Nothing was installed.`)
   }
   const executable = join(staging, supervisorExecutable)
-  const placed = await copyBinary(join(targetDir, target, 'release', supervisorExecutable), executable)
+  const placed = await copyBinary(join(build, target, 'release', supervisorExecutable), executable)
   if (placed !== undefined) return refuse(placed)
   await rm(source, { recursive: true, maxRetries: 3 })
-  await rm(targetDir, { recursive: true, maxRetries: 3 })
+  await rm(build, { recursive: true, maxRetries: 3 })
   if (options.signal.aborted) return refuse('The supervisor install was stopped after its build. Nothing was installed.')
   const probe = await probeSupervisor(executable, target, { env: options.env, signal: options.signal }, run)
   if (probe !== undefined) return refuse(probe)
