@@ -26,3 +26,7 @@ Before publication, the owner must restore valid npm authentication and verify m
 - [Existing recheck-web project](https://github.com/retest/recheck-web)
 
 npm grants a scope matching a user or organization name. Owning a scope permits a package basename that someone else has already used under a different scope. Public availability checks cannot establish that a particular account may publish.
+
+## The unscoped name, 18 November 2026
+
+On 18 November 2026 the owner of `retest` on npm, Blake Embrey, added `vahagnz` as a maintainer of the package. Retest publishes as `retest` from 2.0.0. Versions 0.0.1 to 1.0.1 are his earlier library and stay on npm. `@rehearsal-labs/retest` 0.5.2 was the last release under the scoped name.
