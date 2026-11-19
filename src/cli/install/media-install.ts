@@ -10,6 +10,7 @@ import { describeCommand } from '../../native/processes.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { Deadline } from '../../protocol/deadline.ts'
 import { openRegularFile, readFileSha256, readRecordText } from '../../shared/regular-file.ts'
+import { compilerErrorLines } from './compiler-errors.ts'
 import { downloadFile, mirroredUrl } from './download.ts'
 import { removePath, renamePath } from './file-changes.ts'
 import { takeInstallLock } from './lock.ts'
@@ -105,9 +106,11 @@ async function installLocked(options: MediaInstallOptions, target: MediaTarget, 
     const built = await run(tools.cargo, args, { env: options.env, signal: options.signal, cwd: source, timeoutMs: 30 * 60_000, environment: { RUSTC: tools.rustc, CARGO_TARGET_DIR: build } })
     const afterProblem = await checkMediaSource(source, { signal: options.signal })
     if (afterProblem !== undefined) return refuse(`The build changed the pinned source or Cargo.lock. ${afterProblem}`)
-    // Cargo's last line only says the build failed; its first error says why.
-    const cause = built.stderr.split('\n').find((line) => line.startsWith('error')) ?? ''
-    if (built.code !== 0 || built.stopped || built.timedOut || built.cleanupProblems.length > 0) return refuse(`${describeCommand('cargo build --release --locked', built)}.${cause === '' ? '' : ` ${cause.slice(0, 300)}`} Nothing was installed.`)
+    if (built.code !== 0 || built.stopped || built.timedOut || built.cleanupProblems.length > 0) {
+      // Cargo's last line only says the build failed; the compiler's errors above it say why.
+      for (const line of compilerErrorLines(built.stderr)) options.report(line)
+      return refuse(`${describeCommand('cargo build --release --locked', built)}. Nothing was installed.`)
+    }
     const placed = await copyRegularBinary(join(build, target, 'release', mediaExecutableName(target)), executable)
     if (placed !== undefined) return refuse(placed)
     for (const path of [source, build]) {

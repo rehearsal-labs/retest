@@ -8,6 +8,7 @@ import { describeCommand } from '../../native/processes.ts'
 import { errorMessage } from '../../protocol/failures.ts'
 import { Deadline } from '../../protocol/deadline.ts'
 import { openRegularFile, readFileSha256, readRecordText } from '../../shared/regular-file.ts'
+import { compilerErrorLines } from './compiler-errors.ts'
 import { takeInstallLock } from './lock.ts'
 import { maximumSupervisorBinaryBytes, supervisorExecutable, supervisorSourceDigest, supervisorSourceFiles, supervisorTarget, supervisorVersion } from './supervisor-pins.ts'
 import { checkSupervisorSource, inspectSupervisor, supervisorFolder, supervisorInstallCommand, supervisorLockPath, supervisorNoticePins, supervisorPackageRoot } from './supervisor-record.ts'
@@ -88,7 +89,11 @@ async function installLocked(options: SupervisorInstallOptions, target: Supervis
   const built = await run(tools.cargo, args, { env: options.env, signal: options.signal, cwd: source, timeoutMs: 30 * 60_000, environment: { RUSTC: tools.rustc, CARGO_TARGET_DIR: targetDir } })
   const afterProblem = await checkSupervisorSource(source, { signal: options.signal })
   if (afterProblem !== undefined) return refuse(`The build changed the pinned source or Cargo.lock. ${afterProblem}`)
-  if (built.code !== 0 || built.stopped || built.timedOut || built.cleanupProblems.length > 0) return refuse(`${describeCommand('cargo build --release --locked', built)}. Nothing was installed.`)
+  if (built.code !== 0 || built.stopped || built.timedOut || built.cleanupProblems.length > 0) {
+    // Cargo's last line only says the build failed; the compiler's errors above it say why.
+    for (const line of compilerErrorLines(built.stderr)) options.report(line)
+    return refuse(`${describeCommand('cargo build --release --locked', built)}. Nothing was installed.`)
+  }
   const executable = join(staging, supervisorExecutable)
   const placed = await copyBinary(join(targetDir, target, 'release', supervisorExecutable), executable)
   if (placed !== undefined) return refuse(placed)
