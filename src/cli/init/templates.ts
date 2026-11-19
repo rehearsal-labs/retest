@@ -44,7 +44,7 @@ export function configSource(answers: InitAnswers): string {
     ...(start === undefined ? [] : [`      start: { command: ${jsString(start)}, ready: ${jsString(url)} },`]),
   ]
   const imports = [browser, 'defineConfig'].sort()
-  const chromiumNote = browser === 'chromium' ? ['    // chromium() runs the browser RETEST_CHROMIUM points to, unless you add executablePath.'] : []
+  const chromiumNote = browser === 'chromium' ? ['    // chromium() runs what retest install chromium installs, unless you add executablePath.'] : []
   return [
     `import { ${imports.join(', ')} } from '${packageName}'`,
     '',

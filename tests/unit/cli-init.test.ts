@@ -19,7 +19,7 @@ import { plain, temporaryFolder } from './reporters-fixtures.ts'
 
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
-// Chrome is installed; Edge and a Chromium from RETEST_CHROMIUM are not.
+// Chrome is installed; Edge and Chrome's headless shell, which a headless chromium() runs, are not.
 const chromeOnly: CliDependencies['resolveExecutable'] = (target) =>
   target.browser === 'chrome'
     ? { ok: true, path: chromePath }
@@ -278,9 +278,9 @@ describe('init without questions', () => {
     assert.equal(code, 0)
     const config = read(project, 'retest.config.ts')
     assert.match(config, /^import \{ chromium, defineConfig \} from 'retest'\n/)
-    assert.match(config, /\n {4}\/\/ chromium\(\) runs the browser RETEST_CHROMIUM points to, unless you add executablePath\.\n {4}admin: chromium\(\{\n/)
+    assert.match(config, /\n {4}\/\/ chromium\(\) runs what retest install chromium installs, unless you add executablePath\.\n {4}admin: chromium\(\{\n/)
     assert.match(config, /\n {6}baseUrl: 'http:\/\/localhost:4000',\n {6}start: \{ command: 'npm run dev', ready: 'http:\/\/localhost:4000' \},\n/)
-    assert.match(stdout, /\n\n {2}Set RETEST_CHROMIUM to the browser's path, here and in CI: chromium\(\) runs the browser it points to\.\n\n {2}Next\n/)
+    assert.match(stdout, /\n\n {2}Run npx retest install chromium here and in CI: chromium\(\) runs what it installs\.\n\n {2}Next\n/)
   })
 
   test('an address alone names the app web; quotes in a command are escaped', async () => {

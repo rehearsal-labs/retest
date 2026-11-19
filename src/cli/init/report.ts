@@ -73,7 +73,7 @@ function changeLines(changes: readonly FileChange[], style: Style): string[] {
 
 // What the person must do before the next steps work, as sentences.
 function reportNotes(report: InitReport): string[] {
-  const { unused, packageJson, answers } = report
+  const { unused, packageJson, answers, manager } = report
   const notes: string[] = []
   if (unused.length > 0) {
     notes.push(`${defaultConfigFile} is left as is, so ${listWords(unused, 'and')} ${unused.length === 1 ? 'was' : 'were'} not used.`)
@@ -82,7 +82,7 @@ function reportNotes(report: InitReport): string[] {
     notes.push('Add "type": "module" to package.json, so Node reads the tests as ES modules without guessing.')
   }
   if (answers?.browser === 'chromium') {
-    notes.push("Set RETEST_CHROMIUM to the browser's path, here and in CI: chromium() runs the browser it points to.")
+    notes.push(`Run ${manager.exec} retest install chromium here and in CI: chromium() runs what it installs.`)
   }
   return notes
 }

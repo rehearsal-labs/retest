@@ -10,6 +10,10 @@ Retest publishes releases from `main` through the Promote workflow. Each entry n
 - **To move a project from `@rehearsal-labs/retest`,** change the dependency's name in `package.json` to `retest`. Change every import, every `declare module` block and every adapter string, such as `'@rehearsal-labs/retest/evaluation/ai-sdk'`, from `@rehearsal-labs/retest` to `retest`. Then install again. Nothing else needs to change.
 - **The version jumps to 2.0.0** because versions up to 1.0.1 under the name `retest` are Blake Embrey's earlier library, for testing HTTP servers. They stay on npm, so a project on `retest@1` keeps what it has.
 
+### Fixed
+
+- **`init` no longer tells a `chromium()` project to set `RETEST_CHROMIUM`.** A `chromium()` target runs the builds `retest install chromium` installs. Run headless, as `init` writes it, it runs the headless shell and never reads `RETEST_CHROMIUM`. The closing note now says to run `npx retest install chromium` here and in CI, and the comment `init` writes in `retest.config.ts` says the same.
+
 ## 0.5.2
 
 ### Changed
