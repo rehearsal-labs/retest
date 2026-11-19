@@ -185,12 +185,15 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run build
       # Windows starts every process through retest-supervisor, which holds it in a Job Object; the unit files that start
-      # processes need the real one. The runner image has Rust; the crate's locked dependencies are fetched once.
+      # processes need the real one. It is built with the oldest Rust the crate supports, as integration builds it; the
+      # Rust builds job covers the current stable. The crate's locked dependencies are fetched once.
       - name: Build the process supervisor
         if: ${{ matrix.platform == 'windows-x64' }}
         shell: bash
         run: |
           set -euo pipefail
+          rustup toolchain install "$RETEST_CI_RUST" --profile minimal
+          rustup default "$RETEST_CI_RUST"
           cargo fetch --locked --manifest-path supervisor/Cargo.toml
           CARGO_NET_OFFLINE=true node dist/cli/main.js install supervisor
       # A re-run of this job runs only the files none of its earlier attempts passed; their kept results say which did.
