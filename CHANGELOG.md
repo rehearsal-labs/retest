@@ -6,7 +6,7 @@ Retest publishes releases from `main` through the Promote workflow. Each entry n
 
 ### Changed
 
-- **The package is now `retest` on npm.** `@rehearsal-labs/retest` 0.5.2 was the last release under the old name. Start a project with `npx retest init`, and import from `retest`.
+- **The package is now `retest` on npm.** `@rehearsal-labs/retest` 0.5.2 was the last release under the old name. Start a project with `npx retest init`, and import from `retest`. Checked from the packed tarball on Linux x64 and arm64, macOS arm64 and Windows x64: npm packs it as `retest-<version>.tgz` with the name `retest`, `npx retest --version` answers in an empty project, every entry of its exports map resolves by the new name and each of its modules loads, and no file in it holds the old name.
 - **To move a project from `@rehearsal-labs/retest`,** change the dependency's name in `package.json` to `retest`. Change every import, every `declare module` block and every adapter string, such as `'@rehearsal-labs/retest/evaluation/ai-sdk'`, from `@rehearsal-labs/retest` to `retest`. Then install again. Nothing else needs to change.
 - **The version jumps to 2.0.0** because versions up to 1.0.1 under the name `retest` are Blake Embrey's earlier library, for testing HTTP servers. They stay on npm, so a project on `retest@1` keeps what it has.
 
