@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { view } from '../support/view'
 
 test('imports a JSX helper without its extension', async () => {

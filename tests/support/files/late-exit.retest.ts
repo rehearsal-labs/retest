@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('leaves an exit behind', () => {
   setTimeout(() => process.exit(3), 10)

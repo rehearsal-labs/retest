@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Actions on the task app: fill and click, hover, keys with and without modifiers, select, check and uncheck, and
 // the wheel. Each page shows what it heard, and whether the browser marked it as trusted input.

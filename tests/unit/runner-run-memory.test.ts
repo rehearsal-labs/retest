@@ -72,7 +72,7 @@ function heapReader(browsers: readonly FakeBrowser[], last: number): Reporter & 
 }
 
 function project(): string {
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
 })
@@ -89,7 +89,7 @@ export default defineConfig({
   await expect(page.getByTestId('saved-task')).toHaveText('${text}')
 })`)
     }
-    sources[`tests/bench-${file}.retest.ts`] = `import { expect, test } from '@rehearsal-labs/retest'\n\n${tests.join('\n\n')}\n`
+    sources[`tests/bench-${file}.retest.ts`] = `import { expect, test } from 'retest'\n\n${tests.join('\n\n')}\n`
   }
   return tempProject(sources)
 }

@@ -90,7 +90,7 @@ const together = 50
 const apart = 100
 const rounds = [1, 2, 3]
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 for (const app of ['full', 'shell']) {
   test(\`\${app} reads the page\`, { apps: [app] }, async (apps) => {

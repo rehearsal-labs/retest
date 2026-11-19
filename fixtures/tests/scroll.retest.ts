@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The mouse wheel on the task app's scroll page, which lists every wheel event it hears.
 

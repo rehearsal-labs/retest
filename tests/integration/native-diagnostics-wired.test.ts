@@ -89,7 +89,7 @@ async function startService(t: TestContext): Promise<Service> {
 
 function configSource(service: Service, judgeLog: string): string {
   const desk = (diagnostics: string): string => `{ platform: 'macos', appPath: ${JSON.stringify(taskDeskApp)}, arguments: ['-reset', '-windowFrame', '20,60,700,480', '-serviceURL', ${JSON.stringify(service.url)}]${diagnostics} }`
-  return `import { defineConfig, env } from '@rehearsal-labs/retest'
+  return `import { defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: {

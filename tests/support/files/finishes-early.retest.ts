@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Says it has finished as it loads, before anyone asked it to close, then ends on the request to close before Retest's
 // own code could say it finished.

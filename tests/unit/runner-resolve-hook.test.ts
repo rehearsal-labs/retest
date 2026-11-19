@@ -10,7 +10,7 @@ import { fakeLauncher } from '../support/fake-browser.ts'
 import { newRunFolder, quickTimeouts, rootDir } from '../support/run-harness.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
-const name = '@rehearsal-labs/retest'
+const name = 'retest'
 
 // Imports the package by name and by one of its subpaths, as a host's generated test does.
 const testFile = `import { expect, test } from '${name}'

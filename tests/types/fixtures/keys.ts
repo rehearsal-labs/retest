@@ -1,5 +1,5 @@
 import type { Same } from './support/same.ts'
-import { expect, test, type KeyArgument, type Keyboard, type Locator } from '@rehearsal-labs/retest'
+import { expect, test, type KeyArgument, type Keyboard, type Locator } from 'retest'
 
 // The keys press() takes. A key the types can read is judged here; one they cannot, such as a string, when the test runs.
 declare const typed: string

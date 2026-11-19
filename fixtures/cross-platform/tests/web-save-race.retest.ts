@@ -1,4 +1,4 @@
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // Runs against a service started with --read-delay-ms, so each refresh of the list answers with the tasks as they
 // stood when it was asked, well after a save made meanwhile has answered. The page must not put the older list over

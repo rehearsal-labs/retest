@@ -494,7 +494,7 @@ test('an agent session told of a picker nobody waited for says the session canno
 })
 
 const runTests = (received: string) => `import { readFile } from 'node:fs/promises'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('uploads by path, by content and through a picker, then downloads a CSV', async ({ page }) => {
   await page.goto('/files')

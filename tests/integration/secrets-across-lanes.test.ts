@@ -33,7 +33,7 @@ const credentials = {
   token: `long-${'k7Qm2xWp9Lr4Zt8N'.repeat(8)}-${'end'.repeat(3)}`,
 } as const
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test(${JSON.stringify(name)}, { apps: ['web', 'aside'] }, async ({ web }) => {
   for (const variable of ${JSON.stringify(variables)}) {
@@ -58,10 +58,10 @@ test(${JSON.stringify(refused)}, { apps: ['through'] }, async ({ through }) => {
 
 // The host program reads what varies from `host-input.json` beside it, so the proxy password is in no process's
 // environment but through the config the host builds, and only the four variables above reach its environment.
-const host = `import type { Reporter } from '@rehearsal-labs/retest/runner'
+const host = `import type { Reporter } from 'retest/runner'
 import { readFileSync } from 'node:fs'
-import { chrome, defineConfig, env } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, validateConfig } from '@rehearsal-labs/retest/runner'
+import { chrome, defineConfig, env } from 'retest'
+import { resolveSecrets, runFiles, validateConfig } from 'retest/runner'
 
 const outputDir = process.argv.at(-1) ?? ''
 const input = JSON.parse(readFileSync('host-input.json', 'utf8'))

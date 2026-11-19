@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('checks a saved task every way a locator can be checked', async ({ page }) => {
   await page.goto('/')

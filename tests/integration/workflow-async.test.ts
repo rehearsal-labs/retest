@@ -15,7 +15,7 @@ const assertFailedAt = failedAtIn(file)
 // The budget of the two checks meant to fail, given on each; every check meant to pass has the budget users get.
 const assertionMs = 1500
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('shows a loading line, then the reports that arrive late, and hides the line', async ({ page }) => {
   await page.goto('/workflow/reports')

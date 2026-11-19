@@ -101,7 +101,7 @@ test('${prefix} server error', async () => {
 }
 
 function config(app: string, judges: string): string {
-  return `import { chrome, defineConfig, env } from '@rehearsal-labs/retest'
+  return `import { chrome, defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: { web: chrome({ baseUrl: ${JSON.stringify(app)} }) },
@@ -112,13 +112,13 @@ export default defineConfig({
 
 function judge(provider: Provider, variable: string, model: string, baseURL?: string): string {
   const options = { provider, model, ...(baseURL === undefined ? {} : { baseURL }) }
-  return `${provider}: { adapter: '@rehearsal-labs/retest/evaluation/ai-sdk', credentials: { apiKey: env('${variable}') }, options: ${JSON.stringify(options)}, accepts: ['text', 'images'] }`
+  return `${provider}: { adapter: 'retest/evaluation/ai-sdk', credentials: { apiKey: env('${variable}') }, options: ${JSON.stringify(options)}, accepts: ['text', 'images'] }`
 }
 
 type AzureOptions = { model: string; resourceName?: string; baseURL?: string; apiVersion?: string }
 
 function azureJudge(variable: string, options: AzureOptions): string {
-  return `{ adapter: '@rehearsal-labs/retest/evaluation/ai-sdk', credentials: { apiKey: env('${variable}') }, options: ${JSON.stringify({ provider: 'azure', ...options })}, accepts: ['text', 'images'] }`
+  return `{ adapter: 'retest/evaluation/ai-sdk', credentials: { apiKey: env('${variable}') }, options: ${JSON.stringify({ provider: 'azure', ...options })}, accepts: ['text', 'images'] }`
 }
 
 function liveTests(judgeName: string): string {
@@ -210,7 +210,7 @@ describe('the AI SDK adapter from the packed package', () => {
     const app = await openApp(t)
     const folder = await consumer('without-sdk', {
       'retest.config.ts': config(app.url, `{ ${judge('anthropic', 'RETEST_E2E_SDK_KEY', 'claude-sonnet-5')} }`),
-      'tests/sdk.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+      'tests/sdk.retest.ts': `import { expect, test } from 'retest'
 test('ordinary', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('save-task')).toBeVisible()
@@ -239,7 +239,7 @@ test('judged', async () => {
     const app = await openApp(t)
     const judges = `{ ${judge('anthropic', 'RETEST_E2E_ANTHROPIC_KEY', 'claude-sonnet-5', `${stand.url}/anthropic/v1`)}, ${judge('openai', 'RETEST_E2E_OPENAI_KEY', 'gpt-5.5-2026-04-23', `${stand.url}/openai/v1`)} }`
     await writeFile(join(install.folder, 'retest.config.ts'), config(app.url, judges))
-    await writeFile(join(install.folder, 'tests/judged.retest.ts'), `import { expect, test } from '@rehearsal-labs/retest'\n${judgedTests('anthropic')}${judgedTests('openai')}`)
+    await writeFile(join(install.folder, 'tests/judged.retest.ts'), `import { expect, test } from 'retest'\n${judgedTests('anthropic')}${judgedTests('openai')}`)
     const finished = await run(t, install.folder, { RETEST_E2E_ANTHROPIC_KEY: mockKeys.anthropic, RETEST_E2E_OPENAI_KEY: mockKeys.openai })
 
     assert.equal(finished.exit.code, 1, `${finished.stdout}\n${finished.stderr}`)
@@ -284,7 +284,7 @@ test('judged', async () => {
       const app = await openApp(t)
       // The judge names images in what it accepts, so the screenshot check sends the capture as an image.
       await writeFile(join(folder, 'retest.config.ts'), config(app.url, `{ ${judge(gate.provider, gate.variable, gate.model)} }`))
-      await writeFile(join(folder, 'tests/judged.retest.ts'), `import { expect, test } from '@rehearsal-labs/retest'\n${liveTests(gate.provider)}`)
+      await writeFile(join(folder, 'tests/judged.retest.ts'), `import { expect, test } from 'retest'\n${liveTests(gate.provider)}`)
       const finished = await run(t, folder, { [gate.variable]: key })
       for (const name of [`${gate.provider} live text`, `${gate.provider} live screenshot`]) {
         const result = testNamed(finished, name)
@@ -330,7 +330,7 @@ test('${judgeName}', async () => {
   await test.evaluate({ judge: '${judgeName}', requirement: { pass: 'The message says the task was saved.' }, evidence: { text: 'Your task "Release checklist" was saved.' } })
 })
 `
-    await writeFile(join(install.folder, 'tests/judged.retest.ts'), `import { test } from '@rehearsal-labs/retest'\n${['resource', 'endpoint', 'anthropic', 'openai'].map(check).join('')}`)
+    await writeFile(join(install.folder, 'tests/judged.retest.ts'), `import { test } from 'retest'\n${['resource', 'endpoint', 'anthropic', 'openai'].map(check).join('')}`)
     const keys = { RETEST_E2E_AZURE_KEY: mockKeys.azure, RETEST_E2E_ANTHROPIC_KEY: mockKeys.anthropic, RETEST_E2E_OPENAI_KEY: mockKeys.openai }
     const finished = await run(t, install.folder, { ...keys, ...sdkVariables, ...throughStandIn(stand.url, certificate.path) })
 
@@ -414,7 +414,7 @@ test('${judgeName}', async () => {
       model: liveAzure.deployment,
     }
     await writeFile(join(folder, 'retest.config.ts'), config(app.url, `{ azure: ${azureJudge('RETEST_EVALUATION_AZURE_KEY', options)} }`))
-    await writeFile(join(folder, 'tests/judged.retest.ts'), `import { expect, test } from '@rehearsal-labs/retest'\n${liveTests('azure')}`)
+    await writeFile(join(folder, 'tests/judged.retest.ts'), `import { expect, test } from 'retest'\n${liveTests('azure')}`)
     const finished = await run(t, folder, { RETEST_EVALUATION_AZURE_KEY: liveAzure.key })
     for (const name of ['azure live text', 'azure live screenshot']) {
       const result = testNamed(finished, name)

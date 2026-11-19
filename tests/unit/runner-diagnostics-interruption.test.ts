@@ -6,8 +6,8 @@ import { runProject, tempProject } from '../support/project.ts'
 for (const capture of [true, false]) {
   test(`interrupted opening names every prepared web session, capture ${capture}`, async () => {
     const root = tempProject({
-      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({ apps: { web: chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'}), admin: chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'}) }, diagnostics: { capture: ${capture}, requireComplete: ${capture} } })`,
-      'tests/one.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'; test('one', { apps: ['web', 'admin'] }, () => expect(1).toBe(1))`,
+      'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({ apps: { web: chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'}), admin: chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'}) }, diagnostics: { capture: ${capture}, requireComplete: ${capture} } })`,
+      'tests/one.retest.ts': `import { expect, test } from 'retest'; test('one', { apps: ['web', 'admin'] }, () => expect(1).toBe(1))`,
     })
     const controller = new AbortController()
     const reason = { class: 'interrupted', message: 'stopped while opening' } as const

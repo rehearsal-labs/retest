@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Holds the task app's counter for the limited sessions for a while, and checks that no other page held it
 // meanwhile. The host's budget allows one session at a time, so the other file's holder waits for this one's.

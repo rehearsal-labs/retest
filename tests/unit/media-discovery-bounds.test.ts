@@ -71,8 +71,8 @@ test('runner shutdown cancels media discovery in progress and starts no process'
 
 test('a run interruption cancels its in-progress discovery before a media process or capture starts', async () => {
   const root = tempProject({
-    'retest.config.ts': `import {chromium,defineConfig} from '@rehearsal-labs/retest';export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`,
-    'tests/one.retest.ts': `import {test} from '@rehearsal-labs/retest';test('one',async({page})=>{await page.goto('/')})`,
+    'retest.config.ts': `import {chromium,defineConfig} from 'retest';export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`,
+    'tests/one.retest.ts': `import {test} from 'retest';test('one',async({page})=>{await page.goto('/')})`,
   })
   const controller = new AbortController()
   const fake = fakeMediaStarter()

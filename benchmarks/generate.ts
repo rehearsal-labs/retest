@@ -28,7 +28,7 @@ const TEMPLATES: Readonly<Record<FixtureName, Template>> = {
 }
 
 const IMPORTS: Readonly<Record<Tool, string>> = {
-  retest: "import { expect, test } from '@rehearsal-labs/retest'",
+  retest: "import { expect, test } from 'retest'",
   playwright: "import { expect, test } from '@playwright/test'",
 }
 
@@ -82,7 +82,7 @@ function renderTest(template: Template, n: number): string {
 
 /** The Retest config a benchmark project runs with: one app, in the given Chrome, at the fixture's address. */
 export function retestConfig(browser: string, baseUrl: string): string {
-  return `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  return `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ executablePath: ${JSON.stringify(browser)}, baseUrl: ${JSON.stringify(baseUrl)} }) },

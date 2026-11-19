@@ -51,10 +51,10 @@ describe('what a command loads', () => {
 
   test('a run of Chromium tests printed for people loads the runner, and neither the other reporters nor the other engines', async () => {
     const root = tempProject({
-      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+      'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
 `,
-      'tests/one.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+      'tests/one.retest.ts': `import { expect, test } from 'retest'
 test('one', () => { expect(1).toBe(1) })
 `,
     })

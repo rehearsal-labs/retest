@@ -26,7 +26,7 @@ const card = '4242 4242 4242 4242'
 
 function checkoutTests(payment: string): string {
   const address = JSON.stringify(`/frames?payment=${encodeURIComponent(payment)}`)
-  return `import { expect, secret, test } from '@rehearsal-labs/retest'
+  return `import { expect, secret, test } from 'retest'
 
 test('pays in the payment frame', async ({ page }) => {
   await page.goto(${address})
@@ -85,7 +85,7 @@ test('a project finds, acts and checks inside frames, and a failure inside a fra
   const other = await openApp(t)
   // Another site than 127.0.0.1, so Chrome runs the payment form in a process of its own.
   const payment = other.url.replace('127.0.0.1', 'localhost')
-  const config = `import { chrome, defineConfig, env } from '@rehearsal-labs/retest'
+  const config = `import { chrome, defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) },
@@ -156,11 +156,11 @@ const electronBinary = givenElectron ?? join(homedir(), 'Library/Caches/retest-p
 const noElectron = process.platform !== 'darwin' && givenElectron === undefined ? `unverified: RETEST_TEST_ELECTRON is not set, and Retest has no route yet to an Electron build on ${process.platform}` : false
 
 test('an Electron window refuses a locator inside a frame by name, and sends it nothing', { skip: noElectron }, async (t) => {
-  const config = `import { defineConfig, electron } from '@rehearsal-labs/retest'
+  const config = `import { defineConfig, electron } from 'retest'
 
 export default defineConfig({ apps: { desktop: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: ${JSON.stringify(join(repositoryRoot, 'fixtures/electron'))} }) } })
 `
-  const tests = `import { test } from '@rehearsal-labs/retest'
+  const tests = `import { test } from 'retest'
 
 test('looks inside a frame of the window', async ({ page }) => {
   await page.frame(page.locator('iframe')).getByRole('button', { name: 'Pay' }).click()

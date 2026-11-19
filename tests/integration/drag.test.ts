@@ -15,7 +15,7 @@ const names = {
   covered: 'a covered target fails the drag',
 } as const
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test(${JSON.stringify(names.board)}, async ({ page }) => {
   await page.goto('/drag')

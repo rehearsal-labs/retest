@@ -1,5 +1,5 @@
-import type { NativePage } from '@rehearsal-labs/retest'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import type { NativePage } from 'retest'
+import { expect, secret, test } from 'retest'
 
 // Native diagnostics through the runner on the cross-platform fixture. The harness supplies the config: `phone` and
 // `desk` declare the fixture service's network log, each with its own client name, and keep their standard output,

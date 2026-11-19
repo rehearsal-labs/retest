@@ -11,7 +11,7 @@ import { budgets, configSource, eventsOf, onlyEvent, resultOf, runProject, testN
 
 const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
-const roleTests = `import { expect, test } from '@rehearsal-labs/retest'
+const roleTests = `import { expect, test } from 'retest'
 
 test('storage stays with its app', { apps: ['owner', 'member'] }, async ({ owner, member }) => {
   await owner.goto('/login')

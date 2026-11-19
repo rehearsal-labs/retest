@@ -28,19 +28,19 @@ There is no Playwright, Puppeteer or Selenium underneath. Retest is early, and t
 You need Node.js 24.12 or later, on macOS, Linux or Windows x64. Windows also needs Retest's process supervisor, which [the guide](docs/guide.md#windows) says how to install.
 
 ```sh
-npx @rehearsal-labs/retest init
+npx retest init
 ```
 
-`init` writes `retest.config.ts`, an example test and a `tsconfig.json` for your tests. It adds Retest, TypeScript and `@types/node` to `package.json` and installs them with your package manager. It asks for your app's address and browser and whether to install, or takes them as flags: `npx @rehearsal-labs/retest init --app web=http://localhost:3000 --browser chrome --install`. It never overwrites a file.
+`init` writes `retest.config.ts`, an example test and a `tsconfig.json` for your tests. It adds Retest, TypeScript and `@types/node` to `package.json` and installs them with your package manager. It asks for your app's address and browser and whether to install, or takes them as flags: `npx retest init --app web=http://localhost:3000 --browser chrome --install`. It never overwrites a file.
 
 TypeScript is only for type checks. Retest runs `.ts` test files without it.
 
-Once Retest is installed, `npx retest` runs it, as below. Before that, give npx the full name: on npm, `retest` alone is another package.
+Once `init` has installed Retest, `npx retest` runs the project's own copy, as below.
 
 Write your first test in `tests/task.retest.ts`:
 
 ```ts
-import { test, expect } from '@rehearsal-labs/retest'
+import { test, expect } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')
@@ -104,7 +104,7 @@ This test creates a task on an iPhone simulator, marks it done in Chrome, and se
 
 ```ts
 // retest.config.ts
-import { chrome, defineConfig, env } from '@rehearsal-labs/retest'
+import { chrome, defineConfig, env } from 'retest'
 
 const config = defineConfig({
   apps: {
@@ -118,7 +118,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }
@@ -127,7 +127,7 @@ declare module '@rehearsal-labs/retest' {
 
 ```ts
 // tests/sync.retest.ts
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 test('a task made on the phone shows up done on the desk', { apps: ['phone', 'web', 'desk'] }, async ({ phone, web, desk }) => {
   await phone.getByTestId('account-field').fill('ada')

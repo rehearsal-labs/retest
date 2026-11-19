@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 const baseUrl = process.env['TASK_APP_URL'] ?? 'http://127.0.0.1:4173'
 

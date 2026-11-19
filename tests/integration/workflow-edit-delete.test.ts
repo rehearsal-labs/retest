@@ -11,7 +11,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 const file = 'tests/edit-delete.retest.ts'
 const assertFailedAt = failedAtIn(file)
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('edits a task and the change survives a reload', async ({ page }) => {
   await page.goto('/workflow/backlog')

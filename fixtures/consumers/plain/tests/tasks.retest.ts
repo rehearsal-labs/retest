@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { save, saved, title } from '../support/controls.ts'
 import { trimmed } from '../support/format.mjs'
 import legacy from '../support/legacy-data.cjs'

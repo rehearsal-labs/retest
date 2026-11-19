@@ -1,4 +1,4 @@
-import { app, chrome, chromium, defineConfig, edge, env } from '@rehearsal-labs/retest'
+import { app, chrome, chromium, defineConfig, edge, env } from 'retest'
 
 // What the type check catches while a config is written. None of these configs is registered.
 export const channel = chrome({ channel: 'nightly' }) // type-error TS2322 Type '"nightly"' is not assignable to type

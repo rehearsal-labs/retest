@@ -15,7 +15,7 @@ const assertFailedAt = failedAtIn(file)
 const byName = TEAM.map((member) => member.name).sort((first, second) => first.localeCompare(second, 'en'))
 const byTasks = TEAM.map((member) => member.tasks).sort((first, second) => first - second)
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('reads the table row by row and finds a member by name', async ({ page }) => {
   await page.goto('/workflow/team')

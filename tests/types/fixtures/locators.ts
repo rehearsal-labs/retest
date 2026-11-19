@@ -1,4 +1,4 @@
-import { expect, test, type Finders, type Locator, type Page } from '@rehearsal-labs/retest'
+import { expect, test, type Finders, type Locator, type Page } from 'retest'
 
 // Finders on a page and on a locator, picks and patterns. Each marked line fails the type check.
 export const finders: Finders = {} as Page

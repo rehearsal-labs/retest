@@ -1,5 +1,5 @@
-import type { Page } from '@rehearsal-labs/retest'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import type { Page } from 'retest'
+import { expect, secret, test } from 'retest'
 
 // Workflow family 2, password sign-in and sign-out: F2.1 to F2.4, as tests/integration/workflow-sign-in.test.ts
 // runs them on Chrome. The password is the secret `password`.

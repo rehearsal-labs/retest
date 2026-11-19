@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The task app's frozen mode, as for the stop. The runner ends the browser's process group once the server has
 // counted the press, so the click's outcome cannot be known.

@@ -1,4 +1,4 @@
-import { chromium, defineConfig } from '@rehearsal-labs/retest'
+import { chromium, defineConfig } from 'retest'
 
 // Two apps and nothing else: no default app, secrets, test ids, tags or states.
 const config = defineConfig({
@@ -7,7 +7,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

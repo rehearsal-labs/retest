@@ -20,7 +20,7 @@ for (const nativeWithholding of [undefined, false, true]) {
           ...(field === 'plain' ? { type: 'TextField' } : {}),
           ...(field === 'unreadable' ? { omit: ['type'] } : {}),
         }),
-        tests: `import { expect, secret, test } from '@rehearsal-labs/retest'
+        tests: `import { expect, secret, test } from 'retest'
           test('required wrong state', { apps: ['phone'] }, async ({ phone }) => {
             await phone.getByTestId('password-field').fill(secret('password'))
             expect(1).toBe(2)
@@ -71,7 +71,7 @@ for (const problem of ['type-changed', 'missing-value', 'unknown-input'] as cons
         }
         app.once(route, react)
       },
-      tests: `import { secret, test } from '@rehearsal-labs/retest'
+      tests: `import { secret, test } from 'retest'
         test('requires confirmed secret input', { apps: ['phone'] }, async ({ phone }) => {
           await phone.getByTestId('password-field').fill(secret('password'))
           throw new Error('failed input must stop the body')

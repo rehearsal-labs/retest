@@ -12,7 +12,7 @@ import { budgets, configSource, eventsOf, filesHolding, runCli, runProject, test
 // name each popup's steps as its own.
 
 function tests(appUrl: string, partner: string): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'
+  return `import { expect, test } from 'retest'
 
 test('drives the page a link opens', async ({ page }) => {
   await page.goto('/popups')
@@ -199,7 +199,7 @@ const partnerPassword = 'partner-secret-0b9e55'
 // be typed on the partner's origin.
 function capturedTests(partner: string): string {
   const partnerPath = JSON.stringify(`/popups?partner=${encodeURIComponent(partner)}`)
-  return `import { expect, secret, test } from '@rehearsal-labs/retest'
+  return `import { expect, secret, test } from 'retest'
 
 test('a popup has the emulation of the page that opened it', async ({ page }) => {
   await page.goto('/popups')

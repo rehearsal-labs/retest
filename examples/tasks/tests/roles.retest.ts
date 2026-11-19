@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('each role has a session of its own', { apps: ['web', 'admin'], state: { web: 'signed-in' }, tags: ['roles'] }, async ({ web, admin }) => {
   await web.goto('/account')

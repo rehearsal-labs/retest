@@ -12,7 +12,7 @@ import { tempProject } from '../support/project.ts'
 import { eventsOfType, newRunFolder, quickTimeouts, readEvents } from '../support/run-harness.ts'
 import { tempFolder } from '../support/temp-folder.ts'
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('fails', async ({ page }) => {
   await page.goto('/')

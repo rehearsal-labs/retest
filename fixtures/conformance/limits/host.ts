@@ -1,6 +1,6 @@
-import type { Reporter } from '@rehearsal-labs/retest/runner'
-import { defineConfig } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
+import type { Reporter } from 'retest/runner'
+import { defineConfig } from 'retest'
+import { resolveSecrets, runFiles, SessionBudget, validateConfig } from 'retest/runner'
 import { conformanceBaseUrl, conformanceTarget } from '../config.ts'
 
 // Owner and host session limits, which a host sets through `runFiles`: two workers, and a budget of one session for

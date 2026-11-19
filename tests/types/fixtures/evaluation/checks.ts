@@ -1,6 +1,6 @@
 import type { DefaultJudgeName, JudgeAccepts, JudgeName } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { chromium, defineConfig, test, type EvaluatorFactory } from '@rehearsal-labs/retest'
+import { chromium, defineConfig, test, type EvaluatorFactory } from 'retest'
 
 // The judges in retest.config.ts are registered: their names and what each accepts type-check every AI check.
 export const judges: Same<JudgeName, 'visual' | 'words'> = true
@@ -48,7 +48,7 @@ export const factory: EvaluatorFactory = ({ credentials, options }) => ({
 })
 
 // Named evidence types are available to consumers from the package root.
-import type { TextRecordsEvidence, DiagnosticsFor, EvidenceItem, AbsenceRequirement } from '@rehearsal-labs/retest'
+import type { TextRecordsEvidence, DiagnosticsFor, EvidenceItem, AbsenceRequirement } from 'retest'
 export const selectedRecords: TextRecordsEvidence = { app: 'web', diagnostics: ['console', 'network'] }
 export const textDiagnostics: DiagnosticsFor<'text'> = selectedRecords
 export const visualEvidence: EvidenceItem<'visual'> = selectedRecords

@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('makes the mark', async () => {
   const answer = await fetch(`${process.env['SIGNALS_URL']}/mark`)

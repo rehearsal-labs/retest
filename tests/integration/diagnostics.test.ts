@@ -14,7 +14,7 @@ import { budgets, configSource, eventsOf, filesHolding, finishRun, resultOf, run
 // pages: what each record says, how hops correlate, what the declared scope covers and leaves out, how secrets are
 // kept out of every file, what a strict or required policy does, and how limits, cancellation and isolation behave.
 
-const mainTest = `import { expect, test } from '@rehearsal-labs/retest'
+const mainTest = `import { expect, test } from 'retest'
 
 test('emits every record', async ({ page }) => {
   await page.goto('/diagnostics')
@@ -247,7 +247,7 @@ function windows(value: string): string[] {
   return Array.from({ length: value.length - 9 }, (_, index) => value.slice(index, index + 10))
 }
 
-const secretsTest = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const secretsTest = `import { expect, secret, test } from 'retest'
 
 test('leaks a secret everywhere a page can', async ({ page }) => {
   await page.goto('/diagnostics/secrets')
@@ -349,7 +349,7 @@ test('without a policy, expected console errors and HTTP error responses fail no
   assert.equal(resultOf(run).status, 'passed')
 })
 
-const floodTest = (count: number, size: number, fetches: number): string => `import { expect, test } from '@rehearsal-labs/retest'
+const floodTest = (count: number, size: number, fetches: number): string => `import { expect, test } from 'retest'
 
 test('floods the console', async ({ page }) => {
   await page.goto('/diagnostics/flood?count=${count}&size=${size}&fetches=${fetches}')
@@ -414,7 +414,7 @@ test('an oversized message is cut, with its length kept, and counted as cut; the
   assert.ok(byteSummary.console.state === 'partial' && byteSummary.console.dropped > 0 && byteSummary.console.bytes <= 3000, JSON.stringify(byteSummary.console))
 })
 
-const markerTest = (names: readonly string[]): string => `import { expect, test } from '@rehearsal-labs/retest'
+const markerTest = (names: readonly string[]): string => `import { expect, test } from 'retest'
 ${names.map((name) => `
 test('marks ${name}', async ({ page }) => {
   await page.goto('/diagnostics/marker/${name}')
@@ -446,7 +446,7 @@ test('two apps of one test, two contexts at once, each keep their own records in
   const base = JSON.stringify(app.url)
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { owner: chrome({ baseUrl: ${base} }), member: chrome({ baseUrl: ${base} }) } }`),
-    'tests/two.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/two.retest.ts': `import { expect, test } from 'retest'
 
 test('two apps at once', { apps: ['owner', 'member'] }, async ({ owner, member }) => {
   await owner.goto('/diagnostics/marker/alpha')
@@ -473,7 +473,7 @@ test('two apps at once', { apps: ['owner', 'member'] }, async ({ owner, member }
 
 test('a run stopped while a request hangs keeps what it captured, marks the request interrupted, and exits 130', async (t) => {
   const { root } = await project(t, {
-    'tests/pending.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/pending.retest.ts': `import { expect, test } from 'retest'
 
 test('waits on a request that never ends', async ({ page }) => {
   await page.goto('/diagnostics/pending')
@@ -510,7 +510,7 @@ test('capture turned off records nothing, writes no artifact, and every result s
 
 test('a page with nothing to say leaves a complete, empty console capture, which reads apart from an unavailable one', async (t) => {
   const { root } = await project(t, {
-    'tests/quiet.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/quiet.retest.ts': `import { expect, test } from 'retest'
 
 test('stays quiet', async ({ page }) => {
   await page.goto('/diagnostics/quiet')
@@ -528,7 +528,7 @@ test('stays quiet', async ({ page }) => {
 
 test("a response a service worker answered says so, and the worker's own messages are not captured", async (t) => {
   const { root } = await project(t, {
-    'tests/worker.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/worker.retest.ts': `import { expect, test } from 'retest'
 
 test('reads a page the worker answered', async ({ page }) => {
   await page.goto('/diagnostics/worker-scope/register')

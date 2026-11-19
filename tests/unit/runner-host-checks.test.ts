@@ -292,7 +292,7 @@ describe('a run interrupted during the checks', () => {
 })
 
 describe('host checks in a run from a config', async () => {
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: {
     web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }),
@@ -301,14 +301,14 @@ export default defineConfig({
   defaultApp: 'web',
 })
 `
-  const setup = `import { expect, test } from '@rehearsal-labs/retest'
+  const setup = `import { expect, test } from 'retest'
 test.setup('signed-in', async ({ page }) => {
   await page.goto('/login')
   await page.getByTestId('sign-in').click()
   expect(true).toBe(true)
 })
 `
-  const both = `import { expect, test } from '@rehearsal-labs/retest'
+  const both = `import { expect, test } from 'retest'
 test('opens both', { apps: ['web', 'admin'], state: { web: 'signed-in' } }, async ({ web, admin }) => {
   await web.goto('/tasks')
   await admin.goto('/users')
@@ -362,13 +362,13 @@ test('opens both', { apps: ['web', 'admin'], state: { web: 'signed-in' } }, asyn
 // written, and everything Retest records reads the secret's name instead.
 describe('a host check whose text holds a secret', async () => {
   const password = 'hunter2-7391'
-  const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   secrets: { password: env('RETEST_UNIT_HOST_CHECK_SECRET') },
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 test('signs in', async ({ page }) => {
   await page.goto('/done')
   expect(true).toBe(true)
@@ -410,13 +410,13 @@ test('signs in', async ({ page }) => {
 describe("a failed host check's message", async () => {
   const quoted = 'ab"cd'
   const long = 'SYNTHETIC-PASSWORD'
-  const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   secrets: { quoted: env('RETEST_UNIT_QUOTED_SECRET'), long: env('RETEST_UNIT_LONG_SECRET') },
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 test('signs in', async ({ page }) => {
   await page.goto('/done')
   expect(true).toBe(true)

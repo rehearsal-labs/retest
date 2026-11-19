@@ -8,8 +8,8 @@ import { isPlainObject } from '../protocol/schema.ts'
  * exported subpath. An exports map whose keys are conditions is the `.` export alone. Nothing else is named, so a
  * path the package does not export resolves as it would anyway.
  *
- * @example exportedSpecifiers({ name: '@rehearsal-labs/retest', exports: { '.': './dist/index.js', './runner': './dist/runner/index.js' } })
- * // Set { '@rehearsal-labs/retest', '@rehearsal-labs/retest/runner' }
+ * @example exportedSpecifiers({ name: 'retest', exports: { '.': './dist/index.js', './runner': './dist/runner/index.js' } })
+ * // Set { 'retest', 'retest/runner' }
  */
 export function exportedSpecifiers(manifest: unknown): Set<string> {
   const name = isPlainObject(manifest) ? manifest['name'] : undefined
@@ -25,7 +25,7 @@ export function exportedSpecifiers(manifest: unknown): Set<string> {
  * own name, and leaves every other specifier alone. So a test file loads the copy of Retest that runs it, wherever
  * the file is: in a folder with no `node_modules`, or beside another copy.
  *
- * @example registerHooks({ resolve: ownPackageResolver(new Set(['@rehearsal-labs/retest']), import.meta.url) })
+ * @example registerHooks({ resolve: ownPackageResolver(new Set(['retest']), import.meta.url) })
  */
 export function ownPackageResolver(specifiers: ReadonlySet<string>, ownUrl: string): ResolveHookSync {
   return (specifier, context, nextResolve) => (specifiers.has(specifier) ? nextResolve(specifier, { ...context, parentURL: ownUrl }) : nextResolve(specifier, context))

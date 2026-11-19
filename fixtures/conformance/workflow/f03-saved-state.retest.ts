@@ -1,4 +1,4 @@
-import { expect, secret } from '@rehearsal-labs/retest'
+import { expect, secret } from 'retest'
 import { stateTest as test } from '../unregistered.ts'
 
 // Workflow family 3, reuse signed-in state: F3.1 to F3.4, as tests/integration/workflow-saved-state.test.ts runs them

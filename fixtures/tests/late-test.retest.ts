@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 const running = Promise.withResolvers<void>()
 // Registered while the file loads, so the callback runs outside any test once a test lets it go.

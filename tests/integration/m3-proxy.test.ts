@@ -37,7 +37,7 @@ test('every request goes through the proxy, a host in the bypass list goes aroun
   },
   defaultApp: 'web',
 }`),
-    'tests/proxy.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/proxy.retest.ts': `import { expect, test } from 'retest'
 
 test('sends every request of the page through the proxy', async ({ page }) => {
   await page.goto('${PROXY_CHECK_PATH}')

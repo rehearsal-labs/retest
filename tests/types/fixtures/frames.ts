@@ -1,4 +1,4 @@
-import { expect, test, type Frame, type Locator, type Page } from '@rehearsal-labs/retest'
+import { expect, test, type Frame, type Locator, type Page } from 'retest'
 
 // page.frame() gives a frame with the finders and frame() alone: a frame inside a frame compiles, and nothing of a
 // page's own, such as goto or the page matchers, is there. Each marked line fails the type check.

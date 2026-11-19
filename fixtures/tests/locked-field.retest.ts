@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('keeps the value of a field it cannot fill', async ({ page }) => {
   await page.goto('/')

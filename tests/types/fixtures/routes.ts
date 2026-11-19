@@ -1,4 +1,4 @@
-import { expect, test, type AbortReason, type DragOptions, type ElectronPage, type RouteAnswer, type RoutePattern } from '@rehearsal-labs/retest'
+import { expect, test, type AbortReason, type DragOptions, type ElectronPage, type RouteAnswer, type RoutePattern } from 'retest'
 
 // A route takes a glob or a RegExp and an answer that is data: a response, or a refusal by one of Chrome's error names,
 // never both. A drag takes the locator to drop on, never a string, and its steps as a number.

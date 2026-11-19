@@ -1,4 +1,4 @@
-import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+import { app, chromium, defineConfig } from 'retest'
 
 // Browsers beside native apps. The loader accepts every target here, and a run refuses all but Chromium's at setup;
 // the types offer each app only what its targets can do.
@@ -19,7 +19,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

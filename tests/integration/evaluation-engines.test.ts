@@ -95,7 +95,7 @@ export default function makePixelJudge(setup) {
 `
 }
 
-const judgedTests = `import { expect, test } from '@rehearsal-labs/retest'
+const judgedTests = `import { expect, test } from 'retest'
 
 async function open(page, path) {
   await page.goto(path)

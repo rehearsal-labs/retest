@@ -19,7 +19,7 @@ test('TaskPhone public API: sign in, create a task and preserve a wrong-state fa
   const source = await readFile(join(repositoryRoot, 'fixtures/cross-platform/tests/native-phone.retest.ts'), 'utf8')
   const root = await writeProject(t, {
     'phone.retest.ts': source,
-    'retest.config.ts': `import { defineConfig, env } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { defineConfig, env } from 'retest'
 export default defineConfig({ apps: { phone: { platform: 'ios-simulator', appPath: ${JSON.stringify(taskPhoneApp)}, device: 'iPhone 17', runtime: '26.5', arguments: ['-reset', '-serviceURL', ${JSON.stringify(service.url)}] } }, secrets: { password: env('RETEST_NATIVE_API_PASSWORD') }, secretOrigins: { password: ['dev.retest.fixtures.taskphone'] } })
 `,
   })

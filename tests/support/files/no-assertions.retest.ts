@@ -1,4 +1,4 @@
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 test('only acts', async ({ page }) => {
   await page.goto('/')

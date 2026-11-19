@@ -1,4 +1,4 @@
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 test('clicks a button that never appears', async ({ page }) => {
   await page.goto('/')

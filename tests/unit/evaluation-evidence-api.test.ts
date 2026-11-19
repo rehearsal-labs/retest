@@ -15,7 +15,7 @@ import { runProject, tempProject } from '../support/project.ts'
 const fakeJudge = fileURLToPath(new URL('../support/fake-evaluator.ts', import.meta.url))
 const tag = 'evidence-api'
 
-const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
@@ -30,7 +30,7 @@ export default defineConfig({
 })
 `
 
-const tests = `import { test } from '@rehearsal-labs/retest'
+const tests = `import { test } from 'retest'
 
 test('a recorded step', async () => {
   await test.evaluate({ requirement: { pass: 'The notification appears.' }, evidence: { recording: { step: 'save' } } })

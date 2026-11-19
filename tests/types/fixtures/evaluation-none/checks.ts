@@ -1,6 +1,6 @@
 import type { JudgeName } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 export const judges: Same<JudgeName, never> = true
 

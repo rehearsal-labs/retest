@@ -43,7 +43,7 @@ const nativeApps = { skip: unixOnly('Windows refuses a native app at its setup, 
 
 const budgets = { collection: 2000, setup: 2000, action: 2000, assertion: 2000, navigation: 2000, cleanup: 2000, test: 5000 }
 const stateScreen = () => [{ type: 'StaticText', identifier: 'state', label: 'Open', frame: { x: 16, y: 360, width: 200, height: 20 } }]
-const wrongState = `import { expect, test } from '@rehearsal-labs/retest'
+const wrongState = `import { expect, test } from 'retest'
 
 test('checks a state the app never shows', { apps: ['phone'] }, async ({ phone }) => {
   await expect(phone.getByTestId('state')).toHaveText('Done', { timeout: 300 })
@@ -128,10 +128,10 @@ describe('native keyboard, alert and swipe calls in the record', () => {
 
 describe('a run stopped while its pages start their diagnostics', () => {
   test('closes its pages before it gives their sessions back', { timeout: 60_000 }, async () => {
-    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173' }) } })
 `
-    const root = tempProject({ [configFileName]: config, 'tests/a.retest.ts': `import { test } from '@rehearsal-labs/retest'\n\ntest('never starts', async () => {})\n` })
+    const root = tempProject({ [configFileName]: config, 'tests/a.retest.ts': `import { test } from 'retest'\n\ntest('never starts', async () => {})\n` })
     const loaded = await loadConfig(join(root, configFileName))
     assert.ok(loaded.ok)
     const secrets = resolveSecrets(loaded.config, {})
@@ -207,7 +207,7 @@ describe("a native app's diagnostics scope", () => {
   test('a target that keeps no log covers no console, and says so in its scope and its summary alike', { timeout: 60_000, ...nativeApps }, async (t) => {
     const run = await standInRun(t, {
       screen: stateScreen,
-      tests: `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('reads the state', { apps: ['phone'] }, async ({ phone }) => {\n  await expect(phone.getByTestId('state')).toHaveText('Open')\n})\n`,
+      tests: `import { expect, test } from 'retest'\n\ntest('reads the state', { apps: ['phone'] }, async ({ phone }) => {\n  await expect(phone.getByTestId('state')).toHaveText('Open')\n})\n`,
     })
     assert.equal(run.result.exitCode, 0, JSON.stringify(run.result.files))
     const started = run.events.find((event) => event.type === 'diagnostics.started')

@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The request to close reaches this listener right after Retest's own, which only queues the turn that says the file
 // finished, so the process ends before it could say so.

@@ -115,7 +115,7 @@ describe('list, with a judge whose credential is read from the environment', () 
     const root = tempProject({})
     const seen = join(root, 'seen.txt')
     const file = `import { writeFileSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 writeFileSync(${JSON.stringify(seen)}, process.env.${variable} === undefined ? 'absent' : 'present')
 
@@ -145,7 +145,7 @@ describe('list, with a secret whose value is read from the environment', () => {
     const root = tempProject({})
     const seen = join(root, 'seen.txt')
     const file = `import { writeFileSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 writeFileSync(${JSON.stringify(seen)}, process.env.${secretVariable} === undefined ? 'absent' : 'present')
 

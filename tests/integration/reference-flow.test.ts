@@ -98,7 +98,7 @@ async function startService(t: TestContext, flags: readonly string[]): Promise<S
 }
 
 function configSource(service: string): string {
-  return `import { chrome, defineConfig, env } from '@rehearsal-labs/retest'
+  return `import { chrome, defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: {

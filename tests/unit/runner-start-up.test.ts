@@ -5,7 +5,7 @@ import { describe, test } from 'node:test'
 import { runProject, tempProject } from '../support/project.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 
-const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
 `
 
@@ -15,7 +15,7 @@ function waitsToRun(name: string, mark: string): string {
   return `import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 const root = join(import.meta.dirname, '..')
 const collected = join(root, 'collected-${name}')
@@ -31,7 +31,7 @@ test('${name} runs', () => {
 `
 }
 
-const passing = (name: string): string => `import { expect, test } from '@rehearsal-labs/retest'
+const passing = (name: string): string => `import { expect, test } from 'retest'
 
 test('${name} runs', () => {
   expect(1).toBe(1)

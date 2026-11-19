@@ -93,7 +93,7 @@ const expected: Readonly<Record<EngineName, Expected>> = {
 }
 
 test('a run stopped while its web page opens records an interrupted test with unavailable diagnostics', async (t) => {
-  const root = await writeProject(t, { 'tests/stop.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+  const root = await writeProject(t, { 'tests/stop.retest.ts': `import { expect, test } from 'retest'
 test('never reaches its body', () => expect(1).toBe(1))
 ` })
   const controller = new AbortController()
@@ -131,7 +131,7 @@ test('never reaches its body', () => expect(1).toBe(1))
 test('a run stopped during collection lists no tests from the unfinished module and records the interruption', async (t) => {
   const root = await writeProject(t, {})
   const marker = join(root, 'collection-entered')
-  await writeFile(join(root, 'stop.retest.ts'), `import { expect, test } from '@rehearsal-labs/retest'
+  await writeFile(join(root, 'stop.retest.ts'), `import { expect, test } from 'retest'
 import { writeFileSync } from 'node:fs'
 test('declared before the pause', () => expect(1).toBe(1))
 writeFileSync(${JSON.stringify(marker)}, 'ready')
@@ -278,7 +278,7 @@ function covers(summary: DiagnosticsSummary, kind: DiagnosticKind, area: ScopeAr
   return summary.scope?.[kind].covered.includes(area) === true
 }
 
-const mainTest = `import { expect, test } from '@rehearsal-labs/retest'
+const mainTest = `import { expect, test } from 'retest'
 
 test('emits every record', async ({ page }) => {
   await page.goto('/diagnostics')
@@ -565,7 +565,7 @@ function coverageFacts(summary: DiagnosticsSummary, lines: readonly DiagnosticLi
   }
 }
 
-const markerTest = (names: readonly string[]): string => `import { expect, test } from '@rehearsal-labs/retest'
+const markerTest = (names: readonly string[]): string => `import { expect, test } from 'retest'
 ${names.map((name) => `
 test('marks ${name}', async ({ page }) => {
   await page.goto('/diagnostics/marker/${name}')
@@ -589,7 +589,7 @@ eachEngine('the capture keeps listening across navigations, into another site an
   // localhost and 127.0.0.1 are two sites, so the second page may load in a process of its own.
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { web: ${engine.target(`baseUrl: ${JSON.stringify(app.url)}`)} } }`),
-    'tests/travel.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/travel.retest.ts': `import { expect, test } from 'retest'
 
 test('travels', async ({ page }) => {
   await page.goto('/diagnostics/marker/alpha')
@@ -624,7 +624,7 @@ eachEngine('two apps of one test, two contexts of one browser at once, each keep
   const target = engine.target(`baseUrl: ${JSON.stringify(app.url)}`)
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { owner: ${target}, member: ${target} } }`),
-    'tests/two.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/two.retest.ts': `import { expect, test } from 'retest'
 
 test('two apps at once', { apps: ['owner', 'member'] }, async ({ owner, member }) => {
   await Promise.all([owner.goto('/diagnostics/marker/alpha'), member.goto('/diagnostics/marker/bravo')])
@@ -661,7 +661,7 @@ eachEngine('two files at once in one pooled browser, each test after another in 
 
 eachEngine('a run stopped while a request hangs keeps what it captured, marks the request interrupted, ends the artifact and exits 130', async (t, engine) => {
   const { root } = await project(t, engine, {
-    'tests/pending.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/pending.retest.ts': `import { expect, test } from 'retest'
 
 test('waits on a request that never ends', async ({ page }) => {
   await page.goto('/diagnostics/pending')
@@ -689,7 +689,7 @@ test('waits on a request that never ends', async ({ page }) => {
   assert.equal(lines.at(-1)?.type, 'capture.finished')
 })
 
-const floodTest = (count: number, size: number, fetches: number): string => `import { expect, test } from '@rehearsal-labs/retest'
+const floodTest = (count: number, size: number, fetches: number): string => `import { expect, test } from 'retest'
 
 test('floods the console', async ({ page }) => {
   await page.goto('/diagnostics/flood?count=${count}&size=${size}&fetches=${fetches}')
@@ -738,7 +738,7 @@ function windows(value: string): string[] {
   return Array.from({ length: value.length - 9 }, (_, index) => value.slice(index, index + 10))
 }
 
-const secretsTest = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const secretsTest = `import { expect, secret, test } from 'retest'
 
 test('leaks a secret everywhere a page can', async ({ page }) => {
   await page.goto('/diagnostics/secrets')
@@ -867,7 +867,7 @@ eachEngine('a test that fails its own check keeps that failure first, its own ar
 })
 
 eachEngine('a quiet page leaves a complete, empty console capture, and capture turned off says it was disabled and writes nothing', async (t, engine) => {
-  const quietTest = `import { expect, test } from '@rehearsal-labs/retest'
+  const quietTest = `import { expect, test } from 'retest'
 
 test('stays quiet', async ({ page }) => {
   await page.goto('/diagnostics/quiet')

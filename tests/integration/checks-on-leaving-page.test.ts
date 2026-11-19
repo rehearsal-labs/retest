@@ -16,7 +16,7 @@ const file = 'tests/leaving.retest.ts'
 // that has set off for another until that one arrives, so a click that set the page off itself could end only once the
 // save answered. The browser tells Retest the page asked for the save before it sends the request, so once the server
 // holds the save, the check that follows reads a page Retest knows is opening it.
-const sourceFor = (appUrl: string): string => `import { expect, test } from '@rehearsal-labs/retest'
+const sourceFor = (appUrl: string): string => `import { expect, test } from 'retest'
 
 const appUrl = ${JSON.stringify(appUrl)}
 const held = async () => ((await (await fetch(appUrl + '${HELD_PATH}')).json()) as { held: number }).held

@@ -11,7 +11,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 const file = 'tests/navigation.retest.ts'
 const assertFailedAt = failedAtIn(file)
 
-const source = (origin: string): string => `import { expect, test } from '@rehearsal-labs/retest'
+const source = (origin: string): string => `import { expect, test } from 'retest'
 
 test('opens pages by link, by a moved address and by an absolute address', async ({ page }) => {
   await page.goto('/workflow/site')

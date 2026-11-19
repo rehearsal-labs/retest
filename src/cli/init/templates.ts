@@ -3,7 +3,7 @@ import type { BrowserName } from '../../config/types.ts'
 /** What `init` asks: the app, where it answers, how to start it, and which browser runs the tests. */
 export type InitAnswers = { app: string; url: string; start?: string; browser: BrowserName }
 
-export const packageName = '@rehearsal-labs/retest'
+export const packageName = 'retest'
 
 export const exampleTestFile = 'tests/example.retest.ts'
 
@@ -23,7 +23,7 @@ export const packageScripts: Readonly<Record<string, string>> = {
  * which `erasableSyntaxOnly` needs 5.8 or later. @types/node follows Node 24.12, the oldest Node Retest runs on and the
  * line the workflow `init` writes installs; a later line would describe APIs that Node 24 does not have.
  *
- * @example projectPackages('0.5.2') // { '@rehearsal-labs/retest': '^0.5.2', typescript: '^7.0.2', '@types/node': '^24.12.0' }
+ * @example projectPackages('2.0.0') // { retest: '^2.0.0', typescript: '^7.0.2', '@types/node': '^24.12.0' }
  */
 export function projectPackages(version: string): Readonly<Record<string, string>> {
   return { [packageName]: version === '0.0.0' ? 'latest' : `^${version}`, typescript: '^7.0.2', '@types/node': '^24.12.0' }

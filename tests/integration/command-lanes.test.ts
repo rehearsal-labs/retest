@@ -11,7 +11,7 @@ import { budgets, childLog, configSource, eventsOf, onlyEvent, onlyTest, runProj
 
 const fakeJudge = fileURLToPath(new URL('../support/fake-evaluator.ts', import.meta.url))
 
-const forged = `import { expect, test } from '@rehearsal-labs/retest'
+const forged = `import { expect, test } from 'retest'
 
 let scope
 const answers = new Map()

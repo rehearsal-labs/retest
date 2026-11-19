@@ -34,7 +34,7 @@ function holdingTest(title: string, options: string, name: string, query: string
 }
 
 function holdingFile(tests: readonly string[]): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'\n\n${tests.join('\n\n')}\n`
+  return `import { expect, test } from 'retest'\n\n${tests.join('\n\n')}\n`
 }
 
 async function project(t: TestContext, files: Readonly<Record<string, string>>): Promise<{ root: string; url: string }> {
@@ -125,14 +125,14 @@ test('a test is not charged against its own budget for the time it waits for a l
   // would not let it. Its body asks the app one question, so its short budget bounds nothing but the wait.
   const budgetMs = 1500
   const app = await openApp(t)
-  const holding = `import { expect, test } from '@rehearsal-labs/retest'
+  const holding = `import { expect, test } from 'retest'
 
 test('holds the inbox until released', { locks: ['inbox'] }, async ({ page }) => {
   await page.goto('/holders/hold?name=inbox&release=1')
   await expect(page.getByTestId('overlap')).toHaveText('1')
 })
 `
-  const waiting = `import { expect, test } from '@rehearsal-labs/retest'
+  const waiting = `import { expect, test } from 'retest'
 
 const appUrl = ${JSON.stringify(app.url)}
 const held = async () => ((await (await fetch(new URL('/holders?name=inbox', appUrl))).json()) as { current: number }).current

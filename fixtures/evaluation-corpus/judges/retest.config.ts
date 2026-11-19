@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { chromium, defineConfig } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { chromium, defineConfig } from 'retest'
 
 // The fake corpus judges, for `scripts/run-evaluation-corpus.ts --config fixtures/evaluation-corpus/judges/retest.config.ts`.
 // The app is never opened: the corpus runner reads only the evaluation block.

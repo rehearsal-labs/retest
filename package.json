@@ -1,5 +1,5 @@
 {
-  "name": "@rehearsal-labs/retest",
+  "name": "retest",
   "version": "0.0.0",
   "description": "One test across web, mobile and desktop. Built for software engineers and coding agents.",
   "type": "module",

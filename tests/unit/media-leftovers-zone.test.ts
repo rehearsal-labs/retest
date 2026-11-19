@@ -9,7 +9,7 @@ import { endedPid } from './native-fake-tools.ts'
 import { fakeMediaStarter, recordProject } from './runner-recording-fakes.ts'
 
 test('a media sweep reports an unmarked live owner and leaves its run and outputs alone', { skip: unpinnedMedia }, async () => {
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from 'retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   const previous = await recordProject(root, { files: ['tests/one.retest.ts'], startMedia: fakeMediaStarter().start })
   const current = newRunFolder()
   const old = join(dirname(current), 'legacy')

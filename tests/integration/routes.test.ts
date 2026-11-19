@@ -29,7 +29,7 @@ const longPattern = `**/${'a'.repeat(185)}${password}/never`
 // A whole page a route serves in place of the server: a field whose text the page repeats below it.
 const formPage = '<!doctype html><title>Mocked form</title><input data-testid="secret-field" type="text"><p data-testid="echo"></p><script>document.querySelector("input").addEventListener("input", (event) => { document.querySelector("[data-testid=echo]").textContent = "typed " + event.target.value })</script>'
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test(${JSON.stringify(names.stubs)}, async ({ page }) => {
   await page.route('**/api/tasks', { status: 200, contentType: 'application/json', body: JSON.stringify([{ title: 'Stubbed' }]) })

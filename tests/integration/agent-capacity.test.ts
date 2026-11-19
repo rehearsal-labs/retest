@@ -220,9 +220,9 @@ async function runProgram(t: TestContext, root: string, runs: readonly string[],
 // A host program: one budget with room for one session, an agent host and a test run that both draw on it.
 // It imports the agent API by the package's own `./agent` subpath, as a program that depends on Retest does.
 function sharedBudgetProgram(input: { appUrl: string; config: string; file: string; target: string; engine: string }): string {
-  return `import { chrome, chromium, defineConfig } from '@rehearsal-labs/retest'
-import { AgentHost } from '@rehearsal-labs/retest/agent'
-import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
+  return `import { chrome, chromium, defineConfig } from 'retest'
+import { AgentHost } from 'retest/agent'
+import { resolveSecrets, runFiles, SessionBudget, validateConfig } from 'retest/runner'
 import { join } from 'node:path'
 
 const folder = process.argv.at(-1) ?? ''
@@ -265,7 +265,7 @@ test('agent sessions and a test run draw on one budget, and a required check has
   const engine = engineUnderTest()
   const file = 'tests/sign-in.retest.ts'
   const config = `{ apps: { web: ${engine.target(`baseUrl: ${JSON.stringify(app.url)}`)} } }`
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('the sign-in page asks for a user name', async ({ page }) => {
   await page.goto('/login')

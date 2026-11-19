@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 setTimeout(() => {
   throw new Error('thrown after the file loaded')

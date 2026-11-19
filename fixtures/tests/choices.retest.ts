@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // select, check and uncheck on the task app's choices page, which shows every change it hears, whether each was
 // trusted, and every click on a checkable control. A select is chosen with the keyboard, so its changes are trusted.

@@ -1,4 +1,4 @@
-import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+import { app, chromium, defineConfig } from 'retest'
 
 // Firefox, WebKit, iOS simulator and macOS targets type-check, as the loader accepts them; a run refuses each at
 // setup until its driver exists. A native target takes the app's start command, never an address or browser settings.

@@ -28,7 +28,7 @@ const environment = { RETEST_E2E_PASSWORD: TASK_APP_PASSWORD, RETEST_E2E_TRUSTED
 const codes = ['one-time-1-code', 'one-time-2-code']
 
 function secretTests(elsewhere: string): string {
-  return `import { expect, secret, test } from '@rehearsal-labs/retest'
+  return `import { expect, secret, test } from 'retest'
 
 test('signs in with a secret, and reads the page with the value written as its name', async ({ page }) => {
   console.log('the variable in the test process is', process.env['RETEST_E2E_PASSWORD'] === undefined ? 'absent' : 'present')
@@ -186,7 +186,7 @@ test('a secret a page writes into its address, where it is percent-encoded, is h
   const site = await servePages(t, { '/': echoPage })
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(site.url)} }) }, secrets: { password: env('RETEST_E2E_PASSWORD') } }`),
-    'tests/echo.retest.ts': `import { expect, secret, test } from '@rehearsal-labs/retest'
+    'tests/echo.retest.ts': `import { expect, secret, test } from 'retest'
 
 test('shows the path the secret went into', async ({ page }) => {
   await page.goto('/')
@@ -214,7 +214,7 @@ test('a one-time code a server printed before the fill read it is hidden in the 
   apps: { web: chrome({ baseUrl: ${JSON.stringify(url)}, start: { command: ${JSON.stringify(appServerCommand(port, { printEnv: 'RETEST_E2E_CODE' }))}, ready: ${JSON.stringify(url)} } }) },
   secrets: { code: async () => process.env['RETEST_E2E_CODE'] ?? '' },
 }`),
-    'tests/code.retest.ts': `import { expect, secret, test } from '@rehearsal-labs/retest'
+    'tests/code.retest.ts': `import { expect, secret, test } from 'retest'
 
 test('types the code the server sent', async ({ page }) => {
   await page.goto('/')

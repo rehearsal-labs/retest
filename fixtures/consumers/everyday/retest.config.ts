@@ -1,4 +1,4 @@
-import { chrome, defineConfig } from '@rehearsal-labs/retest'
+import { chrome, defineConfig } from 'retest'
 import { Budget } from '@support/budgets'
 
 // The task app from fixtures/task-app, at the address the check gives in TASK_APP_URL.

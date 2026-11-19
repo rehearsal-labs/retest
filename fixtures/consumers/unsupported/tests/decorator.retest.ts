@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { Tasks } from '../support/decorated.ts'
 
 test('imports a class with a decorator', async () => {

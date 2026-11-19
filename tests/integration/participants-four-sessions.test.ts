@@ -22,7 +22,7 @@ function eachSignedIn(): string {
     .join('\n')
 }
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 ${Object.entries(accounts)
   .map(([app, account]) => signInSetup(`${app}-signed-in`, app, account))

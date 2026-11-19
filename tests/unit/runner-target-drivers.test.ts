@@ -161,7 +161,7 @@ describe('the config accepts targets that have no driver yet', () => {
 // WebKit has a driver now, so its attempts are not refused at planning: one whose build is missing fails its setup by
 // name, as a native app with no bundle does, and nothing stands in for it.
 describe('a run refuses at planning each attempt whose target has no driver yet', async () => {
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -173,7 +173,7 @@ export default defineConfig({
   defaultApp: 'web',
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('runs on Chromium', async ({ page }) => {
   await page.goto('/tasks')
@@ -254,7 +254,7 @@ describe('a refused attempt starts nothing', () => {
   // WebKit has a driver now, so its app's start command runs as a web app's does, beside the browser it asks for; here
   // the server never answers, and that is the failure, whatever became of the build.
   test('a WebKit app’s start command runs as a web app’s does, and a server that never answers is the failure', async () => {
-    const config = `import { defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { defineConfig } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -262,7 +262,7 @@ export default defineConfig({
   },
 })
 `
-    const tests = `import { test } from '@rehearsal-labs/retest'
+    const tests = `import { test } from 'retest'
 
 test('syncs on WebKit', async () => {})
 `
@@ -279,7 +279,7 @@ test('syncs on WebKit', async () => {})
   // Native apps are no longer refused, so their start command runs as a web app's does: inside the attempt's lease,
   // before the app it serves, which does not start once its server fails.
   test('a native app’s start command runs inside its lease, before its app, and a server that never answers is the failure', nativeApps, async () => {
-    const config = `import { defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { defineConfig } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -287,7 +287,7 @@ export default defineConfig({
   },
 })
 `
-    const tests = `import { test } from '@rehearsal-labs/retest'
+    const tests = `import { test } from 'retest'
 
 test('syncs on the Mac', async () => {})
 `
@@ -306,7 +306,7 @@ test('syncs on the Mac', async () => {})
   // On Windows the macOS app is refused at planning, so the start command its app names is never run, and a web test of
   // the same config runs.
   test('on Windows a native app’s start command never runs: the app is refused by its key, and the web test beside it runs', { skip: windowsOnly('the refusal reads the machine it runs on') }, async () => {
-    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -316,7 +316,7 @@ export default defineConfig({
   defaultApp: 'web',
 })
 `
-    const tests = `import { expect, test } from '@rehearsal-labs/retest'
+    const tests = `import { expect, test } from 'retest'
 
 test('runs on Chromium', async ({ page }) => {
   await page.goto('/tasks')
@@ -339,14 +339,14 @@ test('syncs on the Mac', { apps: ['mac'] }, async () => {})
   // WebKit has a driver now, so a test on a web app and a WebKit app readies each in the order the test names them: here
   // Chromium, then WebKit, whose missing build keeps the test from running; the browser launched for the web app is closed.
   test('a test on a web app and a WebKit app whose build is missing readies Chromium, fails at WebKit, and closes the browser it launched', async () => {
-    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173' }), webkit: { browser: 'webkit', executablePath: 'no-webkit-build', baseUrl: 'http://127.0.0.1:4173' } },
   defaultApp: 'web',
 })
 `
-    const tests = `import { test } from '@rehearsal-labs/retest'
+    const tests = `import { test } from 'retest'
 
 test('creates on Chromium, checks on WebKit', { apps: ['web', 'webkit'] }, async () => {})
 `
@@ -364,14 +364,14 @@ test('creates on Chromium, checks on WebKit', { apps: ['web', 'webkit'] }, async
   // A native app has a driver now, so a test on a web app and a native app takes its lease and makes each app ready in
   // the order the test names them: here Chromium, then the Mac app, whose missing bundle keeps the test from running.
   test('a test on a web app and a native app takes its lease, then readies each app in turn, and closes the browser it launched', nativeApps, async () => {
-    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173' }), mac: { platform: 'macos', appPath: 'build/Tasks.app' } },
   defaultApp: 'web',
 })
 `
-    const tests = `import { test } from '@rehearsal-labs/retest'
+    const tests = `import { test } from 'retest'
 
 test('creates on the web, checks on the Mac', { apps: ['web', 'mac'] }, async () => {})
 `
@@ -390,14 +390,14 @@ test('creates on the web, checks on the Mac', { apps: ['web', 'mac'] }, async ()
   // WebKit has a driver now, so its attempts are real attempts of their own target and take that target's share of the
   // browsers; a WebKit target with no build launches none of them, and Chromium's tests still pass in theirs.
   test('a WebKit target with no build takes its own share of the browsers, launches none, and Chromium’s tests still pass', async () => {
-    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173' }), webkit: { browser: 'webkit', executablePath: 'no-webkit-build', baseUrl: 'http://127.0.0.1:4173' } },
   defaultApp: 'web',
 })
 `
-    const tests = `import { expect, test } from '@rehearsal-labs/retest'
+    const tests = `import { expect, test } from 'retest'
 
 test('runs on Chromium', async ({ page }) => {
   await page.goto('/tasks')
@@ -418,7 +418,7 @@ for (const name of ['one', 'two', 'three']) test(\`runs on WebKit \${name}\`, { 
 })
 
 describe('a setup only refused tests need', () => {
-  const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -434,7 +434,7 @@ export default defineConfig({
   states: ['signed-in'],
 })
 `
-  const setup = `import { expect, secret, test } from '@rehearsal-labs/retest'
+  const setup = `import { expect, secret, test } from 'retest'
 
 test.setup('signed-in', { apps: ['web'] }, async ({ web }) => {
   await web.goto('/login')
@@ -442,11 +442,11 @@ test.setup('signed-in', { apps: ['web'] }, async ({ web }) => {
   await expect(web.getByTestId('missing')).toBeVisible()
 })
 `
-  const sync = `import { test } from '@rehearsal-labs/retest'
+  const sync = `import { test } from 'retest'
 
 test('syncs', { apps: ['web', 'webkit'], state: { web: 'signed-in' } }, async () => {})
 `
-  const syncOnMac = `import { test } from '@rehearsal-labs/retest'
+  const syncOnMac = `import { test } from 'retest'
 
 test('syncs on the Mac', { apps: ['web', 'mac'], state: { web: 'signed-in' } }, async () => {})
 `

@@ -10,7 +10,7 @@ import { engineUnderTest } from './engines.ts'
 import { binary, decoder, ffmpeg, importOption, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
 import { recordingSkip } from './recording-harness.ts'
 
-const source = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const source = `import { expect, secret, test } from 'retest'
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 for (const expected of ['Safe before', 'Wrong title']) test(expected, async ({page}) => {
  await page.goto('/')

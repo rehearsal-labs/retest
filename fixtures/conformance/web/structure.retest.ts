@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Test structure on the task app: a suite whose beforeEach opens the page and whose afterEach checks it, steps,
 // a parameterized test, and skipped tests and blocks, which never run and never pass.

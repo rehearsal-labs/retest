@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Holds the task app's counter for the inbox for a while under the lock, and checks that nobody held it meanwhile.
 // The counter is the app's own, so it sees two holders whichever process or browser they come from.

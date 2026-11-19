@@ -4,7 +4,7 @@ import { formatSessionId } from '../../src/protocol/evidence.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 import { decoded, finishRecordingRun, ownershipOf, partialFiles, recordingRun, recordingSkip, saveProof } from './recording-harness.ts'
 
-const source = `import { expect, test } from '@rehearsal-labs/retest'
+const source = `import { expect, test } from 'retest'
 for (const expected of ['Release checklist','Wrong title']) test(expected, async({page})=>{
   await page.goto('/')
   await page.getByTestId('task-title').fill('Release checklist')

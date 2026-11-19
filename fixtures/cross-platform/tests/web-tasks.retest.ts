@@ -1,4 +1,4 @@
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // The cross-platform fixture's web front end, signed in as the seeded account ada. The password is the secret
 // `password`, which the run's config reads from RETEST_CROSS_PLATFORM_PASSWORD. Every task is found by its id. The

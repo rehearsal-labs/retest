@@ -22,7 +22,7 @@ const matching = ['--grep', '/matches its baseline/']
 const update = [...matching, '--update-screenshots']
 const swatchColour = [217, 79, 48]
 
-const pageTests = `import { expect, test } from '@rehearsal-labs/retest'
+const pageTests = `import { expect, test } from 'retest'
 
 test('the page matches its baseline', { apps: ['web'] }, async ({ web }) => {
   await web.goto('/stable')
@@ -65,7 +65,7 @@ test('a page that never stops moving does not settle', { apps: ['web'] }, async 
 })
 `
 
-const elementTests = `import { expect, test } from '@rehearsal-labs/retest'
+const elementTests = `import { expect, test } from 'retest'
 
 test('the swatch matches its baseline', { apps: ['web'] }, async ({ web }) => {
   await web.goto('/stable')
@@ -96,7 +96,7 @@ test('a picture at another scale fails by name', { apps: ['sharp'] }, async ({ s
 
 // A test file that sends the parent raw looks the test's own API never sends, and writes down what came back.
 const rawTests = `import { writeFileSync } from 'node:fs'
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 let ids = {}
 process.on('message', (message) => { if (message && message.type === 'run') ids = { testId: message.testId, attemptId: message.attemptId } })

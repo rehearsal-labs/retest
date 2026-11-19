@@ -20,7 +20,7 @@ import {
   packRetest,
 } from './cli-harness.ts'
 
-const packageName = '@rehearsal-labs/retest'
+const packageName = 'retest'
 
 const consumerConfig = {
   compilerOptions: {
@@ -132,9 +132,8 @@ describe('package smoke test', () => {
   })
 
   test('installing it adds no other package', async () => {
-    assert.deepEqual(readdirSync(join(consumer, 'node_modules/@rehearsal-labs')), ['retest'])
     const installed = readdirSync(join(consumer, 'node_modules')).filter((name) => !name.startsWith('.'))
-    assert.deepEqual(installed, ['@rehearsal-labs'])
+    assert.deepEqual(installed, [packageName])
     const manifest: unknown = JSON.parse(await readFile(join(consumer, 'node_modules', packageName, 'package.json'), 'utf8'))
     assert.ok(typeof manifest === 'object' && manifest !== null)
     for (const key of ['dependencies', 'optionalDependencies']) {

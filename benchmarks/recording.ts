@@ -30,7 +30,7 @@ async function main(): Promise<number> {
   assertSucceeded(observerBuild, 'clang recording-resource.c')
   const cells: RecordingCell[] = []
   const versions: Record<string, string> = {}
-  for (const [name, folder] of [['retest', 'retest-project/node_modules/@rehearsal-labs/retest'], ['playwright', 'playwright-project/node_modules/@playwright/test']] as const) {
+  for (const [name, folder] of [['retest', 'retest-project/node_modules/retest'], ['playwright', 'playwright-project/node_modules/@playwright/test']] as const) {
     const manifest: unknown = JSON.parse(await readFile(join(options.workspace, folder, 'package.json'), 'utf8'))
     if (!isRecord(manifest) || readString(manifest, 'version') === undefined) throw new Error(`No prepared ${name} package.`)
     versions[name] = readString(manifest, 'version') ?? ''
@@ -49,7 +49,7 @@ async function main(): Promise<number> {
         await cp(join(options.workspace, 'retest-project/node_modules'), join(project, 'node_modules'), { recursive: true })
         await writeFile(join(project, 'package.json'), '{"private":true,"type":"module"}\n')
         await writeTests(project, 'retest', fixture, { tests: 1, files: 1 })
-        const retestEntry = join(project, 'node_modules/@rehearsal-labs/retest/dist/cli/main.js')
+        const retestEntry = join(project, 'node_modules/retest/dist/cli/main.js')
         const configurations: { tool: 'retest' | 'playwright'; diagnostics: boolean; recording: boolean; cwd: string; entry: string }[] = options.comparisonOnly ? [] : [
           { tool: 'retest' as const, diagnostics: true, recording: false, cwd: project, entry: retestEntry },
           { tool: 'retest' as const, diagnostics: true, recording: true, cwd: project, entry: retestEntry },

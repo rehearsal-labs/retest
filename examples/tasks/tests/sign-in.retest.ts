@@ -1,4 +1,4 @@
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // Runs before any test that starts from 'signed-in', once for each browser those tests use.
 test.setup('signed-in', async ({ page }) => {

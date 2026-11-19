@@ -17,7 +17,7 @@ import { resolveSecrets } from '../src/runner/secrets.ts'
 const rounds = Number(process.argv[2] ?? '10')
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const tests = ['main', 'flood'] as const
-const testSource = `import { expect, test } from '@rehearsal-labs/retest'
+const testSource = `import { expect, test } from 'retest'
 
 test('main', async ({ page }) => {
   await page.goto('/diagnostics')
@@ -35,8 +35,8 @@ type Sample = { capture: boolean; test: string; durationMs: number; heldBytes: n
 const app = await startTaskApp()
 const root = mkdtempSync(join(tmpdir(), 'retest-measure-diagnostics-'))
 try {
-  mkdirSync(join(root, 'node_modules', '@rehearsal-labs'), { recursive: true })
-  symlinkSync(repository, join(root, 'node_modules', '@rehearsal-labs', 'retest'), 'dir')
+  mkdirSync(join(root, 'node_modules'), { recursive: true })
+  symlinkSync(repository, join(root, 'node_modules', 'retest'), 'dir')
   mkdirSync(join(root, 'tests'))
   writeFileSync(join(root, 'tests', 'measure.retest.ts'), testSource)
   const samples: Sample[] = []
@@ -45,7 +45,7 @@ try {
     for (const capture of round % 2 === 0 ? [true, false] : [false, true]) {
       writeFileSync(
         join(root, configFileName),
-        `import { chrome, defineConfig } from '@rehearsal-labs/retest'\nexport default defineConfig({ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) }, diagnostics: { capture: ${capture} } })\n`,
+        `import { chrome, defineConfig } from 'retest'\nexport default defineConfig({ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) }, diagnostics: { capture: ${capture} } })\n`,
       )
       const loaded = await loadConfig(join(root, configFileName))
       if (!loaded.ok) throw new Error(loaded.failure.message)

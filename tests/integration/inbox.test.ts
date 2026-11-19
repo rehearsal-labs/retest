@@ -90,7 +90,7 @@ async function startApp(t: TestContext, secrets: { code: string; token: string; 
   return app
 }
 
-const tests = `import { expect, inbox, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, inbox, test } from 'retest'
 
 test('signs up with the code from the email, and signs in by its link', async ({ page }) => {
   await page.goto('/')

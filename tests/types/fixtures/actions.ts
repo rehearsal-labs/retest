@@ -1,5 +1,5 @@
 import type { Same } from './support/same.ts'
-import { expect, test, type Locator, type OptionChoice, type Page, type ScrollDelta } from '@rehearsal-labs/retest'
+import { expect, test, type Locator, type OptionChoice, type Page, type ScrollDelta } from 'retest'
 
 // select, check, uncheck and scroll. What the types cannot see, such as an empty list or a delta of 0, is refused when
 // the test runs.

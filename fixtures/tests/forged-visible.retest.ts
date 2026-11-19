@@ -1,4 +1,4 @@
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 // A test process that speaks the protocol itself and lies about what it saw: it opens the page, looks at an element
 // that is not there, then reports that the element is visible, naming that look and the session that served it.

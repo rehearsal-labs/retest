@@ -14,7 +14,7 @@ import { capture, plain } from './reporters-fixtures.ts'
 
 // Runs through the real runner and test file processes, with the fake browser.
 
-const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   locks: ['inbox', 'account'],
@@ -43,7 +43,7 @@ function agent(events: readonly RetestEvent[], result: RunResult): string {
 }
 
 describe('a run with skipped tests', () => {
-  const skipping = `import { expect, test } from '@rehearsal-labs/retest'
+  const skipping = `import { expect, test } from 'retest'
 ${passes('runs')}
 test.skip('waits for a fix', async ({ page }) => {
   await expect(page.getByTestId('never-there')).toBeVisible()
@@ -112,13 +112,13 @@ test.describe.skip('archive', (test) => {
 describe('a run with test.only', () => {
   const files = {
     'retest.config.ts': config,
-    'tests/a.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/a.retest.ts': `import { expect, test } from 'retest'
 test.only('focused', async () => {
   expect(1).toBe(1)
 })
 ${passes('left out')}
 `,
-    'tests/b.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/b.retest.ts': `import { expect, test } from 'retest'
 ${passes('also left out')}
 test.describe.only('block', (test) => {
   ${passes('inside the block')}
@@ -169,7 +169,7 @@ test.describe.only('block', (test) => {
   })
 
   test('without only in the files, a run that forbids it runs as usual', async () => {
-    const record = await runProject(tempProject({ 'retest.config.ts': config, 'tests/a.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\n${passes('plain')}\n` }), {
+    const record = await runProject(tempProject({ 'retest.config.ts': config, 'tests/a.retest.ts': `import { expect, test } from 'retest'\n${passes('plain')}\n` }), {
       files: ['tests/a.retest.ts'],
       forbidOnly: 'CI is set.',
     })
@@ -187,7 +187,7 @@ const waitFor = async (name) => {
   while (!existsSync(signal(name))) await new Promise((resolve) => setTimeout(resolve, 20))
 }
 `
-  const testFile = (body: string): string => `import { expect, test } from '@rehearsal-labs/retest'\n${signals}\n${body}\n`
+  const testFile = (body: string): string => `import { expect, test } from 'retest'\n${signals}\n${body}\n`
 
   async function waitForFile(path: string): Promise<void> {
     const end = performance.now() + 20_000
@@ -288,7 +288,7 @@ describe('per-call timeouts in a run', () => {
   test('a call that shortens its action budget fails within it, and its event records the time it set', async () => {
     const files = {
       'retest.config.ts': config,
-      'tests/a.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+      'tests/a.retest.ts': `import { expect, test } from 'retest'
 test('gives up early', async ({ page }) => {
   await page.getByTestId('missing').click({ timeout: 150 })
 })

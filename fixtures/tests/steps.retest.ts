@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('saves a task in steps', async ({ page }) => {
   await test.step('open the form', () => page.goto('/'))

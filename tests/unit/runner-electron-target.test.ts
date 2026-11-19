@@ -713,7 +713,7 @@ describe('how reports name an Electron target', () => {
 })
 
 describe('the execution record of an attempt on an Electron app', () => {
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('reads the app', async ({ page }) => {
   await expect(page.getByTestId('saved-task')).toHaveText('')
@@ -723,7 +723,7 @@ test('reads the app', async ({ page }) => {
   // A whole run on the fake task app, as the replay tests run one, with every Electron launch a fake.
   async function recordedRun(target: string): Promise<RetestEvent[]> {
     const root = tempProject({
-      'retest.config.ts': `import { defineConfig, electron } from '@rehearsal-labs/retest'\nexport default defineConfig({ apps: { desktop: electron(${target}) } })\n`,
+      'retest.config.ts': `import { defineConfig, electron } from 'retest'\nexport default defineConfig({ apps: { desktop: electron(${target}) } })\n`,
       'tests/desktop.retest.ts': tests,
     })
     const loaded = await loadConfig(join(root, configFileName))

@@ -110,13 +110,13 @@ describe('a failure screenshot’s identity survives the rebuild', async () => {
 })
 
 describe('in a run from a config, each app’s screenshot and its looks rebuild to result.json', async () => {
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { owner: chromium({ baseUrl: 'http://127.0.0.1:4173' }), member: chromium({ baseUrl: 'http://127.0.0.1:4173' }) },
 })
 `
-  const shared = `import { expect, test } from '@rehearsal-labs/retest'
+  const shared = `import { expect, test } from 'retest'
 
 test('shares a task', { apps: ['owner', 'member'] }, async ({ owner, member }) => {
   await member.goto('/')

@@ -38,7 +38,7 @@ export class Screen {
 }
 `
 
-const passing = `import { expect, test } from '@rehearsal-labs/retest'
+const passing = `import { expect, test } from 'retest'
 import { Control, Screen } from '@model/screen'
 import { label } from './label'
 
@@ -50,7 +50,7 @@ test('uses an alias, an enum, parameter properties and an extensionless helper',
 })
 `
 
-const failing = `import { test } from '@rehearsal-labs/retest'
+const failing = `import { test } from 'retest'
 import { Control, Screen } from '@model/screen'
 
 test('throws from a transformed helper', async () => {
@@ -114,7 +114,7 @@ describe('a test file loads with the project TypeScript contract', () => {
   })
 
   test('a failed check in a transformed file names its TypeScript line, which the transformer moved, and its column', async () => {
-    const source = `import { expect, test } from '@rehearsal-labs/retest'
+    const source = `import { expect, test } from 'retest'
 
 // Written on one line each, and printed on several by Node's transformer.
 enum Shade { Light = 'light', Dark = 'dark' }
@@ -140,8 +140,8 @@ test('checks a transformed value', async () => {
       'tsconfig.json': JSON.stringify({ compilerOptions: { strict: true } }),
       'tests/tsconfig.json': JSON.stringify({ extends: '../tsconfig.json', compilerOptions: { paths: { '@local/*': ['./local/*'] } } }),
       'tests/local/greet.ts': `export function greet(): string {\n  return 'hello'\n}\n`,
-      'tests/alias.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\nimport { greet } from '@local/greet'\n\ntest('uses the alias of the nearer tsconfig', async () => {\n  expect(greet()).toBe('hello')\n})\n`,
-      'tests/missing.retest.ts': `import { test } from '@rehearsal-labs/retest'\nimport { gone } from './gone'\n\ntest('never loads', async () => {\n  gone()\n})\n`,
+      'tests/alias.retest.ts': `import { expect, test } from 'retest'\nimport { greet } from '@local/greet'\n\ntest('uses the alias of the nearer tsconfig', async () => {\n  expect(greet()).toBe('hello')\n})\n`,
+      'tests/missing.retest.ts': `import { test } from 'retest'\nimport { gone } from './gone'\n\ntest('never loads', async () => {\n  gone()\n})\n`,
     })
     const { result } = await run(root, ['tests/alias.retest.ts', 'tests/missing.retest.ts'])
     const [alias, missing] = result.files
@@ -151,9 +151,9 @@ test('checks a transformed value', async () => {
   })
 
   test('a CommonJS JavaScript helper loads as Node loads it, and a CommonJS test file fails naming the construct', async () => {
-    const helper = await run(project({ ...everyday, 'support/data.cjs': `module.exports = { heading: 'Tasks' }\n`, 'tests/helper.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\nimport data from '../support/data.cjs'\n\ntest('reads a CommonJS helper', async () => {\n  expect(data.heading).toBe('Tasks')\n})\n` }), ['tests/helper.retest.ts'])
+    const helper = await run(project({ ...everyday, 'support/data.cjs': `module.exports = { heading: 'Tasks' }\n`, 'tests/helper.retest.ts': `import { expect, test } from 'retest'\nimport data from '../support/data.cjs'\n\ntest('reads a CommonJS helper', async () => {\n  expect(data.heading).toBe('Tasks')\n})\n` }), ['tests/helper.retest.ts'])
     assert.deepEqual([helper.result.exitCode, helper.result.files[0]?.tests.map((entry) => entry.status)], [0, ['passed']])
-    const suite = await run(project({ 'package.json': '{}', 'tests/suite.retest.ts': `const { expect, test } = require('@rehearsal-labs/retest')\n\ntest('is CommonJS', async () => {\n  expect(1).toBe(1)\n})\n` }), ['tests/suite.retest.ts'])
+    const suite = await run(project({ 'package.json': '{}', 'tests/suite.retest.ts': `const { expect, test } = require('retest')\n\ntest('is CommonJS', async () => {\n  expect(1).toBe(1)\n})\n` }), ['tests/suite.retest.ts'])
     const [file] = suite.result.files
     assert.deepEqual([suite.result.exitCode, file?.collection, file?.failure?.class], [2, 'failed', 'collection_failed'])
     assert.match(file?.failure?.message ?? '', /^Could not load tests\/suite\.retest\.ts\. Error: tests\/suite\.retest\.ts uses require\(\), so Node loads it as CommonJS\./)

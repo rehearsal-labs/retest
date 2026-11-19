@@ -1,11 +1,11 @@
-import type { RetestEvent } from '@rehearsal-labs/retest/protocol'
-import type { HostCheck, Reporter } from '@rehearsal-labs/retest/runner'
+import type { RetestEvent } from 'retest/protocol'
+import type { HostCheck, Reporter } from 'retest/runner'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { chromium, defineConfig } from '@rehearsal-labs/retest'
-import { defaultTimeouts, readRunFolder, resolveSecrets, runFiles, validateConfig } from '@rehearsal-labs/retest/runner'
+import { chromium, defineConfig } from 'retest'
+import { defaultTimeouts, readRunFolder, resolveSecrets, runFiles, validateConfig } from 'retest/runner'
 
 // A host: a program that runs Retest on its own machines, for an app someone else wrote. It builds the config in
 // memory, gives every secret as a function, writes the test file itself, sends the browser through its own proxy,

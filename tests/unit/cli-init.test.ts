@@ -81,7 +81,7 @@ describe('init in a new project', () => {
         '  created  tests/example.retest.ts',
         '  created  tests/tsconfig.json',
         '  created  package.json   scripts: "test:e2e", "typecheck:e2e"',
-        '  created  package.json   devDependencies: @rehearsal-labs/retest@latest, typescript@^7.0.2, @types/node@^24.12.0',
+        '  created  package.json   devDependencies: retest@latest, typescript@^7.0.2, @types/node@^24.12.0',
         '  created  .gitignore     .retest/',
         '',
         '  Running npm install',
@@ -110,7 +110,7 @@ describe('init in a new project', () => {
     assert.equal(
       read(project, 'retest.config.ts'),
       [
-        "import { chrome, defineConfig } from '@rehearsal-labs/retest'",
+        "import { chrome, defineConfig } from 'retest'",
         '',
         'const config = defineConfig({',
         '  apps: {',
@@ -123,7 +123,7 @@ describe('init in a new project', () => {
         'export default config',
         '',
         '// Lets every test file see your app names, secrets, test ids and tags.',
-        "declare module '@rehearsal-labs/retest' {",
+        "declare module 'retest' {",
         '  interface Register {',
         '    config: typeof config',
         '  }',
@@ -134,7 +134,7 @@ describe('init in a new project', () => {
     assert.equal(
       read(project, 'tests/example.retest.ts'),
       [
-        "import { expect, test } from '@rehearsal-labs/retest'",
+        "import { expect, test } from 'retest'",
         '',
         "test('shows the home page', async ({ page }) => {",
         "  await page.goto('/')",
@@ -171,7 +171,7 @@ describe('init in a new project', () => {
           private: true,
           type: 'module',
           scripts: { 'test:e2e': 'retest run', 'typecheck:e2e': 'tsc -p tests/tsconfig.json' },
-          devDependencies: { '@rehearsal-labs/retest': 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' },
+          devDependencies: { '@types/node': '^24.12.0', retest: 'latest', typescript: '^7.0.2' },
         },
         null,
         2,
@@ -277,7 +277,7 @@ describe('init without questions', () => {
     const { code, stdout } = await init(project, ['--app', 'admin=http://localhost:4000', '--start', 'npm run dev', '--browser', 'chromium'])
     assert.equal(code, 0)
     const config = read(project, 'retest.config.ts')
-    assert.match(config, /^import \{ chromium, defineConfig \} from '@rehearsal-labs\/retest'\n/)
+    assert.match(config, /^import \{ chromium, defineConfig \} from 'retest'\n/)
     assert.match(config, /\n {4}\/\/ chromium\(\) runs the browser RETEST_CHROMIUM points to, unless you add executablePath\.\n {4}admin: chromium\(\{\n/)
     assert.match(config, /\n {6}baseUrl: 'http:\/\/localhost:4000',\n {6}start: \{ command: 'npm run dev', ready: 'http:\/\/localhost:4000' \},\n/)
     assert.match(stdout, /\n\n {2}Set RETEST_CHROMIUM to the browser's path, here and in CI: chromium\(\) runs the browser it points to\.\n\n {2}Next\n/)
@@ -344,7 +344,7 @@ describe('init at a terminal', () => {
       '  How do you start the app? (none) › ',
       `  Which browser: chromium, chrome or edge? (chrome, found at ${chromePath}) › `,
       `  Answer chromium, chrome or edge. Did you mean edge?\n  Which browser: chromium, chrome or edge? (chrome, found at ${chromePath}) › `,
-      '  Install @rehearsal-labs/retest, typescript and @types/node with npm install? (yes) › ',
+      '  Install retest, typescript and @types/node with npm install? (yes) › ',
     ])
     assert.deepEqual(installs, [{ command: 'npm install', cwd: project }], 'enter takes yes')
     assert.match(read(project, 'retest.config.ts'), /web: edge\(\{\n {6}baseUrl: 'http:\/\/localhost:3000',\n {6}start: \{ command: 'npm run dev'/)
@@ -361,7 +361,7 @@ describe('init at a terminal', () => {
       '  Write a full http or https address, such as http://localhost:3000.\n  What should the tests open? (http://localhost:3000) › ',
       '  How do you start the app? (npm run dev, or none) › ',
     ])
-    assert.deepEqual(prompt.questions.slice(3), ['  Install @rehearsal-labs/retest, typescript and @types/node with npm install? (yes) › '], 'the browser has a flag')
+    assert.deepEqual(prompt.questions.slice(3), ['  Install retest, typescript and @types/node with npm install? (yes) › '], 'the browser has a flag')
     assert.doesNotMatch(read(project, 'retest.config.ts'), /start:/)
   })
 
@@ -405,10 +405,10 @@ describe('init beside existing files', () => {
     const { stdout, installs } = await init(project, ['--yes'])
     assert.equal(
       read(project, 'package.json'),
-      '{\n    "name": "shop",\n    "scripts": {\n        "test:e2e": "playwright test",\n        "typecheck:e2e": "tsc -p tests/tsconfig.json"\n    },\n    "devDependencies": {\n        "@rehearsal-labs/retest": "latest",\n        "@types/node": "^24.12.0",\n        "typescript": "6.0.3"\n    }\n}\n',
+      '{\n    "name": "shop",\n    "scripts": {\n        "test:e2e": "playwright test",\n        "typecheck:e2e": "tsc -p tests/tsconfig.json"\n    },\n    "devDependencies": {\n        "@types/node": "^24.12.0",\n        "retest": "latest",\n        "typescript": "6.0.3"\n    }\n}\n',
     )
     assert.match(stdout, /\n {2}updated {5}package\.json {3}scripts: "typecheck:e2e"\n {2}left as is {2}package\.json {3}scripts: "test:e2e"\n/)
-    assert.match(stdout, /\n {2}updated {5}package\.json {3}devDependencies: @rehearsal-labs\/retest@latest, @types\/node@\^24\.12\.0\n/)
+    assert.match(stdout, /\n {2}updated {5}package\.json {3}devDependencies: retest@latest, @types\/node@\^24\.12\.0\n/)
     assert.deepEqual(installs, [{ command: 'npm install', cwd: project }])
     assert.match(stdout, /\n\n {2}Add "type": "module" to package\.json, so Node reads the tests as ES modules without guessing\.\n\n {2}Next\n/)
   })
@@ -474,23 +474,23 @@ function packageOrder(project: string): { fields: string[]; devDependencies: [st
   return { fields: Object.keys(data), devDependencies: Object.entries(data['devDependencies']) }
 }
 
-const allPackages = '{ "type": "module", "devDependencies": { "@rehearsal-labs/retest": "0.5.1", "typescript": "6.0.3", "@types/node": "24.19.0" } }'
-const installQuestion = '  Install @rehearsal-labs/retest, typescript and @types/node with npm install? (yes) › '
+const allPackages = '{ "type": "module", "devDependencies": { "retest": "0.5.1", "typescript": "6.0.3", "@types/node": "24.19.0" } }'
+const installQuestion = '  Install retest, typescript and @types/node with npm install? (yes) › '
 const nextWithInstall = /\n {2}Next\n {4}npm install {14}install the packages in package\.json\n {4}npx retest doctor /
 
 describe('the packages init adds', () => {
   test('Retest at the caret of the version that runs, or latest from a checkout, TypeScript 7 and the types of Node 24', () => {
-    assert.deepEqual(projectPackages('0.6.0'), { '@rehearsal-labs/retest': '^0.6.0', typescript: '^7.0.2', '@types/node': '^24.12.0' })
-    assert.deepEqual(projectPackages('0.0.0'), { '@rehearsal-labs/retest': 'latest', typescript: '^7.0.2', '@types/node': '^24.12.0' })
-    assert.deepEqual(Object.keys(projectPackages('1.2.3')), ['@rehearsal-labs/retest', 'typescript', '@types/node'], 'the order a person reads them in')
+    assert.deepEqual(projectPackages('0.6.0'), { retest: '^0.6.0', typescript: '^7.0.2', '@types/node': '^24.12.0' })
+    assert.deepEqual(projectPackages('0.0.0'), { retest: 'latest', typescript: '^7.0.2', '@types/node': '^24.12.0' })
+    assert.deepEqual(Object.keys(projectPackages('1.2.3')), ['retest', 'typescript', '@types/node'], 'the order a person reads them in')
   })
 
   test('a package either dependency list names, at any version, is left alone; one only a peer names is added', () => {
     const wanted = projectPackages('0.6.0')
     const found = (data: Record<string, unknown>): PackageJson => ({ data, indent: '  ', finalNewline: true })
     assert.deepEqual(missingPackages(undefined, wanted), wanted)
-    assert.deepEqual(missingPackages(found({ dependencies: { '@rehearsal-labs/retest': 'file:../retest.tgz' }, devDependencies: { typescript: '4.9.5' } }), wanted), { '@types/node': '^24.12.0' })
-    assert.deepEqual(missingPackages(found({ devDependencies: { '@types/node': '*', typescript: 'workspace:*', '@rehearsal-labs/retest': '0.1.0' } }), wanted), {})
+    assert.deepEqual(missingPackages(found({ dependencies: { retest: 'file:../retest.tgz' }, devDependencies: { typescript: '4.9.5' } }), wanted), { '@types/node': '^24.12.0' })
+    assert.deepEqual(missingPackages(found({ devDependencies: { '@types/node': '*', typescript: 'workspace:*', retest: '0.1.0' } }), wanted), {})
     assert.deepEqual(missingPackages(found({ peerDependencies: { typescript: '>=5' } }), wanted), wanted)
   })
 
@@ -500,15 +500,15 @@ describe('the packages init adds', () => {
     const { stdout } = await init(sorted, ['--yes'], { version: '0.6.0' })
     assert.deepEqual(packageOrder(sorted), {
       fields: ['type', 'devDependencies', 'scripts'],
-      devDependencies: [['@rehearsal-labs/retest', '^0.6.0'], ['@types/node', '^24.12.0'], ['eslint', '9.0.0'], ['typescript', '^7.0.2'], ['vite', '7.0.0']],
+      devDependencies: [['@types/node', '^24.12.0'], ['eslint', '9.0.0'], ['retest', '^0.6.0'], ['typescript', '^7.0.2'], ['vite', '7.0.0']],
     })
-    assert.match(stdout, /\n {2}updated {2}package\.json {3}devDependencies: @rehearsal-labs\/retest@\^0\.6\.0, typescript@\^7\.0\.2, @types\/node@\^24\.12\.0\n/)
+    assert.match(stdout, /\n {2}updated {2}package\.json {3}devDependencies: retest@\^0\.6\.0, typescript@\^7\.0\.2, @types\/node@\^24\.12\.0\n/)
     const unsorted = temporaryFolder()
     writeFileSync(join(unsorted, 'package.json'), '{ "name": "shop", "devDependencies": { "vite": "7.0.0", "eslint": "9.0.0" }, "type": "module", "dependencies": { "typescript": "5.9.3" } }')
     await init(unsorted, ['--yes'], { version: '0.6.0' })
     assert.deepEqual(packageOrder(unsorted), {
       fields: ['name', 'devDependencies', 'type', 'dependencies', 'scripts'],
-      devDependencies: [['vite', '7.0.0'], ['eslint', '9.0.0'], ['@rehearsal-labs/retest', '^0.6.0'], ['@types/node', '^24.12.0']],
+      devDependencies: [['vite', '7.0.0'], ['eslint', '9.0.0'], ['retest', '^0.6.0'], ['@types/node', '^24.12.0']],
     })
     assert.match(read(unsorted, 'package.json'), /"dependencies": \{\n {4}"typescript": "5\.9\.3"\n {2}\}/)
   })
@@ -629,7 +629,7 @@ describe('the install question', () => {
     const prompt = answering(['yes'])
     const { code, installs } = await init(project, [], { prompt, isTTY: true })
     assert.equal(code, 0)
-    assert.deepEqual(prompt.questions, ['  Install @rehearsal-labs/retest and @types/node with npm install? (yes) › '])
+    assert.deepEqual(prompt.questions, ['  Install retest and @types/node with npm install? (yes) › '])
     assert.deepEqual(installs, [{ command: 'npm install', cwd: project }])
   })
 

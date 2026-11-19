@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { INVOICE_COUNT, invoiceAmountOf, TEAM } from '../../task-app/workflow-lists-page.ts'
 
 // Workflow family 8, find items in lists and tables: F8.1 to F8.4, as tests/integration/workflow-lists.test.ts runs

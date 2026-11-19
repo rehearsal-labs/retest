@@ -34,7 +34,7 @@ const runs = ['alpha', 'bravo'] as const
 type Name = (typeof runs)[number]
 const notes: Record<Name, string> = { alpha: 'alpha-note-4471', bravo: 'bravo-note-8823' }
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test('saves a note', async ({ page }) => {
   await page.goto('/')
@@ -45,10 +45,10 @@ test('saves a note', async ({ page }) => {
 `
 
 // Each run's events go to stdout as JSON lines as they arrive, both runs mixed; each result goes to stderr.
-const host = `import type { Reporter } from '@rehearsal-labs/retest/runner'
+const host = `import type { Reporter } from 'retest/runner'
 import { join } from 'node:path'
-import { chrome, defineConfig } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, validateConfig } from '@rehearsal-labs/retest/runner'
+import { chrome, defineConfig } from 'retest'
+import { resolveSecrets, runFiles, validateConfig } from 'retest/runner'
 
 const [alphaUrl = '', bravoUrl = '', alphaOutput = '', bravoOutput = ''] = process.argv.slice(2)
 const notes = ${JSON.stringify(notes)}

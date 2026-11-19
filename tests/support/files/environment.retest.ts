@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('prints its environment', () => {
   console.log(`environment ${JSON.stringify(Object.keys(process.env).sort())}`)

@@ -27,7 +27,7 @@ type SecretOriginKeys<Config extends RetestConfig> = {
  * @example
  * const config = defineConfig({ apps: { web: chromium({ baseUrl: 'http://localhost:3000' }) } })
  * export default config
- * declare module '@rehearsal-labs/retest' { interface Register { config: typeof config } }
+ * declare module 'retest' { interface Register { config: typeof config } }
  */
 export function defineConfig<const Config extends RetestConfig>(
   config: Config & NoExtraKeys<Config, RetestConfig> & SecretOriginKeys<Config>,

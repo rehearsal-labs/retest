@@ -376,7 +376,7 @@ describe('the inbox on the wire', () => {
 })
 
 describe('an inbox in a run', async () => {
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 
 const message = (link: string) => ({
   subject: 'Your sign-in code',
@@ -395,7 +395,7 @@ export default defineConfig({
   },
 })
 `
-  const tests = `import { expect, inbox, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, inbox, test } from 'retest'
 
 test('signs in with the code and the link from the inbox', async ({ page }) => {
   const message = await inbox('owner').latest({ subject: 'sign-in code' })
@@ -515,10 +515,10 @@ test('a read that finds nothing fails, naming the inbox', async () => {
 describe('a run whose config declares no inbox', async () => {
   const record = await runProject(
     tempProject({
-      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+      'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: '${origin}', executablePath: '/fake/chromium' }) } })
 `,
-      'tests/inbox.retest.ts': `import { inbox, test } from '@rehearsal-labs/retest'
+      'tests/inbox.retest.ts': `import { inbox, test } from 'retest'
 
 test('reads an inbox the config does not declare', async () => {
   await inbox('owner').latest()

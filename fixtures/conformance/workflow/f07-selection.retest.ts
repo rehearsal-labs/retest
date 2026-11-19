@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Workflow family 7, select options, checkboxes and radios: F7.1 to F7.4, as
 // tests/integration/workflow-selection.test.ts runs them on Chrome.

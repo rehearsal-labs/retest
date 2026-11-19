@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { EXPORT_RELEASE_PATH, REPORTS } from '../../task-app/workflow-async-page.ts'
 import { conformanceBaseUrl } from '../config.ts'
 

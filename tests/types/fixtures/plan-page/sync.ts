@@ -1,4 +1,4 @@
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // What the type check catches in one test across two apps, before a browser opens: an app the test did not declare,
 // tap() on an app with no touch screen, a test id, a role and a secret name with a typo, and a value matcher on a

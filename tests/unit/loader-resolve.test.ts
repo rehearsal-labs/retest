@@ -155,9 +155,9 @@ describe('projectResolver', () => {
 
   test('without paths, a bare import resolves as Node resolves it, once', () => {
     const plain = projectResolver({ ownUrl: own, ownFolderUrl })
-    const bare = resolving(['@rehearsal-labs/retest'])
-    plain('@rehearsal-labs/retest', fromTestFile, bare.next)
-    assert.deepEqual(bare.asked, ['@rehearsal-labs/retest'])
+    const bare = resolving(['retest'])
+    plain('retest', fromTestFile, bare.next)
+    assert.deepEqual(bare.asked, ['retest'])
   })
 
   test('a relative import without an extension that names a JSX file fails saying so', () => {

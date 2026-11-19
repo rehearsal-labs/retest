@@ -31,7 +31,7 @@ async function chromeVersion(): Promise<string> {
 }
 
 function deviceTests(pixelUserAgent: string): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'
+  return `import { expect, test } from 'retest'
 
 test('the phone has the screen, the user agent and the touch screen of a Pixel 9', { apps: ['phone'] }, async ({ phone }) => {
   await phone.goto('/device')
@@ -69,7 +69,7 @@ test('the desktop has no touch screen, and its click is a mouse click', async ({
 `
 }
 
-const failingTest = `import { expect, test } from '@rehearsal-labs/retest'
+const failingTest = `import { expect, test } from 'retest'
 
 test('fails on the phone', { apps: ['phone'] }, async ({ phone }) => {
   await phone.goto('/device')

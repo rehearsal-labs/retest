@@ -1,4 +1,4 @@
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 // No config is registered in this program: any lock name type-checks, and skip and only take what test takes.
 test('holds a lock', { locks: ['anything'] }, async ({ page }) => {

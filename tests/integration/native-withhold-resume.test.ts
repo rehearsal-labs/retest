@@ -27,7 +27,7 @@ test('real desk secure focus loss keeps pixels with whole-source privacy', { ski
       recording: { record: true, fps: 10, size: { width: 320, height: 240 } },
       evaluation: { judges: { fake: { adapter: ${JSON.stringify(evaluator)}, accepts: ['images'] } } }
     }`),
-    'resume.retest.ts': `import { expect, secret, test } from '@rehearsal-labs/retest'
+    'resume.retest.ts': `import { expect, secret, test } from 'retest'
       test('keeps the wrong-state failure after secure focus loss', { apps: ['desk'] }, async ({ desk }) => {
         await expect(desk.getByTestId('service-status')).toContainText('Connected to ')
         await test.evaluate({ judge: 'fake', requirement: { ready: 'The sign-in form is visible.' }, evidence: { app: 'desk', capture: 'screenshot' } })

@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Locators on the task app's lookup pages: each kind, scoped lookups and picks, the exact rule by default and with
 // `exact: false`, regular expressions, strict matching for actions and single-element checks, and an action whose

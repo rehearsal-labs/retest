@@ -122,7 +122,7 @@ class TaskDevice {
   }
 }
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 for (const n of [1, 2, 3]) {
   test(\`saves task \${n}\`, { apps: ['tasks'] }, async ({ tasks }) => {
@@ -144,7 +144,7 @@ async function androidRun(t: TestContext, device: TaskDevice): Promise<{ readonl
     return { ok: true, value: { runtime, close: (timeoutMs) => runtime.close(timeoutMs) } }
   }
   const root = tempProject({
-    [configFileName]: `import { defineConfig } from '@rehearsal-labs/retest'\nexport default defineConfig({ apps: { tasks: { platform: 'android', appPath: 'app-debug.apk', package: '${pkg}', serial: 'emulator-5554' } } })\n`,
+    [configFileName]: `import { defineConfig } from 'retest'\nexport default defineConfig({ apps: { tasks: { platform: 'android', appPath: 'app-debug.apk', package: '${pkg}', serial: 'emulator-5554' } } })\n`,
     'tests/tasks.retest.ts': tests,
   })
   const loaded = await loadConfig(join(root, configFileName))

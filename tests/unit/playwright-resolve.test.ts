@@ -7,7 +7,7 @@ import { playwrightSpecifiers, projectResolver } from '../../src/loader/resolve.
 
 const own = 'file:///opt/retest/dist/loader/project.js'
 const ownFolderUrl = 'file:///opt/retest/dist/'
-const compatibility = '@rehearsal-labs/retest/playwright'
+const compatibility = 'retest/playwright'
 // The test file and where the stand-in resolver finds what it knows, as file URLs this platform can read.
 const context: ResolveHookContext = { conditions: ['node', 'import'], importAttributes: {}, parentURL: pathToFileURL(resolve('/work/tests/tasks.spec.ts')).href }
 const resolvedFolder = `${pathToFileURL(resolve('/resolved')).href}/`

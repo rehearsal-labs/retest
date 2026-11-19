@@ -6,7 +6,7 @@ import { budgets, configSource, eventsOf, resultOf, runProject, testNamed, write
 // Acceptance check 3: role, label and text locators, through test files run by the command line in real Chrome,
 // against the conformance page `fixtures/task-app/locators-page.ts`.
 
-const locatorTests = `import { expect, test } from '@rehearsal-labs/retest'
+const locatorTests = `import { expect, test } from 'retest'
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/locators')

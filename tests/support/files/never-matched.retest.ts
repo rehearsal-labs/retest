@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Two checks pass on a locator no look ever finds, as a misspelt test id would; the third passes on a note that is on
 // the page and hidden.

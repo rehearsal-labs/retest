@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 const declaring = Promise.withResolvers<void>()
 const checking = Promise.withResolvers<void>()

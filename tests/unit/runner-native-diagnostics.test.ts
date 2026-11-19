@@ -219,7 +219,7 @@ describe('a launch the session owner makes in place of the executor', () => {
 // A whole run on a native stand-in: a real test file process drives `phone`, whose runtime is the stand-in and whose
 // launch with its output kept is a stand-in too. What the app writes, and when, shows when each source starts and ends.
 describe('a run keeps a native app\'s diagnostics from before its launch until its body and checks are over', nativeApps, () => {
-  const phoneTests = `import { expect, test } from '@rehearsal-labs/retest'
+  const phoneTests = `import { expect, test } from 'retest'
 
 test('saves on the phone', { apps: ['phone'] }, async ({ phone }) => {
   await phone.getByTestId('save').tap()
@@ -227,7 +227,7 @@ test('saves on the phone', { apps: ['phone'] }, async ({ phone }) => {
 })
 `
   // A click on macOS needs the app in front of the real desktop, which a stand-in is not, so the desk's body only reads.
-  const deskTests = `import { expect, test } from '@rehearsal-labs/retest'
+  const deskTests = `import { expect, test } from 'retest'
 
 test('reads the desk', { apps: ['desk'] }, async ({ desk }) => {
   await expect(desk.getByTestId('state')).toHaveText('Open')
@@ -297,7 +297,7 @@ test('reads the desk', { apps: ['desk'] }, async ({ desk }) => {
     }
     const app = platform === 'macos' ? `desk: { platform: 'macos', appPath: 'TaskDesk.app'` : `phone: { platform: 'ios-simulator', appPath: 'TaskPhone.app', device: 'iPhone 17', runtime: '26.5'`
     const root = tempProject({
-      'retest.config.ts': `import { defineConfig } from '@rehearsal-labs/retest'\nexport default defineConfig({ apps: { ${app}, arguments: ['-reset']${diagnostics.replace('NETWORK', JSON.stringify(network))} } }${topLevel} })\n`,
+      'retest.config.ts': `import { defineConfig } from 'retest'\nexport default defineConfig({ apps: { ${app}, arguments: ['-reset']${diagnostics.replace('NETWORK', JSON.stringify(network))} } }${topLevel} })\n`,
       'tests/app.retest.ts': platform === 'macos' ? deskTests : phoneTests,
     })
     const loaded = await loadConfig(join(root, configFileName))

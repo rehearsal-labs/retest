@@ -9,7 +9,7 @@ import type {
   TestIdValue,
 } from '../../../src/config/register.ts'
 import type { Same } from './support/same.ts'
-import { expect, secret, test, type Page, type TestContext } from '@rehearsal-labs/retest'
+import { expect, secret, test, type Page, type TestContext } from 'retest'
 
 // No config is registered in this program: a test gets `page`, and any tag, secret or test id type-checks.
 export const registered: Same<IsRegistered, false> = true

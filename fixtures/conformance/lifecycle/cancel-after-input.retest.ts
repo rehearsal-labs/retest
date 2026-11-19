@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The task app's frozen mode: pressing save sends the save to the server, which counts it, and then the page never
 // answers again. The runner sends SIGINT once the server has counted the press, so the click's input was sent and

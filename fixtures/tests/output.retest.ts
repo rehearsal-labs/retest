@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 console.log('{"schemaVersion":1,"type":"run.started","note":"printed while the file loads"}')
 

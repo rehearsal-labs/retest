@@ -10,7 +10,7 @@ import { findTargetExecutable } from '../../src/runner/target-executable.ts'
 import { runProject, tempProject } from '../support/project.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 
-const imports = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'\n`
+const imports = `import { app, chromium, defineConfig } from 'retest'\n`
 
 const matrixConfig = `${imports}
 export default defineConfig({
@@ -23,7 +23,7 @@ export default defineConfig({
 })
 `
 
-const matrixTests = `import { expect, test } from '@rehearsal-labs/retest'
+const matrixTests = `import { expect, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/tasks')
@@ -132,7 +132,7 @@ export default defineConfig({
   defaultApp: 'owner',
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('shares a task', { apps: ['owner', 'member'] }, async ({ owner, member }) => {
   await owner.goto('/')
@@ -191,7 +191,7 @@ export default defineConfig({
   defaultApp: 'phone',
 })
 `
-    const tests = `import { expect, test } from '@rehearsal-labs/retest'
+    const tests = `import { expect, test } from 'retest'
 test('opens', { apps: ['phone', 'desk'] }, async ({ phone, desk }) => {
   await phone.goto('/')
   await phone.getByTestId('save-task').click()
@@ -272,7 +272,7 @@ export default defineConfig({
   ${runs}
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 test('syncs', { apps: ['web', 'admin'] }, async ({ web }) => {
   await expect(web.getByTestId('save-task')).toBeVisible()
 })

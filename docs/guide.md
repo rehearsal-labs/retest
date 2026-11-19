@@ -8,7 +8,7 @@ Retest has been exercised on macOS arm64, in Docker on Linux x64 and arm64, and 
 
 Some rules on this page were checked only in unit tests with the fake browser, not on Chrome: a finder after a step that keeps several elements; `first().nth()` refusing; the modifier rules of `press` beyond the shortcuts the Chrome checks press, `Shift+Tab` among them; the macOS editing commands other than `Meta+A`, and several of them, `Alt+Delete`, `Meta+ArrowUp` and `Meta+ArrowDown` among them, appear in no test at all; `check` on a `switch`, `menuitemcheckbox`, `menuitemradio` or `aria-checked="mixed"`; a wheel another element takes; `getByLabel` on a `slider`, `spinbutton` or `switch`; `toContainText` with a `RegExp`; `.not.toBeChecked()` on an element that cannot be checked; `.not.toHaveText()` on no match; and the 65,536-character limit and the "could not judge" negation, which are checked as functions alone.
 
-The npm package name is `@rehearsal-labs/retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
+The npm package name is `retest`; see [the naming check](naming.md). The library and public protocol use Apache-2.0.
 
 ## Prerequisites
 
@@ -26,13 +26,13 @@ npm run typecheck  # tsc 6, then tsc 7
 
 From a checkout, run the command line from source with `node --conditions=retest-source src/cli/main.ts`, or from the build with `node dist/cli/main.js`. The examples below write `retest` for either.
 
-To use Retest in another project before it is published, pack it and install the tarball:
+To use a checkout of Retest in another project, pack it and install the tarball:
 
 ```sh
 npm run build
 npm pack --pack-destination /tmp
 cd /path/to/your/project
-npm install /tmp/rehearsal-labs-retest-0.0.0.tgz
+npm install /tmp/retest-0.0.0.tgz
 npx retest --help
 ```
 
@@ -133,12 +133,12 @@ The tests start their own fixture servers and browsers with temporary profiles, 
 ## Start a project
 
 ```sh
-npx @rehearsal-labs/retest init
+npx retest init
 npx retest doctor
 npx retest run
 ```
 
-The first line names the package in full, since npx runs a package the project does not have yet, and on npm `retest` alone is another package. Once `init` has installed Retest, `npx retest` runs the project's own.
+The first line runs the latest Retest from npm, since the project does not have it yet. Once `init` has installed Retest, `npx retest` runs the project's own.
 
 `retest init` writes four things and changes two:
 
@@ -146,12 +146,12 @@ The first line names the package in full, since npx runs a package the project d
 - `tests/example.retest.ts`;
 - `tests/tsconfig.json`, which extends the project's own `tsconfig.json` when there is one and lets `tsc` pass what Retest loads and refuse what it does not; see [TypeScript and imports](#typescript-and-imports);
 - `.github/workflows/retest.yml`, only with `--ci github`;
-- `package.json`, which it creates for ES modules when there is none: the `test:e2e` and `typecheck:e2e` scripts, and `@rehearsal-labs/retest`, `typescript` and `@types/node` in `devDependencies`, each one only when neither `dependencies` nor `devDependencies` lists it;
+- `package.json`, which it creates for ES modules when there is none: the `test:e2e` and `typecheck:e2e` scripts, and `retest`, `typescript` and `@types/node` in `devDependencies`, each one only when neither `dependencies` nor `devDependencies` lists it;
 - `.retest/` in `.gitignore`.
 
 It never overwrites a file, and a package that is listed keeps its version. A file that is already there is reported as "left as is", so running `init` twice changes nothing.
 
-Retest is added at the caret of the version that runs `init`, such as `^0.5.2`; a checkout, whose version is 0.0.0, adds `latest`. TypeScript is added at `^7.0.2`, one of the two lines Retest's types are checked on, and `@types/node` at `^24.12.0`, for the oldest Node Retest runs on.
+Retest is added at the caret of the version that runs `init`, such as `^2.0.0`; a checkout, whose version is 0.0.0, adds `latest`. TypeScript is added at `^7.0.2`, one of the two lines Retest's types are checked on, and `@types/node` at `^24.12.0`, for the oldest Node Retest runs on.
 
 When it adds a package, `init` then runs the project's install with its package manager, which prints its own output: `npm install`, `pnpm install`, `yarn install` or `bun install`. The package manager is the one `packageManager` in `package.json` names, else the one whose lock file is in the folder, else the one that started `init`, such as `pnpm dlx`, else npm. If the install fails, `init` exits with code 2 and says which command to run yourself; the files it wrote stay. `--install` runs the install even when no package was added.
 
@@ -164,7 +164,7 @@ A project that does not say `"type": "module"` in `package.json` gets a note: ad
 A project's config is `retest.config.ts` in the folder Retest runs from, or the file `--config <path>` names. Retest imports it in its own process only, as it loads test files; see [TypeScript and imports](#typescript-and-imports). The test files never load it.
 
 ```ts
-import { app, chrome, chromium, defineConfig, env } from '@rehearsal-labs/retest'
+import { app, chrome, chromium, defineConfig, env } from 'retest'
 
 const baseUrl = process.env['TASK_APP_URL'] ?? 'http://127.0.0.1:4173'
 
@@ -189,7 +189,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }
@@ -488,7 +488,7 @@ Not built yet through agent-device: `swipe`, the keyboard helpers, alerts, scrol
 `electron({ executablePath, appPath, args?, userDataDir? })` is a desktop app built on Electron. Retest drives it with its Chromium driver, over the app's own debugging pipe.
 
 ```ts
-import { defineConfig, electron } from '@rehearsal-labs/retest'
+import { defineConfig, electron } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -723,7 +723,7 @@ Limits:
 A test file ends in `.retest.ts`:
 
 ```ts
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('saves a task', { tags: ['smoke'] }, async ({ page }) => {
   await page.goto('/')
@@ -1290,7 +1290,7 @@ inboxes: {
 locks: ['inbox'],
 
 // a test file
-import { expect, inbox, test } from '@rehearsal-labs/retest'
+import { expect, inbox, test } from 'retest'
 
 test('signs up with the code from the email', { locks: ['inbox'] }, async ({ page }) => {
   await page.goto('/sign-up')
@@ -1413,7 +1413,7 @@ A config declares its judges under `evaluation`:
 evaluation: {
   judges: {
     visual: {
-      adapter: '@rehearsal-labs/retest/evaluation/ai-sdk',
+      adapter: 'retest/evaluation/ai-sdk',
       credentials: { apiKey: env('ANTHROPIC_API_KEY') },
       options: { provider: 'anthropic', model: 'claude-sonnet-5' },
       accepts: ['text', 'images'],
@@ -1529,7 +1529,7 @@ A warning prints under its test, even a passing one, with a `!`. The summary gai
 
 ### The AI SDK adapter
 
-`@rehearsal-labs/retest/evaluation/ai-sdk` is a judge over the Vercel AI SDK for Anthropic, OpenAI and Azure OpenAI deployments. Retest does not install the SDK: install `ai@^7.0.127` with `@ai-sdk/anthropic@^4.0.71`, `@ai-sdk/openai@^4.0.83` or `@ai-sdk/azure@^4.0.90` yourself. They are optional peers of Retest. Without them, a check that names the judge fails its setup with `evaluation_error`, naming the missing package, and every other test runs.
+`retest/evaluation/ai-sdk` is a judge over the Vercel AI SDK for Anthropic, OpenAI and Azure OpenAI deployments. Retest does not install the SDK: install `ai@^7.0.127` with `@ai-sdk/anthropic@^4.0.71`, `@ai-sdk/openai@^4.0.83` or `@ai-sdk/azure@^4.0.90` yourself. They are optional peers of Retest. Without them, a check that names the judge fails its setup with `evaluation_error`, naming the missing package, and every other test runs.
 
 Options: `provider`, `anthropic`, `openai` or `azure`, and `model`, the model id, both required; `temperature` and `topP` when you want them; and `baseURL`, an endpoint you name, by default the provider's public API. `baseURL` must be https, or http only to this machine (`localhost`, `127.0.0.1` or `::1`), so the key and the evidence never cross a network in clear text. Credential: `apiKey`. The adapter makes its own provider instance with your key and an endpoint, so it uses no gateway and no environment variable of the SDK's own. It ignores `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`: to send judge requests through a gateway or to a data-residency endpoint, set `baseURL`. Before this change, a judge without `baseURL` left the endpoint to the SDK, which read those variables and sent your key wherever they pointed.
 
@@ -1541,7 +1541,7 @@ For a model deployed on an Azure OpenAI resource, install `@ai-sdk/azure` and se
 
 ```ts
 azure: {
-  adapter: '@rehearsal-labs/retest/evaluation/ai-sdk',
+  adapter: 'retest/evaluation/ai-sdk',
   credentials: { apiKey: env('RETEST_EVALUATION_AZURE_KEY') },
   options: { provider: 'azure', resourceName: 'my-resource', model: 'my-deployment' },
   accepts: ['text', 'images'],
@@ -1555,7 +1555,7 @@ Its tests ran ai 7.0.127, @ai-sdk/anthropic 4.0.71, @ai-sdk/openai 4.0.83 and @a
 An adapter module's default export takes the setup and returns an evaluator. `EvaluatorFactory` and the types around it come from the root export.
 
 ```ts
-import type { EvaluationRequest, EvaluatorFactory, JudgeAnswer } from '@rehearsal-labs/retest'
+import type { EvaluationRequest, EvaluatorFactory, JudgeAnswer } from 'retest'
 
 // Your own call to the model: it sends the request and reads the reply. Retest does not supply it.
 declare function askHouseModel(token: string | undefined, request: EvaluationRequest): Promise<{ criteria: JudgeAnswer['criteria']; summary: string }>
@@ -1829,7 +1829,7 @@ retest run --playwright tests/checkout.spec.ts --browser /usr/bin/chromium --bas
 ```
 
 - Files end in `.spec.ts`, `.spec.js`, `.spec.mts` or `.spec.mjs`, or the same with `.test.`. With none named, Retest takes every `.spec.` file under the folder and leaves `.test.` files out, since a project's unit tests end the same way.
-- `@playwright/test` and `playwright/test` resolve to Retest's own `@rehearsal-labs/retest/playwright`, wherever the file is. Neither package has to be installed in the project.
+- `@playwright/test` and `playwright/test` resolve to Retest's own `retest/playwright`, wherever the file is. Neither package has to be installed in the project.
 - Imports resolve as in Retest's own test files: `./helper` finds `./helper.ts`, then `./helper.js`, `./helper.mts` and `./helper.mjs`, then the folder's `index.ts` or `index.js`; `./helper.js` loads `./helper.ts` when that file exists; and the `paths` of the nearest `tsconfig.json` apply, as under "TypeScript and imports".
 - What runs: `test`, `test.describe`, `test.beforeEach`, `test.afterEach` and `test.step`; the `page` fixture; `page.goto`, `reload`, `goBack`, `goForward` and `title`; `getByRole`, `getByLabel`, `getByText`, `getByTestId`, `getByPlaceholder` and `locator`, on a page and on a locator; a locator's `first`, `last` and `nth`; `page.keyboard.press`; a locator's `fill`, `click`, `hover`, `press`, `check`, `uncheck` and `selectOption`; `expect` with `toBeVisible`, `toBeHidden`, `toBeChecked`, `toBeEnabled`, `toBeDisabled`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveValue`, `toHaveURL` and `toHaveTitle`, each also after `.not`, and `toBe`, `toEqual`, `toContain` and `toMatch`; `expect.soft` and `expect.poll`.
 - `selectOption` takes one option, named by its label, `{ label: 'High' }`, or by its value, `{ value: 'high' }`, and chooses it with Retest's `select`. A bare string is refused by name, since Playwright matches it against each option's value and its label at once and Retest has to know which; so are a list, `{ index }`, `null` and an option named both ways.
@@ -1840,7 +1840,7 @@ retest run --playwright tests/checkout.spec.ts --browser /usr/bin/chromium --bas
 - The rules are Retest's. A test with no assertion fails, a locator that matches several elements is ambiguous, an action is sent once, and `toHaveText` compares whole text.
 - Finders follow Playwright's rules where Retest can. `getByText`, `getByLabel`, `getByPlaceholder` and a role's `name` match any part of the text in any case, unless `exact: true`; both trim the text and read each run of spaces as one. `exact` beside a `RegExp`, or on a role with no name, is left out, as Playwright ignores it. `getByLabel` also finds any element that an `aria-label`, or the text an `aria-labelledby` points at, names. Reports write these locators as the file wrote them. Retest's own test files keep Retest's defaults.
 - Finders look inside open shadow roots, as Playwright's do. Under `--playwright` on Firefox or WebKit, a role or label lookup fails as `unsupported` when an open shadow root in its search could hold a match, as it does in Retest's own files.
-- A table row by name is refused. Names come from Chrome's accessibility tree, which gives a row no name from its cells, where Playwright names a row from them; `getByRole('row', { name })` would find no row that Playwright finds, so it fails at once by name, and the types of `@rehearsal-labs/retest/playwright` refuse it before the file runs. Take the row by position with `nth()`, or find a cell by name.
+- A table row by name is refused. Names come from Chrome's accessibility tree, which gives a row no name from its cells, where Playwright names a row from them; `getByRole('row', { name })` would find no row that Playwright finds, so it fails at once by name, and the types of `retest/playwright` refuse it before the file runs. Take the row by position with `nth()`, or find a cell by name.
 - What still differs from Playwright:
   - Names come from Chrome's accessibility tree, not from Playwright's own reckoning, for the roles that are not refused too. The comparison's corpus finds buttons, links, tabs, cells, column headers, headings, alerts, status lines and unnamed rows by role, and Playwright and Retest agreed on every one of those lookups.
   - `getByLabel` finds a form control that Chrome names by its `placeholder` or `title`, which Playwright's does not, and leaves out a form control Chrome leaves out of its tree, such as a hidden one, which Playwright's finds.
@@ -2190,8 +2190,8 @@ Native secret entry keeps pixels by default: secure fields rely on the platform'
 
 A program can run tests itself, with no command line. This guide calls such a program a host. A host runs Retest on its own machines, often for apps it did not write. The root export stays the authoring API, and a host uses two subpaths:
 
-- `@rehearsal-labs/retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `readRunFolder`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError`, `RunFolderReadError` and `LaunchError`, and the types a caller needs: `RunOptions`, `StopReason`, `HostCheck`, `RunFolder`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements, `PageNavigation` included. It also exports the session contract's types, which a driver implements. A `WebRuntime` names what it runs on in `identity`, and a `WebSession` answers `dispatch(command, timeoutMs, signal?, token?)` with the result `execute` gives and how far the command's input got: `not_sent`, `sent` or `unknown`. A launcher a host passes still returns an `OwnedBrowser`, and a run does not record how far an input got yet. `SessionBudget` counts browser sessions across runs, and `HostPreparation`, `PreparationAnswer`, `PreparationContext`, `CleanupContext`, `SessionOptions` and `Requirement` type the options below. `LoadedInbox`, `InboxSource`, `InboxReader`, `InboxMessage`, `InboxMessageLink` and `InboxContext` type an inbox a host reads for a run.
-- `@rehearsal-labs/retest/protocol` exports the event, result, command and failure types, their schemas, `parse`, `testId` and `testTitle`, `defaultTimeouts` and `mergeTimeouts`, `eventSchemaUrl` and `resultSchemaUrl`, the file URLs of the JSON Schema files, and `eventsFile`, `resultFile` and `logsFolder`, the names of a run folder's files, and `formatSessionId`, which writes a session's id. `PageFacts`, `NavigationCause`, `OptionChoiceRecord` and `EvidenceReference` are among its types, and so are `ExecutionRecord`, `PreparationRecord`, `CleanupRecord` and `Ending`, with their schemas.
+- `retest/runner` exports `runFiles`, `collectFiles`, `validateConfig`, `resolveSecrets`, `readRunFolder`, `defaultTimeouts`, `mergeTimeouts`, `RunFolderError`, `RunFolderReadError` and `LaunchError`, and the types a caller needs: `RunOptions`, `StopReason`, `HostCheck`, `RunFolder`, `CollectOptions`, `CollectResult`, `LoadedConfig`, `ResolvedSecret`, `ResolvedSecrets`, `Reporter`, `ChildOutput`, `LaunchBrowser` and the browser contract a custom launcher implements, `PageNavigation` included. It also exports the session contract's types, which a driver implements. A `WebRuntime` names what it runs on in `identity`, and a `WebSession` answers `dispatch(command, timeoutMs, signal?, token?)` with the result `execute` gives and how far the command's input got: `not_sent`, `sent` or `unknown`. A launcher a host passes still returns an `OwnedBrowser`, and a run does not record how far an input got yet. `SessionBudget` counts browser sessions across runs, and `HostPreparation`, `PreparationAnswer`, `PreparationContext`, `CleanupContext`, `SessionOptions` and `Requirement` type the options below. `LoadedInbox`, `InboxSource`, `InboxReader`, `InboxMessage`, `InboxMessageLink` and `InboxContext` type an inbox a host reads for a run.
+- `retest/protocol` exports the event, result, command and failure types, their schemas, `parse`, `testId` and `testTitle`, `defaultTimeouts` and `mergeTimeouts`, `eventSchemaUrl` and `resultSchemaUrl`, the file URLs of the JSON Schema files, and `eventsFile`, `resultFile` and `logsFolder`, the names of a run folder's files, and `formatSessionId`, which writes a session's id. `PageFacts`, `NavigationCause`, `OptionChoiceRecord` and `EvidenceReference` are among its types, and so are `ExecutionRecord`, `PreparationRecord`, `CleanupRecord` and `Ending`, with their schemas.
 
 The root export adds `OptionChoice`, `ScrollDelta` and `SecretContext` for code that passes options, distances or a secret's context on, and `InboxContext` and `InboxMessage` for code that reads a mailbox.
 
@@ -2202,8 +2202,8 @@ The root export adds `OptionChoice`, `ScrollDelta` and `SecretContext` for code 
 `resolveSecrets(config, env)` gives the map `runFiles` takes in `apps.secrets`. It reads each `env` source from `env` once, and keeps each function source to call on every use. A missing, empty or short value is a failure that names it. A host that gives every secret as a function passes `{}`.
 
 ```ts
-import { chromium, defineConfig } from '@rehearsal-labs/retest'
-import { defaultTimeouts, resolveSecrets, runFiles, validateConfig, type Reporter } from '@rehearsal-labs/retest/runner'
+import { chromium, defineConfig } from 'retest'
+import { defaultTimeouts, resolveSecrets, runFiles, validateConfig, type Reporter } from 'retest/runner'
 
 const loaded = validateConfig(
   defineConfig({
@@ -2232,7 +2232,7 @@ const result = await runFiles(
 )
 ```
 
-This is the heart of [examples/host/host.ts](../examples/host/host.ts). A test file can live anywhere, in a folder with no `node_modules` too. Its process loads `@rehearsal-labs/retest` and its subpaths from the copy of Retest that runs it, whatever copy sits beside the file.
+This is the heart of [examples/host/host.ts](../examples/host/host.ts). A test file can live anywhere, in a folder with no `node_modules` too. Its process loads `retest` and its subpaths from the copy of Retest that runs it, whatever copy sits beside the file.
 
 A host that holds a test mailbox gives it as an inbox, a function in the config in memory, as it gives a secret's function. `validateConfig` keeps it, the run calls it in its own process on each look, and `resolveSecrets` leaves it alone, so nothing else is passed to `runFiles`:
 
@@ -2371,10 +2371,10 @@ Without `sessions`, nothing is counted, and runs work as before.
 
 ### Agent sessions
 
-An agent, such as a model exploring an app, can drive a browser without a test file, through the same drivers, page commands, looks and session budget a test uses. The API is `AgentHost` and `AgentSession`, imported from `@rehearsal-labs/retest/agent`.
+An agent, such as a model exploring an app, can drive a browser without a test file, through the same drivers, page commands, looks and session budget a test uses. The API is `AgentHost` and `AgentSession`, imported from `retest/agent`.
 
 ```ts
-import { AgentHost } from '@rehearsal-labs/retest/agent'
+import { AgentHost } from 'retest/agent'
 
 const host = new AgentHost({ targets: { chrome: { engine: 'chromium', executablePath } }, budget, logFolder, secrets: { values: { password: { value } } } })
 const opened = await host.open({ owner: 'worker-1', app: 'owner', purpose: 'discovery', target: 'chrome', engine: 'chromium', baseUrl })

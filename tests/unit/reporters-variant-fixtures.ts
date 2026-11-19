@@ -19,7 +19,7 @@ export const tasksFile = 'tests/tasks.retest.ts'
 export const baseUrl = 'http://127.0.0.1:4173'
 export const pageUrl = 'http://127.0.0.1:4173/'
 
-export const tasksSource = `import { expect, test } from '@rehearsal-labs/retest'
+export const tasksSource = `import { expect, test } from 'retest'
 
 test.setup('signs in', async ({ page }) => {
   await page.goto('/sign-in')
@@ -42,7 +42,7 @@ const at = (line: number, column = 3): SourceLocation => ({ file: tasksFile, lin
 const saveButton = { by: 'role', role: 'button', name: 'Save' } as const
 const savedTask = { by: 'testId', value: 'saved-task' } as const
 
-const configSource = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+const configSource = `import { app, chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: app({ baseUrl: '${baseUrl}', targets: { chromium: chromium(), pixel: chromium({ emulate: 'Pixel 9' }) } }) },

@@ -192,7 +192,7 @@ function meetingProject(): string {
   const meets = (own: string, other: string): string => `import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 const marks = join(import.meta.dirname, '..', 'marks')
 mkdirSync(marks, { recursive: true })
@@ -204,7 +204,7 @@ test('meets ${other}', () => {
 })
 `
   return tempProject({
-    'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
 `,
     'tests/one.retest.ts': meets('one', 'two'),
@@ -259,7 +259,7 @@ for (;;) {
 }
 `
     const root = tempProject({
-      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+      'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
 `,
       'tests/first.retest.ts': loops,
@@ -290,7 +290,7 @@ export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1
 
   test('what failed loads printed is written in the order the files were given, whichever failed first', async () => {
     const root = tempProject({
-      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+      'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) } })
 `,
       'tests/slow.retest.ts': `import { setTimeout as delay } from 'node:timers/promises'
@@ -317,7 +317,7 @@ throw new Error('the quick file fails')
 })
 
 describe('collectFiles with a config', async () => {
-  const config = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { app, chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: { web: app({ baseUrl: 'http://127.0.0.1:4173', targets: { stable: chromium({ executablePath: '/fake/stable' }), beta: chromium({ executablePath: '/fake/beta' }) } }) },
   tags: ['smoke'],
@@ -325,14 +325,14 @@ export default defineConfig({
 `
   const root = tempProject({
     'retest.config.ts': config,
-    'tests/archive.retest.ts': `import { test } from '@rehearsal-labs/retest'
+    'tests/archive.retest.ts': `import { test } from 'retest'
 test('archives', { state: 'signed-in', tags: ['smoke'] }, async () => {})
 test('lists', async () => {})
 `,
-    'tests/sign-in.retest.ts': `import { test } from '@rehearsal-labs/retest'
+    'tests/sign-in.retest.ts': `import { test } from 'retest'
 test.setup('signed-in', async () => {})
 `,
-    'tests/broken.retest.ts': `import { test } from '@rehearsal-labs/retest'
+    'tests/broken.retest.ts': `import { test } from 'retest'
 test('tagged', { tags: ['smok'] }, async () => {})
 `,
   })

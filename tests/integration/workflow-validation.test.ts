@@ -12,7 +12,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 const file = 'tests/validation.retest.ts'
 const assertFailedAt = failedAtIn(file)
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('a form with only a name shows the email, password and terms errors, and sends nothing', async ({ page }) => {
   await page.goto('/workflow/sign-up')

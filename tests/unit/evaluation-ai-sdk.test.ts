@@ -162,15 +162,15 @@ describe("the adapter's factory", () => {
 
 describe('a judge that names the adapter by its package, in a project without the AI SDK', async () => {
   const root = tempProject({
-    'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   evaluation: {
-    judges: { visual: { adapter: '@rehearsal-labs/retest/evaluation/ai-sdk', credentials: { apiKey: () => 'sk-test-adapter-1234' }, options: { provider: 'anthropic', model: 'claude-sonnet-5' }, accepts: ['text', 'images'] } },
+    judges: { visual: { adapter: 'retest/evaluation/ai-sdk', credentials: { apiKey: () => 'sk-test-adapter-1234' }, options: { provider: 'anthropic', model: 'claude-sonnet-5' }, accepts: ['text', 'images'] } },
   },
 })
 `,
-    'tests/sdk.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/sdk.retest.ts': `import { expect, test } from 'retest'
 test('ordinary', async () => {
   expect(1).toBe(1)
 })
@@ -261,7 +261,7 @@ function fakePackages({ installed = ['ai', '@ai-sdk/azure', '@ai-sdk/openai', '@
     const found = packages[name]
     const failure = failing[name]
     if (failure !== undefined) throw Object.assign(new Error(failure), { code: 'ERR_MODULE_NOT_FOUND' })
-    if (found === undefined || !installed.includes(name)) throw Object.assign(new Error(`Cannot find package '${name}' imported from /work/node_modules/@rehearsal-labs/retest/dist/evaluation/ai-sdk.js`), { code: 'ERR_MODULE_NOT_FOUND' })
+    if (found === undefined || !installed.includes(name)) throw Object.assign(new Error(`Cannot find package '${name}' imported from /work/node_modules/retest/dist/evaluation/ai-sdk.js`), { code: 'ERR_MODULE_NOT_FOUND' })
     return found
   }
   return { made, load }
@@ -466,7 +466,7 @@ describe('a package the adapter cannot load', () => {
       ["Cannot find package '@ai-sdk/deepseek' imported from /work/node_modules/@ai-sdk/azure/dist/index.js", /^The AI SDK judge needs the package @ai-sdk\/deepseek, which @ai-sdk\/azure imports and which is not installed\./],
       ["Cannot find module '@ai-sdk/deepseek/internal' imported from /work/node_modules/@ai-sdk/azure/dist/index.js", /^The AI SDK judge needs the package @ai-sdk\/deepseek, which @ai-sdk\/azure imports/],
       ["Cannot find module '/work/node_modules/@ai-sdk/azure/dist/chunk.js' imported from /work/node_modules/@ai-sdk/azure/dist/index.js", /^The AI SDK judge could not load the package @ai-sdk\/azure: a file it imports is missing, \/work\/node_modules\/@ai-sdk\/azure\/dist\/chunk\.js\. Reinstall @ai-sdk\/azure\.$/],
-      ["Cannot find package '@ai-sdk/azure' imported from /work/node_modules/@rehearsal-labs/retest/dist/evaluation/ai-sdk.js", /^The AI SDK judge needs the package @ai-sdk\/azure, which is not installed\. Install ai@\^7 and @ai-sdk\/azure@\^4 in the project that runs Retest\.$/],
+      ["Cannot find package '@ai-sdk/azure' imported from /work/node_modules/retest/dist/evaluation/ai-sdk.js", /^The AI SDK judge needs the package @ai-sdk\/azure, which is not installed\. Install ai@\^7 and @ai-sdk\/azure@\^4 in the project that runs Retest\.$/],
       ['the bundle has no such entry', /^The AI SDK judge could not load the package @ai-sdk\/azure: the bundle has no such entry$/],
     ]
     for (const [failure, message] of cases) {
@@ -509,7 +509,7 @@ describe("an Azure judge through the parent, with the SDK's own variables set to
   const human = writer()
   const agent = writer()
   const root = tempProject({
-    'retest.config.ts': `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   evaluation: {
@@ -517,7 +517,7 @@ export default defineConfig({
   },
 })
 `,
-    'judges/azure.ts': `import { createAiSdkEvaluatorWith } from '@rehearsal-labs/retest/evaluation/ai-sdk'
+    'judges/azure.ts': `import { createAiSdkEvaluatorWith } from 'retest/evaluation/ai-sdk'
 
 const seen = { settings: [], models: [], calls: [] }
 globalThis[Symbol.for(${JSON.stringify(seenKey)})] = seen
@@ -552,7 +552,7 @@ const packages = {
 
 export default (setup) => createAiSdkEvaluatorWith(setup, async (name) => packages[name])
 `,
-    'tests/azure.retest.ts': `import { test } from '@rehearsal-labs/retest'
+    'tests/azure.retest.ts': `import { test } from 'retest'
 test('polite', async () => {
   await test.evaluate({ requirement: { polite: 'The reply is polite.' }, evidence: { text: 'Thank you.' } })
 })
@@ -616,7 +616,7 @@ describe('a judge whose provider answered with something that is not an answer, 
   // The provider drops the temperature for a model it takes to be a reasoning model, says so, and returns an object that
   // is not an answer. The check is an evaluation error, and its record must not claim the temperature was sent.
   const root = tempProject({
-    'retest.config.ts': `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   evaluation: {
@@ -624,7 +624,7 @@ export default defineConfig({
   },
 })
 `,
-    'judges/azure.ts': `import { createAiSdkEvaluatorWith } from '@rehearsal-labs/retest/evaluation/ai-sdk'
+    'judges/azure.ts': `import { createAiSdkEvaluatorWith } from 'retest/evaluation/ai-sdk'
 
 const packages = {
   ai: {
@@ -639,7 +639,7 @@ const packages = {
 
 export default (setup) => createAiSdkEvaluatorWith(setup, async (name) => packages[name])
 `,
-    'tests/azure.retest.ts': `import { test } from '@rehearsal-labs/retest'
+    'tests/azure.retest.ts': `import { test } from 'retest'
 test('polite', async () => {
   await test.evaluate({ requirement: { polite: 'The reply is polite.' }, evidence: { text: 'Thank you.' } })
 })

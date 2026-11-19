@@ -1,4 +1,4 @@
-import { app, chrome, chromium, defineConfig } from '@rehearsal-labs/retest'
+import { app, chrome, chromium, defineConfig } from 'retest'
 
 // Locks to hold, and screens sized by a viewport alone.
 const config = defineConfig({
@@ -12,7 +12,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

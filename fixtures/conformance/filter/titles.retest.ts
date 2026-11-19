@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Three tests the runner filters with --grep "kept by the filter". The two others would fail if they ran.
 

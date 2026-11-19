@@ -1,5 +1,5 @@
 import { createServer } from 'node:net'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The harness sets the error off while no test runs, so it lands exactly where the check needs it: with SIGUSR2 on
 // Unix, and on Windows, which has no such signal, by connecting to a port this test listens on.

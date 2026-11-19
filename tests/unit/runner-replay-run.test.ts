@@ -24,14 +24,14 @@ import { newRunFolder, quickTimeouts, readEvents, readResult } from '../support/
 // attempt, session reservations under workers, the execution record and the requirement. Real Chrome proves the same
 // in tests/integration/participants-*.test.ts.
 
-const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: { owner: chromium({ baseUrl: 'http://127.0.0.1:4173' }), member: chromium({ baseUrl: 'http://127.0.0.1:4173' }) },
   defaultApp: 'owner',
 })
 `
 
-const twoApps = `import { expect, test } from '@rehearsal-labs/retest'
+const twoApps = `import { expect, test } from 'retest'
 import { title } from './helpers/title.ts'
 
 test('shows nothing saved to either account', { apps: ['owner', 'member'] }, async ({ owner, member }) => {
@@ -212,7 +212,7 @@ describe('the execution record in a run', () => {
   })
 
   test("a test's bundle is the same in a full run and a run of it alone: a module an earlier test imported is that test's", async () => {
-    const two = `import { expect, test } from '@rehearsal-labs/retest'
+    const two = `import { expect, test } from 'retest'
 
 test('imports a helper late', async ({ page }) => {
   const { title } = await import('./helpers/title.ts')
@@ -235,7 +235,7 @@ test('imports nothing more', async ({ page }) => {
   })
 
   test('a module the body imports while it runs joins the bundle the result records', async () => {
-    const lazy = `import { expect, test } from '@rehearsal-labs/retest'
+    const lazy = `import { expect, test } from 'retest'
 
 test('reads a helper it imports late', async ({ page }) => {
   const { title } = await import('./helpers/title.ts')
@@ -281,7 +281,7 @@ describe('the execution record and credentials', () => {
         limits: defaultEvaluationLimits,
       },
     }
-    const tests = `import { expect, test } from '@rehearsal-labs/retest'\ntest('runs', { locks: [${JSON.stringify(lock)}] }, () => expect(1).toBe(1))\n`
+    const tests = `import { expect, test } from 'retest'\ntest('runs', { locks: [${JSON.stringify(lock)}] }, () => expect(1).toBe(1))\n`
     const root = tempProject({ 'tests/a.retest.ts': tests })
     const result = await runFiles(
       {
@@ -338,7 +338,7 @@ describe('the execution record and credentials', () => {
 
 describe('sessions and the contexts that hold them', () => {
   test('contexts that could not be closed keep their sessions until their browser closes, and the event says so', async () => {
-    const holding = (letter: string): string => `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('${letter} holds the only session', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.getByTestId('saved-task')).toHaveText('')\n})\n`
+    const holding = (letter: string): string => `import { expect, test } from 'retest'\n\ntest('${letter} holds the only session', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.getByTestId('saved-task')).toHaveText('')\n})\n`
     const root = tempProject({ [configFileName]: config, 'tests/a.retest.ts': holding('a'), 'tests/b.retest.ts': holding('b') })
     const budget = new SessionBudget({ perOwner: 1, host: 1 })
     const recorded = await run(root, ['tests/a.retest.ts', 'tests/b.retest.ts'], {
@@ -361,7 +361,7 @@ describe('sessions and the contexts that hold them', () => {
   })
 
   test("a stopped run closes its contexts before another owner gets their sessions", async () => {
-    const holding = (letter: string): string => `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('${letter} holds the only session', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.getByTestId('saved-task')).toHaveText('')\n})\n`
+    const holding = (letter: string): string => `import { expect, test } from 'retest'\n\ntest('${letter} holds the only session', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.getByTestId('saved-task')).toHaveText('')\n})\n`
     const root = tempProject({ [configFileName]: config, 'tests/a.retest.ts': holding('a'), 'tests/b.retest.ts': holding('b') })
     const budget = new SessionBudget({ perOwner: 1, host: 1 })
     const launchers: ReturnType<typeof fakeLauncher>[] = []
@@ -425,7 +425,7 @@ describe('sessions and the contexts that hold them', () => {
 })
 
 describe('endings in a run rest on the parent’s records', () => {
-  const forged = `import { test } from '@rehearsal-labs/retest'
+  const forged = `import { test } from 'retest'
 
 let scope = { testId: '', attemptId: '' }
 process.on('message', (message) => {
@@ -473,7 +473,7 @@ describe('session limits in a run', () => {
   test('under workers, concurrent attempts never hold more sessions than the owner and host limits allow', async () => {
     const files: Record<string, string> = { [configFileName]: config, 'tests/helpers/title.ts': helper }
     for (const letter of ['a', 'b', 'c', 'd', 'e']) {
-      files[`tests/${letter}.retest.ts`] = `import { expect, test } from '@rehearsal-labs/retest'
+      files[`tests/${letter}.retest.ts`] = `import { expect, test } from 'retest'
 
 test('${letter} one app', async ({ page }) => {
   await page.goto('/')
@@ -536,7 +536,7 @@ test('${letter} two apps', { apps: ['owner', 'member'] }, async ({ owner, member
   })
 
   test('the wait for sessions counts against no budget of the test', async () => {
-    const holding = (letter: string): string => `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('${letter} holds the only session', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.getByTestId('saved-task')).toHaveText('')\n})\n`
+    const holding = (letter: string): string => `import { expect, test } from 'retest'\n\ntest('${letter} holds the only session', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.getByTestId('saved-task')).toHaveText('')\n})\n`
     const root = tempProject({ [configFileName]: config, 'tests/a.retest.ts': holding('a'), 'tests/b.retest.ts': holding('b') })
     const testBudget = 800
     const budget = new SessionBudget({ perOwner: 1, host: 1 })

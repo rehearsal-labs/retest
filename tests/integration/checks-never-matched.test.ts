@@ -8,7 +8,7 @@ import { budgets, configSource, eventsOf, runProject, testNamed, writeProject } 
 
 const file = 'tests/gone.retest.ts'
 
-const source = `import { expect, test } from '@rehearsal-labs/retest'
+const source = `import { expect, test } from 'retest'
 
 test('a misspelt banner check', async ({ page }) => {
   await page.goto('/leaving/edit')

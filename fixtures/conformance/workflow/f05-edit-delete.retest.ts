@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Workflow family 5, edit and delete an object: F5.1 to F5.4, as tests/integration/workflow-edit-delete.test.ts runs
 // them on Chrome.

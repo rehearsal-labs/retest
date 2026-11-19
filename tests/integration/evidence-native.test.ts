@@ -18,7 +18,7 @@ const app = target === 'ios-simulator' ? 'phone' : 'desk'
 const bundle = target === 'ios-simulator' ? 'dev.retest.fixtures.taskphone' : 'dev.retest.fixtures.taskdesk'
 const unavailable = await nativeSkipReason(target)
 
-const source = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const source = `import { expect, secret, test } from 'retest'
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 for (const expected of ['ready', 'wrong']) test(expected, { apps: ['${app}'] }, async ({${app}:page}) => {
  await expect(page.getByTestId('service-status')).toContainText('Connected to ')

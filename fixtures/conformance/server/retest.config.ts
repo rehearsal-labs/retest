@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { defineConfig } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { defineConfig } from 'retest'
 import { conformanceTarget, conformanceVariables, requiredVariable } from '../config.ts'
 
 // One app-server command with readiness and cleanup: the run starts fixtures/app-server, waits until its address

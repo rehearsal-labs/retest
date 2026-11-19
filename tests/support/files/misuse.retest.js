@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('passes a promise to expect', async ({ page }) => {
   expect(page.goto('/')).toBe(undefined)

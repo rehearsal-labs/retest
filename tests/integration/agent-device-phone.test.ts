@@ -31,7 +31,7 @@ test('TaskPhone through agent-device: secret sign-in, a created task, a preserve
   const source = await readFile(join(repositoryRoot, 'fixtures/cross-platform/tests/agent-device-phone.retest.ts'), 'utf8')
   const root = await writeProject(t, {
     'phone.retest.ts': source,
-    'retest.config.ts': `import { defineConfig, env } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { defineConfig, env } from 'retest'
 export default defineConfig({ apps: { phone: { platform: 'ios-simulator', driver: 'agent-device', appPath: ${JSON.stringify(taskPhoneApp)}, device: 'iPhone 17', runtime: '26.5', arguments: ['-reset', '-serviceURL', ${JSON.stringify(service.url)}] } }, secrets: { password: env('RETEST_AGENT_DEVICE_PASSWORD') }, secretOrigins: { password: ['dev.retest.fixtures.taskphone'] } })
 `,
   })

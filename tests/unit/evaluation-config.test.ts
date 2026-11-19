@@ -22,7 +22,7 @@ describe('the evaluation block', () => {
         evaluation: {
           judges: {
             visual: { adapter: './judges/visual.ts', credentials: { apiKey: { env: 'ANTHROPIC_API_KEY' }, project: credential }, options: { provider: 'anthropic', model: 'claude-sonnet-5', nested: { list: [1, 'two', null] } }, accepts: ['text', 'images'] },
-            words: { adapter: '@rehearsal-labs/retest/evaluation/ai-sdk', accepts: ['text'] },
+            words: { adapter: 'retest/evaluation/ai-sdk', accepts: ['text'] },
           },
           defaultJudge: 'visual',
           timeoutMs: 20_000,
@@ -36,7 +36,7 @@ describe('the evaluation block', () => {
     assert.ok(evaluation !== undefined)
     const visual = evaluation.judges.get('visual')
     assert.deepEqual(visual?.adapter, { kind: 'file', path: resolve('/work/judges/visual.ts') })
-    assert.deepEqual(evaluation.judges.get('words')?.adapter, { kind: 'package', specifier: '@rehearsal-labs/retest/evaluation/ai-sdk', from: resolve('/work/retest.config.ts') })
+    assert.deepEqual(evaluation.judges.get('words')?.adapter, { kind: 'package', specifier: 'retest/evaluation/ai-sdk', from: resolve('/work/retest.config.ts') })
     assert.deepEqual(visual?.credentials.get('apiKey'), { env: 'ANTHROPIC_API_KEY' })
     assert.ok(visual?.credentials.get('project') !== undefined && 'read' in (visual.credentials.get('project') ?? {}))
     assert.deepEqual(visual?.options, { provider: 'anthropic', model: 'claude-sonnet-5', nested: { list: [1, 'two', null] } })

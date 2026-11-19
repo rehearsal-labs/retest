@@ -1,5 +1,5 @@
 import type { Same } from './support/same.ts'
-import { expect, test, type Download, type FileChooser, type FilePayload, type InputFiles } from '@rehearsal-labs/retest'
+import { expect, test, type Download, type FileChooser, type FilePayload, type InputFiles } from 'retest'
 
 // A file input takes a path, a file by content, or a list of them; a picker's input takes the same; a download gives its
 // file's path as a string. A number is no file, and an action that returns nothing is not one page.fileChooser() or

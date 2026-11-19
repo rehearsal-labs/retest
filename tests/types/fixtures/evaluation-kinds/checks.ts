@@ -1,4 +1,4 @@
-import { test, type EvaluateOptions, type EvaluationRequest } from '@rehearsal-labs/retest'
+import { test, type EvaluateOptions, type EvaluationRequest } from 'retest'
 
 export const options: EvaluateOptions<'motion'> = {
   requirement: {

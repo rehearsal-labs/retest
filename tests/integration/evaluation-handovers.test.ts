@@ -19,7 +19,7 @@ test('a non-recording CLI screenshot check refuses pixels after a secret fill', 
       secrets: { password: env('RETEST_CLOSEOUT_PASSWORD') },
       evaluation: { judges: { fake: { adapter: ${JSON.stringify(fakeJudge)}, options: { log: ${JSON.stringify(log)} }, accepts: ['images'] } } },
     }`),
-    'tests/secret.retest.ts': `import { secret, test } from '@rehearsal-labs/retest'
+    'tests/secret.retest.ts': `import { secret, test } from 'retest'
       test('secret screenshot', async ({ page }) => {
         await page.goto('/')
         await page.getByTestId('entry').fill(secret('password'))
@@ -57,7 +57,7 @@ test('CLI evaluation receives the current bounded diagnostics with its attempt i
       apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) },
       evaluation: { judges: { fake: { adapter: ${JSON.stringify(fakeJudge)}, options: { log: ${JSON.stringify(log)} }, accepts: ['text'] } } },
     }`),
-    'tests/diagnostics.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/diagnostics.retest.ts': `import { expect, test } from 'retest'
       test('diagnostics selected', async ({ page }) => {
         await page.goto('/')
         await expect(page.getByTestId('ready')).toHaveText('Ready')

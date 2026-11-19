@@ -42,7 +42,7 @@ describe('writeTests', () => {
     await writeTests(project, 'retest', 'search-app', { tests: 2, files: 1 })
     assert.deepEqual(await readdir(join(project, 'tests')), ['bench-1.retest.ts'])
     const text = await readFile(join(project, 'tests', 'bench-1.retest.ts'), 'utf8')
-    assert.match(text, /^import \{ expect, test \} from '@rehearsal-labs\/retest'\n/)
+    assert.match(text, /^import \{ expect, test \} from 'retest'\n/)
     assert.match(text, /toHaveText\('3 results for release'\)/)
   })
 })

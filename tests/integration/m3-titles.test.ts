@@ -13,7 +13,7 @@ const password = 'wren 7731 tag'
 const variable = 'RETEST_E2E_TITLE_PASSWORD'
 const alarm = '/titles/echo?title=%1B%5B2J%C2%9B31mAlarm%07%C2%9B0m'
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test('records a title and a cause for each way a page opens', async ({ page }) => {
   await page.goto('/titles')

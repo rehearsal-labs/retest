@@ -1,6 +1,6 @@
 import type { InboxName } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { expect, inbox, test } from '@rehearsal-labs/retest'
+import { expect, inbox, test } from 'retest'
 
 // The config declares its inboxes, so a test reads only those.
 export const names: Same<InboxName, 'owner' | 'member'> = true

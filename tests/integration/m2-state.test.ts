@@ -20,7 +20,7 @@ import {
 // state start signed in, the others start signed out, a failed setup keeps its dependents from running, and no
 // saved state outlives the run.
 
-const setups = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const setups = `import { expect, secret, test } from 'retest'
 
 test.setup('signed-in', async ({ page }) => {
   await page.goto('/login')
@@ -39,7 +39,7 @@ test.setup('wrong-password', async ({ page }) => {
 })
 `
 
-const accountTests = `import { expect, test } from '@rehearsal-labs/retest'
+const accountTests = `import { expect, test } from 'retest'
 
 test('starts signed in', { state: 'signed-in' }, async ({ page }) => {
   await page.goto('/account')
@@ -179,7 +179,7 @@ test('a test that starts from a state no setup saves fails collection, naming th
   const app = await openApp(t)
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { web: ${engineUnderTest().target(`baseUrl: ${JSON.stringify(app.url)}`)} } }`),
-    'tests/orphan.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/orphan.retest.ts': `import { expect, test } from 'retest'
 
 test('needs a state nobody saves', { state: 'nowhere' }, async ({ page }) => {
   await page.goto('/account')

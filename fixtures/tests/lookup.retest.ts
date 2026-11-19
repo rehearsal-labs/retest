@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Scoped locators, picks, CSS, placeholders and patterns; the state matchers and their negations; reload, back and
 // forward with the page's address and title; hover; and shortcuts, on the task app's lookup pages.

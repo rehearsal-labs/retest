@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { countTest } from './tests-in-process.ts'
 
 test('starts in a new process with clean storage', async ({ page }) => {

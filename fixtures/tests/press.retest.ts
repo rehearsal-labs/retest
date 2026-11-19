@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('submits a search with Enter on its field', async ({ page }) => {
   await page.goto('/actions')

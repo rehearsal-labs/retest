@@ -1,5 +1,5 @@
-import type { NativePage } from '@rehearsal-labs/retest'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import type { NativePage } from 'retest'
+import { expect, secret, test } from 'retest'
 
 // TaskPhone on an iPhone simulator, driven through agent-device. The harness supplies the config: the app on
 // `{ platform: 'ios-simulator', driver: 'agent-device' }`. Every finder, chain, pick, action and check of the first

@@ -87,7 +87,7 @@ describe('help', () => {
     for (const option of ['--app <name=url>', '--start <command>', '--browser <name>', '--ci <name>', '--install', '--no-install', '--yes']) {
       assert.ok(init.includes(option), option)
     }
-    assert.match(init, /It adds @rehearsal-labs\/retest, typescript and @types\/node to devDependencies when package\.json does not list them,\ncreating package\.json when there is none, and then runs the package manager's install, such as npm install\./)
+    assert.match(init, /It adds retest, typescript and @types\/node to devDependencies when package\.json does not list them,\ncreating package\.json when there is none, and then runs the package manager's install, such as npm install\./)
     assert.deepEqual(listedOptions((await call(['help', 'doctor'])).stdout), ['config', 'help'])
     assert.match((await call(['help', 'inspect'])).stdout, /--target <app=name> {7}With --test, the target it ran on/)
   })

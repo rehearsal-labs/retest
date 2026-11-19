@@ -1,4 +1,4 @@
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // Every matcher's argument is typed by what it checks. Each marked line fails the type check.
 test('value matchers', async ({ page }) => {

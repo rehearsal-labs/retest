@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // A test process that speaks the protocol itself and claims a pass it did not earn: it looks at an element that is
 // not there, reports that look as a failed assertion, which the parent accepts since it fails on that look, then ends

@@ -9,7 +9,7 @@ import { runProject, tempProject } from '../support/project.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 import { capture } from './reporters-fixtures.ts'
 
-const config = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+const config = `import { app, chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: {
     web: app({
@@ -21,7 +21,7 @@ export default defineConfig({
 })
 `
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('saves a task', { tags: ['smoke'] }, async ({ page }) => {
   await expect(page.getByTestId('save-task')).toBeVisible()
@@ -83,7 +83,7 @@ describe('choosing tests in a run', () => {
   })
 
   test('the rerun line of a failed row names its row', async () => {
-    const rows = `import { expect, test } from '@rehearsal-labs/retest'
+    const rows = `import { expect, test } from 'retest'
 
 test.for([{ id: 'save-task' }, { id: 'hidden-note' }])('shows $id', async ({ page }, { id }) => {
   await expect(page.getByTestId(id)).toBeVisible()
@@ -116,7 +116,7 @@ test.for([{ id: 'save-task' }, { id: 'hidden-note' }])('shows $id', async ({ pag
     const root = tempProject({
       'retest.config.ts': config,
       'tests/tasks.retest.ts': tests,
-      'tests/flaky.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+      'tests/flaky.retest.ts': `import { expect, test } from 'retest'
 test('shows a note', async ({ page }) => {
   await expect(page.getByTestId('hidden-note')).toBeVisible()
 })

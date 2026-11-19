@@ -10,7 +10,7 @@ import { budgets, configSource, eventsOf, inspectJson, onlyEvent, resultOf, runC
 
 const notCi = { CI: '' }
 
-const skipping = `import { expect, test } from '@rehearsal-labs/retest'
+const skipping = `import { expect, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')
@@ -33,7 +33,7 @@ test.describe.skip('archive', (test) => {
 `
 
 const focusing = {
-  'tests/a.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+  'tests/a.retest.ts': `import { expect, test } from 'retest'
 
 test.only('saves a task', async ({ page }) => {
   await page.goto('/')
@@ -47,7 +47,7 @@ test('left out', async ({ page }) => {
   await expect(page.getByTestId('saved-task')).toHaveText('never there')
 })
 `,
-  'tests/b.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+  'tests/b.retest.ts': `import { expect, test } from 'retest'
 
 test('also left out', async ({ page }) => {
   await page.goto('/')
@@ -165,7 +165,7 @@ test('with CI set, a run containing test.only fails before any test runs, naming
 
 test('a per-call timeout shortens the action and navigation budgets for that call only, and its event records it', async (t) => {
   const root = await project(t, {
-    'tests/timeouts.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/timeouts.retest.ts': `import { expect, test } from 'retest'
 
 test('a click gives up at its own timeout', async ({ page }) => {
   await page.goto('/', { timeout: 4000 })

@@ -77,7 +77,7 @@ describe('host checks in the human report', () => {
         '    Waited           5s, looked 14 times, limit 5s',
         '',
         '    tests/checkout.retest.ts:3:1',
-        "      1 │ import { expect, test } from '@rehearsal-labs/retest'",
+        "      1 │ import { expect, test } from 'retest'",
         '      2 │',
         "    › 3 │ test('places an order', async ({ page }) => {",
         "      4 │   await page.goto('/cart')",

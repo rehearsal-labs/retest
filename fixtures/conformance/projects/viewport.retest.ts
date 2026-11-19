@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Runs once per target. A test does not know its target, so it checks the size is one of the two; the runner reads
 // which one the parent saw for each target from the run's own record.

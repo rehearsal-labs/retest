@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { chrome, defineConfig, env } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { chrome, defineConfig, env } from 'retest'
 
 // The config the cross-platform fixture's web test runs with. The service takes a port of its own choosing in the
 // tests, so each run gives the address with `--base-url`; this one is the service's default port. The config is not

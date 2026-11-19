@@ -20,7 +20,7 @@ async function runDesk(t: TestContext, paired: boolean) {
   const source = await readFile(join(repositoryRoot, `fixtures/cross-platform/tests/${paired ? 'native-desk-web' : 'native-desk'}.retest.ts`), 'utf8')
   const root = await writeProject(t, {
     'desk.retest.ts': source,
-    'retest.config.ts': `import { chrome, defineConfig, env } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { chrome, defineConfig, env } from 'retest'
 export default defineConfig({ apps: { desk: { platform: 'macos', appPath: ${JSON.stringify(taskDeskApp)}, arguments: ['-reset', '-windowFrame', '20,60,700,480', '-serviceURL', ${JSON.stringify(service.url)}] }${paired ? `, web: chrome({ baseUrl: ${JSON.stringify(service.url)} })` : ''} }, secrets: { password: env('RETEST_NATIVE_API_PASSWORD') }, secretOrigins: { password: ['dev.retest.fixtures.taskdesk', ${JSON.stringify(service.url)}] } })
 `,
   })

@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { defineConfig, env } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { defineConfig, env } from 'retest'
 import { conformanceBaseUrl, conformanceTarget, conformanceVariables } from '../config.ts'
 
 // The method cases on the task app: one app on the engine the runner names. The password is the task app's sign-in

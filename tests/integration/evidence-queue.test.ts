@@ -83,7 +83,7 @@ test('a real Chrome recording with a stalled encoder names queue drops and prese
  }
 })\n`)
  const site=await servePages(t,{'/':'<body><p data-testid="state">Ready</p><script>let n=0;setInterval(()=>document.body.style.background=(n++%2)?"#0000ff":"#00ff00",20)</script>'})
- const source=`import {expect,test} from '@rehearsal-labs/retest';test('passes with saturated queue',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,6000));await expect(page.getByTestId('state')).toHaveText('Ready')})`
+ const source=`import {expect,test} from 'retest';test('passes with saturated queue',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,6000));await expect(page.getByTestId('state')).toHaveText('Ready')})`
  const root=await writeProject(t,{'retest.config.ts':configSource(`{apps:{web:chromium({executablePath:${JSON.stringify(browserPath())},baseUrl:${JSON.stringify(site.url)}})},recording:{record:true,fps:10,size:{width:320,height:240}}}`),'queue.retest.ts':source})
  const started=await startRun(t,{cwd:root,browser:false,files:['queue.retest.ts'],timeouts:budgets({test:30000,setup:30000,cleanup:15000}),env:{RETEST_MEDIA_BINARY:binary,RETEST_FFMPEG:ffmpeg,NODE_OPTIONS:importOption(loader)}})
  const media=await started.retest.waitForEvent('media.started')

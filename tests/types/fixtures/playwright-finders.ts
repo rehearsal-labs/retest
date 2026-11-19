@@ -1,6 +1,6 @@
-import type { Page } from '@rehearsal-labs/retest/playwright'
+import type { Page } from 'retest/playwright'
 
-// Finders as `@rehearsal-labs/retest/playwright` types them for a Playwright test file. A table row by name is
+// Finders as `retest/playwright` types them for a Playwright test file. A table row by name is
 // refused when it runs, since Chrome gives a row no name from its cells where Playwright does, and its type refuses it
 // first. A row by position, a cell by name and a role held in a variable are not refused. Each marked line fails.
 export async function rows(page: Page, role: 'row' | 'cell'): Promise<void> {

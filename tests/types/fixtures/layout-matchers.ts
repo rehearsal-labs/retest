@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The layout matchers: three on a locator, one on a page, each with `.not` and its own timeout. Each marked line fails
 // the type check.

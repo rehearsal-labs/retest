@@ -186,7 +186,7 @@ describe('a browser lost while a check looks', () => {
 
 describe('a browser lost while a check looks, in a run', async () => {
   const file = 'tests/lost.retest.ts'
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('a browser lost while a check looks', async ({ page }) => {
   await page.goto('/')

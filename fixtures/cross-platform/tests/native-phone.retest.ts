@@ -1,5 +1,5 @@
-import type { NativePage } from '@rehearsal-labs/retest'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import type { NativePage } from 'retest'
+import { expect, secret, test } from 'retest'
 
 // The harness supplies this fixture's app configuration; native type fixtures check its fixed context.
 const phoneTest = test as typeof test & ((name: string, options: { apps: readonly ['phone'] }, body: (apps: { phone: NativePage<'ios-simulator'> }) => Promise<void>) => void)

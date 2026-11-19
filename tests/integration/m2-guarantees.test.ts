@@ -52,7 +52,7 @@ test('outcomes stay honest: a pass exits 0, a failed check 1, and a target whose
     'retest.config.ts': configSource(`{
   apps: { web: app({ baseUrl: ${JSON.stringify(app.url)}, targets: { chrome: chrome(), missing: chromium({ executablePath: '/nonexistent/chromium' }) } }) },
 }`),
-    'tests/tasks.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('saves a task', ${savesTask})\n`,
+    'tests/tasks.retest.ts': `import { expect, test } from 'retest'\n\ntest('saves a task', ${savesTask})\n`,
   })
 
   const passing = await runProject(t, root, { args: ['--target', 'web=chrome'] })
@@ -81,7 +81,7 @@ test('a test that runs out of time ends its file process, the rest of the file d
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) } }`),
     'tests/a-waits.retest.ts': `import { writeSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 writeSync(1, \`pid \${process.pid}\\n\`)
 
@@ -92,7 +92,7 @@ test('waits forever', { timeout: 800 }, async ({ page }) => {
 
 test('comes after it', ${savesTask})
 `,
-    'tests/b-next.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('runs in the next file', ${savesTask})\n`,
+    'tests/b-next.retest.ts': `import { expect, test } from 'retest'\n\ntest('runs in the next file', ${savesTask})\n`,
   })
   const run = await runProject(t, root)
 
@@ -118,7 +118,7 @@ test('a lost browser fails the test it was running honestly, later tests on it d
   },
   defaultApp: 'web',
 }`),
-    'tests/lost.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/lost.retest.ts': `import { expect, test } from 'retest'
 
 test('clicks a button that freezes the page', { apps: ['frozen'] }, async ({ frozen }) => {
   await frozen.goto('/')
@@ -174,7 +174,7 @@ async function waitingProject(t: TestContext): Promise<{ root: string; port: num
   apps: { web: chrome({ baseUrl: ${JSON.stringify(url)}, start: { command: ${JSON.stringify(appServerCommand(port))}, ready: ${JSON.stringify(url)} } }) },
   states: ['visited'],
 }`),
-    'tests/waits.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/waits.retest.ts': `import { expect, test } from 'retest'
 
 test.setup('visited', async ({ page }) => {
   await page.goto('/')
@@ -243,7 +243,7 @@ test('inspect reads a run from a config that was killed, keeping each variant, a
   defaultApp: 'web',
   states: ['visited'],
 }`),
-    'tests/killed.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/killed.retest.ts': `import { expect, test } from 'retest'
 
 test.setup('visited', async ({ page }) => {
   await page.goto('/')

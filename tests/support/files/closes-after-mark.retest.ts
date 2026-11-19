@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // After its test, its process cannot take the request to close until the marker named by SIGNALS_MARK exists, which
 // marks.retest.ts makes once its own test runs.

@@ -12,7 +12,7 @@ after(() => {
   delete process.env[variable]
 })
 
-const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+const config = `import { chromium, defineConfig, env } from 'retest'
 
 let reads = 0
 
@@ -23,7 +23,7 @@ export default defineConfig({
 })
 `
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test('signs in', async ({ page }) => {
   await page.goto('/login')
@@ -105,13 +105,13 @@ describe('a secret value that appears inside identifiers', () => {
   test('is hidden in free text and nowhere else: paths, ids, names and locators stay as they are', async () => {
     const value = 'xample'
     const root = tempProject({
-      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+      'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   secrets: { password: () => '${value}' },
 })
 `,
-      'tests/example.retest.ts': `import { expect, secret, test } from '@rehearsal-labs/retest'
+      'tests/example.retest.ts': `import { expect, secret, test } from 'retest'
 test.describe('xample block', () => {
   test('signs in as xample', async ({ page }) => {
     await page.goto('/xample')

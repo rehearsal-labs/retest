@@ -1,5 +1,5 @@
-import type { Page } from '@rehearsal-labs/retest'
-import { expect, secret } from '@rehearsal-labs/retest'
+import type { Page } from 'retest'
+import { expect, secret } from 'retest'
 
 /** Signs a participant's page in as `account` on the task app, with the secret `password`. */
 export async function signIn(page: Page<false>, account: string): Promise<void> {

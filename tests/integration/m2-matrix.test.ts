@@ -60,14 +60,14 @@ async function reportSite(t: TestContext): Promise<Pages> {
 function reportTests(site: Pages): Record<string, string> {
   const report = (label: string) => JSON.stringify(`${site.url}/report/${label}`)
   return {
-    'tests/solo.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/solo.retest.ts': `import { expect, test } from 'retest'
 
 test('reports its browser', async ({ page }) => {
   await page.goto(${report('solo')})
   await expect(page.getByTestId('reported')).toHaveText('reported')
 })
 `,
-    'tests/pair.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/pair.retest.ts': `import { expect, test } from 'retest'
 
 test('reports both browsers', { apps: ['web', 'admin'] }, async ({ web, admin }) => {
   await web.goto(${report('web')})

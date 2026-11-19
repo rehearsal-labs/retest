@@ -6,7 +6,7 @@ import { fakeLauncher } from '../support/fake-browser.ts'
 import { fakeExecutable, runProject, tempProject } from '../support/project.ts'
 import { eventsOfType, newRunFolder, quickTimeouts, readEvents } from '../support/run-harness.ts'
 
-const config = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+const config = `import { app, chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: {
     web: app({
@@ -22,7 +22,7 @@ export default defineConfig({
 })
 `
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 test('opens both', { apps: ['web', 'admin'] }, async ({ web, admin }) => {
   await web.goto('/')
   await admin.goto('/')
@@ -75,7 +75,7 @@ describe('a proxy address that holds credentials', () => {
       secrets: new Map(),
       timeouts: {},
     }
-    const root = tempProject({ 'tests/a.retest.ts': "import { expect, test } from '@rehearsal-labs/retest'\ntest('runs', () => expect(1).toBe(1))\n" })
+    const root = tempProject({ 'tests/a.retest.ts': "import { expect, test } from 'retest'\ntest('runs', () => expect(1).toBe(1))\n" })
     const result = await runFiles(
       { files: ['tests/a.retest.ts'], rootDir: root, apps: { kind: 'config', config: loaded, secrets: new Map() }, timeouts: quickTimeouts, outputDir: folder, headless: true, signal: new AbortController().signal },
       [],

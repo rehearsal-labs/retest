@@ -31,7 +31,7 @@ test("the hostile ended reply cannot attach another attempt's existing video ins
 test("a hostile ended reply leaves the runner's passed test intact with unavailable recording evidence", { skip: unpinnedMedia }, async t => {
   const { tempProject } = await import('../support/project.ts')
   const { recordProject } = await import('./runner-recording-fakes.ts')
-  const root = tempProject({ 'retest.config.ts': `import {chromium,defineConfig} from '@rehearsal-labs/retest';export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import {test,expect} from '@rehearsal-labs/retest';test('one',async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import {chromium,defineConfig} from 'retest';export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import {test,expect} from 'retest';test('one',async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   const run = await recordProject(root, { files: ['tests/one.retest.ts'], startMedia: () => worker(t, 'running-hostile') })
   const result = run.result.files[0]?.tests[0]
   assert.equal(result?.status, 'passed')

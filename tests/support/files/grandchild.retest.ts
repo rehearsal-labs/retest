@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // A test file that starts a process with its own stdio, as a test that starts a server from its file would, and
 // leaves it running: the grandchild holds the test file's output pipes after the test file itself has gone.

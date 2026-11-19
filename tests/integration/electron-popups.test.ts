@@ -42,7 +42,7 @@ const names = {
   goto: 'goto in a popup window is refused by name',
 } as const
 
-const config = `import { defineConfig, electron, env } from '@rehearsal-labs/retest'
+const config = `import { defineConfig, electron, env } from 'retest'
 
 export default defineConfig({
   apps: { desktop: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: ${JSON.stringify(fixtureApp)} }) },
@@ -51,7 +51,7 @@ export default defineConfig({
 `
 
 const tests = `import { setTimeout as sleep } from 'node:timers/promises'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 test(${JSON.stringify(names.opened)}, async ({ page }) => {
   const notes = await page.popup(() => page.getByRole('button', { name: 'Open notes' }).click())

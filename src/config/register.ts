@@ -13,7 +13,7 @@ export interface RetestTypeError<Message extends string> {
  * Where a project registers its config, once, in `retest.config.ts`, so every test file's types see its apps,
  * secrets, inboxes, test ids, tags and states.
  *
- * @example declare module '@rehearsal-labs/retest' { interface Register { config: typeof config } }
+ * @example declare module 'retest' { interface Register { config: typeof config } }
  */
 export interface Register {}
 
@@ -24,7 +24,7 @@ export type IsRegistered = [RegisteredConfig] extends [never] ? false : true
 
 /** What declaring `apps` or `state` gives before a config is registered. */
 export type Unregistered =
-  RetestTypeError<'Register your config: declare module "@rehearsal-labs/retest" { interface Register { config: typeof config } }'>
+  RetestTypeError<'Register your config: declare module "retest" { interface Register { config: typeof config } }'>
 
 /** `T` once a config is registered; before that, the error that says how to register one. */
 export type RequiresConfig<T> = IsRegistered extends true ? T : Unregistered

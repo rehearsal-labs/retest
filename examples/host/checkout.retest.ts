@@ -1,4 +1,4 @@
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // The test examples/host/host.ts writes for the task app. It signs in with a password and a one-time code, both
 // secrets the host gives as functions, and saves a task. It prints which of the host's variables it can see.

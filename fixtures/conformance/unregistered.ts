@@ -1,5 +1,5 @@
-import type { Page } from '@rehearsal-labs/retest'
-import { test } from '@rehearsal-labs/retest'
+import type { Page } from 'retest'
+import { test } from 'retest'
 
 // The conformance configs are not registered: a registration would apply to every file of the repository's own
 // TypeScript program. Without one, `state` and `apps` do not type-check, so the tests that use them call `test`

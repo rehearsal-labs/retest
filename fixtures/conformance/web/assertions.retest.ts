@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Assertions on the task app: every locator and page matcher, their negations, regular expressions, value
 // assertions, a soft assertion, polling until the page shows what is expected, and failures after a check's own

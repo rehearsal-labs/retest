@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { defineConfig, env } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { defineConfig, env } from 'retest'
 import { conformanceBaseUrl, conformanceTarget, conformanceVariables } from '../config.ts'
 
 // The forty basic workflow cases of docs/compatibility/workflow-cases.md, families 1 to 10, on the engine the

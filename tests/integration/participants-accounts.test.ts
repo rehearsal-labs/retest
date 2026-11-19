@@ -15,7 +15,7 @@ const file = 'tests/participants.retest.ts'
 const accounts = { owner: 'owner-a', member: 'member-b' }
 const starting = `{ apps: ['owner', 'member'], state: { owner: 'owner-account', member: 'member-account' } }`
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 ${signInSetup('owner-account', 'owner', accounts.owner)}
 

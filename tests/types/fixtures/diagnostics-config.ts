@@ -1,5 +1,5 @@
-import type { DiagnosticsConfig } from '@rehearsal-labs/retest/runner'
-import { chrome, defineConfig } from '@rehearsal-labs/retest'
+import type { DiagnosticsConfig } from 'retest/runner'
+import { chrome, defineConfig } from 'retest'
 
 // A config's diagnostics block, and the same block a program passes as RunOptions.diagnostics.
 export const accepted = defineConfig({

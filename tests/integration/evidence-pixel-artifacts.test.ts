@@ -13,7 +13,7 @@ import { engineUnderTest } from './engines.ts'
 import { binary, decoder, ffmpeg, importOption, observationLoader, observations, preserveReport, proofRoot, secretAbsent, verifyScreenshots, verifyVideo } from './evidence-support.test.ts'
 import { recordingSkip } from './recording-harness.ts'
 
-const source=`import {expect,secret,test} from '@rehearsal-labs/retest'
+const source=`import {expect,secret,test} from 'retest'
 test('secret image requests are refused until a new document',async({page})=>{
  await page.goto('/')
  await expect(page.getByTestId('state')).toHaveText('Before')

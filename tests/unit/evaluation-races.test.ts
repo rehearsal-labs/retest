@@ -259,7 +259,7 @@ const racesJudge = `export default (setup) => {
 }
 `
 
-const racesConfig = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+const racesConfig = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
@@ -275,7 +275,7 @@ export default defineConfig({
 })
 `
 
-const racesTests = `import { expect, test } from '@rehearsal-labs/retest'
+const racesTests = `import { expect, test } from 'retest'
 
 const evidence = { text: 'Your task was saved.', label: 'banner' }
 const check = (id, judge) => test.evaluate({ ...(judge === undefined ? {} : { judge }), requirement: { [id]: 'The banner says the task was saved.' }, evidence })

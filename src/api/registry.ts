@@ -17,7 +17,7 @@ export type Collected = { ok: true; tests: RegisteredTest[] } | { ok: false; fai
 
 type Pending = { readonly test: RegisteredTest; readonly title: string; readonly body: RuntimeBody; readonly block: Block }
 
-const processKey = Symbol.for('@rehearsal-labs/retest')
+const processKey = Symbol.for('retest')
 
 claimProcess()
 
@@ -70,7 +70,7 @@ function claimProcess(): void {
   if (typeof owner === 'string' && owner !== import.meta.url) {
     throw new Error(
       `Retest is loaded twice in this process, from ${owner} and ${import.meta.url}. ` +
-        'Tests register with one copy only: import @rehearsal-labs/retest from the installation that runs them.',
+        'Tests register with one copy only: import the retest package from the installation that runs them.',
     )
   }
   Reflect.set(globalThis, processKey, import.meta.url)

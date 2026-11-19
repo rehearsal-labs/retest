@@ -258,7 +258,7 @@ export type InboxSource = InboxReader | { readonly messages: InboxReader; readon
 
 /**
  * A judge for AI checks. `adapter` makes it: a module path relative to the config, such as './judges/visual.ts', a
- * package such as '@rehearsal-labs/retest/evaluation/ai-sdk', or a function. Retest's own process loads it, the first
+ * package such as 'retest/evaluation/ai-sdk', or a function. Retest's own process loads it, the first
  * time a check uses the judge, and calls its default export with `credentials`, read the way secrets are read, and
  * `options`, which hold JSON values only. `accepts` lists what the judge takes: `text`, `images` and `frames`.
  */

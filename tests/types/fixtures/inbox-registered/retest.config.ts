@@ -1,4 +1,4 @@
-import { chromium, defineConfig } from '@rehearsal-labs/retest'
+import { chromium, defineConfig } from 'retest'
 
 // Two inboxes, one read by a function alone and one with an origin its links may also open on.
 const config = defineConfig({
@@ -11,7 +11,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

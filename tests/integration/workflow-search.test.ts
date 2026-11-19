@@ -17,7 +17,7 @@ const titles = BOOKS.map((book) => book.title)
 const pageOf = (page: number): string => JSON.stringify(titles.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE))
 const pages = Math.ceil(titles.length / PAGE_SIZE)
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('a search lists only the matching books', async ({ page }) => {
   await page.goto('/workflow/catalog')

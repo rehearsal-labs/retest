@@ -11,7 +11,7 @@ import { eventsOf, filesHolding, hostScript, repositoryRoot, runCli, runHost, te
 // Acceptance check 2: host checks, given through `runFiles` from the runner subpath by a host's own script, against
 // real Chrome and the task app. The parent runs them after each test's body, and they decide the test with it.
 
-const signInTests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const signInTests = `import { expect, secret, test } from 'retest'
 
 test.setup('signed-in', async ({ page }) => {
   await page.goto('/login')
@@ -27,7 +27,7 @@ test('shows the account', { state: 'signed-in' }, async ({ page }) => {
 })
 `
 
-const taskTests = `import { expect, test } from '@rehearsal-labs/retest'
+const taskTests = `import { expect, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')

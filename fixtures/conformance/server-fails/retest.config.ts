@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { defineConfig } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { defineConfig } from 'retest'
 import { conformanceTarget, conformanceVariables, requiredVariable } from '../config.ts'
 
 // A setup error: the runner names an app server that never listens, so its address never answers within the time

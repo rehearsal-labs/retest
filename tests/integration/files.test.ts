@@ -26,7 +26,7 @@ const names = {
 } as const
 
 const tests = (received: string) => `import { readFile } from 'node:fs/promises'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test(${JSON.stringify(names.flow)}, async ({ page }) => {
   await page.goto('/files')
@@ -161,7 +161,7 @@ test('a run uploads, catches a picker and keeps downloads, and its events and re
   assert.match(html, /download broken\.csv stopped after \d+ of 100000 bytes/)
 })
 
-const engineTests = `import { expect, test } from '@rehearsal-labs/retest'
+const engineTests = `import { expect, test } from 'retest'
 
 for (const app of ['fox', 'kit']) {
   test(app + ' finds a field by its label beside a submit input, and a file input by its label alone', { apps: [app] }, async (pages) => {
@@ -197,7 +197,7 @@ test('Firefox and WebKit find a field by its label beside a submit input, and a 
   assert.equal(run.exit.code, 0, run.stderr)
 })
 
-const secretTests = `import { secret, test } from '@rehearsal-labs/retest'
+const secretTests = `import { secret, test } from 'retest'
 
 test('a download that holds a secret is not kept', async ({ page }) => {
   await page.goto('/files')
@@ -258,7 +258,7 @@ test('a Playwright test file is told a picker was closed and that its uploads ar
 const electronBinary = process.env['RETEST_TEST_ELECTRON'] ?? join(homedir(), 'Library/Caches/retest-proofs/electron/44.5.1/dist/Electron.app/Contents/MacOS/Electron')
 const noElectron = process.platform !== 'darwin' && process.env['RETEST_TEST_ELECTRON'] === undefined ? 'unverified: RETEST_TEST_ELECTRON is not set, and Retest has no route yet to an Electron build here' : false
 
-const electronTests = `import { expect, test } from '@rehearsal-labs/retest'
+const electronTests = `import { expect, test } from 'retest'
 
 test('the window takes files by label and through its picker', async ({ page }) => {
   await page.getByLabel('Attachment').setInputFiles({ name: 'notes.txt', content: 'hello' })
@@ -275,7 +275,7 @@ test('an action that starts no download fails page.download() when its time runs
 // The window's downloads, and what the app's own handling of them changes, run in electron-downloads.test.ts.
 test('an Electron app takes files through a run, and waits for a download as a Chrome page does', { skip: noElectron }, async (t) => {
   const root = await writeProject(t, {
-    'retest.config.ts': `import { defineConfig, electron } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: './app' }) } })\n`,
+    'retest.config.ts': `import { defineConfig, electron } from 'retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: './app' }) } })\n`,
     'app/package.json': JSON.stringify({ name: 'retest-files-electron', private: true, main: 'main.mjs' }),
     'app/main.mjs': ELECTRON_FILES_MAIN,
     'app/index.html': ELECTRON_FILES_PAGE,

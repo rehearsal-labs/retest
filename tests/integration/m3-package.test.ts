@@ -27,7 +27,7 @@ import {
 // type-checks on TypeScript 6 and 7 with skipLibCheck off; the calls the types refuse fail with their messages on
 // both; and its installed command line runs the presses, choices and scrolls against the fixture.
 
-const packageName = '@rehearsal-labs/retest'
+const packageName = 'retest'
 
 // Every name wave 1 added to the root, runner and protocol entries, used as a consumer uses it: the short list's,
 // then the rest's.

@@ -35,7 +35,7 @@ import {
 // `retest init` writes a project that type-checks and runs, and a consumer with a registered config type-checks
 // on TypeScript 6 and 7, runs from the command line, and runs from the runner and protocol subpaths.
 
-const packageName = '@rehearsal-labs/retest'
+const packageName = 'retest'
 
 /** Every file of a project but its installed packages, with its contents, to tell whether anything changed. */
 function snapshot(root: string): Record<string, string> {
@@ -228,7 +228,7 @@ describe('milestone 2 package: init and a registered consumer', () => {
       private: true,
       type: 'module',
       scripts: { 'test:e2e': 'retest run', 'typecheck:e2e': 'tsc -p tests/tsconfig.json' },
-      devDependencies: { '@rehearsal-labs/retest': 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' },
+      devDependencies: { retest: 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' },
     })
     // The options that let tsc pass what Retest loads and refuse what it does not; with no tsconfig of the project's own,
     // there is nothing to extend.
@@ -249,7 +249,7 @@ describe('milestone 2 package: init and a registered consumer', () => {
       include: ['../retest.config.ts', '**/*'],
     })
     assert.equal(readFileSync(join(empty, '.gitignore'), 'utf8'), '.retest/\n')
-    assert.match(readFileSync(join(empty, 'retest.config.ts'), 'utf8'), /declare module '@rehearsal-labs\/retest' \{\n {2}interface Register \{\n {4}config: typeof config/)
+    assert.match(readFileSync(join(empty, 'retest.config.ts'), 'utf8'), /declare module 'retest' \{\n {2}interface Register \{\n {4}config: typeof config/)
     assert.match(init.stdout, /\n {4}npm install +install the packages in package\.json\n/)
   })
 

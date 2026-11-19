@@ -143,7 +143,7 @@ describe('installing the pinned Electron from a stand-in mirror', { skip: unveri
   test('shows doctor the installed build an electron() target runs, and nothing is fetched', async (t) => {
     const root = await writeProject(t, {})
     await writeFiles(root, {
-      'retest.config.ts': `import { defineConfig, electron } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(executable)}, appPath: ${JSON.stringify(join(repositoryRoot, 'fixtures/electron'))} }) } })\n`,
+      'retest.config.ts': `import { defineConfig, electron } from 'retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(executable)}, appPath: ${JSON.stringify(join(repositoryRoot, 'fixtures/electron'))} }) } })\n`,
     })
     const start = requests.length
     const doctor = await runCli(t, ['doctor'], { cwd: root, env })
@@ -162,7 +162,7 @@ describe('installing the pinned Electron from a stand-in mirror', { skip: unveri
     assert.equal(listed.exit.code, 2)
     assert.match(listed.stdout, new RegExp(`electron +Electron 44\\.5\\.1 +✗ not as recorded in ${folder.replaceAll('.', '\\.')}\\n +${join(folder, 'build', 'LICENSES').replaceAll('.', '\\.')}\\.chromium\\.html is missing\\.`))
     const root = await writeProject(t, {})
-    await writeFiles(root, { 'retest.config.ts': `import { defineConfig, electron } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(executable)}, appPath: ${JSON.stringify(join(repositoryRoot, 'fixtures/electron'))} }) } })\n` })
+    await writeFiles(root, { 'retest.config.ts': `import { defineConfig, electron } from 'retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(executable)}, appPath: ${JSON.stringify(join(repositoryRoot, 'fixtures/electron'))} }) } })\n` })
     const doctor = await runCli(t, ['doctor'], { cwd: root, env })
     assert.equal(doctor.exit.code, 2)
     assert.match(doctor.stdout, /builds +electron +✗ Electron 44\.5\.1 in .+ does not match its record: .+LICENSES\.chromium\.html is missing\.\n +Remove .+electron-44\.5\.1-mac-arm64 and run npx retest install electron again\./)
@@ -283,7 +283,7 @@ ${installed.stderr}`)
       assert.deepEqual(requestsSince(start), fetched, 'list, verify and repeat fetch nothing')
       const executable = engine === 'webkit' ? join(buildFolder(folders, pin), 'build') : installedExecutablePath(buildFolder(folders, pin), pin)
       const root = await writeProject(t, {
-        'retest.config.ts': `import { app, defineConfig } from '@rehearsal-labs/retest'
+        'retest.config.ts': `import { app, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: app({ baseUrl: ${JSON.stringify(`${mirror}/doctor-app`)}, targets: { ${engine}: { browser: '${engine}', executablePath: ${JSON.stringify(executable)} } } }) } })
 `,
       })
@@ -306,8 +306,8 @@ describe('what retest install refuses, and what run and doctor never do', { skip
     const env = { HOME: home, NO_COLOR: '1', RETEST_DOWNLOAD_MIRROR: mirror, RETEST_CHROMIUM: '' }
     const start = requests.length
     const root = await writeProject(t, {
-      'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:9' }) } })\n`,
-      'tests/one.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('opens', async ({ page }) => {\n  await page.goto('/')\n  await expect(page).toHaveTitle('x')\n})\n`,
+      'retest.config.ts': `import { chromium, defineConfig } from 'retest'\n\nexport default defineConfig({ apps: { web: chromium({ baseUrl: 'http://127.0.0.1:9' }) } })\n`,
+      'tests/one.retest.ts': `import { expect, test } from 'retest'\n\ntest('opens', async ({ page }) => {\n  await page.goto('/')\n  await expect(page).toHaveTitle('x')\n})\n`,
     })
     const doctor = await runCli(t, ['doctor'], { cwd: root, env })
     assert.equal(doctor.exit.code, 2, 'chromium() names no browser here')

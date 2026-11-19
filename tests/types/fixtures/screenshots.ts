@@ -1,5 +1,5 @@
-import type { ScreenshotOptions } from '@rehearsal-labs/retest'
-import { expect, test } from '@rehearsal-labs/retest'
+import type { ScreenshotOptions } from 'retest'
+import { expect, test } from 'retest'
 
 // `toHaveScreenshot` on a page and on a locator, with its options typed. It has no `.not`, and a value has no
 // screenshot. Each marked line fails the type check.

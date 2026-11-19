@@ -1,4 +1,4 @@
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 import { TaskPage } from '@support/task-page'
 import { failLoudly } from '../support/failures'
 

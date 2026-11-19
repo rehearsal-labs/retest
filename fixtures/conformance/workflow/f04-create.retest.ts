@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Workflow family 4, create an object through a form: F4.1 to F4.4, as tests/integration/workflow-create.test.ts
 // runs them on Chrome.

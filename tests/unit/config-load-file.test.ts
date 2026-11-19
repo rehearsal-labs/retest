@@ -4,7 +4,7 @@ import { describe, test } from 'node:test'
 import { configFileName, findConfigFile, loadConfig } from '../../src/config/load.ts'
 import { tempProject } from '../support/project.ts'
 
-const typed = `import { app, chromium, defineConfig, env } from '@rehearsal-labs/retest'
+const typed = `import { app, chromium, defineConfig, env } from 'retest'
 
 type Port = number
 const port: Port = 4173
@@ -44,7 +44,7 @@ describe('loadConfig', () => {
   })
 
   test('an invalid config is a usage failure naming the file and the key', async () => {
-    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({ apps: { web: chromium({ baseUrl: 'localhost:3000' }) } })
 `
     const root = tempProject({ [configFileName]: config })

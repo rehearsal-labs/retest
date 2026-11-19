@@ -1,4 +1,4 @@
-import { app, chrome, chromium, defineConfig, env } from '@rehearsal-labs/retest'
+import { app, chrome, chromium, defineConfig, env } from 'retest'
 
 // An app's own constant of test ids, as a project exports it.
 const testIds = { saveTask: 'save-task', taskTitle: 'task-title', savedTask: 'saved-task' } as const
@@ -22,7 +22,7 @@ export const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

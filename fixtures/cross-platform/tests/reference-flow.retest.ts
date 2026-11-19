@@ -1,6 +1,6 @@
-import type { NativePage, Page } from '@rehearsal-labs/retest'
+import type { NativePage, Page } from 'retest'
 import { randomBytes } from 'node:crypto'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // The reference flow on the cross-platform fixture: a task created in TaskPhone on an iOS simulator, marked done on
 // the web front end in Chrome, and seen done in TaskDesk on macOS, all on one fixture service and signed in as the

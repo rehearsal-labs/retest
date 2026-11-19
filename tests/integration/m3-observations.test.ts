@@ -114,7 +114,7 @@ test('page text that holds a secret reads its name in the observation, as the te
   const app = await openApp(t)
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) }, secrets: { password: env('RETEST_E2E_PASSWORD') } }`),
-    'tests/account.retest.ts': `import { expect, secret, test } from '@rehearsal-labs/retest'
+    'tests/account.retest.ts': `import { expect, secret, test } from 'retest'
 
 test('signs in with the secret as the user name', async ({ page }) => {
   await page.goto('/login')

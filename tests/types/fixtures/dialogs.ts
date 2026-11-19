@@ -1,5 +1,5 @@
 import type { Same } from './support/same.ts'
-import { expect, test, type Dialog, type DialogType, type ElectronPage, type Page } from '@rehearsal-labs/retest'
+import { expect, test, type Dialog, type DialogType, type ElectronPage, type Page } from 'retest'
 
 // page.dialog() gives a Dialog, whose kind is one of four; accept() takes a prompt's text and nothing else. page.popup()
 // gives a Page, with the same touch screen as the page that opened it. Each takes a function that returns the action's

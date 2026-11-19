@@ -1,5 +1,5 @@
-import type { Page } from '@rehearsal-labs/retest'
-import { expect } from '@rehearsal-labs/retest'
+import type { Page } from 'retest'
+import { expect } from 'retest'
 
 // The task app's controls by test id, in a string enum.
 export enum Control {

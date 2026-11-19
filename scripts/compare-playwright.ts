@@ -907,7 +907,7 @@ export function renderTable(comparison: Comparison): string {
   const variants = verdicts.filter((verdict) => verdict.testCase.variantOf !== undefined).length
   const wholes = runProblems(comparison)
   const packages = comparison.playwright.packages.map((entry) => `\`${entry.name}\` ${entry.version} (\`${entry.integrity}\`)`).join(', ')
-  const retest = `\`@rehearsal-labs/retest\` ${comparison.retest.version} from source at commit \`${comparison.retest.commit}\`${comparison.retest.changed ? ', with uncommitted changes' : ''}`
+  const retest = `\`retest\` ${comparison.retest.version} from source at commit \`${comparison.retest.commit}\`${comparison.retest.changed ? ', with uncommitted changes' : ''}`
   const lines = [
     '# Playwright compatibility',
     '',

@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { Title } from '../support/types.ts'
 
 test('imports a type without the type keyword', async () => {

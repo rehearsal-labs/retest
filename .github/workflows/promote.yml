@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PACKAGE_NAME: '@rehearsal-labs/retest'
+  PACKAGE_NAME: 'retest'
   # A jq program over the list of versions npm has: prints the highest one that is not below $version, or nothing.
   # Versions compare as semver, so a prerelease sits below its release.
   NOT_BELOW: |

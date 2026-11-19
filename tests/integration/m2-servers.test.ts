@@ -25,7 +25,7 @@ import {
 // output, and stops its whole process group when the run ends; a server already running is used and left alone;
 // a server that never answers is a setup failure for the tests that need it.
 
-const servedTests = `import { expect, test } from '@rehearsal-labs/retest'
+const servedTests = `import { expect, test } from 'retest'
 
 test('opens the served page', async ({ page }) => {
   await page.goto('/')

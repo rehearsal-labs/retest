@@ -166,7 +166,7 @@ export async function standInRun(t: TestContext, { platform = 'ios-simulator', s
   }
   const target = platform === 'macos' ? `desk: { platform: 'macos', appPath: 'TaskDesk.app'` : `phone: { platform: 'ios-simulator', appPath: 'TaskPhone.app', device: ${JSON.stringify(device)}, runtime: '26.5'`
   const root = tempProject({
-    [configFileName]: `import { defineConfig, env } from '@rehearsal-labs/retest'\nexport default defineConfig({ apps: { ${target}, diagnostics: { logs: 'none' } } }, ${configFields} })\n`,
+    [configFileName]: `import { defineConfig, env } from 'retest'\nexport default defineConfig({ apps: { ${target}, diagnostics: { logs: 'none' } } }, ${configFields} })\n`,
     'tests/app.retest.ts': tests,
   })
   const loaded = await loadConfig(join(root, configFileName))

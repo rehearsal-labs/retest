@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The task app's delayed mode, whose save answers only after a minute. The runner ends the browser's process group
 // once the click has completed, while the check looks for the saved title: the session is lost, and no check failed.

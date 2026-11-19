@@ -1,5 +1,5 @@
 import { writeSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 setTimeout(() => {
   writeSync(1, 'busy\n')

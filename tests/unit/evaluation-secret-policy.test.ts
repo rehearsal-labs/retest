@@ -18,13 +18,13 @@ test('a run without recording applies the secret pixel policy before an evaluati
   t.after(() => { FakePage.prototype.screenshot = screenshot })
   const tag = 'closeout-secret-policy'
   const root = tempProject({
-    'retest.config.ts': `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { chromium, defineConfig, env } from 'retest'
       export default defineConfig({
         apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
         secrets: { password: env('RETEST_CLOSEOUT_PASSWORD') },
         evaluation: { judges: { fake: { adapter: ${JSON.stringify(fakeJudge)}, options: { tag: '${tag}' }, accepts: ['images'] } } },
       })`,
-    'tests/secret.retest.ts': `import { secret, test } from '@rehearsal-labs/retest'
+    'tests/secret.retest.ts': `import { secret, test } from 'retest'
       test('secret screenshot', async ({ page }) => {
         await page.goto('/')
         await page.getByTestId('task-title').fill(secret('password'))

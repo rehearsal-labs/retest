@@ -20,7 +20,7 @@ import {
 
 // Acceptance check 1: a config is found, checked and named when it is wrong, and milestone 1's mode still runs.
 
-const savesTask = `import { expect, test } from '@rehearsal-labs/retest'
+const savesTask = `import { expect, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')

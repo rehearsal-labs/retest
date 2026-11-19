@@ -179,7 +179,7 @@ describe('a run stopped with a Failure while a file is collected', async () => {
 describe('a run stopped while a secret function waits for its value', async () => {
   const stopKey = 'retestUnitStopRun'
   const signalKey = 'retestUnitSecretSignal'
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
@@ -192,7 +192,7 @@ export default defineConfig({
   },
 })
 `
-  const tests = `import { secret, test } from '@rehearsal-labs/retest'
+  const tests = `import { secret, test } from 'retest'
 
 test('types the code', async ({ page }) => {
   await page.goto('/login')

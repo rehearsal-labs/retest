@@ -23,7 +23,7 @@ export const baseUrl = 'http://127.0.0.1:4173'
 export const cartUrl: string = `${baseUrl}/cart`
 export const thanksUrl: string = `${baseUrl}/thanks`
 
-export const checkoutSource = `import { expect, test } from '@rehearsal-labs/retest'
+export const checkoutSource = `import { expect, test } from 'retest'
 
 test('places an order', async ({ page }) => {
   await page.goto('/cart')

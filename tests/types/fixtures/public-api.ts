@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type TestContext } from '@rehearsal-labs/retest'
+import { expect, test, type Locator, type Page, type TestContext } from 'retest'
 
 // Written the way the brief shows a test: every line here type-checks.
 test('saves a task', async ({ page }) => {

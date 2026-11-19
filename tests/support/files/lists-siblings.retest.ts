@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Its first test lets the run start the next file's process, which it does once a file's first test is over. Its
 // second tells the signals server which processes Retest's process has while it runs, and writes down when its own

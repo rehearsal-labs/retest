@@ -23,7 +23,7 @@ export const preferencesUrl: string = `${baseUrl}/preferences`
 export const savedUrl: string = `${baseUrl}/preferences/saved`
 export const homeUrl: string = `${baseUrl}/home`
 
-export const preferencesSource = `import { expect, test } from '@rehearsal-labs/retest'
+export const preferencesSource = `import { expect, test } from 'retest'
 
 test('saves preferences', async ({ page }) => {
   await page.goto('/preferences')

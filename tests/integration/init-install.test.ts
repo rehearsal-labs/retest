@@ -6,7 +6,7 @@ import { delimiter, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { repositoryRoot, runProgram, scratchFolder, sourceCommand } from './cli-harness.ts'
 
-// `npx @rehearsal-labs/retest init` runs Retest from npx's own folder, in a project that has no Retest. These cases run
+// `npx retest init` runs Retest from npx's own folder, in a project that has no Retest. These cases run
 // it from this checkout in an empty folder outside the repository, with stand-ins for npm, pnpm, yarn and bun first on
 // PATH. Each stand-in writes how it was called to a record and to a file in the folder it ran in, prints a line, and
 // exits with the code the case gives it, so no case reaches the registry or installs anything. On Windows a stand-in
@@ -68,14 +68,14 @@ describe('init installs what the project needs', () => {
     const run = await init(setup, ['--yes'])
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
     // This checkout is 0.0.0, a version npm never had, so Retest is asked for at its latest.
-    assert.deepEqual(devDependencies(setup.project), { '@rehearsal-labs/retest': 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' })
+    assert.deepEqual(devDependencies(setup.project), { retest: 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' })
     assert.deepEqual(linesOf(setup.record), ['npm install'])
     assert.deepEqual(linesOf(join(setup.project, 'install-calls.txt')), ['npm install'], 'it ran in the project folder')
     const running = run.stdout.indexOf('  Running npm install\n')
     const output = run.stdout.indexOf('stand-in npm output')
     const installed = run.stdout.indexOf('  The packages are installed.')
     assert.ok(running >= 0 && output > running && installed > output, run.stdout)
-    assert.ok(run.stdout.indexOf('  created  package.json   devDependencies: @rehearsal-labs/retest@latest, typescript@^7.0.2, @types/node@^24.12.0') < running, run.stdout)
+    assert.ok(run.stdout.indexOf('  created  package.json   devDependencies: retest@latest, typescript@^7.0.2, @types/node@^24.12.0') < running, run.stdout)
   })
 
   test('a failed install exits 2 with the command to run by hand, and the files stay', async (t) => {
@@ -85,7 +85,7 @@ describe('init installs what the project needs', () => {
     assert.ok(run.stderr.includes('npm install failed with exit code 1. The files are written; run npm install yourself to install the packages.'), run.stderr)
     assert.deepEqual(linesOf(setup.record), ['npm install'])
     for (const path of ['retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json', '.gitignore']) assert.ok(existsSync(join(setup.project, path)), path)
-    assert.deepEqual(devDependencies(setup.project), { '@rehearsal-labs/retest': 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' })
+    assert.deepEqual(devDependencies(setup.project), { retest: 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' })
     assert.match(run.stdout, /\n {4}npm install +install the packages in package\.json\n/)
   })
 
@@ -95,7 +95,7 @@ describe('init installs what the project needs', () => {
     assert.equal(run.code, 0, run.stderr)
     assert.deepEqual(linesOf(setup.record), [])
     assert.ok(!run.stdout.includes('Running'), run.stdout)
-    assert.deepEqual(devDependencies(setup.project), { '@rehearsal-labs/retest': 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' })
+    assert.deepEqual(devDependencies(setup.project), { retest: 'latest', '@types/node': '^24.12.0', typescript: '^7.0.2' })
   })
 
   test('the package manager that started init installs, when nothing in the project names one', async (t) => {

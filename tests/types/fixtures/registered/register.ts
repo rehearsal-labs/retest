@@ -9,7 +9,7 @@ import type {
   TestIdValue,
 } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { expect, secret, test, type Apps, type Page, type TestContext } from '@rehearsal-labs/retest'
+import { expect, secret, test, type Apps, type Page, type TestContext } from 'retest'
 
 // The config in retest.config.ts is registered, and every name the tests use comes from it.
 export const registered: Same<IsRegistered, true> = true

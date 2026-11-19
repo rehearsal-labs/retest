@@ -1,5 +1,5 @@
 import type { Same } from './support/same.ts'
-import { chromium, defineConfig, env, type SecretContext, type SecretSource } from '@rehearsal-labs/retest'
+import { chromium, defineConfig, env, type SecretContext, type SecretSource } from 'retest'
 
 // A secret's function is called with a signal, aborted once Retest stops waiting for the value. It is the project's
 // own AbortSignal, so the function can hand it to fetch. None of these configs is registered.

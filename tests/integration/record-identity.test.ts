@@ -19,7 +19,7 @@ import { budgets, configSource, eventsOf, inspectJson, onlyEvent, onlyTest, runC
 
 const fakeJudge = fileURLToPath(new URL('../support/fake-evaluator.ts', import.meta.url))
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('names every record by its session', async ({ page }) => {
   await page.goto('/diagnostics')

@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Its first test lets the run start the next files' processes, which it does once a file's first test is over; its
 // second holds its worker until ahead-signals.retest.ts has loaded a second time, which only a load ahead of its turn

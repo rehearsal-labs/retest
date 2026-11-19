@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { defineConfig, env } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { defineConfig, env } from 'retest'
 import { conformanceBaseUrl, conformanceTarget, conformanceVariables } from '../config.ts'
 
 // Web participants: named apps on one origin, each signed in as its own account from its own saved state. The owner

@@ -37,7 +37,7 @@ import { recordingSkip } from './recording-harness.ts'
 // test types a secret the page then shows; its value must reach neither the records nor either report, which show
 // `{{note}}`. RETEST_REPORT_PROOF_OUT, when set, keeps the run folder and a screenshot of the report there.
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')
@@ -358,7 +358,7 @@ test('a step click in a recorded real-Chrome run seeks its video from a file rep
   const app = await openApp(t)
   const root = await writeProject(t, {
     'retest.config.ts': configSource(`{ apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)} }) }, recording: { record: true, fps: 10, size: { width: 320, height: 240 } } }`),
-    'tests/jump.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/jump.retest.ts': `import { expect, test } from 'retest'
 test('recorded task', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('task-title')).toBeVisible()

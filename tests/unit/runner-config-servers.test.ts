@@ -22,7 +22,7 @@ async function freePort(): Promise<number> {
 }
 
 function project(port: number, command: string, timeoutMs = 5000): string {
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: {
     web: chromium({
@@ -33,7 +33,7 @@ export default defineConfig({
   },
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 test('opens', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('save-task')).toBeVisible()

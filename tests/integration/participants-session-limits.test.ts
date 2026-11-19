@@ -23,7 +23,7 @@ test('${letter} holds with two apps', { apps: ['web', 'admin'] }, async ({ web, 
   await expect(admin.getByTestId('held-name')).toHaveText('${name}')
 })`
     : ''
-  return `import { expect, test } from '@rehearsal-labs/retest'
+  return `import { expect, test } from 'retest'
 
 test('${letter} holds with one app', async ({ page }) => {
   await page.goto('${hold}')
@@ -56,7 +56,7 @@ test('under workers, concurrent attempts never hold more sessions than the confi
   assert.ok((await holders(app.url, 'unlimited')).most >= 3, 'without limits, three or more pages held at once')
 
   const options = `workers: 4,
-    sessions: { owner: 'agent-1', budget: new (await import('@rehearsal-labs/retest/runner')).SessionBudget({ perOwner: 2, host: 2 }), waitMs: 30000 },`
+    sessions: { owner: 'agent-1', budget: new (await import('retest/runner')).SessionBudget({ perOwner: 2, host: 2 }), waitMs: 30000 },`
   const root = await writeProject(t, { 'package.json': '{ "type": "module" }\n', 'host.ts': hostScript({ config: appsConfig(app.url), files, options }), ...holdingFiles('limited') })
   const run = await runHost(t, { cwd: root, command: [process.execPath, '--conditions=retest-source', 'host.ts'] })
   assert.equal(run.exit.code, 0, run.stderr)
@@ -77,8 +77,8 @@ test('under workers, concurrent attempts never hold more sessions than the confi
 
 // Two runs of one host process, for two owners, draw from one host budget at once.
 function twoOwnersProgram(url: string): string {
-  return `import { chrome, defineConfig } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
+  return `import { chrome, defineConfig } from 'retest'
+import { resolveSecrets, runFiles, SessionBudget, validateConfig } from 'retest/runner'
 import { join } from 'node:path'
 
 const folder = process.argv.at(-1) ?? ''
@@ -102,7 +102,7 @@ process.stdout.write(JSON.stringify({ exitCodes: results.map((result) => result.
 
 // A test that holds the host-wide counter, then its owner's own, in one session.
 function ownerFile(owner: string, index: number): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'
+  return `import { expect, test } from 'retest'
 
 test('${owner} ${index} holds', async ({ page }) => {
   await page.goto('/holders/hold?name=host-wide&ms=${holdMs}')
@@ -145,8 +145,8 @@ test('two owners share one host budget without oversubscribing it, and both get 
 // A run stopped while attempts wait for and hold sessions gives every one of them back, and the next run on the same
 // budget gets its sessions in the turn it asks for them.
 function cancelProgram(url: string): string {
-  return `import { chrome, defineConfig } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
+  return `import { chrome, defineConfig } from 'retest'
+import { resolveSecrets, runFiles, SessionBudget, validateConfig } from 'retest/runner'
 import { join } from 'node:path'
 
 const folder = process.argv.at(-1) ?? ''
@@ -215,7 +215,7 @@ test('cancelling a run gives back the sessions it held and the ones it was waiti
   const app = await openApp(t)
   // The hold answers only once released, which nothing here asks for, or at the app's longest hold, so the stop is what
   // ends it, by closing its page: the app counts that hold as cut short.
-  const long = (letter: string): string => `import { expect, test } from '@rehearsal-labs/retest'
+  const long = (letter: string): string => `import { expect, test } from 'retest'
 
 test('${letter} holds for long', async ({ page }) => {
   await page.goto('/holders/hold?name=cancelled&release=1')
@@ -228,7 +228,7 @@ test('${letter} holds for long', async ({ page }) => {
     'tests/a.retest.ts': long('a'),
     'tests/b.retest.ts': long('b'),
     'tests/c.retest.ts': long('c'),
-    'tests/quick.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('runs at once', async ({ page }) => {\n  await page.goto('/holders/hold?name=next&ms=0')\n  await expect(page.getByTestId('held-name')).toHaveText('next')\n})\n`,
+    'tests/quick.retest.ts': `import { expect, test } from 'retest'\n\ntest('runs at once', async ({ page }) => {\n  await page.goto('/holders/hold?name=next&ms=0')\n  await expect(page.getByTestId('held-name')).toHaveText('next')\n})\n`,
   })
   const hosted = await runHostProgram(t, root, 'host.ts', ['stopped', 'next'])
   assert.equal(hosted.code, 0, hosted.stderr)
@@ -250,8 +250,8 @@ test('${letter} holds for long', async ({ page }) => {
 // One owner's run is stopped while it holds the host's only session and another owner's run waits for it. The waiting
 // run must not get the session until the stopped run's context is closed: the app's counter would see two pages at once.
 function abortedOwnerProgram(url: string): string {
-  return `import { chrome, defineConfig } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
+  return `import { chrome, defineConfig } from 'retest'
+import { resolveSecrets, runFiles, SessionBudget, validateConfig } from 'retest/runner'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -331,8 +331,8 @@ test('a stopped owner gives its session to the next only once its context is clo
     'package.json': '{ "type": "module" }\n',
     'host.ts': abortedOwnerProgram(app.url),
     // The page's own script holds the counter, so the hold lasts until the context closes, not until a command stops.
-    'tests/a.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('a holds the only session', async ({ page }) => {\n  await page.goto('/shared/holding?name=one-at-a-time&ms=9500')\n  await expect(page.getByTestId('holding')).toBeVisible()\n  await expect(page.getByTestId('never-shown')).toBeVisible({ timeout: 9000 })\n})\n`,
-    'tests/b.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\n\ntest('b waits for it', async ({ page }) => {\n  await page.goto('/holders/hold?name=one-at-a-time&ms=500')\n  await expect(page.getByTestId('held-name')).toHaveText('one-at-a-time')\n})\n`,
+    'tests/a.retest.ts': `import { expect, test } from 'retest'\n\ntest('a holds the only session', async ({ page }) => {\n  await page.goto('/shared/holding?name=one-at-a-time&ms=9500')\n  await expect(page.getByTestId('holding')).toBeVisible()\n  await expect(page.getByTestId('never-shown')).toBeVisible({ timeout: 9000 })\n})\n`,
+    'tests/b.retest.ts': `import { expect, test } from 'retest'\n\ntest('b waits for it', async ({ page }) => {\n  await page.goto('/holders/hold?name=one-at-a-time&ms=500')\n  await expect(page.getByTestId('held-name')).toHaveText('one-at-a-time')\n})\n`,
   })
   const hosted = await runHostProgram(t, root, 'host.ts', ['owner-a', 'owner-b'])
   assert.equal(hosted.code, 0, hosted.stderr)

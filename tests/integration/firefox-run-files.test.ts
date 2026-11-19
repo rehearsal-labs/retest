@@ -23,7 +23,7 @@ const names = {
 } as const
 
 const tests = (received: string) => `import { readFile } from 'node:fs/promises'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test(${JSON.stringify(names.flow)}, async ({ page }) => {
   await page.goto('/files')

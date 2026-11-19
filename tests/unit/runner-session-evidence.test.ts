@@ -62,13 +62,13 @@ describe('a failure screenshot carries its evidence reference', async () => {
 })
 
 describe('in a run from a config, each app’s screenshot names its own session', async () => {
-  const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { owner: chromium({ baseUrl: 'http://127.0.0.1:4173' }), member: chromium({ baseUrl: 'http://127.0.0.1:4173' }) },
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('shares a task', { apps: ['owner', 'member'] }, async ({ owner }) => {
   await expect(owner.getByTestId('hidden-note')).toBeVisible()

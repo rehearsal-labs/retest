@@ -1,5 +1,5 @@
 import type { Same } from './support/same.ts'
-import { chromium, defineConfig, expect, inbox, test, type InboxContext, type InboxMessage, type InboxSource, type ReceivedMessage } from '@rehearsal-labs/retest'
+import { chromium, defineConfig, expect, inbox, test, type InboxContext, type InboxMessage, type InboxSource, type ReceivedMessage } from 'retest'
 
 // An inbox's function is called with a signal, aborted once Retest stops waiting for the messages, and gives the
 // mailbox's messages. A code goes only to fill() and a link only to goto(); neither is ever a string. This program has

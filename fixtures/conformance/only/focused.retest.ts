@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // A test and a block marked only, and a test beside them that would fail if it ran.
 

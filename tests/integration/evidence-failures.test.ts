@@ -73,7 +73,7 @@ async function decoded(run: FinishedRun, recording: RecordingRecord): Promise<vo
   console.log(`decoded ${recording.recordingId}: ${stream.nb_read_frames} ${stream.codec_name} frames, ${read.format.duration} s, ${stream.width}x${stream.height}`)
 }
 
-const waiting = `import { expect, test } from '@rehearsal-labs/retest'
+const waiting = `import { expect, test } from 'retest'
 test('waits',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,2000));await expect(page.getByTestId('save-task')).toBeVisible()})`
 
 for (const ending of ['media','encoder','SIGINT','timeout','browser'] as const) {
@@ -139,7 +139,7 @@ for (const ending of ['media','encoder','SIGINT','timeout','browser'] as const) 
 }
 
 test('a killed runner leaves no owned media worker, encoder, browser or test process', { timeout: 60000, skip: recordingSkip }, async t => {
-  const started = await recordingRun(t, `import {test} from '@rehearsal-labs/retest'; test('waits',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,10000))})`)
+  const started = await recordingRun(t, `import {test} from 'retest'; test('waits',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,10000))})`)
   const media = await started.retest.waitForEvent('media.started')
   await started.retest.waitForEvent('recording.started')
   await started.retest.waitForEvent('action.completed', event => event.command === 'goto')
@@ -167,7 +167,7 @@ test('a killed runner leaves no owned media worker, encoder, browser or test pro
 })
 
 test('required evidence has its own CLI exit while a test keeps its observed pass', { timeout: 60000, skip: recordingSkip }, async t => {
-  const started = await recordingRun(t, `import {expect,test} from '@rehearsal-labs/retest'; test('passes',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,2000));await expect(page.getByTestId('save-task')).toBeVisible()})`, { required: true })
+  const started = await recordingRun(t, `import {expect,test} from 'retest'; test('passes',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,2000));await expect(page.getByTestId('save-task')).toBeVisible()})`, { required: true })
   const media = await started.retest.waitForEvent('media.started')
   await started.retest.waitForEvent('recording.started')
   await started.retest.waitForEvent('action.completed', event => event.command === 'goto')
@@ -191,7 +191,7 @@ test('required evidence has its own CLI exit while a test keeps its observed pas
 
 // A killed runner cannot finalize. The next run's worker removes only the old recording's owned leftovers.
 test('the next media worker removes leftovers of a killed run and leaves unrelated files alone', { timeout: 60000, skip: recordingSkip }, async t => {
-  const started = await recordingRun(t, `import { test } from '@rehearsal-labs/retest'; test('waits',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,10000))})`)
+  const started = await recordingRun(t, `import { test } from 'retest'; test('waits',async({page})=>{await page.goto('/');await new Promise(resolve=>setTimeout(resolve,10000))})`)
   const mediaStart = await started.retest.waitForEvent('media.started')
   await started.retest.waitForEvent('recording.started')
   await started.retest.waitForEvent('action.completed', event => event.command === 'goto')

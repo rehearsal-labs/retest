@@ -506,8 +506,8 @@ export async function startRun(t: TestContext, request: RunRequest): Promise<Sta
 /** A config whose one app, `web`, is the engine's target, in a folder that resolves Retest by its package name. */
 async function writeEngineConfig(folder: string, engine: TestEngine): Promise<string> {
   const file = join(folder, 'retest.config.ts')
-  await writeFiles(folder, { 'retest.config.ts': `import { defineConfig } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { web: ${engine.target()} } })\n` })
-  await linkPackage(folder, '@rehearsal-labs/retest', repositoryRoot)
+  await writeFiles(folder, { 'retest.config.ts': `import { defineConfig } from 'retest'\n\nexport default defineConfig({ apps: { web: ${engine.target()} } })\n` })
+  await linkPackage(folder, 'retest', repositoryRoot)
   return file
 }
 
@@ -835,9 +835,9 @@ export type HostScript = {
  * result `runFiles` returned, as `runHost` reads them, and exits with the run's exit code.
  */
 export function hostScript(script: HostScript): string {
-  return `import type { Reporter } from '@rehearsal-labs/retest/runner'
-import { chrome, defineConfig } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, validateConfig } from '@rehearsal-labs/retest/runner'
+  return `import type { Reporter } from 'retest/runner'
+import { chrome, defineConfig } from 'retest'
+import { resolveSecrets, runFiles, validateConfig } from 'retest/runner'
 
 const outputDir = process.argv.at(-1) ?? ''
 const loaded = validateConfig(defineConfig(${script.config}), \`\${process.cwd()}/host.config.ts\`)
@@ -911,7 +911,7 @@ export type ProjectFiles = Readonly<Record<string, string>>
 export async function writeProject(t: TestContext, files: ProjectFiles): Promise<string> {
   const root = await scratchFolder(t, 'retest-project-')
   await writeFiles(root, files)
-  await linkPackage(root, '@rehearsal-labs/retest', repositoryRoot)
+  await linkPackage(root, 'retest', repositoryRoot)
   return root
 }
 
@@ -932,7 +932,7 @@ export async function linkPackage(root: string, name: string, target: string): P
 
 /** A `retest.config.ts` whose default export is `defineConfig(body)`, with every constructor imported. */
 export function configSource(body: string): string {
-  return `import { app, chrome, chromium, defineConfig, env } from '@rehearsal-labs/retest'\n\nexport default defineConfig(${body})\n`
+  return `import { app, chrome, chromium, defineConfig, env } from 'retest'\n\nexport default defineConfig(${body})\n`
 }
 
 export type ProjectRunRequest = Omit<RunRequest, 'cwd' | 'browser' | 'files'> & { files?: readonly string[] }
@@ -1136,7 +1136,7 @@ export async function packRetest(folder: string): Promise<Packed> {
  */
 export function installedRetest(project: string, platform: NodeJS.Platform = process.platform): [string, ...string[]] {
   if (platform !== 'win32') return [join(project, 'node_modules/.bin/retest')]
-  const installed = join(project, 'node_modules', '@rehearsal-labs', 'retest')
+  const installed = join(project, 'node_modules', 'retest')
   const manifest: unknown = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'))
   const bin = typeof manifest === 'object' && manifest !== null && 'bin' in manifest && typeof manifest.bin === 'object' && manifest.bin !== null && 'retest' in manifest.bin ? manifest.bin.retest : undefined
   assert.ok(typeof bin === 'string', `${installed} names its retest bin`)

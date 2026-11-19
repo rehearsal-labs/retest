@@ -25,7 +25,7 @@ describe('the agent subpath', () => {
   })
 
   test('imports by the package name and opens a host', async () => {
-    const agent = await import('@rehearsal-labs/retest/agent')
+    const agent = await import('retest/agent')
     assert.equal(typeof agent.AgentHost, 'function')
     assert.equal(typeof agent.AgentSession, 'function')
     assert.equal(agent.defaultAgentTimeouts.lease, 60_000)

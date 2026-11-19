@@ -83,7 +83,7 @@ jobs:
           SERVE
           cat > sandbox.retest.ts <<'TEST'
           import { readdirSync, readFileSync } from 'node:fs'
-          import { expect, test } from '@rehearsal-labs/retest'
+          import { expect, test } from 'retest'
 
           type Seen = { args: string[]; status: string }
 

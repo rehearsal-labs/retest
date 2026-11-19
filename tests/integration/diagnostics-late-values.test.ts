@@ -16,7 +16,7 @@ import { filesHolding, hostScript, runHost, testNamed, writeProject } from './cl
 
 const file = 'tests/late.retest.ts'
 
-const tests = `import { expect, inbox, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, inbox, test } from 'retest'
 
 test('the page prints a code nobody has read yet', async ({ page }) => {
   await page.goto('/')

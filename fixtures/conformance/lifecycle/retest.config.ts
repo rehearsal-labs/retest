@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { defineConfig } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { defineConfig } from 'retest'
 import { conformanceBaseUrl, conformanceTarget } from '../config.ts'
 
 // Failure handling after input was sent: the runner starts the task app in a mode whose save button never confirms

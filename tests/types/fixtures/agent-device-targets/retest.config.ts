@@ -1,4 +1,4 @@
-import { defineConfig } from '@rehearsal-labs/retest'
+import { defineConfig } from 'retest'
 
 // Phones driven through agent-device: an iOS simulator target that opts in, and Android targets, which run through
 // agent-device alone. The types offer each app what its targets can do.
@@ -13,7 +13,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

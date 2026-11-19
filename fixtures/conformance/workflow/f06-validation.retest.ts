@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { SIGN_UP_ERRORS, TAKEN_EMAIL } from '../../task-app/workflow-validation-page.ts'
 
 // Workflow family 6, show validation errors: F6.1 to F6.4, as tests/integration/workflow-validation.test.ts runs them

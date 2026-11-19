@@ -23,9 +23,9 @@ import { tempFolder } from './temp-folder.ts'
  */
 export function tempProject(files: Readonly<Record<string, string>>): string {
   const root = tempFolder('project-')
-  const scope = join(root, 'node_modules', '@rehearsal-labs')
-  mkdirSync(scope, { recursive: true })
-  symlinkSync(rootDir, join(scope, 'retest'), 'dir')
+  const modules = join(root, 'node_modules')
+  mkdirSync(modules, { recursive: true })
+  symlinkSync(rootDir, join(modules, 'retest'), 'dir')
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true })
     writeFileSync(join(root, path), text)

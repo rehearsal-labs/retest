@@ -1,5 +1,5 @@
-import type { RetestConfig } from '@rehearsal-labs/retest'
-import { app, defineConfig } from '@rehearsal-labs/retest'
+import type { RetestConfig } from 'retest'
+import { app, defineConfig } from 'retest'
 import { conformanceBaseUrl, conformanceTarget } from '../config.ts'
 
 // Browser projects: one app with two targets on the engine the runner names, each opening its pages at its own size.

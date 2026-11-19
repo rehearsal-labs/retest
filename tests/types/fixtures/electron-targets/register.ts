@@ -1,6 +1,6 @@
 import type { AppKind } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { expect, test, type Apps, type ElectronPage, type Page, type TestContext } from '@rehearsal-labs/retest'
+import { expect, test, type Apps, type ElectronPage, type Page, type TestContext } from 'retest'
 
 // An Electron app's handle is a web page with no address: its windows are Chromium pages, found, acted on and checked
 // as Chrome's are, and it opens its own first window, so goto() is a mistake before anything runs.

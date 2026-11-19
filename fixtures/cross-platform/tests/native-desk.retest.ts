@@ -1,5 +1,5 @@
-import type { NativePage } from '@rehearsal-labs/retest'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import type { NativePage } from 'retest'
+import { expect, secret, test } from 'retest'
 
 const deskTest = test as typeof test & ((name: string, options: { apps: readonly ['desk'] }, body: (apps: { desk: NativePage<'macos'> }) => Promise<void>) => void)
 

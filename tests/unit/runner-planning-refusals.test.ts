@@ -67,10 +67,10 @@ describe('an attempt refused at planning', () => {
 
 describe('in a run', () => {
   test('a test of two macOS apps is not run, by name, and nothing starts for it', nativeApps, async () => {
-    const config = `import { defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { defineConfig } from 'retest'
 export default defineConfig({ apps: { desk: { platform: 'macos', appPath: '/fixture/TaskDesk.app' }, notes: { platform: 'macos', appPath: '/fixture/Notes.app' } } })
 `
-    const tests = `import { test } from '@rehearsal-labs/retest'
+    const tests = `import { test } from 'retest'
 test('uses two desktop apps', { apps: ['desk', 'notes'] }, async () => {})
 `
     const record = await runProject(tempProject({ 'retest.config.ts': config, 'tests/a.retest.ts': tests }), { files: ['tests/a.retest.ts'] })
@@ -82,7 +82,7 @@ test('uses two desktop apps', { apps: ['desk', 'notes'] }, async () => {})
   })
 
   test('on Windows a test of a macOS app is not run, by its key, its start command never runs, and the web test beside it runs', { skip: windowsOnly('the refusal reads the machine it runs on') }, async () => {
-    const config = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    const config = `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: {
     web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }),
@@ -91,7 +91,7 @@ export default defineConfig({
   defaultApp: 'web',
 })
 `
-    const tests = `import { expect, test } from '@rehearsal-labs/retest'
+    const tests = `import { expect, test } from 'retest'
 test('opens the tasks', async ({ page }) => {
   await page.goto('/tasks')
   await expect(page.getByTestId('task-title')).toBeVisible()
@@ -110,10 +110,10 @@ test('uses the desk', { apps: ['desk'] }, async () => {})
   })
 
   test('a setup on an Electron app is refused before its body runs, and the test that starts from its state is not run', async () => {
-    const config = `import { defineConfig, electron } from '@rehearsal-labs/retest'
+    const config = `import { defineConfig, electron } from 'retest'
 export default defineConfig({ apps: { desktop: electron({ executablePath: '/opt/Electron.app/Contents/MacOS/Electron', appPath: '/work/desktop' }) } })
 `
-    const tests = `import { test } from '@rehearsal-labs/retest'
+    const tests = `import { test } from 'retest'
 test.setup('signed in', async () => {
   throw new Error('the body of a refused setup never runs')
 })

@@ -13,7 +13,7 @@ import { configSource, eventsOf, parseLine, resultOf, runCli, runProject, writeP
 
 const passes = `async () => {\n    expect(true).toBe(true)\n  }`
 
-const taskTests = `import { expect, test } from '@rehearsal-labs/retest'
+const taskTests = `import { expect, test } from 'retest'
 
 test('saves a task', { tags: ['smoke'] }, ${passes})
 
@@ -28,7 +28,7 @@ test.for([{ n: 1 }, { n: 2 }, { n: 3 }])('row $n', { tags: ['smoke'] }, ${passes
 `
 
 // Fails on the emulated phone only, so a run leaves one variant of it failed.
-const deviceTest = `import { expect, test } from '@rehearsal-labs/retest'
+const deviceTest = `import { expect, test } from 'retest'
 
 test('has no touch screen', { apps: ['device'] }, async ({ device }) => {
   await device.goto('/device')

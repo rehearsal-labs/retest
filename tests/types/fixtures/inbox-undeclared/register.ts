@@ -1,6 +1,6 @@
 import type { InboxName } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { inbox, test } from '@rehearsal-labs/retest'
+import { inbox, test } from 'retest'
 
 // A config that declares no inbox takes none.
 export const names: Same<InboxName, never> = true

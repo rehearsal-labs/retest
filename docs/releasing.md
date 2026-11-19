@@ -1,6 +1,6 @@
 # Releasing Retest
 
-Retest is published to npm as `@rehearsal-labs/retest`. A push starts nothing. Work happens on `main`, and a release is a promotion. A person chooses a commit on `main` and a version, and runs `.github/workflows/promote.yml` by hand. Only then do the gates run on that commit and the package go to npm.
+Retest is published to npm as `retest`. A push starts nothing. Work happens on `main`, and a release is a promotion. A person chooses a commit on `main` and a version, and runs `.github/workflows/promote.yml` by hand. Only then do the gates run on that commit and the package go to npm.
 
 The founder publishes the first version, 0.1.0, by hand. Every later version goes through `promote.yml`, through npm trusted publishing. No npm token is stored in GitHub.
 
@@ -13,7 +13,7 @@ The founder publishes the first version, 0.1.0, by hand. Every later version goe
 From a terminal:
 
 ```sh
-gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=0.2.0
+gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=2.1.0
 ```
 
 ### Publish a commit the gates already passed
@@ -21,7 +21,7 @@ gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=0.2.0
 A full run takes hours when GitHub is short of machines, and a test that fails on a slow machine has to be read and its job run again. Do that once, before the promotion, and hand the promotion the run:
 
 1. Run every gate on the commit, from `main`: `gh workflow run ci.yml --ref main -f ref=<full SHA>`. Read each failure, run the failed jobs again, and go on until the run is green.
-2. Promote with that run's number: `gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=0.2.0 -f gates_run=<run number>`.
+2. Promote with that run's number: `gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=2.1.0 -f gates_run=<run number>`.
 
 The promotion then publishes without running the gates a second time. It accepts the run only when all of this holds, and says which part does not:
 
@@ -61,7 +61,7 @@ npm can hold each new version until a maintainer approves it on npmjs.com. Publi
 
 1. The publish job succeeds and writes the receipt.
 2. npm does not serve the version yet, so the tag job fails after five minutes. There is no tag or release yet.
-3. Approve the version on npmjs.com, and check it with `npm view @rehearsal-labs/retest@<version> version`.
+3. Approve the version on npmjs.com, and check it with `npm view retest@<version> version`.
 4. Choose "Re-run failed jobs" on the same run. The tag job finds the version, tags the commit and makes the release.
 
 Do not start a new promotion for that version. npm does not list a staged version, so the new run would pass its checks and the gates, then npm would refuse the publish.
@@ -150,6 +150,8 @@ A file the repository no longer holds is dropped, and the command prints which. 
 
 ## The first release
 
+These steps published 0.1.0 under the earlier name, `@rehearsal-labs/retest`. [The first release as retest](#the-first-release-as-retest) follows them.
+
 npm lets a package name a trusted publisher only once the package exists, so 0.1.0 is published by hand. Follow steps 1 through 8 for that release. Apply step 10 as soon as npm serves 0.1.0. Wait until the next promotion is ready before step 9.
 
 - [ ] **1. Get the workflows onto `main`.** Push the commit that holds `promote.yml` and this `ci.yml`. The push starts nothing. GitHub offers a workflow to run by hand only once it is on the default branch.
@@ -211,6 +213,22 @@ npm lets a package name a trusted publisher only once the package exists, so 0.1
 - [ ] **10. Require two-factor and disallow tokens after 0.1.0.** As soon as npm serves 0.1.0, open the package's settings. Under Publishing access, choose "Require two-factor authentication and disallow tokens" and save. Manual publishing requires two-factor. Traditional publish tokens are blocked; trusted publishing still works. [npm explains this setting](https://docs.npmjs.com/trusted-publishers/#how-to-configure-maximum-security).
 
 From then on every release is a promotion.
+
+## The first release as retest
+
+`@rehearsal-labs/retest` 0.5.2 was the last release under the earlier name. On npm, `retest` holds Blake Embrey's earlier library, versions 0.0.1 to 1.0.1, which stay there. On 18 November 2026 he added `vahagnz` as a maintainer of `retest`. The package exists, so its trusted publisher can be set before the first publish, and 2.0.0 goes out through a promotion.
+
+- [ ] **1. Configure the trusted publisher of `retest`.** Follow step 9 above in the settings of `retest` on npmjs.com, with the same organization, repository, workflow and environment. Promote within two days of saving it.
+
+- [ ] **2. Require two-factor and disallow tokens on `retest`.** Follow step 10 above in the settings of `retest`.
+
+- [ ] **3. Promote 2.0.0.** The version check refuses any version at or below 1.0.1, the highest one npm lists for `retest`.
+
+  ```sh
+  gh workflow run promote.yml --ref main -f commit=<full SHA> -f version=2.0.0
+  ```
+
+- [ ] **4. Check that npm serves it.** `npm view retest@2.0.0 version` prints `2.0.0`, and `npm view retest dist-tags.latest` prints `2.0.0`.
 
 ## The published manifest
 

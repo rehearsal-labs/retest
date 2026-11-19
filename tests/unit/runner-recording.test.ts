@@ -13,7 +13,7 @@ import { unpinnedMedia } from '../support/unpinned-host.ts'
 import { endedPid } from './native-fake-tools.ts'
 import { fakeMediaStarter, recordProject } from './runner-recording-fakes.ts'
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -42,7 +42,7 @@ test('types a secret and fails', async ({ page }) => {
 })
 `
 
-const signIn = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const signIn = `import { expect, secret, test } from 'retest'
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -58,7 +58,7 @@ test('signs in and goes on', async ({ page }) => {
 `
 
 function config(block = ''): string {
-  return `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+  return `import { chromium, defineConfig } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
@@ -312,7 +312,7 @@ describe('a run whose media process cannot start', async () => {
 })
 
 describe('a passing run that requires evidence it cannot have', { skip: unpinnedMedia }, async () => {
-  const passing = `import { expect, test } from '@rehearsal-labs/retest'
+  const passing = `import { expect, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')
@@ -334,7 +334,7 @@ test('saves a task', async ({ page }) => {
 })
 
 describe('a media process that crashes during a test', { skip: unpinnedMedia }, async () => {
-  const two = `import { expect, test } from '@rehearsal-labs/retest'
+  const two = `import { expect, test } from 'retest'
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -385,7 +385,7 @@ test('second', async ({ page }) => {
 })
 
 describe('a wedged media process', { skip: unpinnedMedia }, async () => {
-  const one = `import { expect, test } from '@rehearsal-labs/retest'
+  const one = `import { expect, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')
@@ -413,7 +413,7 @@ test('saves a task', async ({ page }) => {
 })
 
 describe('an interrupted run that records', { skip: unpinnedMedia }, async () => {
-  const slow = `import { test } from '@rehearsal-labs/retest'
+  const slow = `import { test } from 'retest'
 
 test('waits', async ({ page }) => {
   await page.goto('/')
@@ -441,7 +441,7 @@ test('waits', async ({ page }) => {
 })
 
 describe('leftovers of a killed run', { skip: unpinnedMedia }, async () => {
-  const one = `import { expect, test } from '@rehearsal-labs/retest'
+  const one = `import { expect, test } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')
@@ -507,8 +507,8 @@ test('saves a task', async ({ page }) => {
 
 test('two attempts of the same test in one run preserve both recordings', { skip: unpinnedMedia }, async () => {
   const root = tempProject({
-    'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({ apps: { web: { baseUrl: 'http://127.0.0.1:4173', targets: { first: chromium({ executablePath: '/fake/chrome' }), second: chromium({ executablePath: '/fake/chrome' }) } } }, recording: { record: true } })`,
-    'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('same test',async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})`,
+    'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({ apps: { web: { baseUrl: 'http://127.0.0.1:4173', targets: { first: chromium({ executablePath: '/fake/chrome' }), second: chromium({ executablePath: '/fake/chrome' }) } } }, recording: { record: true } })`,
+    'tests/one.retest.ts': `import { expect,test } from 'retest'; test('same test',async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})`,
   })
   const media = fakeMediaStarter()
   const run = await recordProject(root, { files: ['tests/one.retest.ts'], startMedia: media.start })
@@ -531,7 +531,7 @@ test('two attempts of the same test in one run preserve both recordings', { skip
 
 
 test('interruption before recording starts emits no fabricated recording or media process', async () => {
-  const root = tempProject({ 'retest.config.ts': config('recording: { record: true },'), 'tests/one.retest.ts': `import {test} from '@rehearsal-labs/retest'; test('one',async({page})=>{await page.goto('/')})` })
+  const root = tempProject({ 'retest.config.ts': config('recording: { record: true },'), 'tests/one.retest.ts': `import {test} from 'retest'; test('one',async({page})=>{await page.goto('/')})` })
   const media = fakeMediaStarter()
   const controller = new AbortController()
   controller.abort('SIGINT')

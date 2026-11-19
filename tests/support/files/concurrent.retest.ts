@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('sends two actions at once', async ({ page }) => {
   const saving = page.getByTestId('save-task').click()

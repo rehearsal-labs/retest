@@ -1,4 +1,4 @@
-import { app, defineConfig, electron } from '@rehearsal-labs/retest'
+import { app, defineConfig, electron } from 'retest'
 
 // An Electron app type-checks with its binary, its app, its arguments, a data folder and the app's start command.
 export const accepted = defineConfig({

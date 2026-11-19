@@ -7,7 +7,7 @@ import { configSource, eventsOf, resultOf, runProject, testNamed, writeProject }
 // an action, and expect.soft lets the test go on and fails it at the end with each failure kept.
 
 function matcherTests(baseUrl: string): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'
+  return `import { expect, test } from 'retest'
 
 async function submissions(): Promise<number> {
   const response = await fetch(${JSON.stringify(`${baseUrl}/api/submissions`)})

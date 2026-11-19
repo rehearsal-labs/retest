@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { conformanceBaseUrl } from '../config.ts'
 
 // Workflow family 1, open a page, navigate and reload: F1.1 to F1.4, as tests/integration/workflow-navigation.test.ts

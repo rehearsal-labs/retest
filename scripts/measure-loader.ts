@@ -22,8 +22,8 @@ const files: Readonly<Record<string, string>> = {
   'tsconfig.json': JSON.stringify({ compilerOptions: { module: 'nodenext', baseUrl: '.', paths: { '@helpers/*': ['helpers/*'] } } }),
   'helpers/label.ts': `export function label(value: string): string {\n  return value.trim()\n}\n`,
   'helpers/model.ts': `export enum Status { Open = 'open', Done = 'done' }\nexport class Task {\n  constructor(readonly title: string, public status: Status = Status.Open) {}\n}\n`,
-  'tests/plain.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\nimport { label } from '../helpers/label.ts'\n\ntest('loads', async () => {\n  expect(label(' a ')).toBe('a')\n})\n`,
-  'tests/everyday.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'\nimport { Status, Task } from '@helpers/model'\nimport { label } from '../helpers/label'\n\ntest('loads', async () => {\n  expect(new Task(label(' a ')).status).toBe(Status.Open)\n})\n`,
+  'tests/plain.retest.ts': `import { expect, test } from 'retest'\nimport { label } from '../helpers/label.ts'\n\ntest('loads', async () => {\n  expect(label(' a ')).toBe('a')\n})\n`,
+  'tests/everyday.retest.ts': `import { expect, test } from 'retest'\nimport { Status, Task } from '@helpers/model'\nimport { label } from '../helpers/label'\n\ntest('loads', async () => {\n  expect(new Task(label(' a ')).status).toBe(Status.Open)\n})\n`,
   'bare/plain.ts': `import { label } from '../helpers/label.ts'\nconst shown: string = label(' a ')\nif (shown !== 'a') process.exit(1)\n`,
   'bare/everyday.ts': `import { Status, Task } from '../helpers/model.ts'\nimport { label } from '../helpers/label.ts'\nif (new Task(label(' a ')).status !== Status.Open) process.exit(1)\n`,
   // The same transformer Node's --experimental-transform-types uses, called from a load hook.
@@ -63,8 +63,8 @@ try {
     mkdirSync(dirname(join(project, path)), { recursive: true })
     writeFileSync(join(project, path), text)
   }
-  mkdirSync(join(project, 'node_modules/@rehearsal-labs'), { recursive: true })
-  symlinkSync(repositoryRoot, join(project, 'node_modules/@rehearsal-labs/retest'), 'dir')
+  mkdirSync(join(project, 'node_modules'), { recursive: true })
+  symlinkSync(repositoryRoot, join(project, 'node_modules/retest'), 'dir')
   symlinkSync(join(repositoryRoot, 'node_modules/typescript'), join(project, 'node_modules/typescript'), 'dir')
 
   const node = (args: readonly string[]) => (cacheFolder: string) => Promise.resolve(timeNode(args, cacheFolder))

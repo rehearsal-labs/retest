@@ -683,7 +683,7 @@ const passwordVariable = 'RETEST_RESOURCES_PASSWORD'
 const password = 'correct-horse-battery-42'
 
 function configSource(extra = ''): string {
-  return `import { chromium, defineConfig, electron, env } from '@rehearsal-labs/retest'
+  return `import { chromium, defineConfig, electron, env } from 'retest'
 export default defineConfig({
   apps: {
     web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }),
@@ -707,7 +707,7 @@ function holding(name: string, options: string, apps: readonly string[], ms = 0)
 }
 
 function testFile(...tests: string[]): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'\n\n${tests.join('\n\n')}\n`
+  return `import { expect, test } from 'retest'\n\n${tests.join('\n\n')}\n`
 }
 
 // An Electron window as the fake browser serves a page; closing it quits the app, as Electron's own does.
@@ -1213,7 +1213,7 @@ describe('an Electron app in a run', () => {
   test('a data folder on a disk whose case rule cannot be read keeps the test from running, and says why', { skip: unreadableFolder }, async () => {
     // With one named data folder the config has nothing to tell it apart from, so the run is the first to read its disk.
     const root = tempProject({
-      [configFileName]: `import { chromium, defineConfig, electron, env } from '@rehearsal-labs/retest'
+      [configFileName]: `import { chromium, defineConfig, electron, env } from 'retest'
 export default defineConfig({
   apps: {
     web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }),
@@ -1348,7 +1348,7 @@ describe('commands in one session', () => {
         inFlight -= 1
       },
     })
-    const tests = `import { expect, test } from '@rehearsal-labs/retest'
+    const tests = `import { expect, test } from 'retest'
 
 test('sends two at once', async ({ page }) => {
   await Promise.all([page.getByTestId('task-title').fill('Release checklist'), page.getByTestId('save-task').click()])

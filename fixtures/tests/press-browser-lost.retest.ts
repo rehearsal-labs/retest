@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('presses a key on a page that stops answering', async ({ page }) => {
   await page.goto('/keys')

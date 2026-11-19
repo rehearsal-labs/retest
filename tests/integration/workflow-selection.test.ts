@@ -12,7 +12,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 const file = 'tests/selection.retest.ts'
 const assertFailedAt = failedAtIn(file)
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('chooses a plan, ticks a box and picks a theme, and the saved choices come back after a reload', async ({ page }) => {
   await page.goto('/workflow/preferences')

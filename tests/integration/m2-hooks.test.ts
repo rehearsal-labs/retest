@@ -10,7 +10,7 @@ const log = (text: string) => `async () => {
     console.log('hook ${text}')
   }`
 
-const hookTests = `import { expect, test } from '@rehearsal-labs/retest'
+const hookTests = `import { expect, test } from 'retest'
 
 test.beforeEach(${log('file before')})
 test.afterEach(${log('file after')})
@@ -125,7 +125,7 @@ test('hooks run outermost beforeEach first and innermost afterEach first, and af
 
 test('two tests, two test.for rows or two blocks with one name each fail their file, and nothing in it runs', async (t) => {
   const app = await openApp(t)
-  const header = `import { expect, test } from '@rehearsal-labs/retest'\n\n`
+  const header = `import { expect, test } from 'retest'\n\n`
   const body = `async () => {\n  expect(1).toBe(1)\n}`
   const blocks = `${header}test.describe('tasks', (test) => {\n  test('saves', ${body})\n})\n\ntest.describe('tasks', (test) => {\n  test('archives', ${body})\n})\n`
   const names = `${header}test.describe('tasks', (test) => {\n  test('saves', ${body})\n  test('saves', ${body})\n})\n`

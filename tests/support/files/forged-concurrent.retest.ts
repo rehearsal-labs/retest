@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // A test process that speaks the protocol itself and skips the test runtime's own lanes: it sends two clicks to the same
 // app at once, waits for both answers, then ends its test as passed with one value assertion of its own.

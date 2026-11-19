@@ -15,7 +15,7 @@ function escape(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-const everydayConfig = `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+const everydayConfig = `import { chromium, defineConfig } from 'retest'
 import { Budget, Target } from '@config/budgets'
 import { port } from './settings/port'
 
@@ -88,7 +88,7 @@ describe('loadConfig with TypeScript beyond type stripping', () => {
   })
 
   test('a CommonJS config, a JSX line and a decorator each fail naming the construct and the file', async () => {
-    const commonJs = tempProject({ [configFileName]: `const { defineConfig } = require('@rehearsal-labs/retest')\nmodule.exports = defineConfig({ apps: {} })\n` })
+    const commonJs = tempProject({ [configFileName]: `const { defineConfig } = require('retest')\nmodule.exports = defineConfig({ apps: {} })\n` })
     const refused = await loadConfig(join(commonJs, configFileName))
     assert.ok(!refused.ok)
     assert.equal(
@@ -129,7 +129,7 @@ describe('loadConfig with TypeScript beyond type stripping', () => {
       'support/titles.ts': 'export type Title = string\n',
       'support/plain.js': 'export const shown = 1\n',
       [configFileName]: `import { hidden } from './support/plain.js'\nexport default { hidden }\n`,
-      'package.config.ts': `import { notThere } from '@rehearsal-labs/retest'\nexport default { notThere }\n`,
+      'package.config.ts': `import { notThere } from 'retest'\nexport default { notThere }\n`,
     })
     const plain = await loadConfig(join(missingValue, configFileName))
     assert.ok(!plain.ok)

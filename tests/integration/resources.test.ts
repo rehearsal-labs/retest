@@ -17,8 +17,8 @@ type Printed = Record<string, unknown>
 // A host program: a config of two Chrome apps on the task app and the lock `inbox`, then `body`, which runs and prints
 // one JSON line. `run(output, files, extra)` runs files on two workers into a folder of its own.
 function hostProgram(url: string, body: string): string {
-  return `import { chrome, defineConfig } from '@rehearsal-labs/retest'
-import { resolveSecrets, runFiles, SessionBudget, validateConfig } from '@rehearsal-labs/retest/runner'
+  return `import { chrome, defineConfig } from 'retest'
+import { resolveSecrets, runFiles, SessionBudget, validateConfig } from 'retest/runner'
 import { join } from 'node:path'
 
 const folder = process.argv.at(-1) ?? ''
@@ -65,7 +65,7 @@ function holdingTest(title: string, options: string, name: string, ms: number): 
 }
 
 function file(...tests: string[]): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'\n\n${tests.join('\n\n')}\n`
+  return `import { expect, test } from 'retest'\n\n${tests.join('\n\n')}\n`
 }
 
 async function inspect(t: TestContext, root: string, run: HostedRun, testId?: string): Promise<string> {

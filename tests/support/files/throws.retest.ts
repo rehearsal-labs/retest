@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('throws from test code', async ({ page }) => {
   await expect(page.getByTestId('save-task')).toBeVisible()

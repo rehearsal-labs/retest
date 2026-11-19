@@ -79,7 +79,7 @@ const names = {
   partition: 'a window in a session of its own is refused page.download() by name',
 } as const
 
-const config = (files: string, saveDir: string) => `import { defineConfig, electron, env } from '@rehearsal-labs/retest'
+const config = (files: string, saveDir: string) => `import { defineConfig, electron, env } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -91,7 +91,7 @@ export default defineConfig({
 `
 
 const tests = `import { readFile } from 'node:fs/promises'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 const csv = ${JSON.stringify(csv)}
 

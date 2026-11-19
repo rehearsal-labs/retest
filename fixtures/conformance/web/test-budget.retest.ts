@@ -1,4 +1,4 @@
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 // A test that runs past its own budget is stopped and fails as a timeout, and the tests after it in its file do not
 // run, since its process is ended with it.

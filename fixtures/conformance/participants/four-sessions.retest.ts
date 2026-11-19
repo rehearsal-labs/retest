@@ -1,4 +1,4 @@
-import { expect } from '@rehearsal-labs/retest'
+import { expect } from 'retest'
 import { stateTest as test } from '../unregistered.ts'
 import { signIn } from './sign-in.ts'
 

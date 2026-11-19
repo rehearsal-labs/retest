@@ -406,14 +406,14 @@ describe('a secret fill', () => {
 describe('titles in a run', async () => {
   const variable = 'RETEST_UNIT_TITLE_PASSWORD'
   const password = 'hunter2-4410'
-  const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: '${origin}', executablePath: '/fake/chromium' }) },
   secrets: { password: env('${variable}') },
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('shows the account', async ({ page }) => {
   await page.goto('/account')
@@ -447,14 +447,14 @@ describe('long titles in a run', async () => {
   const variable = 'RETEST_UNIT_LONG_TITLE_PASSWORD'
   const password = 'hunter2-4410'
   const kept = 'a'.repeat(295)
-  const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+  const config = `import { chromium, defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: '${origin}', executablePath: '/fake/chromium' }) },
   secrets: { password: env('${variable}') },
 })
 `
-  const tests = `import { expect, test } from '@rehearsal-labs/retest'
+  const tests = `import { expect, test } from 'retest'
 
 test('opens pages with long titles', async ({ page }) => {
   await page.goto('/spanning')

@@ -8,7 +8,7 @@ import { runProject, tempProject } from '../support/project.ts'
 import { eventsOfType } from '../support/run-harness.ts'
 import { capture } from './reporters-fixtures.ts'
 
-const config = `import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+const config = `import { app, chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: {
     web: app({
@@ -21,7 +21,7 @@ export default defineConfig({
 `
 
 // The dependents sort before the setup, so the run has to reach ahead for it.
-const archive = `import { expect, test } from '@rehearsal-labs/retest'
+const archive = `import { expect, test } from 'retest'
 
 test('starts signed in', { state: 'signed-in' }, async ({ page }) => {
   await expect(page.getByTestId('session')).toHaveText('Signed in')
@@ -32,7 +32,7 @@ test('starts signed out', async ({ page }) => {
 })
 `
 
-const signIn = (expected: string) => `import { expect, test } from '@rehearsal-labs/retest'
+const signIn = (expected: string) => `import { expect, test } from 'retest'
 
 test.setup('signed-in', async ({ page }) => {
   await page.goto('/login')
@@ -163,7 +163,7 @@ test('a test beside the setup', async ({ page }) => {
   })
 
   test('when no file saves the state, the file that names it fails collection, and the message names the state', async () => {
-    const root = tempProject({ 'retest.config.ts': config, 'tests/archive.retest.ts': archive, 'tests/other.retest.ts': alsoInSignIn.replace('\n', "import { expect, test } from '@rehearsal-labs/retest'\n") })
+    const root = tempProject({ 'retest.config.ts': config, 'tests/archive.retest.ts': archive, 'tests/other.retest.ts': alsoInSignIn.replace('\n', "import { expect, test } from 'retest'\n") })
     const record = await runProject(root, { files: ['tests/archive.retest.ts'] })
     assert.equal(record.result.files.length, 1)
     assert.equal(record.result.files[0]?.collection, 'failed')

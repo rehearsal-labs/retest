@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // The same as waits-for-ahead.retest.ts, for a second worker.
 test('also lets the next files start', () => {

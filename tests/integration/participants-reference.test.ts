@@ -17,7 +17,7 @@ const title = 'Quarterly report'
 const variable = 'RETEST_E2E_PARTICIPANTS_PASSWORD'
 
 const tests = `import { randomUUID } from 'node:crypto'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 ${signInSetup('owner-account', 'owner', accounts.owner)}
 

@@ -126,7 +126,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 const folder = ${JSON.stringify(folder)}
 const helper = fileURLToPath(new URL('../helper.cjs', import.meta.url))

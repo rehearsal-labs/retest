@@ -20,7 +20,7 @@ after(() => {
   delete process.env[keyVariable]
 })
 
-const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+const config = `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   evaluation: {
@@ -30,7 +30,7 @@ export default defineConfig({
 })
 `
 const file = 'tests/a.retest.ts'
-const source = `import { expect, test } from '@rehearsal-labs/retest'
+const source = `import { expect, test } from 'retest'
 test.only('runs', async () => {
   expect(1).toBe(1)
 })

@@ -18,7 +18,7 @@ export const baseUrl = 'http://127.0.0.1:4173'
 export const pageUrl = 'http://127.0.0.1:4173/'
 export const comparison = 'whole text, ends trimmed, each run of spaces or line breaks read as one space'
 
-export const source = `import { test, expect } from '@rehearsal-labs/retest'
+export const source = `import { test, expect } from 'retest'
 
 test('saves a task', async ({ page }) => {
   await page.goto('/')

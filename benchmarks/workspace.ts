@@ -59,7 +59,7 @@ export async function prepareWorkspace(options: BenchmarkOptions, repositoryRoot
   }
 
   return {
-    retest: await project(retestFolder, '@rehearsal-labs/retest'),
+    retest: await project(retestFolder, 'retest'),
     playwright: await project(playwrightFolder, '@playwright/test'),
     install: { retestMs: retestInstall.endedAt - retestInstall.startedAt, playwrightMs },
   }

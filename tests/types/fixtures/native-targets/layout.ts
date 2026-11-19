@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Layout matchers measure a web page; a native app's locators refuse them by name.
 test('layout matchers on web and native apps', { apps: ['iphone', 'mac', 'web'] }, async ({ iphone, mac, web }) => {

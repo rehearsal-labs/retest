@@ -14,7 +14,7 @@ const file = 'tests/saved-state.retest.ts'
 const assertFailedAt = failedAtIn(file)
 const variable = 'RETEST_E2E_WORKFLOW_PASSWORD'
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test.setup('signed-in', async ({ page }) => {
   await page.goto('/workflow/sign-in')

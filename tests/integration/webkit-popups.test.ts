@@ -288,7 +288,7 @@ async function launchCounting(t: TestContext): Promise<{ browser: OwnedBrowser; 
 }
 
 function runTests(partner: string): string {
-  return `import { expect, test } from '@rehearsal-labs/retest'
+  return `import { expect, test } from 'retest'
 
 test('drives the page a link opens', async ({ page }) => {
   await page.goto('/popups')

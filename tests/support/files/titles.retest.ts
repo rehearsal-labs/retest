@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('opens the tasks through a link', async ({ page }) => {
   await page.goto('/')

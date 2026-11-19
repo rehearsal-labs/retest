@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('saves an empty title', async ({ page }) => {
   await page.goto('/')

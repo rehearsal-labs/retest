@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 let scope: { testId: string; attemptId: string } | undefined
 process.on('message', (message: unknown) => {

@@ -45,7 +45,7 @@ function runProject(root: string, options: ProjectRunOptions): Promise<ProjectRe
 type ConfigOptions = { tag: string; limits?: string; keyFrom?: string; timeoutMs?: number; options?: Record<string, string | number | boolean>; extra?: string }
 
 function config({ tag, limits = '', keyFrom = keyVariable, timeoutMs = 2000, options = {}, extra = '' }: ConfigOptions): string {
-  return `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+  return `import { chromium, defineConfig, env } from 'retest'
 
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
@@ -63,7 +63,7 @@ export default defineConfig({
 `
 }
 
-const imports = `import { expect, test } from '@rehearsal-labs/retest'
+const imports = `import { expect, test } from 'retest'
 
 const evidence = { text: 'Your task "Release checklist" was saved.', label: 'banner' }
 `
@@ -656,7 +656,7 @@ describe('a test that only acts and captures', async () => {
 
 // A test file that forges its own verdict: it catches the failed check's error, then sends the parent a pass in the
 // test file process's name and never lets the real verdict go. The parent's own record of the check decides.
-const forged = `import { test } from '@rehearsal-labs/retest'
+const forged = `import { test } from 'retest'
 
 let ids
 process.on('message', (message) => {
@@ -687,7 +687,7 @@ describe('a test file that sends the parent a forged pass after a failed check',
 
 // A run interrupted after the body, while the parent settles it, before the host's AI checks: as page host checks the
 // interruption stops do, the checks it kept from running leave the test failed by the interruption, never passed.
-const settling = `import { expect, test } from '@rehearsal-labs/retest'
+const settling = `import { expect, test } from 'retest'
 
 test('opens the tasks', async ({ page }) => {
   await page.goto('/')
@@ -751,7 +751,7 @@ describe('two checks at once, the undecided one answering before the failed one'
 
 // A test file whose process reports its own failure after the parent recorded a failed check, then never finishes.
 function claims(name: string, claimed: string): string {
-  return `import { test } from '@rehearsal-labs/retest'
+  return `import { test } from 'retest'
 
 let ids
 process.on('message', (message) => {
@@ -846,7 +846,7 @@ createServer((request, response) => response.end('ok')).listen(${port}, '127.0.0
       `web: chromium({ baseUrl: 'http://127.0.0.1:${port}', executablePath: '/fake/chromium', start: { command: 'node server.mjs', ready: 'http://127.0.0.1:${port}/' } })`,
     ),
     // The page here shows the key, as an app that read it elsewhere would; no AI check runs in this test.
-    'tests/shows.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/shows.retest.ts': `import { expect, test } from 'retest'
 process.stdout.write('the judge variable in the test process is ' + (process.env.${keyVariable} === undefined ? 'absent' : 'present') + '\\n')
 test('shows the key', async ({ page }) => {
   await page.goto('/')
@@ -908,7 +908,7 @@ describe('provider strings and host criteria that hold a value', async () => {
 describe('an adapter whose module never finishes loading', async () => {
   const root = tempProject({
     'judges/stuck.mjs': 'await new Promise(() => undefined)\nexport default () => undefined\n',
-    'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'
+    'retest.config.ts': `import { chromium, defineConfig } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   evaluation: { judges: { stuck: { adapter: './judges/stuck.mjs', accepts: ['text'] } }, timeoutMs: 400 },

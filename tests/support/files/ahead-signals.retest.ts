@@ -1,5 +1,5 @@
 import { appendFileSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Tells the signals server each time it is loaded, collection's load included, so a test can tell when a run loaded it
 // ahead of its turn. With SIGNALS_FAIL_LATER it fails every load after the first, as a file that loads to be collected

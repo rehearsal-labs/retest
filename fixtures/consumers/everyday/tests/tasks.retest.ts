@@ -1,5 +1,5 @@
 import type { Title } from '../support/titles'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { TaskPage } from '@support/task-page'
 import { timeZone } from '../support/clock.mjs'
 import { shownTitle } from '../support/labels.js'

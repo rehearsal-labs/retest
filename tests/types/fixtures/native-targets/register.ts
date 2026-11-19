@@ -1,6 +1,6 @@
 import type { AppKind } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { expect, test, type Apps, type NativePage, type Page, type TestContext } from '@rehearsal-labs/retest'
+import { expect, test, type Apps, type NativePage, type Page, type TestContext } from 'retest'
 
 // Each app's handle offers what its targets can do: a web page has goto, a native app's handle does not.
 export const web: Same<AppKind<'web'>, 'web'> = true

@@ -1,7 +1,7 @@
-import type { EvaluatorSetup } from '@rehearsal-labs/retest'
-import type { AiSdkPackageLoader, AiSdkPackageName } from '@rehearsal-labs/retest/evaluation/ai-sdk'
+import type { EvaluatorSetup } from 'retest'
+import type { AiSdkPackageLoader, AiSdkPackageName } from 'retest/evaluation/ai-sdk'
 import type { Same } from './support/same.ts'
-import { createAiSdkEvaluatorWith } from '@rehearsal-labs/retest/evaluation/ai-sdk'
+import { createAiSdkEvaluatorWith } from 'retest/evaluation/ai-sdk'
 
 // A host that bundles the SDK hands the adapter a loader typed to the packages it may ask for.
 declare const setup: EvaluatorSetup

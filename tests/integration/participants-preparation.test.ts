@@ -26,7 +26,7 @@ const signIn = `  await page.goto('/login')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByTestId('account')).toHaveText('Signed in as member-b')`
 
-const tests = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, secret, test } from 'retest'
 
 test('${names.seeded}', async ({ page }) => {
 ${signIn}

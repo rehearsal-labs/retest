@@ -40,7 +40,7 @@ const timeouts = budgets({ assertion: 6000, test: 40_000 })
 const flowName = 'creates a task in Electron, marks it done on the web, and sees it done in Electron'
 
 const flow = `import { randomUUID } from 'node:crypto'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 test(${JSON.stringify(flowName)}, { apps: ['desktop', 'web'] }, async ({ desktop, web }) => {
   // Titles repeat in the service on purpose, so the task is followed by the id the service gives it.
@@ -77,7 +77,7 @@ test(${JSON.stringify(flowName)}, { apps: ['desktop', 'web'] }, async ({ desktop
 })
 `
 
-const signIn = `import { expect, secret, test } from '@rehearsal-labs/retest'
+const signIn = `import { expect, secret, test } from 'retest'
 
 test('signs in to the service in the Electron window', { apps: ['desktop'] }, async ({ desktop }) => {
   await desktop.getByTestId('account').fill('ada')
@@ -98,7 +98,7 @@ function configSource({ service, web, secretOrigins }: ConfigOptions): string {
     `desktop: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: ${JSON.stringify(fixtureApp)}, args: [${JSON.stringify(`--service=${service}`)}] }),`,
     ...(web ? [`web: chrome({ baseUrl: ${JSON.stringify(service)} }),`] : []),
   ]
-  return `import { chrome, defineConfig, electron, env } from '@rehearsal-labs/retest'
+  return `import { chrome, defineConfig, electron, env } from 'retest'
 
 export default defineConfig({
   apps: {

@@ -1,6 +1,6 @@
 import type { AppHasTouch, LockName } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { chromium, expect, test } from '@rehearsal-labs/retest'
+import { chromium, expect, test } from 'retest'
 
 // The config declares its locks, so a test may hold only those; a viewport is a screen with no touch.
 export const locks: Same<LockName, 'inbox' | 'staging-account'> = true

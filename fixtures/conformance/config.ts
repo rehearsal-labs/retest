@@ -1,4 +1,4 @@
-import type { ChromiumOptions, FirefoxTarget, Viewport, WebKitTarget } from '@rehearsal-labs/retest'
+import type { ChromiumOptions, FirefoxTarget, Viewport, WebKitTarget } from 'retest'
 
 // What every conformance config shares. The runner in `tests/conformance/run.ts` names the engine, the browser to
 // launch and the task app's address in the environment, so one config file per folder serves Chrome, Firefox and

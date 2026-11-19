@@ -12,7 +12,7 @@ import { failedAtIn, lineOf } from './workflow-harness.ts'
 const file = 'tests/create.retest.ts'
 const assertFailedAt = failedAtIn(file)
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('adds a task with a title, notes and a priority', async ({ page }) => {
   await page.goto('/workflow/tasks')

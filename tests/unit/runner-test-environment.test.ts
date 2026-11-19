@@ -51,13 +51,13 @@ describe('the test environment', () => {
 
   test('a variable an env secret reads is hidden from the test process, even when testEnvironment holds it', async () => {
     const root = tempProject({
-      'retest.config.ts': `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+      'retest.config.ts': `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   secrets: { token: env('${secretVariable}') },
 })
 `,
-      'tests/environment.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+      'tests/environment.retest.ts': `import { expect, test } from 'retest'
 test('prints its environment', () => {
   console.log(\`environment \${JSON.stringify(Object.keys(process.env).sort())}\`)
   expect(true).toBe(true)
@@ -76,13 +76,13 @@ test('prints its environment', () => {
   test('on Windows a variable an env secret reads is hidden whatever the case of its name; elsewhere another case is another variable', async () => {
     const otherCase = 'Retest_Unit_Env_Secret'
     const root = tempProject({
-      'retest.config.ts': `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+      'retest.config.ts': `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   secrets: { token: env('${secretVariable}') },
 })
 `,
-      'tests/environment.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+      'tests/environment.retest.ts': `import { expect, test } from 'retest'
 test('prints its environment', () => {
   console.log(\`environment \${JSON.stringify(Object.keys(process.env).sort())}\`)
   expect(true).toBe(true)

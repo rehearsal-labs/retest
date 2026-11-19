@@ -1,6 +1,6 @@
 import type { AppKind } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { defineConfig, expect, test, type Apps, type NativePage } from '@rehearsal-labs/retest'
+import { defineConfig, expect, test, type Apps, type NativePage } from 'retest'
 
 // An iOS simulator target through agent-device keeps the iOS handle; an Android target gets an Android one, which takes
 // taps and has no click, swipe or keyboard helpers yet.

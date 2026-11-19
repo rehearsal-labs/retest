@@ -29,7 +29,7 @@ function installedChrome(): string {
 const file = 'tests/saves.retest.ts'
 const name = 'saves a task'
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 import { taskTitle } from './helpers/titles.ts'
 
 test('${name}', async ({ page }) => {

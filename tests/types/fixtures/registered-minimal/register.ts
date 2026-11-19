@@ -1,6 +1,6 @@
 import type { AppName, DefaultAppName, SecretName, StateName, TagName, TestIdValue } from '../../../../src/config/register.ts'
 import type { Same } from '../support/same.ts'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // A config that lists no tags, states or test ids accepts any; one that declares no secrets accepts none.
 export const apps: Same<AppName, 'owner' | 'member'> = true

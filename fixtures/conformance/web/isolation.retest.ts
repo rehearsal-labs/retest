@@ -1,4 +1,4 @@
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 // Each test starts in a fresh browser context: what one test keeps in local storage, session storage and cookies is
 // gone for the next, which runs right after it in the same process.

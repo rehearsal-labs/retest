@@ -15,7 +15,7 @@ import { budgets, childLog, configSource, eventsOf, filesHolding, resultOf, runC
 const fakeJudge = fileURLToPath(new URL('../support/fake-evaluator.ts', import.meta.url))
 const key = 'sk-e2e-judge-7c2d5a91'
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 async function save(page) {
   await page.goto('/')

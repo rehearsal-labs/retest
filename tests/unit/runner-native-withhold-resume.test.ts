@@ -46,7 +46,7 @@ for (const state of ['focused', 'unmasked', 'secure-unmasked', 'masked', 'empty'
         }
         return fields
       },
-      tests: `import { expect, secret, test } from '@rehearsal-labs/retest'
+      tests: `import { expect, secret, test } from 'retest'
         test('keeps the application failure', { apps: ['phone'] }, async ({ phone }) => {
           await phone.getByTestId('password-field').fill(secret('password'))
           await phone.getByTestId('sign-in-button').tap()

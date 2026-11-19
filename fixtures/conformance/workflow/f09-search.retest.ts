@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 import { BOOKS, PAGE_SIZE } from '../../task-app/workflow-search-page.ts'
 
 // Workflow family 9, search, filter and paginate: F9.1 to F9.4, as tests/integration/workflow-search.test.ts runs them

@@ -9,7 +9,7 @@ import { budgets, configSource, eventsOf, runProject, testNamed, writeProject } 
 // 390 and at 1280 pixels wide. At 390 the buttons overlap, the price ends past the edge and the page scrolls sideways;
 // at 1280 none of that holds. The card clips its title at both widths, and the ellipsis note is never cut off.
 
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 
 test('the narrow page shows each layout problem', { apps: ['narrow'] }, async ({ narrow }) => {
   await narrow.goto('/')

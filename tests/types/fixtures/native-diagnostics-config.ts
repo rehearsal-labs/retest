@@ -1,4 +1,4 @@
-import { app, chromium, defineConfig } from '@rehearsal-labs/retest'
+import { app, chromium, defineConfig } from 'retest'
 
 // A native target says where its diagnostics come from: its standard output, the default, or none, and a network file
 // with the client name its records give the app. The declaration has the shape the network source reads, and a browser

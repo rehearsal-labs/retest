@@ -13,7 +13,7 @@ import { budgets, configSource, eventsOf, filesHolding, inspectJson, runCli, run
 const password = 'dialog-secret-3f9a1c'
 
 // The test's file, which signals the task app at `appUrl` to open a dialog while nothing runs.
-const testsFor = (appUrl: string): string => `import { expect, secret, test } from '@rehearsal-labs/retest'
+const testsFor = (appUrl: string): string => `import { expect, secret, test } from 'retest'
 
 test('accepts a confirm', async ({ page }) => {
   await page.goto('/dialogs')
@@ -199,14 +199,14 @@ test("an Electron app's alert at start, answered before the test's first command
     'app/package.json': JSON.stringify({ name: 'retest-startup-alert', private: true, main: 'main.mjs' }),
     'app/main.mjs': STARTUP_MAIN,
     'app/index.html': STARTUP_PAGE,
-    'tests/start.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/start.retest.ts': `import { expect, test } from 'retest'
 
 test('starts past its alert', async ({ page }) => {
   await expect(page.getByTestId('status')).toHaveText('After the alert')
 })
 `,
   })
-  await writeFiles(root, { 'retest.config.ts': `import { defineConfig, electron } from '@rehearsal-labs/retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: ${JSON.stringify(join(root, 'app'))} }) } })\n` })
+  await writeFiles(root, { 'retest.config.ts': `import { defineConfig, electron } from 'retest'\n\nexport default defineConfig({ apps: { desk: electron({ executablePath: ${JSON.stringify(electronBinary)}, appPath: ${JSON.stringify(join(root, 'app'))} }) } })\n` })
   const run = await runProject(t, root, { timeouts: budgets() })
   assert.equal(run.exit.code, 0, run.stderr)
   const started = testNamed(run, 'starts past its alert')

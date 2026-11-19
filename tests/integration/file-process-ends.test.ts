@@ -15,7 +15,7 @@ import { childLog, childLogIfAny, configSource, eventsOf, isRunning, printedPids
 
 const endedBadly = '(signal SIGKILL|exit code \\d+)'
 
-const killsItselfAsItExits = `import { expect, test } from '@rehearsal-labs/retest'
+const killsItselfAsItExits = `import { expect, test } from 'retest'
 
 process.on('exit', () => process.kill(process.pid, 'SIGKILL'))
 
@@ -26,7 +26,7 @@ test('passes before its process ends badly', () => {
 
 // The request to close reaches this listener right after Retest's own, which only queues the turn that says the file
 // finished, so the process ends before it could say so.
-const killsItselfOnClose = `import { expect, test } from '@rehearsal-labs/retest'
+const killsItselfOnClose = `import { expect, test } from 'retest'
 
 process.on('message', (message) => {
   if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'close') process.kill(process.pid, 'SIGKILL')
@@ -41,7 +41,7 @@ test('passes before its process ends on the request to close', () => {
 const block = 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)'
 
 const heldAsItExits = `import { writeSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 writeSync(1, \`pid \${process.pid}\\n\`)
 process.on('exit', () => ${block})
@@ -53,7 +53,7 @@ test('passes before its process is held as it exits', () => {
 
 // As for killsItselfOnClose: Retest's own listener has only queued the turn that says the file finished.
 const heldOnClose = `import { writeSync } from 'node:fs'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 writeSync(1, \`pid \${process.pid}\\n\`)
 process.on('message', (message) => {

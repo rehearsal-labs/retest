@@ -41,8 +41,8 @@ test('the recording runner carries its judge exclusion into media startup', asyn
   process.env[name] = 'synthetic-fixture-value'
   t.after(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous })
   const root = tempProject({
-    'retest.config.ts': `import {chromium,defineConfig,env} from '@rehearsal-labs/retest';export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true},evaluation:{judges:{review:{adapter:${JSON.stringify(join(process.cwd(), 'tests/support/fake-evaluator.ts'))},accepts:['text'],credentials:{apiKey:env('${name}')}}}}})`,
-    'tests/one.retest.ts': `import {expect,test} from '@rehearsal-labs/retest';test('one',async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})`,
+    'retest.config.ts': `import {chromium,defineConfig,env} from 'retest';export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true},evaluation:{judges:{review:{adapter:${JSON.stringify(join(process.cwd(), 'tests/support/fake-evaluator.ts'))},accepts:['text'],credentials:{apiKey:env('${name}')}}}}})`,
+    'tests/one.retest.ts': `import {expect,test} from 'retest';test('one',async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})`,
   })
   const fake = fakeMediaStarter()
   let environment: Readonly<Record<string, string | undefined>> | undefined

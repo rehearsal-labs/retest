@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('shows the wrong text', async ({ page }) => {
   await page.getByTestId('task-title').fill('Draft')

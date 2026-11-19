@@ -132,9 +132,9 @@ const azureHostSuffixes = ['.openai.azure.com', '.services.ai.azure.com', '.cogn
  * uses the judge; one that is not installed fails the judge's setup by name.
  *
  * @example
- * judges: { visual: { adapter: '@rehearsal-labs/retest/evaluation/ai-sdk', credentials: { apiKey: env('ANTHROPIC_API_KEY') }, options: { provider: 'anthropic', model: 'claude-sonnet-5' }, accepts: ['text', 'images'] } }
+ * judges: { visual: { adapter: 'retest/evaluation/ai-sdk', credentials: { apiKey: env('ANTHROPIC_API_KEY') }, options: { provider: 'anthropic', model: 'claude-sonnet-5' }, accepts: ['text', 'images'] } }
  * @example
- * judges: { azure: { adapter: '@rehearsal-labs/retest/evaluation/ai-sdk', credentials: { apiKey: env('RETEST_EVALUATION_AZURE_KEY') }, options: { provider: 'azure', resourceName: 'my-resource', model: 'my-deployment' }, accepts: ['text', 'images'] } }
+ * judges: { azure: { adapter: 'retest/evaluation/ai-sdk', credentials: { apiKey: env('RETEST_EVALUATION_AZURE_KEY') }, options: { provider: 'azure', resourceName: 'my-resource', model: 'my-deployment' }, accepts: ['text', 'images'] } }
  */
 export default async function createAiSdkEvaluator(setup: EvaluatorSetup): Promise<Evaluator> {
   // Imported here, so the packages resolve from where Retest is installed, which is where an npm project's packages are.

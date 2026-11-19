@@ -1,5 +1,5 @@
 import { writeSync } from 'node:fs'
-import { test } from '@rehearsal-labs/retest'
+import { test } from 'retest'
 
 writeSync(1, `pid ${process.pid}\n`)
 

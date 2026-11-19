@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Navigation on the task app: relative and absolute addresses, reload, back and forward, the page's address and
 // title, the action that caused each navigation, redirects, and the refusals and deadlines around them.

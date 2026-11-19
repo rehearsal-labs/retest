@@ -187,7 +187,7 @@ describe('a check that ended on its own, around a stop', () => {
 // the stop did to it first, as it does when the answer to its look reaches it before the abort.
 describe('a run stopped while a check looks', () => {
   const file = 'tests/stopped.retest.ts'
-  const source = (options: string) => `import { expect, test } from '@rehearsal-labs/retest'
+  const source = (options: string) => `import { expect, test } from 'retest'
 
 test('waits for text that never comes', ${options}async ({ page }) => {
   await page.goto('/')

@@ -1,4 +1,4 @@
-import { app, chromium, defineConfig, electron } from '@rehearsal-labs/retest'
+import { app, chromium, defineConfig, electron } from 'retest'
 
 // An Electron app beside a web app, and an app that mixes the two, which the loader refuses. An Electron app's windows
 // are web pages with no address, so its handle is a web page with no goto and no touch screen.
@@ -14,7 +14,7 @@ const config = defineConfig({
 
 export default config
 
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

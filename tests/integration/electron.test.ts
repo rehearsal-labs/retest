@@ -48,7 +48,7 @@ const names = {
   closed: 'once the app closes its first window, no other window is reachable',
 } as const
 
-const config = `import { defineConfig, electron, env } from '@rehearsal-labs/retest'
+const config = `import { defineConfig, electron, env } from 'retest'
 
 export default defineConfig({
   apps: {
@@ -64,7 +64,7 @@ export default defineConfig({
 `
 
 const tests = `import { setTimeout as sleep } from 'node:timers/promises'
-import { expect, secret, test } from '@rehearsal-labs/retest'
+import { expect, secret, test } from 'retest'
 
 test(${JSON.stringify(names.flow)}, async ({ page }) => {
   await expect(page).toHaveURL(${JSON.stringify(firstPage)})
@@ -357,7 +357,7 @@ test('a data folder the config names is the app\'s from one launch to the next: 
   const reported = realpathSync(named)
   const root = await writeProject(t, {
     'retest.config.ts': config.replace(`appPath: ${JSON.stringify(fixtureApp)},`, `appPath: ${JSON.stringify(fixtureApp)},\n      userDataDir: ${JSON.stringify(named)},`),
-    'tests/desktop.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/desktop.retest.ts': `import { expect, test } from 'retest'
 
 test('opens on the named folder', async ({ page }) => {
   await expect(page.getByTestId('task-total')).toHaveText('0 tasks')
@@ -392,7 +392,7 @@ test('an Electron target whose binary is missing fails setup by name, and no bro
   const missing = join(fixtureApp, 'no-such-binary', 'Electron')
   const root = await writeProject(t, {
     'retest.config.ts': config.replace(JSON.stringify(electronBinary), JSON.stringify(missing)),
-    'tests/desktop.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/desktop.retest.ts': `import { expect, test } from 'retest'
 
 test('needs the app', async ({ page }) => {
   await expect(page.getByTestId('task-total')).toHaveText('0 tasks')
@@ -421,7 +421,7 @@ test("the window's first address is known before input, and a secret is typed on
   const name = 'types the secret on the window it opened'
   const root = await writeProject(t, {
     'retest.config.ts': served,
-    'tests/desktop.retest.ts': `import { expect, secret, test } from '@rehearsal-labs/retest'
+    'tests/desktop.retest.ts': `import { expect, secret, test } from 'retest'
 
 test(${JSON.stringify(name)}, async ({ page }) => {
   await page.getByLabel('Title').fill(secret('password'))

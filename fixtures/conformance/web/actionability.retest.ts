@@ -1,4 +1,4 @@
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 // Actionability on the task app: an action waits for its element to be ready, and refuses one that is covered,
 // disabled or hidden when its time runs out, naming the check that failed. A cover that appears as the pointer

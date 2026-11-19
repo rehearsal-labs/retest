@@ -1,7 +1,7 @@
 import type { Engine } from './recording-options.ts'
 
 export function recordingConfig(engine: Engine, path: string, baseUrl: string, record: boolean, diagnostics: boolean): string {
-  return `import { defineConfig } from '@rehearsal-labs/retest'
+  return `import { defineConfig } from 'retest'
 export default defineConfig({
   apps: { web: { browser: ${JSON.stringify(engine)}, executablePath: ${JSON.stringify(path)}, baseUrl: ${JSON.stringify(baseUrl)}, headless: true, viewport: { width: 1280, height: 720 } } },
   diagnostics: { capture: ${diagnostics} },

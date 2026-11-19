@@ -12,7 +12,7 @@ test('a target with a viewport opens its pages at that size, with no touch scree
     'retest.config.ts': configSource(`{
   apps: { web: chrome({ baseUrl: ${JSON.stringify(app.url)}, viewport: { width: 1280, height: 720 } }) },
 }`),
-    'tests/viewport.retest.ts': `import { expect, test } from '@rehearsal-labs/retest'
+    'tests/viewport.retest.ts': `import { expect, test } from 'retest'
 
 test('the page is 1280 by 720', async ({ page }) => {
   await page.goto('/device')

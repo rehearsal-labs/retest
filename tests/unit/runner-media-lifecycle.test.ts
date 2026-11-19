@@ -33,7 +33,7 @@ test('a finished recording whose file is missing remains unavailable', { skip: u
   const { rmSync } = await import('node:fs')
   const { tempProject } = await import('../support/project.ts')
   const { recordProject } = await import('./runner-recording-fakes.ts')
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from 'retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   const fake = fakeMediaStarter()
   const run = await recordProject(root, { files: ['tests/one.retest.ts'], startMedia: async (location, timeoutMs) => {
     const process = await fake.start(location, timeoutMs)
@@ -72,7 +72,7 @@ test('a source factory failure leaves the test verdict intact and names missing 
   const { tempProject } = await import('../support/project.ts')
   const { FramedPage, recordProject } = await import('./runner-recording-fakes.ts')
   t.mock.method(FramedPage.prototype, 'frameSource', () => { throw new Error('target capture refused') })
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from 'retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   const media = fakeMediaStarter()
   const run = await recordProject(root, { files: ['tests/one.retest.ts'], startMedia: media.start })
   assert.equal(run.result.files[0]?.tests[0]?.status, 'passed')
@@ -126,7 +126,7 @@ test('a leftover request that never answers cannot hold media shutdown', { skip:
   const { renameSync, rmSync, writeFileSync } = await import('node:fs')
   const { tempProject } = await import('../support/project.ts')
   const { recordProject } = await import('./runner-recording-fakes.ts')
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from 'retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   const previous = await recordProject(root, { files: ['tests/one.retest.ts'], startMedia: fakeMediaStarter().start })
   const current = newRunFolder()
   const old = join(dirname(current), 'old')
@@ -164,7 +164,7 @@ test('recording start retains the actual capture mode when availability changes 
     source.stop = async () => ({ ...await stop(), mode: 'screenshot-loop' })
     return source
   })
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from 'retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   const run = await recordProject(root, { files: ['tests/one.retest.ts'], startMedia: fakeMediaStarter().start })
   const began = run.events.find(event => event.type === 'recording.started')
   assert.ok(began?.type === 'recording.started')
@@ -175,7 +175,7 @@ test('recording start retains the actual capture mode when availability changes 
 test('cancellation while media readiness is pending starts no recording or UI capture afterwards', { skip: unpinnedMedia }, async () => {
   const { tempProject } = await import('../support/project.ts')
   const { recordProject } = await import('./runner-recording-fakes.ts')
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import {test} from '@rehearsal-labs/retest'; test('one',async({page})=>{await page.goto('/')})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import {test} from 'retest'; test('one',async({page})=>{await page.goto('/')})` })
   const fake = fakeMediaStarter()
   const controller = new AbortController()
   const run = await recordProject(root, { files: ['tests/one.retest.ts'], signal: controller.signal, startMedia: async (location, budget) => {
@@ -195,7 +195,7 @@ test('cancellation while media readiness is pending starts no recording or UI ca
 test('a discovery refusal is a named setup failure, starts no media and preserves the test outcome', { skip: unpinnedMedia }, async t => {
   const { tempProject } = await import('../support/project.ts')
   const { recordProject } = await import('./runner-recording-fakes.ts')
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})},recording:{record:true}})`, 'tests/one.retest.ts': `import { expect,test } from 'retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
@@ -224,7 +224,7 @@ test('a discovery refusal is a named setup failure, starts no media and preserve
 test('recording off never calls media discovery', async () => {
   const { tempProject } = await import('../support/project.ts')
   const { recordProject } = await import('./runner-recording-fakes.ts')
-  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from '@rehearsal-labs/retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})}})`, 'tests/one.retest.ts': `import { expect,test } from '@rehearsal-labs/retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
+  const root = tempProject({ 'retest.config.ts': `import { chromium, defineConfig } from 'retest'; export default defineConfig({apps:{web:chromium({baseUrl:'http://127.0.0.1:4173',executablePath:'/fake/chrome'})}})`, 'tests/one.retest.ts': `import { expect,test } from 'retest'; test('one', async({page})=>{await page.goto('/');await expect(page.getByTestId('save-task')).toBeVisible()})` })
   let discoveries = 0
   const run = await recordProject(root, { files: ['tests/one.retest.ts'], discoverMedia: async () => { discoveries++; return 'must not be called' } })
   assert.equal(discoveries, 0)

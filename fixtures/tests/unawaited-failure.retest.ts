@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises'
-import { expect, test } from '@rehearsal-labs/retest'
+import { expect, test } from 'retest'
 
 test('lets a failed assertion go unawaited', async ({ page }) => {
   await page.goto('/')

@@ -1,4 +1,4 @@
-import { app, chrome, chromium, defineConfig, env } from '@rehearsal-labs/retest'
+import { app, chrome, chromium, defineConfig, env } from 'retest'
 
 // Every app opens the task app from fixtures/task-app. Start it with `node fixtures/task-app/cli.ts` and put
 // the address it prints in TASK_APP_URL.
@@ -31,7 +31,7 @@ const config = defineConfig({
 export default config
 
 // Lets every test file see the app names, secrets, tags, states and locks above.
-declare module '@rehearsal-labs/retest' {
+declare module 'retest' {
   interface Register {
     config: typeof config
   }

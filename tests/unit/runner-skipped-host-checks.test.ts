@@ -23,7 +23,7 @@ after(() => {
   delete process.env[keyVariable]
 })
 
-const config = `import { chromium, defineConfig, env } from '@rehearsal-labs/retest'
+const config = `import { chromium, defineConfig, env } from 'retest'
 export default defineConfig({
   apps: { web: chromium({ baseUrl: 'http://127.0.0.1:4173', executablePath: '/fake/chromium' }) },
   evaluation: {
@@ -34,7 +34,7 @@ export default defineConfig({
 `
 
 const file = 'tests/a.retest.ts'
-const tests = `import { expect, test } from '@rehearsal-labs/retest'
+const tests = `import { expect, test } from 'retest'
 test('runs', async () => {
   expect(1).toBe(1)
 })
@@ -117,7 +117,7 @@ describe('a check the host requires of a skipped test', () => {
 })
 
 describe('result.json and a result rebuilt from the events', () => {
-  const marked = `import { expect, test } from '@rehearsal-labs/retest'
+  const marked = `import { expect, test } from 'retest'
 test('ordinary', async () => {
   expect(1).toBe(1)
 })
@@ -136,7 +136,7 @@ test.describe.only('block', (test) => {
   })
 })
 `
-  const plain = `import { expect, test } from '@rehearsal-labs/retest'
+  const plain = `import { expect, test } from 'retest'
 test('in another file', async () => {
   expect(1).toBe(1)
 })
