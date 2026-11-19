@@ -2,6 +2,14 @@
 
 Retest publishes releases from `main` through the Promote workflow. Each entry names what a test can do that it could not before, and on which engines it was checked.
 
+## 2.0.0
+
+### Changed
+
+- **The package is now `retest` on npm.** `@rehearsal-labs/retest` 0.5.2 was the last release under the old name. Start a project with `npx retest init`, and import from `retest`.
+- **To move a project from `@rehearsal-labs/retest`,** change the dependency's name in `package.json` to `retest`. Change every import, every `declare module` block and every adapter string, such as `'@rehearsal-labs/retest/evaluation/ai-sdk'`, from `@rehearsal-labs/retest` to `retest`. Then install again. Nothing else needs to change.
+- **The version jumps to 2.0.0** because versions up to 1.0.1 under the name `retest` are Blake Embrey's earlier library, for testing HTTP servers. They stay on npm, so a project on `retest@1` keeps what it has.
+
 ## 0.5.2
 
 ### Changed
