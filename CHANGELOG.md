@@ -13,6 +13,7 @@ Retest publishes releases from `main` through the Promote workflow. Each entry n
 ### Fixed
 
 - **`init` no longer tells a `chromium()` project to set `RETEST_CHROMIUM`.** A `chromium()` target runs the builds `retest install chromium` installs. Run headless, as `init` writes it, it runs the headless shell and never reads `RETEST_CHROMIUM`. The closing note now says to run `npx retest install chromium` here and in CI, and the comment `init` writes in `retest.config.ts` says the same.
+- **`init` prints one line for its one write of `package.json`.** It printed `created package.json` twice, once for the scripts and once for the packages, and `updated package.json` twice the same way. The scripts and the packages it added now share one line. Scripts it left as they were still have a line of their own.
 
 ## 0.5.2
 

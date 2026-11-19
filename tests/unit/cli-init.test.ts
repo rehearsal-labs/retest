@@ -80,8 +80,7 @@ describe('init in a new project', () => {
         '  created  retest.config.ts',
         '  created  tests/example.retest.ts',
         '  created  tests/tsconfig.json',
-        '  created  package.json   scripts: "test:e2e", "typecheck:e2e"',
-        '  created  package.json   devDependencies: retest@latest, typescript@^7.0.2, @types/node@^24.12.0',
+        '  created  package.json   scripts: "test:e2e", "typecheck:e2e"; devDependencies: retest@latest, typescript@^7.0.2, @types/node@^24.12.0',
         '  created  .gitignore     .retest/',
         '',
         '  Running npm install',
@@ -407,8 +406,7 @@ describe('init beside existing files', () => {
       read(project, 'package.json'),
       '{\n    "name": "shop",\n    "scripts": {\n        "test:e2e": "playwright test",\n        "typecheck:e2e": "tsc -p tests/tsconfig.json"\n    },\n    "devDependencies": {\n        "@types/node": "^24.12.0",\n        "retest": "latest",\n        "typescript": "6.0.3"\n    }\n}\n',
     )
-    assert.match(stdout, /\n {2}updated {5}package\.json {3}scripts: "typecheck:e2e"\n {2}left as is {2}package\.json {3}scripts: "test:e2e"\n/)
-    assert.match(stdout, /\n {2}updated {5}package\.json {3}devDependencies: retest@latest, @types\/node@\^24\.12\.0\n/)
+    assert.match(stdout, /\n {2}updated {5}package\.json {3}scripts: "typecheck:e2e"; devDependencies: retest@latest, @types\/node@\^24\.12\.0\n {2}left as is {2}package\.json {3}scripts: "test:e2e"\n {2}created/)
     assert.deepEqual(installs, [{ command: 'npm install', cwd: project }])
     assert.match(stdout, /\n\n {2}Add "type": "module" to package\.json, so Node reads the tests as ES modules without guessing\.\n\n {2}Next\n/)
   })
@@ -502,7 +500,7 @@ describe('the packages init adds', () => {
       fields: ['type', 'devDependencies', 'scripts'],
       devDependencies: [['@types/node', '^24.12.0'], ['eslint', '9.0.0'], ['retest', '^0.6.0'], ['typescript', '^7.0.2'], ['vite', '7.0.0']],
     })
-    assert.match(stdout, /\n {2}updated {2}package\.json {3}devDependencies: retest@\^0\.6\.0, typescript@\^7\.0\.2, @types\/node@\^24\.12\.0\n/)
+    assert.match(stdout, /\n {2}updated {2}package\.json {3}scripts: "test:e2e", "typecheck:e2e"; devDependencies: retest@\^0\.6\.0, typescript@\^7\.0\.2, @types\/node@\^24\.12\.0\n/)
     const unsorted = temporaryFolder()
     writeFileSync(join(unsorted, 'package.json'), '{ "name": "shop", "devDependencies": { "vite": "7.0.0", "eslint": "9.0.0" }, "type": "module", "dependencies": { "typescript": "5.9.3" } }')
     await init(unsorted, ['--yes'], { version: '0.6.0' })

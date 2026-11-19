@@ -323,9 +323,9 @@ describe('milestone 2 package: init and a registered consumer', () => {
     for (const path of ['retest.config.ts', 'tests/example.retest.ts', 'tests/tsconfig.json', '.github/workflows/retest.yml', '.gitignore']) {
       assert.match(first.stdout, new RegExp(`created +${path.replaceAll('.', '\\.')}`), `init created ${path}:\n${first.stdout}`)
     }
-    assert.match(first.stdout, /updated +package\.json +scripts: "test:e2e", "typecheck:e2e"/)
-    // Retest is installed from the tarball already, so only the other two are added.
-    assert.match(first.stdout, /updated +package\.json +devDependencies: typescript@\^7\.0\.2, @types\/node@\^24\.12\.0\n/)
+    // One line for the one write. Retest is installed from the tarball already, so only the other two are added.
+    assert.match(first.stdout, /\n {2}updated +package\.json +scripts: "test:e2e", "typecheck:e2e"; devDependencies: typescript@\^7\.0\.2, @types\/node@\^24\.12\.0\n/)
+    assert.equal(first.stdout.match(/^ {2}(?:created|updated|left as is) +package\.json/gm)?.length, 1, first.stdout)
     const workflow = readFileSync(join(initialized, '.github/workflows/retest.yml'), 'utf8')
     assert.match(workflow, /run: npm run typecheck:e2e\n.*run: npm run test:e2e/s)
     const config = readFileSync(join(initialized, 'retest.config.ts'), 'utf8')

@@ -75,7 +75,8 @@ describe('init installs what the project needs', () => {
     const output = run.stdout.indexOf('stand-in npm output')
     const installed = run.stdout.indexOf('  The packages are installed.')
     assert.ok(running >= 0 && output > running && installed > output, run.stdout)
-    assert.ok(run.stdout.indexOf('  created  package.json   devDependencies: retest@latest, typescript@^7.0.2, @types/node@^24.12.0') < running, run.stdout)
+    const created = run.stdout.indexOf('  created  package.json   scripts: "test:e2e", "typecheck:e2e"; devDependencies: retest@latest, typescript@^7.0.2, @types/node@^24.12.0\n')
+    assert.ok(created >= 0 && created < running, run.stdout)
   })
 
   test('a failed install exits 2 with the command to run by hand, and the files stay', async (t) => {

@@ -30,7 +30,8 @@ export type InitReport = {
 const nextColumn = 25
 
 /**
- * One line for each change to a file, package.json's scripts and dev dependencies each on a line of their own.
+ * One line for each change to a file. package.json's scripts and dev dependencies share the line of the write that
+ * added them, and the scripts it left as they were have a line of their own.
  *
  * @example stdout.write(renderChanges(changes, style)) // '  created  retest.config.ts\n...'
  */

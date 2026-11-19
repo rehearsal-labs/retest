@@ -68,31 +68,32 @@ export function missingPackages(found: PackageJson | undefined, wanted: Readonly
 
 /**
  * Adds the `test:e2e` and `typecheck:e2e` scripts that are missing and the packages given, as dev dependencies, in
- * one write, and never changes a script that is set. Without a package.json, writes a new one for ES modules.
+ * one write, and never changes a script that is set. Without a package.json, writes a new one for ES modules. The write
+ * is one change, naming the scripts and the packages it added; the scripts that were already set are another.
  */
 export function updatePackageJson(root: string, found: PackageJson | undefined, packages: Readonly<Record<string, string>>): FileChange[] {
   const path = 'package.json'
   const names = Object.keys(packageScripts)
-  const adding = Object.keys(packages).length > 0
-  const packageChange = (change: FileChange['change']): FileChange[] => (adding ? [{ path, change, detail: packageList(packages) }] : [])
+  const packageDetails = Object.keys(packages).length > 0 ? [packageList(packages)] : []
   if (found === undefined) {
     const data = { private: true, type: 'module', scripts: packageScripts, ...withPackages(undefined, packages) }
     writeFileSync(join(root, path), `${JSON.stringify(data, null, 2)}\n`)
-    return [{ path, change: 'created', detail: scriptList(names) }, ...packageChange('created')]
+    return [{ path, change: 'created', detail: joinDetails([scriptList(names), ...packageDetails]) }]
   }
   const scripts = isPlainObject(found.data['scripts']) ? found.data['scripts'] : {}
   const added = names.filter((name) => !Object.hasOwn(scripts, name))
   const kept = names.filter((name) => Object.hasOwn(scripts, name))
-  if (added.length > 0 || adding) {
+  const details = [...(added.length === 0 ? [] : [scriptList(added)]), ...packageDetails]
+  const changes: FileChange[] = []
+  if (details.length > 0) {
     const additions = Object.fromEntries(added.map((name) => [name, packageScripts[name]]))
     const withScripts = added.length === 0 ? {} : { scripts: { ...scripts, ...additions } }
     const data = { ...found.data, ...withScripts, ...withPackages(found.data['devDependencies'], packages) }
     writeFileSync(join(root, path), `${JSON.stringify(data, null, found.indent)}${found.finalNewline ? '\n' : ''}`)
+    changes.push({ path, change: 'updated', detail: joinDetails(details) })
   }
-  const changes: FileChange[] = []
-  if (added.length > 0) changes.push({ path, change: 'updated', detail: scriptList(added) })
   if (kept.length > 0) changes.push({ path, change: 'left as is', detail: scriptList(kept) })
-  return [...changes, ...packageChange('updated')]
+  return changes
 }
 
 /** Adds `.retest/` to .gitignore, since run folders hold screenshots and logs. */
@@ -115,6 +116,11 @@ function scriptList(names: readonly string[]): string {
 
 function packageList(packages: Readonly<Record<string, string>>): string {
   return `devDependencies: ${Object.entries(packages).map(([name, range]) => `${name}@${range}`).join(', ')}`
+}
+
+// Each list joins its own items with commas, so the lists of one change are told apart by semicolons.
+function joinDetails(details: readonly string[]): string {
+  return details.join('; ')
 }
 
 function listsPackage(found: PackageJson | undefined, name: string): boolean {
