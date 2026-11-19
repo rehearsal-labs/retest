@@ -1,9 +1,9 @@
 name: CI
 run-name: ${{ inputs.commit && 'Release gates' || inputs.suite || 'all' }} on ${{ inputs.commit || inputs.ref }}
 
-# Manual debugging can choose a suite, platform and exact files. The fast suite runs build, types and unit files on
-# the selected platforms and, when macOS is selected, its short integration files, to find what fails before the full
-# matrix. Promotion calls
+# Manual debugging can choose a suite, platform and exact files. The fast suite runs build, types, the Rust builds and
+# unit files on the selected platforms and, when macOS is selected, its short integration files, to find what fails
+# before the full matrix. Promotion calls
 # this with only a commit, which always plans the full matrix. No push, tag or schedule starts this workflow.
 on:
   workflow_dispatch:
@@ -37,6 +37,11 @@ on:
 permissions:
   contents: read
 
+# The oldest Rust the crates support, their rust-version. A job that builds a crate installs the Rust it names through
+# rustup, so its result never depends on the Rust its runner image happens to carry.
+env:
+  RETEST_CI_RUST: '1.88.0'
+
 # New manual work replaces old work in the same suite/platform. Promotion has a run-specific group and is never cancelled here.
 concurrency:
   group: ${{ inputs.commit && format('retest-ci-promotion-{0}', github.run_id) || format('retest-ci-manual-{0}-{1}-{2}', github.ref, inputs.suite || 'all', inputs.platform || 'all') }}
@@ -56,6 +61,8 @@ jobs:
       macos: ${{ steps.plan.outputs.macos }}
       windows: ${{ steps.plan.outputs.windows }}
       requested: ${{ steps.plan.outputs.requested }}
+      rust: ${{ steps.rust.outputs.rust }}
+      rust-jobs: ${{ steps.rust.outputs.rust-jobs }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -78,6 +85,20 @@ jobs:
           RETEST_CI_PLATFORM: ${{ inputs.platform }}
           RETEST_CI_TEST_FILES: ${{ inputs.files }}
         run: node scripts/ci/write-test-plan.ts
+      # A crate is built where a user builds it: the supervisor on Windows x64, the media process on Linux x64, macOS
+      # arm64 and Windows x64. Linux arm64 has neither. A focused unit or integration run builds none.
+      - name: Choose the platforms whose Rust builds are checked
+        id: rust
+        env:
+          RETEST_CI_SCOPE: ${{ inputs.suite }}
+          RETEST_CI_CHECKS: ${{ steps.plan.outputs.checks }}
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs'
+          const focused = process.env.RETEST_CI_SCOPE === 'unit' || process.env.RETEST_CI_SCOPE === 'integration'
+          const builds = focused ? [] : JSON.parse(process.env.RETEST_CI_CHECKS).filter((job) => job.platform !== 'linux-arm64')
+          appendFileSync(process.env.GITHUB_OUTPUT, `rust=${JSON.stringify(builds)}\nrust-jobs=${builds.length}\n`)
+          JS
 
   checks:
     name: Build and types ${{ matrix.platform }}
@@ -100,6 +121,48 @@ jobs:
       - run: npm run build
       - run: npm run typecheck
       - run: npm run test:types
+
+  # A user builds the crates with the Rust they have, and a new Rust reaches users before it reaches the runner images.
+  # Each crate is installed here as a user installs it, through its installer, from nothing, with the oldest Rust it
+  # supports and with the current stable. Integration does not wait for this job; the result job requires it.
+  rust:
+    name: Rust builds ${{ matrix.platform }}
+    needs: commit
+    if: ${{ needs.commit.outputs.rust != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.commit.outputs.rust) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.commit.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ matrix.platform == 'macos-arm64' && '24.12.0' || '24' }}
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Install the crates with Rust ${{ env.RETEST_CI_RUST }} and with the current stable
+        shell: bash
+        env:
+          RETEST_CI_CRATES: ${{ matrix.platform == 'windows-x64' && 'supervisor media' || 'media' }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows) cache="$(cygpath -u "$LOCALAPPDATA")/retest" ;;
+            macOS) cache="$HOME/Library/Caches/retest" ;;
+            *) cache="${XDG_CACHE_HOME:-$HOME/.cache}/retest" ;;
+          esac
+          for toolchain in "$RETEST_CI_RUST" stable; do
+            rustup toolchain install "$toolchain" --profile minimal
+            rustup default "$toolchain"
+            # An install already recorded is not built again, so each Rust starts from an empty cache.
+            rm -rf "$cache/supervisor" "$cache/media"
+            node dist/cli/main.js install $RETEST_CI_CRATES
+          done
 
   unit:
     name: Unit ${{ matrix.platform }} ${{ matrix.shard }}/${{ matrix.total }}
@@ -297,7 +360,7 @@ jobs:
 
   result:
     name: Verify every requested job finished
-    needs: [commit, checks, unit, linux, macos, windows]
+    needs: [commit, checks, rust, unit, linux, macos, windows]
     if: ${{ always() && needs.commit.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -306,6 +369,8 @@ jobs:
       RETEST_CI_REQUESTED: ${{ needs.commit.outputs.requested }}
       RETEST_CI_FULL: ${{ needs.commit.outputs.full }}
       RETEST_CI_CHECKS: ${{ needs.checks.result }}
+      RETEST_CI_RUST_BUILDS: ${{ needs.rust.result }}
+      RETEST_CI_RUST_BUILD_JOBS: ${{ needs.commit.outputs.rust-jobs }}
       RETEST_CI_UNIT: ${{ needs.unit.result }}
       RETEST_CI_LINUX: ${{ needs.linux.result }}
       RETEST_CI_MACOS: ${{ needs.macos.result }}
@@ -315,8 +380,8 @@ jobs:
         run: |
           node --input-type=module <<'JS'
           import { appendFileSync } from 'node:fs'
-          const requested = JSON.parse(process.env.RETEST_CI_REQUESTED)
-          const results = { checks: process.env.RETEST_CI_CHECKS, unit: process.env.RETEST_CI_UNIT, linux: process.env.RETEST_CI_LINUX, macos: process.env.RETEST_CI_MACOS, windows: process.env.RETEST_CI_WINDOWS }
+          const requested = { ...JSON.parse(process.env.RETEST_CI_REQUESTED), rust: Number.parseInt(process.env.RETEST_CI_RUST_BUILD_JOBS, 10) }
+          const results = { checks: process.env.RETEST_CI_CHECKS, rust: process.env.RETEST_CI_RUST_BUILDS, unit: process.env.RETEST_CI_UNIT, linux: process.env.RETEST_CI_LINUX, macos: process.env.RETEST_CI_MACOS, windows: process.env.RETEST_CI_WINDOWS }
           for (const [name, result] of Object.entries(results)) {
             const count = requested[name]
             if (!Number.isInteger(count) || count < 0) throw new Error(`${name}: the plan gave no job count`)
