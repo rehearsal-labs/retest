@@ -234,6 +234,18 @@ Every run also writes versioned events, one JSON object per line, with a publish
 - [Conformance](docs/compatibility/conformance.md): fixed cases on Chrome, Firefox and WebKit, and where each engine differs.
 - [rehearsal.dev/retest](https://rehearsal.dev/retest): the documentation site.
 
+## Thank you, Blake
+
+The name `retest` was not free. Blake Embrey published the first `retest` on npm in 2014, a library for testing HTTP servers, and the name had been his ever since.
+
+In November 2026 I wrote to him as a stranger and asked whether this project could have it. He said yes the same day, added me to the package the next, and asked for nothing in return.
+
+Every `npx retest` typed from here on works because of that. Thank you, Blake.
+
+Vahagn
+
+If you came here for Blake's library, it is still on npm and works as before: `npm install retest@1`. Its source is at [blakeembrey/retest](https://github.com/blakeembrey/retest).
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
